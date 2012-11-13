@@ -1963,12 +1963,12 @@ abstract class GenICode extends SubComponent  {
         this
       }
 
-      def removeFinalizer(f: Tree): this.type = {
-        assert(cleanups.head contains f,
-               "Illegal nesting of cleanup operations: " + cleanups + " while exiting finalizer " + f);
-        cleanups = cleanups.tail
-        this
-      }
+      // def removeFinalizer(f: Tree): this.type = {
+      //   assert(cleanups.head contains f,
+      //          "Illegal nesting of cleanup operations: " + cleanups + " while exiting finalizer " + f);
+      //   cleanups = cleanups.tail
+      //   this
+      // }
 
       /** Prepare a new context upon entry into a method.
        *
@@ -2047,14 +2047,14 @@ abstract class GenICode extends SubComponent  {
       }
 
       /** Remove the given handler from the list of active exception handlers. */
-      def removeActiveHandler(exh: ExceptionHandler): Unit = {
-        assert(handlerCount > 0 && handlers.head == exh,
-               "Wrong nesting of exception handlers." + this + " for " + exh)
-        handlerCount -= 1
-        handlers = handlers.tail
-        debuglog("removed handler: " + exh);
+      // def removeActiveHandler(exh: ExceptionHandler): Unit = {
+      //   assert(handlerCount > 0 && handlers.head == exh,
+      //          "Wrong nesting of exception handlers." + this + " for " + exh)
+      //   handlerCount -= 1
+      //   handlers = handlers.tail
+      //   debuglog("removed handler: " + exh);
 
-      }
+      // }
 
       /** Clone the current context */
       def dup: Context = new Context(this)
@@ -2342,7 +2342,7 @@ abstract class GenICode extends SubComponent  {
     val locals: ListBuffer[Local] = new ListBuffer
 
     def add(l: Local)     = locals += l
-    def remove(l: Local)  = locals -= l
+    // def remove(l: Local)  = locals -= l
 
     /** Return all locals that are in scope. */
     def varsInScope: Buffer[Local] = outer.varsInScope.clone() ++= locals
