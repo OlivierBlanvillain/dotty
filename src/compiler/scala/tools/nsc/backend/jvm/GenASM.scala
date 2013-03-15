@@ -2252,6 +2252,7 @@ abstract class GenASM extends SubComponent with BytecodeWriters with GenJVMASM {
         hostSymbol.info ; methodOwner.info
 
         def isInterfaceCall(sym: Symbol) = (
+             //XXX remove the test for ObjectClass.
              sym.isInterface && methodOwner != ObjectClass
           || sym.isJavaDefined && sym.isNonBottomSubClass(ClassfileAnnotationClass)
         )
@@ -2259,8 +2260,8 @@ abstract class GenASM extends SubComponent with BytecodeWriters with GenJVMASM {
         // the type of the method owner (if not an interface!)
         val useMethodOwner = (
              style != Dynamic
-          || !isInterfaceCall(hostSymbol) && isAccessibleFrom(methodOwner, siteSymbol)
           || hostSymbol.isBottomClass
+          || methodOwner == ObjectClass
         )
         val receiver = if (useMethodOwner) methodOwner else hostSymbol
         val jowner   = javaName(receiver)
