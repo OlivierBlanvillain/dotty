@@ -1176,8 +1176,7 @@ abstract class GenJVM extends SubComponent with GenJVMUtil with GenAndroid with 
         hostSymbol.info ; methodOwner.info
 
         def isInterfaceCall(sym: Symbol) = (
-             //XXX remove the test for ObjectClass.
-             sym.isInterface && methodOwner != ObjectClass
+             sym.isInterface
           || sym.isJavaDefined && sym.isNonBottomSubClass(ClassfileAnnotationClass)
         )
         // whether to reference the type of the receiver or
