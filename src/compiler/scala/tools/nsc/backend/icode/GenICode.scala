@@ -1009,8 +1009,15 @@ abstract class GenICode extends SubComponent  {
       }
 
       // emit conversion
-      if (generatedType != expectedType)
-        adapt(generatedType, expectedType, resCtx, tree.pos)
+      if (generatedType != expectedType) {
+        tree match {
+          case Literal(Constant(null)) if generatedType == NullReference =>
+            // literal null on the stack (as opposed to a boxed null, see SI-8233),
+            // we can bypass `adapt` which would otherwise emitt a redundant [DROP, CONSTANT(null)]
+          case _ =>
+            adapt(generatedType, expectedType, resCtx, tree.pos)
+        }
+      }
 
       resCtx
     }
@@ -1060,6 +1067,9 @@ abstract class GenICode extends SubComponent  {
         case (NothingReference, _) =>
           ctx.bb.emit(THROW(ThrowableClass))
           ctx.bb.enterIgnoreMode()
+        case (NullReference, REFERENCE(_)) =>
+          // SI-8223 we can't assume that the stack contains a `null`, it might contain a Null$
+          ctx.bb.emit(Seq(DROP(from), CONSTANT(Constant(null))))
         case _ if from isAssignabledTo to =>
           ()
         case (_, UNIT) =>
