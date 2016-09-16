@@ -48,9 +48,7 @@ object Patterns {
     val yy: String = y
   }
 
-
-
-  val xs = List('2' -> "ABC", '3' -> "DEF")
+  val xs = List('2' ~> "ABC", '3' ~> "DEF")
 
   xs filter {
     case (digit, str) => true

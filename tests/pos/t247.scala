@@ -21,6 +21,6 @@ class TreeMap[KEY,VALUE](_factory:TreeMapFactory[KEY]) extends Tree[KEY,Tuple2[K
   val order = _factory.order;
   def this(newOrder:Order[KEY]) = this(new TreeMapFactory[KEY](newOrder));
   def get(key:KEY) = null;
-  def iterator:Iterator[Tuple2[KEY,VALUE]] = null;
+  def iterator:Iterator[scala.Tuple2[KEY,VALUE]] = null;
   override def size = super[Tree].size
 }

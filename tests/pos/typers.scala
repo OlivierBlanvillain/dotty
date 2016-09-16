@@ -10,8 +10,8 @@ object typers {
 
   object Inference {
 
-    for ((name, n) <- (names, ints).zipped)
-      println(name.length + n)
+    // for ((name, n) <- (names, ints).zipped)
+    //   println(name.length + n)
 
     def double(x: Char): String = s"$x$x"
 
@@ -136,8 +136,8 @@ object typers {
 
     val entries = Array("abc", "def")
 
-    for ((x, i) <- entries.zipWithIndex)
-      println(x)
+    // for ((x, i) <- entries.zipWithIndex)
+    //   println(x)
   }
 
   object SeqExtractors {

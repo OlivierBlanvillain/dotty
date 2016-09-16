@@ -1,18 +1,18 @@
 object Test extends App {
   // compiles:
   Map[Int, Value](
-    0 -> KnownType(classOf[Object]),
-    1 -> UnknownValue())
+    0 ~> KnownType(classOf[Object]),
+    1 ~> UnknownValue())
 
   // does not compile:
   Map(
-    0 -> KnownType(classOf[Object]),
-    1 -> UnknownValue())
+    0 ~> KnownType(classOf[Object]),
+    1 ~> UnknownValue())
 
   // Experiment.scala:10: error: type mismatch;
   //  found   : (Int, KnownType)
   //  required: (Int, Product with Value{def getType: Option[java.lang.Class[_$$2]]}) where type _$$2
-  //     0 -> KnownType(classOf[Object]),
+  //     0 ~> KnownType(classOf[Object]),
   //       ^
   // one error found
 }
