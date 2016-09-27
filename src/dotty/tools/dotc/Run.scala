@@ -59,8 +59,8 @@ class Run(comp: Compiler)(implicit ctx: Context) {
 
   protected def compileUnits() = Stats.monitorHeartBeat {
     ctx.checkSingleThreaded()
-    val phases = ctx.squashPhases(ctx.phasePlan,
-      ctx.settings.Yskip.value, ctx.settings.YstopBefore.value, ctx.settings.YstopAfter.value, ctx.settings.Ycheck.value)
+    val stopBeforeSetting = ctx.settings.YstopBefore.value ::: (if (ctx.settings.YtestPickler.value) List("pickler") else Nil)
+    val phases = ctx.squashPhases(ctx.phasePlan, ctx.settings.Yskip.value, stopBeforeSetting, ctx.settings.YstopAfter.value, ctx.settings.Ycheck.value)
     ctx.usePhases(phases)
     var lastPrintedTree: PrintedTree = NoPrintedTree
     for (phase <- ctx.allPhases)
