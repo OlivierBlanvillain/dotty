@@ -745,11 +745,19 @@ class Typer extends Namer with TypeAssigner with Applications with Implicits wit
         else errorType(i"wrong number of parameters, expected: ${protoFormals.length}", tree.pos)
 
       /** Is `formal` a product type which is elementwise compatible with `params`? */
-      def ptIsCorrectProduct(formal: Type) = {
-        val pclass = defn.ProductNType(params.length).symbol
+      def ptIsCorrectProduct(formal: Type): Boolean = {
+        val hcons = defn.TupleConsType.symbol
+
+        // Flatten types nested in an Tuple as as List[Type].
+        def hlistTypes(t: Type): List[Type] =
+          t.baseArgTypes(hcons) match {
+            case x :: y :: Nil => x :: hlistTypes(y) // TupleCons[H, T <: Tuple]
+            case _ => Nil                            // TNil
+          }
+
         isFullyDefined(formal, ForceDegree.noBottom) &&
-        formal.derivesFrom(pclass) &&
-        formal.baseArgTypes(pclass).corresponds(params) {
+        formal.derivesFrom(hcons) &&
+        hlistTypes(formal).corresponds(params) {
           (argType, param) =>
             param.tpt.isEmpty || argType <:< typedAheadType(param.tpt).tpe
         }

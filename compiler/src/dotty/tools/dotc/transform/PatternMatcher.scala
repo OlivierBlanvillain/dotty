@@ -1905,7 +1905,8 @@ class PatternMatcher extends MiniPhaseTransform with DenotTransformer {
       /** Converts a T => (A, B, C) extractor to a T => ((A, B, CC)) extractor.
         */
       def tupleExtractor(extractor: Extractor): Extractor =
-        extractor.copy(fixed = defn.tupleType(extractor.fixed) :: Nil)
+        // extractor.copy(fixed = defn.tupleType(extractor.fixed) :: Nil)
+        ??? // TODO OLIVIER: is this dead code?
 
       private def validateAligned(tree: Tree, aligned: Aligned): Aligned = {
         import aligned._

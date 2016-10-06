@@ -385,7 +385,7 @@ object desugar {
 
     // Case classes and case objects get a ProductN parent
     var parents1 = parents
-    if (mods.is(Case) && arity <= Definitions.MaxTupleArity)
+    if (mods.is(Case))
       parents1 = parents1 :+ productConstr(arity)
 
     // The thicket which is the desugared version of the companion object
@@ -582,7 +582,14 @@ object desugar {
           val firstDef =
             ValDef(tmpName, TypeTree(), matchExpr)
               .withPos(pat.pos.union(rhs.pos)).withMods(patMods)
-          def selector(n: Int) = Select(Ident(tmpName), nme.selectorName(n))
+          def selector(n: Int): Tree = {
+            // TODO OLIVIER: Should we generate optimal code here or will this be optimised later?
+            // Currently it generates `val x_1 = t.head; val x_2 = t.tail.head; val x_3 = t.tail.tail.head; ...`.
+            // whereas the last bits could be replace with val x_n = t.tails.asInstanceOf[Tuple4Impl[_, _, _, _]]].e4
+            val prod: Tree = Ident(tmpName)
+            val tails = (1 to n).foldLeft(prod) { case (tree, _) => Select(tree, nme.tail) }
+            Select(tails, nme.head)
+          }
           val restDefs =
             for (((named, tpt), n) <- vars.zipWithIndex)
             yield
@@ -677,7 +684,7 @@ object desugar {
     val param = makeSyntheticParameter()
     def selector(n: Int) = Select(refOfDef(param), nme.selectorName(n))
     val vdefs =
-      params.zipWithIndex.map{
+      params.zipWithIndex.map {
         case (param, idx) =>
           DefDef(param.name, Nil, Nil, TypeTree(), selector(idx)).withPos(param.pos)
       }
@@ -977,14 +984,24 @@ object desugar {
         t
       case Tuple(ts) =>
         val arity = ts.length
-        def tupleTypeRef = defn.TupleType(arity)
-        if (arity > Definitions.MaxTupleArity) {
-          ctx.error(TupleTooLong(ts), tree.pos)
-          unitLiteral
-        } else if (arity == 1) ts.head
-        else if (ctx.mode is Mode.Type) AppliedTypeTree(ref(tupleTypeRef), ts)
-        else if (arity == 0) unitLiteral
-        else Apply(ref(tupleTypeRef.classSymbol.companionModule.valRef), ts)
+        arity match {
+          case 0 => unitLiteral
+          case _ if ctx.mode is Mode.Type =>
+            // Transforming Tuple types: (T1, T2) → TupleCons[T1, TupleCons[T2, TNil]]
+            def hconsType(l: Tree, r: Tree): Tree =
+              AppliedTypeTree(ref(defn.TupleConsType), l :: r :: Nil)
+            ts.foldRight(ref(defn.TNilType))(hconsType)
+          // case _ if arity < Definitions.MaxFlatTupleArity =>
+          //   // Transforming small Tuple trees: (T1, T2) → TupleCons(T1, TupleCons(T2, TNil))
+          //   ??? // TODO OLIVIER
+          case _ =>
+            // Transforming large Tuple trees: (T1, T2, ..., TN) → TupleCons(T1, TupleCons(T2, ... (TupleCons(TN, TNil))))
+            val tnil = defn.TNilType.classSymbol.companionModule.valRef
+            val tcons = defn.TupleNImplType.classSymbol.companionModule.valRef
+            def tconsTree(l: Tree, r: Tree): Tree =
+              Apply(ref(tcons), l :: r :: Nil)
+            ts.foldRight(ref(tnil))(tconsTree)
+        }
       case WhileDo(cond, body) =>
         // { <label> def while$(): Unit = if (cond) { body; while$() } ; while$() }
         val call = Apply(Ident(nme.WHILE_PREFIX), Nil)
