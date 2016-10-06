@@ -376,7 +376,7 @@ object desugar {
 
     // Case classes and case objects get a ProductN parent
     var parents1 = parents
-    if (mods.is(Case) && arity <= Definitions.MaxTupleArity)
+    if (mods.is(Case))
       parents1 = parents1 :+ productConstr(arity)
 
     // The thicket which is the desugared version of the companion object
@@ -559,7 +559,11 @@ object desugar {
           val firstDef =
             ValDef(tmpName, TypeTree(), matchExpr)
               .withPos(pat.pos.union(rhs.pos)).withMods(patMods)
-          def selector(n: Int) = Select(Ident(tmpName), nme.selectorName(n))
+          def selector(n: Int): Tree = {
+            val prod: Tree = Ident(tmpName)
+            val tails = (1 to n).foldLeft(prod) { case (tree, _) => Select(tree, nme.tail) }
+            Select(tails, nme.head)
+          }
           val restDefs =
             for (((named, tpt), n) <- vars.zipWithIndex)
             yield
@@ -655,7 +659,7 @@ object desugar {
     val param = makeSyntheticParameter()
     def selector(n: Int) = Select(refOfDef(param), nme.selectorName(n))
     val vdefs =
-      params.zipWithIndex.map{
+      params.zipWithIndex.map {
         case (param, idx) =>
           DefDef(param.name, Nil, Nil, TypeTree(), selector(idx)).withPos(param.pos)
       }
@@ -929,14 +933,21 @@ object desugar {
         t
       case Tuple(ts) =>
         val arity = ts.length
-        def tupleTypeRef = defn.TupleType(arity)
-        if (arity > Definitions.MaxTupleArity) {
-          ctx.error(TupleTooLong(ts), tree.pos)
-          unitLiteral
-        } else if (arity == 1) ts.head
-        else if (ctx.mode is Mode.Type) AppliedTypeTree(ref(tupleTypeRef), ts)
-        else if (arity == 0) unitLiteral
-        else Apply(ref(tupleTypeRef.classSymbol.companionModule.valRef), ts)
+        arity match {
+          case 0 => unitLiteral
+          case _ if ctx.mode is Mode.Type =>
+            // Transforming Tuple types: (T1, T2) → HCons[T1, HCons[T2, HNil]]
+            def hconsType(l: Tree, r: Tree) =
+              AppliedTypeTree(ref(defn.HConsType), l :: r :: Nil)
+            ts.foldRight(ref(defn.HNilType))(hconsType)
+          case _ =>
+            // Transforming Tuple trees: (T1, T2) → HCons(T1, HCons(T2, HNil))
+            val hnil  = defn.HNilType .classSymbol.companionModule.valRef
+            val hcons = defn.HConsType.classSymbol.companionModule.valRef
+            def hconsTree(l: Tree, r: Tree) =
+              Apply(ref(hcons), l :: r :: Nil)
+            ts.foldRight(ref(hnil))(hconsTree)
+        }
       case WhileDo(cond, body) =>
         // { <label> def while$(): Unit = if (cond) { body; while$() } ; while$() }
         val call = Apply(Ident(nme.WHILE_PREFIX), Nil)

@@ -12,7 +12,7 @@ import collection.mutable
 import scala.reflect.api.{ Universe => ApiUniverse }
 
 object Definitions {
-  val MaxTupleArity, MaxAbstractFunctionArity = 22
+  val MaxAbstractFunctionArity = 22
   val MaxFunctionArity = 30
     // Awaiting a definite solution that drops the limit altogether, 30 gives a safety
     // margin over the previous 22, so that treecopiers in miniphases are allowed to
@@ -614,12 +614,10 @@ class Definitions {
     lazy val Function0_applyR = FunctionType(0).symbol.requiredMethodRef(nme.apply)
     def Function0_apply(implicit ctx: Context) = Function0_applyR.symbol
 
-  lazy val TupleType = mkArityArray("scala.Tuple", MaxTupleArity, 2)
-  lazy val ProductNType = mkArityArray("scala.Product", MaxTupleArity, 0)
+  lazy val HNilType = ctx.requiredClassRef("dotty.HNil")
+  lazy val HConsType = ctx.requiredClassRef("dotty.HCons")
 
   private lazy val FunctionTypes: Set[TypeRef] = FunctionType.toSet
-  private lazy val TupleTypes: Set[TypeRef] = TupleType.toSet
-  private lazy val ProductTypes: Set[TypeRef] = ProductNType.toSet
 
   /** If `cls` is a class in the scala package, its name, otherwise EmptyTypeName */
   def scalaClassName(cls: Symbol)(implicit ctx: Context): TypeName =
@@ -673,14 +671,8 @@ class Definitions {
   def isPolymorphicAfterErasure(sym: Symbol) =
      (sym eq Any_isInstanceOf) || (sym eq Any_asInstanceOf)
 
-  def isTupleType(tp: Type)(implicit ctx: Context) = {
-    val arity = tp.dealias.argInfos.length
-    arity <= MaxTupleArity && TupleType(arity) != null && (tp isRef TupleType(arity).symbol)
-  }
-
-  def tupleType(elems: List[Type]) = {
-    TupleType(elems.size).appliedTo(elems)
-  }
+  def isTupleType(tp: Type)(implicit ctx: Context) =
+    tp.isRef(HNilType.symbol) || tp.isRef(HConsType.symbol)
 
   def isProductSubType(tp: Type)(implicit ctx: Context) =
     (tp derivesFrom ProductType.symbol) && tp.baseClasses.exists(isProductClass)

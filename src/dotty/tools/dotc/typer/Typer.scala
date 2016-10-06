@@ -709,11 +709,19 @@ class Typer extends Namer with TypeAssigner with Applications with Implicits wit
         else errorType(i"wrong number of parameters, expected: ${protoFormals.length}", tree.pos)
 
       /** Is `formal` a product type which is elementwise compatible with `params`? */
-      def ptIsCorrectProduct(formal: Type) = {
-        val pclass = defn.ProductNType(params.length).symbol
+      def ptIsCorrectProduct(formal: Type): Boolean = {
+        val hcons = defn.HConsType.symbol
+
+        // Flatten types nested in an HList as as List[Type].
+        def hlistTypes(t: Type): List[Type] =
+          t.baseArgTypes(hcons) match {
+            case x :: y :: Nil => x :: hlistTypes(y) // HCons[H, T <: HList]
+            case _             => Nil                // HNil
+          }
+
         isFullyDefined(formal, ForceDegree.noBottom) &&
-        formal.derivesFrom(pclass) &&
-        formal.baseArgTypes(pclass).corresponds(params) {
+        formal.derivesFrom(hcons) &&
+        hlistTypes(formal).corresponds(params) {
           (argType, param) =>
             param.tpt.isEmpty || argType <:< typedAheadType(param.tpt).tpe
         }
@@ -722,8 +730,7 @@ class Typer extends Namer with TypeAssigner with Applications with Implicits wit
       val desugared =
         if (protoFormals.length == 1 && params.length != 1 && ptIsCorrectProduct(protoFormals.head)) {
           desugar.makeTupledFunction(params, fnBody)
-        }
-        else {
+        } else {
           val inferredParams: List[untpd.ValDef] =
             for ((param, i) <- params.zipWithIndex) yield
               if (!param.tpt.isEmpty) param
