@@ -56,7 +56,6 @@ class CachedCompilerImpl(args: Array[String], output: Output, resident: Boolean)
     debug(log, args.mkString("Calling Dotty compiler with arguments  (CompilerInterface):\n\t", "\n\t", ""))
     val ctx = (new ContextBase).initialCtx.fresh
       .setSbtCallback(callback)
-      .setReporter(new DelegatingReporter(delegate))
 
     val cl = getClass.getClassLoader.asInstanceOf[URLClassLoader]
 
