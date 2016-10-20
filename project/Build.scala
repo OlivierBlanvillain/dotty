@@ -9,7 +9,7 @@ import org.scalajs.sbtplugin.ScalaJSPlugin.autoImport._
 
 object DottyBuild extends Build {
 
-  val baseVersion = "0.1"
+  val baseVersion = "0.1.15"
   val isNightly = sys.env.get("NIGHTLYBUILD") == Some("yes")
 
   val jenkinsMemLimit = List("-Xmx1300m")
@@ -241,9 +241,9 @@ object DottyBuild extends Build {
       ),
       version := {
         if (isNightly)
-          "0.1.1-" + VersionUtil.commitDate + "-" + VersionUtil.gitHash + "-NIGHTLY"
+          "0.1.15-" + VersionUtil.commitDate + "-" + VersionUtil.gitHash + "-NIGHTLY"
         else
-          "0.1.1-SNAPSHOT"
+          "0.1.15-SNAPSHOT"
       },
       // The sources should be published with crossPaths := false since they
       // need to be compiled by the project using the bridge.
@@ -278,7 +278,7 @@ object DottyInjectedPlugin extends AutoPlugin {
     scalaBinaryVersion  := "2.11",
     autoScalaLibrary := false,
     libraryDependencies ++= Seq("org.scala-lang" % "scala-library" % "2.11.5"),
-    scalaCompilerBridgeSource := ("ch.epfl.lamp" % "dotty-bridge" % "0.1.1-SNAPSHOT" % "component").sources()
+    scalaCompilerBridgeSource := ("ch.epfl.lamp" % "dotty-bridge" % "0.1.15-SNAPSHOT" % "component").sources()
   )
 }
 """)
