@@ -144,7 +144,9 @@ class TreeChecker extends Phase with SymTransformer {
     val nowDefinedSyms = new mutable.HashSet[Symbol]
     val everDefinedSyms = new mutable.HashMap[Symbol, Tree]
 
-    def withDefinedSym[T](tree: untpd.Tree)(op: => T)(implicit ctx: Context): T = tree match {
+    def withDefinedSym[T](tree: untpd.Tree)(op: => T)(implicit ctx: Context): T = {
+      validate(tree)
+      tree match {
       case tree: DefTree =>
         val sym = tree.symbol
         () //assert(isValidJVMName(sym.name), s"${sym.fullName} name is invalid on jvm")
@@ -175,16 +177,18 @@ class TreeChecker extends Phase with SymTransformer {
         res
       case _ => op
     }
+    }
 
-    def withDefinedSyms[T](trees: List[untpd.Tree])(op: => T)(implicit ctx: Context) =
+    def withDefinedSyms[T](trees: List[untpd.Tree])(op: => T)(implicit ctx: Context) = {
+      trees.foreach(validate)
       trees.foldRightBN(op)(withDefinedSym(_)(_))
+    }
 
     def withDefinedSymss[T](vparamss: List[List[untpd.ValDef]])(op: => T)(implicit ctx: Context): T =
       vparamss.foldRightBN(op)(withDefinedSyms(_)(_))
 
     def assertDefined(tree: untpd.Tree)(implicit ctx: Context) =
-      if (tree.symbol.maybeOwner.isTerm)
-        () //assert(nowDefinedSyms contains tree.symbol, i"undefined symbol ${tree.symbol}")
+      validate(tree)
 
     /** assert Java classes are not used as objects */
     def assertIdentNotJavaClass(tree: Tree)(implicit ctx: Context): Unit = tree match {
@@ -194,7 +198,9 @@ class TreeChecker extends Phase with SymTransformer {
     }
 
     /** check Java classes are not used as objects */
-    def checkIdentNotJavaClass(tree: Tree)(implicit ctx: Context): Unit = tree match {
+    def checkIdentNotJavaClass(tree: Tree)(implicit ctx: Context): Unit = {
+      validate(tree)
+      tree match {
       // case tree: untpd.Ident =>
       // case tree: untpd.Select =>
       // case tree: untpd.Bind =>
@@ -248,15 +254,38 @@ class TreeChecker extends Phase with SymTransformer {
       case Annotated(arg, _) =>
         assertIdentNotJavaClass(arg)
       case _ =>
+    }    }
+
+    def validate(tree: untpd.Tree)(implicit ctx: Context, d: DummyImplicit): Unit = {
+      tree match {
+        case Apply(fn, args) if fn.symbol == tree.symbol =>
+          ()
+        case Apply(fn, args) =>
+          ???
+        case _ => ()
+      }
+    }
+
+    def validate(tree: tpd.Tree)(implicit ctx: Context): Unit = {
+      tree match {
+        case Apply(fn, args) if fn.symbol == tree.symbol =>
+          ()
+        case Apply(fn, args) =>
+          ???
+        case _ => ()
+      }
     }
 
     override def typed(tree: untpd.Tree, pt: Type = WildcardType)(implicit ctx: Context): tpd.Tree = {
+      validate(tree)
       val tpdTree = super.typed(tree, pt)
       checkIdentNotJavaClass(tpdTree)
+      validate(tpdTree)
       tpdTree
     }
 
     override def typedUnadapted(tree: untpd.Tree, pt: Type)(implicit ctx: Context): tpd.Tree = {
+      validate(tree)
       val res = tree match {
         case _: untpd.UnApply =>
           // can't recheck patterns
@@ -284,6 +313,7 @@ class TreeChecker extends Phase with SymTransformer {
       }
       checkNoOrphans(res.tpe)
       phasesToCheck.foreach(_.checkPostCondition(res))
+      validate(res)
       res
     }
 
@@ -308,6 +338,7 @@ class TreeChecker extends Phase with SymTransformer {
     }.apply(tp)
 
     def checkNotRepeated(tree: Tree)(implicit ctx: Context): tree.type = {
+      validate(tree)
       def allowedRepeated = (tree.symbol.flags is Case) && tree.tpe.widen.isRepeatedParam
 
       () //assert(!tree.tpe.widen.isRepeatedParam || allowedRepeated, i"repeated parameter type not allowed here: $tree")
@@ -334,6 +365,7 @@ class TreeChecker extends Phase with SymTransformer {
      *  Approximately means: The two symbols might be different but one still overrides the other.
      */
     override def typedSelect(tree: untpd.Select, pt: Type)(implicit ctx: Context): Tree = {
+      validate(tree)
       () //assert(tree.isTerm || !ctx.isAfterTyper, tree.show + " at " + ctx.phase)
       val tpe = tree.typeOpt
       val sym = tree.symbol
@@ -344,14 +376,14 @@ class TreeChecker extends Phase with SymTransformer {
           else qualTpe.nonPrivateMember(tree.name)
         val memberSyms = member.alternatives.map(_.symbol)
         () //assert(memberSyms.exists(mbr =>
-                 sym == mbr ||
-                 sym.overriddenSymbol(mbr.owner.asClass) == mbr ||
-                 mbr.overriddenSymbol(sym.owner.asClass) == sym),
-               ex"""symbols differ for $tree
-                   |was                 : $sym
-                   |alternatives by type: $memberSyms%, % of types ${memberSyms.map(_.info)}%, %
-                   |qualifier type      : ${tree.qualifier.typeOpt}
-                   |tree type           : ${tree.typeOpt} of class ${tree.typeOpt.getClass}""")
+               //   sym == mbr ||
+               //   sym.overriddenSymbol(mbr.owner.asClass) == mbr ||
+               //   mbr.overriddenSymbol(sym.owner.asClass) == sym),
+               // ex"""symbols differ for $tree
+               //     |was                 : $sym
+               //     |alternatives by type: $memberSyms%, % of types ${memberSyms.map(_.info)}%, %
+               //     |qualifier type      : ${tree.qualifier.typeOpt}
+               //     |tree type           : ${tree.typeOpt} of class ${tree.typeOpt.getClass}""")
       }
       checkNotRepeated(super.typedSelect(tree, pt))
     }
@@ -364,13 +396,14 @@ class TreeChecker extends Phase with SymTransformer {
     }
 
     private def checkOwner(tree: untpd.Tree)(implicit ctx: Context): Unit = {
+      validate(tree)
       def ownerMatches(symOwner: Symbol, ctxOwner: Symbol): Boolean =
         symOwner == ctxOwner ||
         ctxOwner.isWeakOwner && ownerMatches(symOwner, ctxOwner.owner) ||
         ctx.phase.labelsReordered && symOwner.isWeakOwner && ownerMatches(symOwner.owner, ctxOwner)
       () //assert(ownerMatches(tree.symbol.owner, ctx.owner),
-        i"bad owner; ${tree.symbol} has owner ${tree.symbol.owner}, expected was ${ctx.owner}\n" +
-        i"owner chain = ${tree.symbol.ownersIterator.toList}%, %, ctxOwners = ${ctx.outersIterator.map(_.owner).toList}%, %")
+        // i"bad owner; ${tree.symbol} has owner ${tree.symbol.owner}, expected was ${ctx.owner}\n" +
+        // i"owner chain = ${tree.symbol.ownersIterator.toList}%, %, ctxOwners = ${ctx.outersIterator.map(_.owner).toList}%, %")
     }
 
     override def typedClassDef(cdef: untpd.TypeDef, cls: ClassSymbol)(implicit ctx: Context) = {
@@ -390,9 +423,9 @@ class TreeChecker extends Phase with SymTransformer {
       val symbolsNotDefined = cls.classInfo.decls.toSet.filter(isNonMagicalMethod) -- impl.body.map(_.symbol) - constr.symbol
 
       () //assert(symbolsNotDefined.isEmpty,
-          i" $cls tree does not define methods: ${symbolsNotDefined.toList}%, %\n" +
-          i"expected: ${cls.classInfo.decls.toSet.filter(isNonMagicalMethod).toList}%, %\n" +
-          i"defined: ${impl.body.map(_.symbol)}%, %")
+          // i" $cls tree does not define methods: ${symbolsNotDefined.toList}%, %\n" +
+          // i"expected: ${cls.classInfo.decls.toSet.filter(isNonMagicalMethod).toList}%, %\n" +
+          // i"defined: ${impl.body.map(_.symbol)}%, %")
 
       super.typedClassDef(cdef, cls)
     }
@@ -427,6 +460,7 @@ class TreeChecker extends Phase with SymTransformer {
      *  of a helper value without having to do a change owner traversal of the expression.
      */
     override def typedStats(trees: List[untpd.Tree], exprOwner: Symbol)(implicit ctx: Context): List[Tree] = {
+      trees.foreach(validate)
       for (tree <- trees) tree match {
         case tree: untpd.DefTree => checkOwner(tree)
         case _: untpd.Thicket => () //assert(false, i"unexpanded thicket $tree in statement sequence $trees%\n%")
@@ -435,10 +469,13 @@ class TreeChecker extends Phase with SymTransformer {
       super.typedStats(trees, exprOwner)
     }
 
-    override def ensureNoLocalRefs(tree: Tree, pt: Type, localSyms: => List[Symbol], forcedDefined: Boolean = false)(implicit ctx: Context): Tree =
+    override def ensureNoLocalRefs(tree: Tree, pt: Type, localSyms: => List[Symbol], forcedDefined: Boolean = false)(implicit ctx: Context): Tree = {
+      validate(tree)
       tree
+    }
 
     override def adapt(tree: Tree, pt: Type, original: untpd.Tree = untpd.EmptyTree)(implicit ctx: Context) = {
+      validate(tree)
       def isPrimaryConstructorReturn =
         ctx.owner.isPrimaryConstructor && pt.isRef(ctx.owner.owner) && tree.tpe.isRef(defn.UnitClass)
       if (ctx.mode.isExpr &&
@@ -446,10 +483,10 @@ class TreeChecker extends Phase with SymTransformer {
           !isPrimaryConstructorReturn &&
           !pt.isInstanceOf[FunProto])
         () //assert(tree.tpe <:< pt, {
-          val mismatch = err.typeMismatchMsg(tree.tpe, pt)
-          i"""|${mismatch.msg}
-              |tree = $tree""".stripMargin
-        })
+        //   val mismatch = err.typeMismatchMsg(tree.tpe, pt)
+        //   i"""|${mismatch.msg}
+        //       |tree = $tree""".stripMargin
+        // })
       tree
     }
   }
