@@ -10,7 +10,7 @@ object Test extends DirectTest {
     val global = newCompiler()
     new global.Run()
     import global._, definitions._
-    val function0TC = FunctionClass(0).typeConstructor
+    val function0TC = FunctionClass0.typeConstructor
     val tuple1TC = TupleClass(1).typeConstructor
     FunctionClass.seq.foreach { sym =>
       val tc = sym.typeConstructor

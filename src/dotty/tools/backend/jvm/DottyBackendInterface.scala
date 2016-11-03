@@ -140,8 +140,8 @@ class DottyBackendInterface(outputDirectory: AbstractFile, val superCallsMap: Ma
   val externalEqualsNumChar: Symbol = NoSymbol // ctx.requiredMethod(BoxesRunTimeTypeRef, nme.equalsNumChar) // this method is private
   val externalEqualsNumObject: Symbol = defn.BoxesRunTimeModule.requiredMethod(nme.equalsNumObject)
   val externalEquals: Symbol = defn.BoxesRunTimeClass.info.decl(nme.equals_).suchThat(toDenot(_).info.firstParamTypes.size == 2).symbol
-  val MaxFunctionArity: Int = Definitions.MaxFunctionArity
-  val FunctionClass: Array[Symbol] = defn.FunctionClassPerRun()
+  val MaxFunctionArity: Int = 256 // TODO OLIVIER Definitions.MaxFunctionArity
+  val FunctionClass: Array[Symbol] = Array() // TODO OLIVIER defn.FunctionClassPerRun()
   val AbstractFunctionClass: Array[Symbol] = defn.AbstractFunctionClassPerRun()
   val PartialFunctionClass: Symbol = defn.PartialFunctionClass
   val AbstractPartialFunctionClass: Symbol = defn.AbstractPartialFunctionClass

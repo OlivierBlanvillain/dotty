@@ -70,7 +70,7 @@ object Implicits {
           case tpw =>
             //if (ctx.typer.isApplicable(tp, argType :: Nil, resultType))
             //  println(i"??? $tp is applicable to $this / typeSymbol = ${tpw.typeSymbol}")
-            !tpw.derivesFrom(defn.FunctionClass(1)) ||
+            !tpw.derivesFrom(defn.FunctionClass1) ||
             ref.symbol == defn.Predef_conforms //
               // as an implicit conversion, Predef.$conforms is a no-op, so exclude it
         }

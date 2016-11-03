@@ -13,7 +13,7 @@ import scala.reflect.api.{ Universe => ApiUniverse }
 
 object Definitions {
   val MaxAbstractFunctionArity = 22
-  val MaxFunctionArity = 30
+  // val MaxFunctionArity = 30
     // Awaiting a definite solution that drops the limit altogether, 30 gives a safety
     // margin over the previous 22, so that treecopiers in miniphases are allowed to
     // temporarily create larger closures. This is needed in lambda lift where large closures
@@ -553,17 +553,20 @@ class Definitions {
     sym.owner.linkedClass.typeRef
 
   object FunctionOf {
-    def apply(args: List[Type], resultType: Type)(implicit ctx: Context) =
-      FunctionType(args.length).appliedTo(args ::: resultType :: Nil)
-    def unapply(ft: Type)(implicit ctx: Context)/*: Option[(List[Type], Type)]*/ = {
+    def apply(args: List[Type], resultType: Type)(implicit ctx: Context): TypeRef =
+      ??? // TODO OLIVIER
+      // FunctionType(args.length).appliedTo(args ::: resultType :: Nil)
+
+    def unapply(ft: Type)(implicit ctx: Context): Option[(List[Type], Type)] = {
+      ??? // TODO OLIVIER
       // -language:keepUnions difference: unapply needs result type because inferred type
       // is Some[(List[Type], Type)] | None, which is not a legal unapply type.
-      val tsym = ft.typeSymbol
-      lazy val targs = ft.argInfos
-      val numArgs = targs.length - 1
-      if (numArgs >= 0 && numArgs <= MaxFunctionArity &&
-          (FunctionType(numArgs).symbol == tsym)) Some(targs.init, targs.last)
-      else None
+      // val tsym = ft.typeSymbol
+      // lazy val targs = ft.argInfos
+      // val numArgs = targs.length - 1
+      // if (numArgs >= 0 && numArgs <= MaxFunctionArity &&
+      //     (FunctionType(numArgs).symbol == tsym)) Some(targs.init, targs.last)
+      // else None
     }
   }
 
@@ -608,16 +611,19 @@ class Definitions {
   lazy val AbstractFunctionType = mkArityArray("scala.runtime.AbstractFunction", MaxAbstractFunctionArity, 0)
   val AbstractFunctionClassPerRun = new PerRun[Array[Symbol]](implicit ctx => AbstractFunctionType.map(_.symbol.asClass))
   def AbstractFunctionClass(n: Int)(implicit ctx: Context) = AbstractFunctionClassPerRun()(ctx)(n)
-  lazy val FunctionType = mkArityArray("scala.Function", MaxFunctionArity, 0)
-  def FunctionClassPerRun = new PerRun[Array[Symbol]](implicit ctx => FunctionType.map(_.symbol.asClass))
-  def FunctionClass(n: Int)(implicit ctx: Context) = FunctionClassPerRun()(ctx)(n)
-    lazy val Function0_applyR = FunctionType(0).symbol.requiredMethodRef(nme.apply)
-    def Function0_apply(implicit ctx: Context) = Function0_applyR.symbol
+  // lazy val FunctionType = mkArityArray("scala.Function", MaxFunctionArity, 0)
+  // def FunctionClassPerRun: String = new PerRun[Array[Symbol]](implicit ctx => FunctionType.map(_.symbol.asClass))
+  // def FunctionClass(n: Int)(implicit ctx: Context) = FunctionClassPerRun()(ctx)(n)
+  //   lazy val Function0_applyR = FunctionType(0).symbol.requiredMethodRef(nme.apply)
+  //   def Function0_apply(implicit ctx: Context) = Function0_applyR.symbol
+  def FunctionClass0(implicit ctx: Context): Symbol = ??? // TODO OLIVIER FunctionClassPerRun()(ctx)(0)
+  def FunctionClass1(implicit ctx: Context): Symbol = ??? // TODO OLIVIER FunctionClassPerRun()(ctx)(1)
+  // val Function1: Tyope
 
   lazy val HNilType = ctx.requiredClassRef("dotty.HNil")
   lazy val HConsType = ctx.requiredClassRef("dotty.HCons")
 
-  private lazy val FunctionTypes: Set[TypeRef] = FunctionType.toSet
+  // private lazy val FunctionTypes: Set[TypeRef] = FunctionType.toSet
 
   /** If `cls` is a class in the scala package, its name, otherwise EmptyTypeName */
   def scalaClassName(cls: Symbol)(implicit ctx: Context): TypeName =
@@ -677,9 +683,11 @@ class Definitions {
   def isProductSubType(tp: Type)(implicit ctx: Context) =
     (tp derivesFrom ProductType.symbol) && tp.baseClasses.exists(isProductClass)
 
-  def isFunctionType(tp: Type)(implicit ctx: Context) = {
-    val arity = functionArity(tp)
-    0 <= arity && arity <= MaxFunctionArity && (tp isRef FunctionType(arity).symbol)
+  def isFunctionType(tp: Type)(implicit ctx: Context): Boolean = {
+    false
+    // TODO OLIVIER
+    // val arity = functionArity(tp)
+    // 0 <= arity && arity <= MaxFunctionArity && (tp isRef FunctionType(arity).symbol)
   }
 
   def functionArity(tp: Type)(implicit ctx: Context) = tp.dealias.argInfos.length - 1

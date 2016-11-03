@@ -355,7 +355,7 @@ class TypeErasure(isJava: Boolean, semiEraseVCs: Boolean, isConstructor: Boolean
     case SuperType(thistpe, supertpe) =>
       SuperType(this(thistpe), this(supertpe))
     case ExprType(rt) =>
-      defn.FunctionClass(0).typeRef
+      defn.FunctionClass0.typeRef
     case AndType(tp1, tp2) =>
       erasedGlb(this(tp1), this(tp2), isJava)
     case OrType(tp1, tp2) =>

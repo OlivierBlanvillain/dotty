@@ -74,7 +74,7 @@ class ElimByName extends MiniPhaseTransform with InfoTransformer { thisTransform
         val argType = arg.tpe.widen
         val argFun = arg match {
           case Apply(Select(qual, nme.apply), Nil)
-          if qual.tpe.derivesFrom(defn.FunctionClass(0)) && isPureExpr(qual) =>
+          if qual.tpe.derivesFrom(defn.FunctionClass0) && isPureExpr(qual) =>
             qual
           case _ =>
             val inSuper = if (ctx.mode.is(Mode.InSuperCall)) InSuperCall else EmptyFlags
@@ -99,9 +99,11 @@ class ElimByName extends MiniPhaseTransform with InfoTransformer { thisTransform
   /** Map `tree` to `tree.apply()` is `ftree` was of ExprType and becomes now a function */
   private def applyIfFunction(tree: Tree, ftree: Tree)(implicit ctx: Context) = {
     val origDenot = originalDenotation(ftree)
-    if (exprBecomesFunction(origDenot) && (origDenot.info.isInstanceOf[ExprType]))
-      tree.select(defn.Function0_apply).appliedToNone
-    else tree
+    // TODO OLIVIER
+    // if (exprBecomesFunction(origDenot) && (origDenot.info.isInstanceOf[ExprType]))
+    //   tree.select(defn.Function0_apply).appliedToNone
+    // else
+      tree
   }
 
   override def transformIdent(tree: Ident)(implicit ctx: Context, info: TransformerInfo): Tree =

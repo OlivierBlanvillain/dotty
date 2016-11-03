@@ -633,7 +633,9 @@ class Typer extends Namer with TypeAssigner with Applications with Implicits wit
     val untpd.Function(args, body) = tree
     if (ctx.mode is Mode.Type)
       typed(cpy.AppliedTypeTree(tree)(
-        untpd.TypeTree(defn.FunctionClass(args.length).typeRef), args :+ body), pt)
+        // TODO OLIVIER
+        untpd.TypeTree(null.asInstanceOf[TypeRef]), args :+ body), pt)
+        // untpd.TypeTree(defn.FunctionClass(args.length).typeRef), args :+ body), pt)
     else {
       val params = args.asInstanceOf[List[untpd.ValDef]]
 
@@ -730,7 +732,8 @@ class Typer extends Namer with TypeAssigner with Applications with Implicits wit
       val desugared =
         if (protoFormals.length == 1 && params.length != 1 && ptIsCorrectProduct(protoFormals.head)) {
           desugar.makeTupledFunction(params, fnBody)
-        } else {
+        } else
+        {
           val inferredParams: List[untpd.ValDef] =
             for ((param, i) <- params.zipWithIndex) yield
               if (!param.tpt.isEmpty) param
