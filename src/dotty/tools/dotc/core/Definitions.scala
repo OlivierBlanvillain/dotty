@@ -4,6 +4,7 @@ package core
 
 import Types._, Contexts._, Symbols._, Denotations._, SymDenotations._, StdNames._, Names._
 import Flags._, Scopes._, Decorators._, NameOps._, util.Positions._, Periods._
+import ast.Trees.{AppliedTypeTree, Tree}
 import unpickleScala2.Scala2Unpickler.ensureConstructor
 import scala.annotation.{ switch, meta }
 import scala.collection.{ mutable, immutable }
@@ -553,9 +554,19 @@ class Definitions {
     sym.owner.linkedClass.typeRef
 
   object FunctionOf {
-    def apply(args: List[Type], resultType: Type)(implicit ctx: Context): TypeRef =
-      ??? // TODO OLIVIER
+    def apply(args: List[Type], resultType: Type)(implicit ctx: Context): Type = {
+      // def hconsType(l: ast.untpd.Tree, r: ast.untpd.Tree) =
+      //   AppliedTypeTree(ast.untpd.ref(defn.HConsType), l :: r :: Nil)
+      // val tupled = args.map(ast.untpd.ref).foldRight(ast.untpd.ref(defn.HNilType))(hconsType)
+      // ---
+      // val tupled: Type =
+      //   args.foldRight(defn.HNilType: Type) { case (t: Type, a: Type) =>
+      //     HConsType.appliedTo(t :: a :: Nil)
+      //   }
+      // GenFunctionType.appliedTo(tupled :: resultType :: Nil)
+      ???
       // FunctionType(args.length).appliedTo(args ::: resultType :: Nil)
+    }
 
     def unapply(ft: Type)(implicit ctx: Context): Option[(List[Type], Type)] = {
       ??? // TODO OLIVIER
@@ -611,7 +622,7 @@ class Definitions {
   lazy val AbstractFunctionType = mkArityArray("scala.runtime.AbstractFunction", MaxAbstractFunctionArity, 0)
   val AbstractFunctionClassPerRun = new PerRun[Array[Symbol]](implicit ctx => AbstractFunctionType.map(_.symbol.asClass))
   def AbstractFunctionClass(n: Int)(implicit ctx: Context) = AbstractFunctionClassPerRun()(ctx)(n)
-  // lazy val FunctionType = mkArityArray("scala.Function", MaxFunctionArity, 0)
+  lazy val GenFunctionType = ctx.requiredClassRef("dotty.GenFun")
   // def FunctionClassPerRun: String = new PerRun[Array[Symbol]](implicit ctx => FunctionType.map(_.symbol.asClass))
   // def FunctionClass(n: Int)(implicit ctx: Context) = FunctionClassPerRun()(ctx)(n)
   //   lazy val Function0_applyR = FunctionType(0).symbol.requiredMethodRef(nme.apply)
@@ -789,8 +800,8 @@ class Definitions {
     if (!_isInitialized) {
       // force initialization of every symbol that is synthesized or hijacked by the compiler
       val forced = syntheticCoreClasses ++ syntheticCoreMethods ++ ScalaValueClasses()
-      
-      // Enter all symbols from the scalaShadowing package in the scala package 
+
+      // Enter all symbols from the scalaShadowing package in the scala package
       for (m <- ScalaShadowingPackageClass.info.decls)
         ScalaPackageClass.enter(m)
 
