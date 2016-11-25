@@ -754,8 +754,8 @@ class Definitions {
   )
 
   val PredefImportFns = List[() => TermRef](
-      () => ScalaPredefModuleRef,
-      () => DottyPredefModuleRef
+    () => ScalaPredefModuleRef,
+    () => DottyPredefModuleRef
   )
 
   lazy val RootImportFns =

@@ -746,18 +746,18 @@ class Typer extends Namer with TypeAssigner with Applications with Implicits wit
 
       /** Is `formal` a product type which is elementwise compatible with `params`? */
       def ptIsCorrectProduct(formal: Type): Boolean = {
-        val hcons = defn.TupleConsType.symbol
+        val cons = defn.TupleConsType.symbol
 
-        // Flatten types nested in an Tuple as as List[Type].
-        def hlistTypes(t: Type): List[Type] =
-          t.baseArgTypes(hcons) match {
-            case x :: y :: Nil => x :: hlistTypes(y) // TupleCons[H, T <: Tuple]
-            case _ => Nil                            // TNil
+        // Flatten types nested in TupleCons as a List[Type].
+        def tupleType(t: Type): List[Type] =
+          t.baseArgTypes(cons) match {
+            case x :: y :: Nil => x :: tupleType(y) // TupleCons[H, T <: Tuple]
+            case _ => Nil                           // TNil
           }
 
         isFullyDefined(formal, ForceDegree.noBottom) &&
-        formal.derivesFrom(hcons) &&
-        hlistTypes(formal).corresponds(params) {
+        formal.derivesFrom(cons) &&
+        tupleType(formal).corresponds(params) {
           (argType, param) =>
             param.tpt.isEmpty || argType <:< typedAheadType(param.tpt).tpe
         }

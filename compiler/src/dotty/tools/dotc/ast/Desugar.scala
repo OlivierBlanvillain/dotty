@@ -583,9 +583,8 @@ object desugar {
             ValDef(tmpName, TypeTree(), matchExpr)
               .withPos(pat.pos.union(rhs.pos)).withMods(patMods)
           def selector(n: Int): Tree = {
-            // TODO OLIVIER: Should we generate optimal code here or will this be optimised later?
-            // Currently it generates `val x_1 = t.head; val x_2 = t.tail.head; val x_3 = t.tail.tail.head; ...`.
-            // whereas the last bits could be replace with val x_n = t.tails.asInstanceOf[Tuple4Impl[_, _, _, _]]].e4
+            // Generates suboptimal tuple accessors of the following shape, which are optimised later:
+            // `val x_1 = t.head; val x_2 = t.tail.head; val x_3 = t.tail.tail.head; ...`
             val prod: Tree = Ident(tmpName)
             val tails = (1 to n).foldLeft(prod) { case (tree, _) => Select(tree, nme.tail) }
             Select(tails, nme.head)
@@ -991,16 +990,13 @@ object desugar {
             def hconsType(l: Tree, r: Tree): Tree =
               AppliedTypeTree(ref(defn.TupleConsType), l :: r :: Nil)
             ts.foldRight(ref(defn.TNilType))(hconsType)
-          // case _ if arity < Definitions.MaxFlatTupleArity =>
-          //   // Transforming small Tuple trees: (T1, T2) → TupleCons(T1, TupleCons(T2, TNil))
-          //   ??? // TODO OLIVIER
           case _ =>
-            // Transforming large Tuple trees: (T1, T2, ..., TN) → TupleCons(T1, TupleCons(T2, ... (TupleCons(TN, TNil))))
-            val tnil = defn.TNilType.classSymbol.companionModule.valRef
-            val tcons = defn.TupleNImplType.classSymbol.companionModule.valRef
-            def tconsTree(l: Tree, r: Tree): Tree =
-              Apply(ref(tcons), l :: r :: Nil)
-            ts.foldRight(ref(tnil))(tconsTree)
+            // Transforming Tuple trees: (T1, T2, ..., TN) → TupleCons(T1, TupleCons(T2, ... (TupleCons(TN, TNil))))
+            val nil = defn.TNilType.classSymbol.companionModule.valRef
+            val cons = defn.TupleConsType.classSymbol.companionModule.valRef
+            def consTree(l: Tree, r: Tree): Tree =
+              Apply(ref(cons), l :: r :: Nil)
+            ts.foldRight(ref(nil))(consTree)
         }
       case WhileDo(cond, body) =>
         // { <label> def while$(): Unit = if (cond) { body; while$() } ; while$() }
