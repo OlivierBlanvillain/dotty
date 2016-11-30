@@ -698,7 +698,8 @@ class Definitions {
 
   lazy val TNilType = ctx.requiredClassRef("dotty.TNil")
   lazy val TupleConsType = ctx.requiredClassRef("dotty.TupleCons")
-  lazy val TupleNImplType = ctx.requiredClassRef("dotty.TupleNImpl")
+  lazy val TupleImplNType = ctx.requiredClassRef("dotty.TupleImplN")
+  lazy val TupleImplType = mkArityArray("dotty.TupleImpl", MaxFlatTupleArity, 1)
 
   def FunctionClass(n: Int)(implicit ctx: Context) =
     if (n < MaxImplementedFunctionArity) FunctionClassPerRun()(ctx)(n)

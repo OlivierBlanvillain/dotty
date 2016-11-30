@@ -119,6 +119,7 @@ class PatternMatcher extends MiniPhaseTransform with DenotTransformer {
     def codegen: AbsCodegen
 
     abstract class CommonCodegen extends AbsCodegen {
+      // TODO OLIVIER: productAccessorName(i) ...hmmm
       def tupleSel(binder: Symbol)(i: Int): Tree = ref(binder).select(nme.productAccessorName(i))
       def index(tgt: Tree)(i: Int): Tree         = {
         if (i > 0) tgt.select(defn.Seq_apply).appliedTo(Literal(Constant(i)))

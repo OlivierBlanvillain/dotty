@@ -307,6 +307,11 @@ object StdNames {
     val _21 : N = "_21"
     val _22 : N = "_22"
 
+    val e1 : N  = "e1"
+    val e2 : N  = "e2"
+    val e3 : N  = "e3"
+    val e4 : N  = "e4"
+
     val ??? = encode("???")
 
     val genericWrapArray: N     = "genericWrapArray"
@@ -515,6 +520,7 @@ object StdNames {
     val unapply: N              = "unapply"
     val unapplySeq: N           = "unapplySeq"
     val unbox: N                = "unbox"
+    val underlying: N           = "underlying"
     val universe: N             = "universe"
     val update: N               = "update"
     val updateDynamic: N        = "updateDynamic"
@@ -712,6 +718,14 @@ object StdNames {
       case 21 => nme._21
       case 22 => nme._22
       case _  => termName("_" + j)
+    }
+
+    @switch def smallTupleImplAccessorName(i: Int): TermName = i match {
+      case 1  => nme.e1
+      case 2  => nme.e2
+      case 3  => nme.e3
+      case 4  => nme.e4
+      case _  => throw new IllegalArgumentException("TODOC")
     }
 
     def syntheticParamNames(num: Int): List[TermName] =
