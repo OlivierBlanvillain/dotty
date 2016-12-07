@@ -352,6 +352,7 @@ object StdNames {
     val TypeRef: N              = "TypeRef"
     val UNIT : N                = "UNIT"
     val add_ : N                = "add"
+    val any : N                 = "Any"
     val annotation: N           = "annotation"
     val anyValClass: N          = "anyValClass"
     val append: N               = "append"
@@ -725,7 +726,7 @@ object StdNames {
       case 2  => nme.e2
       case 3  => nme.e3
       case 4  => nme.e4
-      case _  => throw new IllegalArgumentException("TODOC")
+      case _  => throw new IllegalArgumentException("TODOC OLIVIER")
     }
 
     def syntheticParamNames(num: Int): List[TermName] =

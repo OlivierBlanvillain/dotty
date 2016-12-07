@@ -6,7 +6,6 @@ sealed trait Tuple
 sealed trait TNil extends Tuple
 final case object TNil extends TNil
 
-// A case class could be used here if they where extendable.
 sealed trait TupleCons[+H, +T <: Tuple] extends Tuple {
   def head: H
   def tail: T
@@ -40,7 +39,7 @@ object TupleCons {
         a(2) = e2
         a(3) = e3
         a(4) = e4
-        new TupleImplN(a)
+        TupleImplN(a)
     }).asInstanceOf[TupleCons[H, T]]
 
   def unapply[H, T <: Tuple](t: TupleCons[H, T]): TupleCons[H, T] = t
@@ -50,13 +49,17 @@ case class TupleImplN[H, T <: Tuple](underlying: Array[Any]) extends TupleCons[H
   def head: H = underlying(0).asInstanceOf[H]
   def tail: T = {
     var s = underlying.size
-    s = s - 1
-    val a = new Array[Any](s)
-    while (s != 0) {
-      a(s - 1) = underlying(s)
+    if (s == 5) {
+      TupleImpl4(underlying(1), underlying(2), underlying(3), underlying(4)).asInstanceOf[T]
+    } else {
       s = s - 1
+      val a = new Array[Any](s)
+      while (s != 0) {
+        a(s - 1) = underlying(s)
+        s = s - 1
+      }
+      TupleImplN(a).asInstanceOf[T]
     }
-    new TupleImplN(a).asInstanceOf[T]
   }
   override def toString: String = underlying.mkString("(", ", ", ")")
 }
