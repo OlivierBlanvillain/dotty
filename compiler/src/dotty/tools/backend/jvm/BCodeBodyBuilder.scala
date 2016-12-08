@@ -4,16 +4,18 @@
  */
 
 
-package scala
-package tools.nsc
-package backend
-package jvm
+//package scala
+//package tools.nsc
+//package backend
+//package jvm
+package dotty.tools.backend.jvm
 
 import scala.annotation.switch
 
 import scala.tools.asm
 import scala.tools.asm.Label
 import scala.tools.nsc.backend.icode.{Opcodes, Primitives}
+import scala.tools.nsc.backend.ScalaPrimitives
 
 /*
  *

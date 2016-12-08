@@ -3,11 +3,12 @@
  * @author  Martin Odersky
  */
 
+package dotty.tools.backend.jvm
 
-package scala
-package tools.nsc
-package backend
-package jvm
+//package scala
+//package tools.nsc
+//package backend
+//package jvm
 
 import scala.collection.{ mutable, immutable }
 import scala.tools.nsc.symtab._

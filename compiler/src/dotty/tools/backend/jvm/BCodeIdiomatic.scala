@@ -3,9 +3,10 @@
  * @author  Martin Odersky
  */
 
-package scala
-package tools.nsc
-package backend.jvm
+package dotty.tools.backend.jvm
+//package scala
+//package tools.nsc
+//package backend.jvm
 
 import scala.tools.asm
 import scala.annotation.switch
@@ -114,7 +115,7 @@ trait BCodeIdiomatic {
     def jmethod: asm.MethodVisitor
 
     import asm.Opcodes;
-    import backend.icode.Opcodes._
+    import scala.tools.nsc.backend.icode.Opcodes._
 
     final def emit(opc: Int) { jmethod.visitInsn(opc) }
 

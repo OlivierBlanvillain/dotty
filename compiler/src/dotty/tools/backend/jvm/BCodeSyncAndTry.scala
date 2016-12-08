@@ -4,10 +4,7 @@
  */
 
 
-package scala
-package tools.nsc
-package backend
-package jvm
+package dotty.tools.backend.jvm
 
 import scala.collection.immutable
 import scala.tools.asm

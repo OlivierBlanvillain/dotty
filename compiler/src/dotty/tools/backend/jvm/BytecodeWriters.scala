@@ -2,9 +2,10 @@
  * Copyright 2005-2013 LAMP/EPFL
  * @author  Martin Odersky
  */
-
-package scala.tools.nsc
+package dotty.tools
 package backend.jvm
+//package scala.tools.nsc
+//package backend.jvm
 
 import java.io.{ DataOutputStream, FileOutputStream, IOException, OutputStream, File => JFile }
 import scala.tools.nsc.io._

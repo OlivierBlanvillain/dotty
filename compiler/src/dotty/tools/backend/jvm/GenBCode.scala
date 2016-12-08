@@ -9,7 +9,7 @@ import dotty.tools.dotc.core.Names.TypeName
 import scala.collection.mutable
 import scala.tools.asm.{CustomAttr, ClassVisitor, MethodVisitor, FieldVisitor}
 import scala.tools.nsc.Settings
-import scala.tools.nsc.backend.jvm._
+//import scala.tools.nsc.backend.jvm._
 import dotty.tools.dotc
 import dotty.tools.dotc.backend.jvm.DottyPrimitives
 import dotty.tools.dotc.transform.Erasure

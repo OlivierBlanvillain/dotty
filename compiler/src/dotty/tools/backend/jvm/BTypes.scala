@@ -3,8 +3,7 @@
  * @author  Martin Odersky
  */
 
-package scala.tools.nsc
-package backend.jvm
+package dotty.tools.backend.jvm
 
 import scala.tools.asm
 import asm.Opcodes

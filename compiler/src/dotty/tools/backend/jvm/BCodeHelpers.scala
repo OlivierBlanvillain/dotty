@@ -3,9 +3,11 @@
  * @author  Martin Odersky
  */
 
-package scala
-package tools.nsc
-package backend.jvm
+package dotty.tools.backend.jvm
+
+//package scala
+//package tools.nsc
+//package backend.jvm
 
 import scala.tools.asm
 import scala.collection.mutable
