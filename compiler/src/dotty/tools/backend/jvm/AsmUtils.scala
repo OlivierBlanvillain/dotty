@@ -3,7 +3,7 @@
  * @author  Martin Odersky
  */
 
-package scala.tools.nsc.backend.jvm
+package dotty.tools.backend.jvm
 
 import scala.tools.asm.tree.{AbstractInsnNode, ClassNode, MethodNode}
 import java.io.PrintWriter

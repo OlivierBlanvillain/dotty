@@ -3,7 +3,7 @@
  * @author  Martin Odersky
  */
 
-package scala.tools.nsc
+package dotty.tools
 package backend.jvm
 package opt
 
@@ -12,8 +12,8 @@ import scala.tools.asm.{Opcodes, MethodWriter, ClassWriter}
 import scala.tools.asm.tree.analysis.{Analyzer, BasicValue, BasicInterpreter}
 import scala.tools.asm.tree._
 import scala.collection.convert.decorateAsScala._
-import scala.tools.nsc.backend.jvm.opt.BytecodeUtils._
 import scala.tools.nsc.settings.ScalaSettings
+import dotty.tools.backend.jvm.opt.BytecodeUtils._
 
 /**
  * Optimizations within a single method.

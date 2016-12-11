@@ -3,10 +3,9 @@
  * @author  Martin Odersky
  */
 
-package scala.tools.nsc.backend.jvm
+package dotty.tools.backend.jvm
 
 import scala.reflect.internal.AnnotationInfos
-import scala.tools.nsc.Global
 
 /**
  * This trait contains code shared between GenBCode and GenASM that depends on types defined in

@@ -3,8 +3,7 @@
  * @author  Martin Odersky
  */
 
-package scala.tools.nsc
-package backend.jvm
+package dotty.tools.backend.jvm
 
 import scala.tools.asm
 
@@ -23,7 +22,7 @@ import scala.tools.asm
 class BTypesFromSymbols[I <: BackendInterface](val int: I) extends BTypes {
   import int._
 
-  val bCodeAsmCommon: BCodeAsmCommon[int.type ] = new BCodeAsmCommon(int)
+  val bCodeAsmCommon: BCodeAsmCommon[int.type] = new BCodeAsmCommon(int)
   import bCodeAsmCommon._
 
   // Why the proxy, see documentation of class [[CoreBTypes]].

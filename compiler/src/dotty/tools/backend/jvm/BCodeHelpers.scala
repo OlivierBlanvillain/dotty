@@ -3,9 +3,7 @@
  * @author  Martin Odersky
  */
 
-package scala
-package tools.nsc
-package backend.jvm
+package dotty.tools.backend.jvm
 
 import scala.tools.asm
 import scala.collection.mutable
@@ -120,7 +118,7 @@ trait BCodeHelpers extends BCodeIdiomatic with BytecodeWriters {
    *
    * can-multi-thread
    */
-  final def addInnerClassesASM(jclass: asm.ClassVisitor, refedInnerClasses: List[ClassBType]) {
+  final def addInnerClassesASM(jclass: asm.ClassVisitor, refedInnerClasses: List[ClassBType]) = {
     val allNestedClasses = refedInnerClasses.flatMap(_.enclosingNestedClassesChain).distinct
 
     // sorting ensures nested classes are listed after their enclosing class thus satisfying the Eclipse Java compiler
@@ -323,7 +321,7 @@ trait BCodeHelpers extends BCodeIdiomatic with BytecodeWriters {
      *
      * must-single-thread
      */
-    def addRemoteExceptionAnnot(isRemoteClass: Boolean, isJMethodPublic: Boolean, meth: Symbol) {
+    def addRemoteExceptionAnnot(isRemoteClass: Boolean, isJMethodPublic: Boolean, meth: Symbol) = {
       val needsAnnotation = (
         (  isRemoteClass ||
            isRemote(meth) && isJMethodPublic
@@ -338,7 +336,7 @@ trait BCodeHelpers extends BCodeIdiomatic with BytecodeWriters {
      *
      * must-single-thread
      */
-    private def addForwarder(isRemoteClass: Boolean, jclass: asm.ClassVisitor, module: Symbol, m: Symbol) {
+    private def addForwarder(isRemoteClass: Boolean, jclass: asm.ClassVisitor, module: Symbol, m: Symbol) = {
       val moduleName     = internalName(module)
       val methodInfo     = module.thisType.memberInfo(m)
       val paramJavaTypes: List[BType] = methodInfo.paramTypes map toTypeKind
@@ -400,7 +398,7 @@ trait BCodeHelpers extends BCodeIdiomatic with BytecodeWriters {
      *
      * must-single-thread
      */
-    def addForwarders(isRemoteClass: Boolean, jclass: asm.ClassVisitor, jclassName: String, moduleClass: Symbol) {
+    def addForwarders(isRemoteClass: Boolean, jclass: asm.ClassVisitor, jclassName: String, moduleClass: Symbol) = {
       assert(moduleClass.isModuleClass, moduleClass)
       debuglog(s"Dumping mirror class for object: $moduleClass")
 
@@ -453,7 +451,7 @@ trait BCodeHelpers extends BCodeIdiomatic with BytecodeWriters {
      *
      *  can-multi-thread
      */
-    def addSerialVUID(id: Long, jclass: asm.ClassVisitor) {
+    def addSerialVUID(id: Long, jclass: asm.ClassVisitor) = {
       // add static serialVersionUID field if `clasz` annotated with `@SerialVersionUID(uid: Long)`
       jclass.visitField(
         GenBCode.PublicStaticFinal,
@@ -596,7 +594,7 @@ trait BCodeHelpers extends BCodeIdiomatic with BytecodeWriters {
         UNIT
       )
 
-      def push(lst: List[String]) {
+      def push(lst: List[String]) = {
         var fi = 0
         for (f <- lst) {
           constructor.visitInsn(asm.Opcodes.DUP)
@@ -665,7 +663,7 @@ trait BCodeHelpers extends BCodeIdiomatic with BytecodeWriters {
     /*
      * must-single-thread
      */
-    def legacyAddCreatorCode(clinit: asm.MethodVisitor, cnode: asm.tree.ClassNode, thisName: String) {
+    def legacyAddCreatorCode(clinit: asm.MethodVisitor, cnode: asm.tree.ClassNode, thisName: String) = {
       // this tracks the inner class in innerClassBufferASM, if needed.
       val androidCreatorType = getClassBTypeAndRegisterInnerClass(AndroidCreatorClass)
       val tdesc_creator = androidCreatorType.descriptor

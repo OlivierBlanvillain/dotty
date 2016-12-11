@@ -3,12 +3,11 @@
  * @author  Martin Odersky
  */
 
-package scala
-package tools.nsc
+package dotty.tools
 package backend
 package icode
 
-import scala.reflect.internal.util.{Position,NoPosition}
+import scala.reflect.internal.util.{Position, NoPosition}
 import Primitives._
 
 object Opcodes{

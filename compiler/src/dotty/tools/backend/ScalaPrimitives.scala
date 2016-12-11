@@ -3,8 +3,8 @@
  * @author  Martin Odersky
  */
 
-package scala
-package tools.nsc
+package dotty
+package tools
 package backend
 
 import scala.collection.{ mutable, immutable }

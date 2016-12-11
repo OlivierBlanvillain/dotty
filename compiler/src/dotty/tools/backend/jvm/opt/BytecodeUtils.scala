@@ -3,7 +3,7 @@
  * @author  Martin Odersky
  */
 
-package scala.tools.nsc
+package dotty.tools
 package backend.jvm
 package opt
 

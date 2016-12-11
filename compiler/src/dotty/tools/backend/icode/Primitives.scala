@@ -4,13 +4,11 @@
  */
 
 
-package scala.tools.nsc
+package dotty.tools
 package backend
 package icode
 
 import java.io.PrintWriter
-
-import scala.tools.nsc.backend.icode.ICodes
 
 object Primitives {
   /** This class represents a primitive operation. */
