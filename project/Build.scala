@@ -19,8 +19,6 @@ object DottyBuild extends Build {
   val JENKINS_BUILD = "dotty.jenkins.build"
   val DRONE_MEM = "dotty.drone.mem"
 
-  val scalaCompiler = "me.d-d" % "scala-compiler" % "2.11.5-20160322-171045-e19b30b3cd"
-
   val agentOptions = List(
     // "-agentlib:jdwp=transport=dt_socket,server=y,suspend=y,address=5005"
     // "-agentpath:/home/dark/opt/yjp-2013-build-13072/bin/linux-x86-64/libyjpagent.so"
@@ -176,7 +174,8 @@ object DottyBuild extends Build {
       com.typesafe.sbteclipse.plugin.EclipsePlugin.EclipseKeys.withSource := true,
 
       // get libraries onboard
-      partestDeps := Seq(scalaCompiler,
+      partestDeps := Seq("org.scala-lang" % "scala-compiler" % scalaVersion.value, // Used for scala.tools.nsc.io._
+                         "org.scala-lang.modules" % "scala-asm" % "5.1.0-scala-1",
                          "org.scala-lang" % "scala-reflect" % scalaVersion.value,
                          "org.scala-lang" % "scala-library" % scalaVersion.value % "test"),
       libraryDependencies ++= partestDeps.value,
@@ -522,7 +521,7 @@ object DottyInjectedPlugin extends AutoPlugin {
       baseDirectory in (Test,run) := (baseDirectory in `dotty-compiler`).value,
 
       libraryDependencies ++= Seq(
-        scalaCompiler % Test,
+        "org.scala-lang" % "scala-compiler" % scalaVersion.value % Test,
         "com.storm-enroute" %% "scalameter" % "0.6" % Test
       ),
 
