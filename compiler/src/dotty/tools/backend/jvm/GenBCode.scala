@@ -431,3 +431,11 @@ class GenBCodePipeline(val entryPoints: List[Symbol], val int: DottyBackendInter
     }
   //} // end of class BCodePhase
 }
+
+/** Stolen from scalac GenBCode */
+object GenBCode {
+  def mkFlags(args: Int*) = args.foldLeft(0)(_ | _)
+
+  final val PublicStatic      = asm.Opcodes.ACC_PUBLIC | asm.Opcodes.ACC_STATIC
+  final val PublicStaticFinal = asm.Opcodes.ACC_PUBLIC | asm.Opcodes.ACC_STATIC | asm.Opcodes.ACC_FINAL
+}
