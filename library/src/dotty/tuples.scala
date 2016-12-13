@@ -64,6 +64,11 @@ case class TupleImplN[H, T <: Tuple](underlying: Array[Any]) extends TupleCons[H
   override def toString: String = underlying.mkString("(", ", ", ")")
 }
 
+object TupleImplN {
+  def wrap[H, T <: Tuple](seq: Any*): TupleImplN[H, T] =
+    TupleImplN(seq.toArray)
+}
+
 case class TupleImpl1[T1](e1: T1) extends TupleCons[T1, TNil] {
   def head: T1 = e1
   def tail: TNil = TNil

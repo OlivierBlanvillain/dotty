@@ -30,28 +30,28 @@ object Test {
     //     assert(d4 == 4)
     // }
 
-    val x5 = ("a", 2, "c", 4, "e")
+    // val x5 = ("a", 2, "c", 4, "e")
 
-    x5 match {
-      case (a5, b5, c5, d5, e5) =>
-        assert(a5 == "a")
-        assert(b5 == 2)
-        assert(c5 == "c")
-        assert(d5 == 4)
-        assert(e5 == "e")
-    }
-
-    // val x6 = ("a", 2, "c", 4, "e", 6)
-
-    // x6 match {
-    //   case (a5, b5, c5, d5, e5, f5) =>
+    // x5 match {
+    //   case (a5, b5, c5, d5, e5) =>
     //     assert(a5 == "a")
     //     assert(b5 == 2)
     //     assert(c5 == "c")
     //     assert(d5 == 4)
     //     assert(e5 == "e")
-    //     assert(f5 == 6)
     // }
+
+    val x6 = ("a", 2, "c", 4, "e", 6)
+
+    x6 match {
+      case (a5, b5, c5, d5, e5, f5) =>
+        assert(a5 == "a")
+        assert(b5 == 2)
+        assert(c5 == "c")
+        assert(d5 == 4)
+        assert(e5 == "e")
+        assert(f5 == 6)
+    }
 
     println("Yay!")
   }

@@ -381,7 +381,6 @@ class Definitions {
   lazy val ArrayModuleType = ctx.requiredModuleRef("scala.Array")
   def ArrayModule(implicit ctx: Context) = ArrayModuleType.symbol.moduleClass.asClass
 
-
   lazy val UnitType: TypeRef = valueTypeRef("scala.Unit", BoxedUnitType, java.lang.Void.TYPE, UnitEnc)
   def UnitClass(implicit ctx: Context) = UnitType.symbol.asClass
   lazy val BooleanType = valueTypeRef("scala.Boolean", BoxedBooleanType, java.lang.Boolean.TYPE, BooleanEnc)
@@ -715,6 +714,11 @@ class Definitions {
     if (isImplicit && !ctx.erasedTypes) ImplicitFunctionClass(n).typeRef
     else if (n < MaxImplementedFunctionArity) ImplementedFunctionType(n)
     else FunctionClass(n).typeRef
+
+  lazy val TnilSymbol = TNilType.classSymbol.companionModule.symbol
+  lazy val TupleConsSymbol  = TupleConsType.classSymbol.companionModule.symbol
+  lazy val TupleImplNSymbol = TupleImplNType.classSymbol.companionModule.symbol
+  lazy val TupleImplSymbols = TupleImplType.tail.map(_.classSymbol.companionModule.symbol).toSet
 
   def scalaClassName(cls: Symbol)(implicit ctx: Context): TypeName =
     if (cls.isClass && cls.owner == ScalaPackageClass) cls.asClass.name else EmptyTypeName
