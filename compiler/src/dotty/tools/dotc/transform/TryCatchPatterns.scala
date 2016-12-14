@@ -44,7 +44,18 @@ class TryCatchPatterns extends MiniPhaseTransform {
 
   def phaseName: String = "tryCatchPatterns"
 
-  override def checkPostCondition(tree: Tree)(implicit ctx: Context): Unit = ()
+  override def runsAfter = Set(classOf[ElimRepeated])
+
+  override def checkPostCondition(tree: Tree)(implicit ctx: Context): Unit = tree match {
+    case Try(_, cases, _) =>
+      cases.foreach {
+        case CaseDef(Typed(_, _), guard, _) => assert(guard.isEmpty, "Try case should not contain a guard.")
+        case CaseDef(Bind(_, _), guard, _) => assert(guard.isEmpty, "Try case should not contain a guard.")
+        case c =>
+          assert(isDefaultCase(c), "Pattern in Try should be Bind, Typed or default case.")
+      }
+    case _ =>
+  }
 
   override def transformTry(tree: Try)(implicit ctx: Context, info: TransformerInfo): Tree = {
     val (tryCases, patternMatchCases) = tree.cases.span(isCatchCase)

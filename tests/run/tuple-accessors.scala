@@ -37,5 +37,7 @@ object Test {
     assert(c5 == "c")
     assert(d5 == 3)
     assert(e5 == "e")
+
+    println("Yay!")
   }
 }

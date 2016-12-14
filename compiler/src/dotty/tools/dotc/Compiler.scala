@@ -48,7 +48,8 @@ class Compiler {
       List(new Pickler),            // Generate TASTY info
       List(new FirstTransform,      // Some transformations to put trees into a canonical form
            new CheckReentrant),     // Internal use only: Check that compiled program has no data races involving global vars
-      List(new RefChecks,           // Various checks mostly related to abstract members and overriding
+      List(new TupleRewrites,       // TODOC OLIVIER
+           new RefChecks,           // Various checks mostly related to abstract members and overriding
            new CheckStatic,         // Check restrictions that apply to @static members
            new ElimRepeated,        // Rewrite vararg parameters and arguments
            new NormalizeFlags,      // Rewrite some definition flags
@@ -57,8 +58,7 @@ class Compiler {
            new TailRec,             // Rewrite tail recursion to loops
            new LiftTry,             // Put try expressions that might execute on non-empty stacks into their own methods
            new ClassOf),            // Expand `Predef.classOf` calls.
-      List(new TupleRewrites,       // TODOC OLIVIER
-           new TryCatchPatterns,    // Compile cases in try/catch
+      List(new TryCatchPatterns,    // Compile cases in try/catch
            new PatternMatcher,      // Compile pattern matches
            new ExplicitOuter,       // Add accessors to outer classes from nested ones.
            new ExplicitSelf,        // Make references to non-trivial self types explicit as casts

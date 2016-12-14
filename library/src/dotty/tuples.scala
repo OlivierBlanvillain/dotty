@@ -69,6 +69,12 @@ object TupleImplN {
     TupleImplN(seq.toArray)
 }
 
+trait  TupleUnapplySeq {}
+object TupleUnapplySeq {
+  def unapplySeq[H, T <: Tuple](tuple: TupleImplN[H, T]): Option[Seq[Any]] =
+    Some(tuple.underlying)
+}
+
 case class TupleImpl1[T1](e1: T1) extends TupleCons[T1, TNil] {
   def head: T1 = e1
   def tail: TNil = TNil

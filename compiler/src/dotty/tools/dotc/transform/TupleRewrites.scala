@@ -21,13 +21,41 @@ class TupleRewrites extends MiniPhaseTransform {
 
   override def checkPostCondition(tree: Tree)(implicit ctx: Context): Unit = ()
 
-  override def transformSelect(tree: Select)(implicit ctx: Context, info: TransformerInfo): Tree =
+  /** Rewrites `t.tail.tail. ... .head` to implementation specific selectors.
+    *
+    * Below `MaxFlatTupleArity`, they become direct `t._i` accesses.
+    * Above `MaxFlatTupleArity`, they become `t.underlying.apply(i)` accesses.
+    */
+  override def transformSelect(tree: Select)(implicit ctx: Context, info: TransformerInfo): Tree = {
+    // Matches a tree with shape `inner.tail.tail ...` when inner derives from `TupleCon`,
+    // returning the `inner` tree and the number of `.tail`s.
+    object TupleTails {
+      def unapply(tree: Select)(implicit ctx: Context): Option[(Tree, Int)] = unapply0(tree, 0)
+      @tailrec
+      def unapply0(tree: Tree, depth: Int)(implicit ctx: Context): Option[(Tree, Int)] =
+        tree match {
+          case Select(inner, nme.tail) =>
+            unapply0(inner, depth + 1)
+          case _ if tree.tpe.derivesFrom(defn.TupleConsType.symbol) =>
+            Some((tree, depth))
+          case _ => None
+        }
+    }
+
+    // Extracts tuple arity from it's type.
+    @tailrec
+    def tupleTypeArity(t: Type, acc: Int = 0)(implicit ctx: Context): Int =
+      t.baseArgTypes(defn.TupleConsType.symbol) match {
+        case _ :: y :: Nil => tupleTypeArity(y, acc + 1) // TupleCons[H, T <: Tuple]
+        case _ => acc                                    // TNil
+      }
+
     tree match {
       case Select(TupleTails(inner, tails), nme.head) =>
         val arity = tupleTypeArity(inner.tpe)
         if (arity <= MaxFlatTupleArity)
           inner // .asInstanceOf[TupleImpl$arity[_, _]]._${tail + 1}s.asInstanceOf[${tree.tpe}]
-            .asInstance(defn.TupleImplType(arity))
+            .asInstance(defn.TupleImplType(arity)) // TODO: Type?
             .select(nme.smallTupleImplAccessorName(tails + 1)) // t(0) <=> t._1, thus the +1
             .asInstance(tree.tpe)
         else
@@ -39,8 +67,41 @@ class TupleRewrites extends MiniPhaseTransform {
             .asInstance(tree.tpe)
       case _ => tree
     }
+  }
 
-  override def transformApply(tree: Apply)(implicit ctx: Context, info: TransformerInfo): Tree =
+  /** Rewrites `TupleCons(a, TupleCons(b, ..., TNit))` to implementation specific constructors.
+    *
+    * Below `MaxFlatTupleArity`, they become `TupleImpl$i(a, b, ...)`.
+    * Above `MaxFlatTupleArity`, they become `TupleImplN(Array.apply(a, b, ...)`.
+    *
+    * Note that because of bottom up traversal, the transformation of a tuple constructor of size `N`
+    * will go thought this transformation `N` times, thus generating `N` `TupleCons(a, opt)` where `opt`
+    * is the optimized transformation for previous arity.
+    */
+  override def transformApply(tree: Apply)(implicit ctx: Context, info: TransformerInfo): Tree = {
+    // Matches a tree with shape `TupleCons.apply(head, tail)` where `tail` itself a tuple
+    // with statically known lenght (TupleNil, TupleImpl1, TupleImpl2...). */
+    object TupleApplies {
+      def unapply(tree: Apply)(implicit ctx: Context): Option[List[Tree]] =
+        tree match {
+          case Apply(TypeApply(Select(ident, nme.apply), _), head :: tail :: Nil)
+            if ident.symbol eq defn.TupleConsSymbol =>
+              tail match {
+                case _
+                  if tail.symbol eq defn.TNilSymbol =>
+                    Some(head :: Nil)
+                case Apply(TypeApply(Select(tailIdent, nme.apply), _), args)
+                  if defn.TupleImplSymbols contains tailIdent.symbol =>
+                    Some(head :: args)
+                case Apply(TypeApply(Select(tailIdent, nme.wrap), _), SeqLiteral(args, _) :: Nil)
+                  if tailIdent.symbol eq defn.TupleImplNSymbol =>
+                    Some(head :: args)
+                case _ => None
+              }
+          case _ => None
+        }
+    }
+
     tree match {
       case TupleApplies(args) =>
         val arity = args.length
@@ -56,54 +117,53 @@ class TupleRewrites extends MiniPhaseTransform {
             .appliedTo(SeqLiteral(args, ref(defn.AnyType)))
       case _ => tree
     }
-
-  @tailrec
-  private def tupleTypeArity(t: Type, acc: Int = 0)(implicit ctx: Context): Int =
-    t.baseArgTypes(defn.TupleConsType.symbol) match {
-      case _ :: y :: Nil => tupleTypeArity(y, acc + 1) // TupleCons[H, T <: Tuple]
-      case _ => acc                                    // TNil
-    }
-
-  /** Matches a tree with shape `inner.tail.tail ...` when inner derives from `TupleCon`,
-    * returning the `inner` tree and the number of `.tail`s. */
-  private object TupleTails {
-    def unapply(tree: Select)(implicit ctx: Context): Option[(Tree, Int)] = unapply0(tree, 0)
-
-    @tailrec
-    def unapply0(tree: Tree, depth: Int)(implicit ctx: Context): Option[(Tree, Int)] =
-      tree match {
-        case Select(inner, nme.tail) =>
-          unapply0(inner, depth + 1)
-
-        case inner if inner.tpe.derivesFrom(defn.TupleConsType.symbol) =>
-          Some((inner, depth))
-
-        case _ => None
-      }
   }
 
-  /** Matches a tree with shape `TupleCons.apply(head, tail)` where tail itself a tuple
-    * with statically known lenght (TupleNil, TupleImpl1, TupleImpl2...). */
-  private object TupleApplies {
-    def unapply(tree: Apply)(implicit ctx: Context): Option[List[Tree]] =
-      tree match {
-        case Apply(TypeApply(Select(ident, nme.apply), _), head :: tail :: Nil)
-          if ident.symbol eq defn.TupleConsSymbol =>
-            tail match {
-              case _ if tail.symbol eq defn.TnilSymbol =>
-                Some(head :: Nil)
+  /** Rewrites `TupleCons.unapply(a, TupleCons.unapply(b, ..., TNit))` to implementation specific extractors.
+    *
+    * Below `MaxFlatTupleArity`, they become `TupleImpl$i.unapply(a, b, ...)`.
+    * Above `MaxFlatTupleArity`, they become `TupleUnapplySeq.unapply(a, b, ...)`.
+    *
+    * Similarly to `transformApply`, size `N` extractors will pass `N` times thought this transformation.
+    */
+  override def transformUnApply(tree: UnApply)(implicit ctx: Context, info: TransformerInfo): Tree = {
+    // Matches a tree with shape `TupleCons.unapply(head, tail)` where `tail` itself a tuple
+    // with statically known lenght (TupleNil, TupleImpl1, TupleImpl2...).
+    object TupleUnapplies {
+      def unapply(tree: UnApply)(implicit ctx: Context): Option[List[Tree]] =
+        tree match {
+          case UnApply(TypeApply(Select(selectIndent, nme.unapply), _), Nil, firstPattern :: secondPattern :: Nil)
+            if selectIndent.symbol eq defn.TupleConsSymbol =>
+              secondPattern match {
+                case _
+                  if secondPattern.symbol eq defn.TNilSymbol =>
+                    Some(List(firstPattern))
+                case UnApply(TypeApply(Select(ident, nme.unapply), _), Nil, patterns)
+                  if secondPattern.tpe.derivesFrom(defn.TupleConsType.symbol) =>
+                    Some(firstPattern :: patterns)
+                case UnApply(TypeApply(Select(ident, nme.unapplySeq), _), Nil, patterns)
+                  if ident.symbol eq defn.TupleUnapplySeqSymbol =>
+                    Some(firstPattern :: patterns)
+                case _ => None
+              }
+          case _ => None
+        }
+    }
 
-              case Apply(TypeApply(Select(tailIdent, nme.apply), _), args)
-                if defn.TupleImplSymbols contains tailIdent.symbol =>
-                  Some(head :: args)
-
-              case Apply(TypeApply(Select(tailIdent, nme.wrap), _), SeqLiteral(args, _) :: Nil)
-                if tailIdent.symbol eq defn.TupleImplNSymbol =>
-                  Some(head :: args)
-
-              case _ => None
-            }
-        case _ => None
-      }
+    tree match {
+      case TupleUnapplies(patterns) =>
+        val arity = patterns.length
+        val call =
+          if (arity <= MaxFlatTupleArity) // TupleImpl${arity}.unapply(patterns)
+            ref(defn.TupleImplType(arity).classSymbol.companionModule)
+              .select(nme.unapply)
+              .appliedToTypes(patterns.map(_.tpe)) // TODO: Types?
+          else // TupleUnapplySeq.unapplySeq(patterns)
+            ref(defn.TupleUnapplySeqType.classSymbol.companionModule)
+              .select(nme.unapplySeq)
+              .appliedToTypeTrees(ref(defn.AnyType) :: ref(defn.AnyType) :: Nil) // TODO: Types?
+        UnApply(fun = call, implicits = Nil, patterns = patterns, proto = tree.tpe)
+      case _ => tree
+    }
   }
 }

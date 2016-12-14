@@ -583,7 +583,7 @@ object desugar {
             ValDef(tmpName, TypeTree(), matchExpr)
               .withPos(pat.pos.union(rhs.pos)).withMods(patMods)
           def selector(n: Int): Tree = {
-            // Generates suboptimal tuple accessors of the following shape, which are optimised later:
+            // Generates suboptimal tuple accessors of the following shape, optimised later in TupleRewrites:
             // `val x_1 = t.head; val x_2 = t.tail.head; val x_3 = t.tail.tail.head; ...`
             val prod: Tree = Ident(tmpName)
             val tails = (1 to n).foldLeft(prod) { case (tree, _) => Select(tree, nme.tail) }
