@@ -3,17 +3,11 @@ package dotty
 sealed trait Tuple
 
 // TODO OLIVIER: This is to be unified with `Unit`.
-sealed trait TNil extends Tuple
-final case object TNil extends TNil
+final case object TNil extends Tuple
 
 sealed trait TupleCons[+H, +T <: Tuple] extends Tuple {
   def head: H
   def tail: T
-
-  def isDefined = true
-  def get       = this
-  def _1        = head
-  def _2        = tail
 }
 
 object TupleCons {
@@ -42,7 +36,7 @@ object TupleCons {
         TupleImplN(a)
     }).asInstanceOf[TupleCons[H, T]]
 
-  def unapply[H, T <: Tuple](t: TupleCons[H, T]): TupleCons[H, T] = t
+  def unapply[H, T <: Tuple](t: TupleCons[H, T]): TupleImpl2[H, T] = new TupleImpl2(t.head, t.tail)
 }
 
 case class TupleImplN[H, T <: Tuple](underlying: Array[Any]) extends TupleCons[H, T] {
@@ -50,7 +44,7 @@ case class TupleImplN[H, T <: Tuple](underlying: Array[Any]) extends TupleCons[H
   def tail: T = {
     var s = underlying.size
     if (s == 5) {
-      TupleImpl4(underlying(1), underlying(2), underlying(3), underlying(4)).asInstanceOf[T]
+      new TupleImpl4(underlying(1), underlying(2), underlying(3), underlying(4)).asInstanceOf[T]
     } else {
       s = s - 1
       val a = new Array[Any](s)
@@ -65,39 +59,82 @@ case class TupleImplN[H, T <: Tuple](underlying: Array[Any]) extends TupleCons[H
 }
 
 object TupleImplN {
-  def wrap[H, T <: Tuple](seq: Any*): TupleImplN[H, T] =
+  def wrap[H, T <: Tuple](seq: Seq[Any]): TupleImplN[H, T] =
     TupleImplN(seq.toArray)
 }
 
-trait  TupleUnapplySeq {}
 object TupleUnapplySeq {
-  def unapplySeq[H, T <: Tuple](tuple: TupleImplN[H, T]): Option[Seq[Any]] =
-    Some(tuple.underlying)
+  def unapplySeq[H, T <: Tuple](tuple: TupleCons[H, T]): Option[Seq[Any]] =
+    Some(tuple.asInstanceOf[TupleImplN[H, T]].underlying)
 }
 
-case class TupleImpl1[T1](e1: T1) extends TupleCons[T1, TNil] {
-  def head: T1 = e1
-  def tail: TNil = TNil
-  override def toString: String = s"($e1)"
+class TupleImpl1[T1](val _1: T1) extends TupleCons[T1, TNil.type] {
+  def head: T1 = _1
+  def tail: TNil.type = TNil
+  override def toString: String = s"(${_1})"
+  def isEmpty   = false
+  def isDefined = true
+  def get       = this
 }
 
-case class TupleImpl2[T1, T2](e1: T1, e2: T2)
-  extends TupleCons[T1, TupleCons[T2, TNil]] {
-    def head: T1 = e1
-    def tail: TupleCons[T2, TNil] = TupleImpl1(e2)
-    override def toString: String = s"($e1, $e2)"
+object TupleImpl1 {
+  def apply[T1](_1: T1): TupleImpl1[T1] =
+    new TupleImpl1[T1](_1)
+
+  def unapply[T1](t: TupleCons[T1, TNil.type]): TupleImpl1[T1] =
+    t.asInstanceOf[TupleImpl1[T1]]
+}
+
+class TupleImpl2[T1, T2](val _1: T1, val _2: T2)
+  extends TupleCons[T1, TupleCons[T2, TNil.type]] {
+    def head: T1 = _1
+    def tail: TupleCons[T2, TNil.type] = new TupleImpl1(_2)
+    override def toString: String = s"(${_1}, ${_2})"
+    def isEmpty   = false
+    def isDefined = true
+    def get       = this
   }
 
-case class TupleImpl3[T1, T2, T3](e1: T1, e2: T2, e3: T3)
-  extends TupleCons[T1, TupleCons[T2, TupleCons[T3, TNil]]] {
-    def head: T1 = e1
-    def tail: TupleCons[T2, TupleCons[T3, TNil]] = TupleImpl2(e2, e3)
-    override def toString: String = s"($e1, $e2, $e3)"
+object TupleImpl2 {
+  def apply[T1, T2](_1: T1, _2: T2): TupleImpl2[T1, T2] =
+    new TupleImpl2[T1, T2](_1, _2)
+
+  def unapply[T1, T2](t: TupleCons[T1, TupleCons[T2, TNil.type]]): TupleImpl2[T1, T2] =
+    t.asInstanceOf[TupleImpl2[T1, T2]]
+}
+
+class TupleImpl3[T1, T2, T3](val _1: T1, val _2: T2, val _3: T3)
+  extends TupleCons[T1, TupleCons[T2, TupleCons[T3, TNil.type]]] {
+    def head: T1 = _1
+    def tail: TupleCons[T2, TupleCons[T3, TNil.type]] = new TupleImpl2(_2, _3)
+    override def toString: String = s"(${_1}, ${_2}, ${_3})"
+    def isEmpty   = false
+    def isDefined = true
+    def get       = this
   }
 
-case class TupleImpl4[T1, T2, T3, T4](e1: T1, e2: T2, e3: T3, e4: T4)
-  extends TupleCons[T1, TupleCons[T2, TupleCons[T3, TupleCons[T4, TNil]]]] {
-    def head: T1 = e1
-    def tail: TupleCons[T2, TupleCons[T3, TupleCons[T4, TNil]]] = TupleImpl3(e2, e3, e4)
-    override def toString: String = s"($e1, $e2, $e3, $e4)"
+object TupleImpl3 {
+  def apply[T1, T2, T3](_1: T1, _2: T2, _3: T3): TupleImpl3[T1, T2, T3] =
+    new TupleImpl3[T1, T2, T3](_1, _2, _3)
+
+  def unapply[T1, T2, T3](t: TupleCons[T1, TupleCons[T2, TupleCons[T3, TNil.type]]]): TupleImpl3[T1, T2, T3] =
+    t.asInstanceOf[TupleImpl3[T1, T2, T3]]
+}
+
+class TupleImpl4[T1, T2, T3, T4](val _1: T1, val _2: T2, val _3: T3, val _4: T4)
+  extends TupleCons[T1, TupleCons[T2, TupleCons[T3, TupleCons[T4, TNil.type]]]] {
+    def head: T1 = _1
+    def tail: TupleCons[T2, TupleCons[T3, TupleCons[T4, TNil.type]]] = new TupleImpl3(_2, _3, _4)
+    override def toString: String = s"(${_1}, ${_2}, ${_3}, ${_4})"
+    def isEmpty   = false
+    def isDefined = true
+    def get       = this
   }
+
+object TupleImpl4 {
+  def apply[T1, T2, T3, T4](_1: T1, _2: T2, _3: T3, _4: T4): TupleImpl4[T1, T2, T3, T4] =
+    new TupleImpl4[T1, T2, T3, T4](_1, _2, _3, _4)
+
+  def unapply[T1, T2, T3, T4](t: TupleCons[T1, TupleCons[T2, TupleCons[T3, TupleCons[T4, TNil.type]]]]): TupleImpl4[T1, T2, T3, T4] =
+    t.asInstanceOf[TupleImpl4[T1, T2, T3, T4]]
+}

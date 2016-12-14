@@ -12,12 +12,8 @@ import collection.mutable
 import scala.reflect.api.{ Universe => ApiUniverse }
 
 object Definitions {
-<<<<<<< HEAD
-
-  /** The maximum number of elements in a tuple or product.
-   *  This should be removed once we go to hlists.
-   */
-  val MaxTupleArity = 22
+  /** TODOC OLIVIER*/
+  val MaxFlatTupleArity = 4
 
   /** The maximum arity N of a function type that's implemented
    *  as a trait `scala.FunctionN`. Functions of higher arity are possible,
@@ -27,24 +23,6 @@ object Definitions {
    *  else without affecting the set of programs that can be compiled.
    */
   val MaxImplementedFunctionArity = 22
-||||||| merged common ancestors
-  val MaxTupleArity, MaxAbstractFunctionArity = 22
-  val MaxFunctionArity = 30
-    // Awaiting a definite solution that drops the limit altogether, 30 gives a safety
-    // margin over the previous 22, so that treecopiers in miniphases are allowed to
-    // temporarily create larger closures. This is needed in lambda lift where large closures
-    // are first formed by treecopiers before they are split apart into parameters and
-    // environment in the lambdalift transform itself.
-=======
-  val MaxFlatTupleArity = 4
-  val MaxAbstractFunctionArity = 22
-  val MaxFunctionArity = 30
-    // Awaiting a definite solution that drops the limit altogether, 30 gives a safety
-    // margin over the previous 22, so that treecopiers in miniphases are allowed to
-    // temporarily create larger closures. This is needed in lambda lift where large closures
-    // are first formed by treecopiers before they are split apart into parameters and
-    // environment in the lambdalift transform itself.
->>>>>>> Draft HList based TupleN implementation
 }
 
 /** A class defining symbols and types of standard definitions
@@ -695,11 +673,11 @@ class Definitions {
   private lazy val ImplementedFunctionType = mkArityArray("scala.Function", MaxImplementedFunctionArity, 0)
   def FunctionClassPerRun = new PerRun[Array[Symbol]](implicit ctx => ImplementedFunctionType.map(_.symbol.asClass))
 
-  lazy val TNilType = ctx.requiredClassRef("dotty.TNil")
-  lazy val TupleConsType = ctx.requiredClassRef("dotty.TupleCons")
-  lazy val TupleImplNType = ctx.requiredClassRef("dotty.TupleImplN")
-  lazy val TupleUnapplySeqType = ctx.requiredClassRef("dotty.TupleUnapplySeq")
-  lazy val TupleImplType = mkArityArray("dotty.TupleImpl", MaxFlatTupleArity, 1)
+  lazy val TNilType: TypeRef = ctx.requiredClassRef("dotty.TNil$")
+  lazy val TupleConsType: TypeRef = ctx.requiredClassRef("dotty.TupleCons")
+  lazy val TupleImplNType: TypeRef = ctx.requiredClassRef("dotty.TupleImplN")
+  lazy val TupleUnapplySeqType: TypeRef = ctx.requiredClassRef("dotty.TupleUnapplySeq$")
+  lazy val TupleImplType: Array[TypeRef] = mkArityArray("dotty.TupleImpl", MaxFlatTupleArity, 1)
 
   def FunctionClass(n: Int)(implicit ctx: Context) =
     if (n < MaxImplementedFunctionArity) FunctionClassPerRun()(ctx)(n)

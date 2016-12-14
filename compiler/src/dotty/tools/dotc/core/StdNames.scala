@@ -721,14 +721,6 @@ object StdNames {
       case _  => termName("_" + j)
     }
 
-    @switch def smallTupleImplAccessorName(i: Int): TermName = i match {
-      case 1  => nme.e1
-      case 2  => nme.e2
-      case 3  => nme.e3
-      case 4  => nme.e4
-      case _  => throw new IllegalArgumentException("TODOC OLIVIER")
-    }
-
     def syntheticParamNames(num: Int): List[TermName] =
       (0 until num).map(syntheticParamName)(breakOut)
 

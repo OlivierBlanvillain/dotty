@@ -1,10 +1,9 @@
-import dotty._
-
 object Test {
   def main(args: Array[String]) = {
 
     case class Box(t: (String, Int, A))
     case class A(i: Int, j: Int)
+    case class XX[X, Y](i: X, j: Y)
 
     val x1 = Box(("a", 2, A(3, 4)))
 
