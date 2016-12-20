@@ -690,8 +690,8 @@ class Scala2Unpickler(bytes: Array[Byte], classRoot: ClassDenotation, moduleClas
       case CONSTANTtpe =>
         ConstantType(readConstantRef())
       case TYPEREFtpe =>
-        var pre = readTypeRef()
-        val sym = readSymbolRef()
+        var pre: Type = readTypeRef()
+        val sym: Symbol = readSymbolRef()
         pre match {
           case thispre: ThisType =>
             // The problem is that class references super.C get pickled as
@@ -709,7 +709,7 @@ class Scala2Unpickler(bytes: Array[Byte], classRoot: ClassDenotation, moduleClas
             }
           case _ =>
         }
-        val tycon =
+        val tycon: Type =
           if (sym.isClass && sym.is(Scala2x) && !sym.owner.is(Package))
             // used fixed sym for Scala 2 inner classes, because they might be shadowed
             TypeRef.withFixedSym(pre, sym.name.asTypeName, sym.asType)
@@ -719,7 +719,9 @@ class Scala2Unpickler(bytes: Array[Byte], classRoot: ClassDenotation, moduleClas
           }
           else TypeRef(pre, sym.name.asTypeName)
         val args = until(end, readTypeRef)
-        if (sym == defn.ByNameParamClass2x) ExprType(args.head)
+        if (sym.showFullName == "scala.Tuple2")
+          args.reverse.foldLeft[Type](defn.TNilType) { case (acc, el) => defn.TupleConsType.safeAppliedTo(List(el, acc)) }
+        else if (sym == defn.ByNameParamClass2x) ExprType(args.head)
         else if (args.nonEmpty) tycon.safeAppliedTo(EtaExpandIfHK(sym.typeParams, args))
         else if (sym.typeParams.nonEmpty) tycon.EtaExpand(sym.typeParams)
         else tycon
