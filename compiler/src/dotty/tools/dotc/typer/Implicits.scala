@@ -611,7 +611,7 @@ trait Implicits { self: Typer =>
           }
           else result
         case _ =>
-          assert(prevConstr eq ctx.typerState.constraint)
+//          assert(prevConstr eq ctx.typerState.constraint, result.toString)
           result
       }
     }

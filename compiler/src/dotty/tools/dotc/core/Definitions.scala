@@ -674,10 +674,13 @@ class Definitions {
   def FunctionClassPerRun = new PerRun[Array[Symbol]](implicit ctx => ImplementedFunctionType.map(_.symbol.asClass))
 
   lazy val TNilType: TypeRef = ctx.requiredClassRef("dotty.TNil$")
+  lazy val TupleType: TypeRef = ctx.requiredClassRef("dotty.Tuple")
   lazy val TupleConsType: TypeRef = ctx.requiredClassRef("dotty.TupleCons")
   lazy val TupleImplNType: TypeRef = ctx.requiredClassRef("dotty.TupleImplN")
   lazy val TupleUnapplySeqType: TypeRef = ctx.requiredClassRef("dotty.TupleUnapplySeq$")
   lazy val TupleImplType: Array[TypeRef] = mkArityArray("dotty.TupleImpl", MaxFlatTupleArity, 1)
+
+  lazy val ProductNType = mkArityArray("scala.Product", 22, 0)
 
   def FunctionClass(n: Int)(implicit ctx: Context) =
     if (n < MaxImplementedFunctionArity) FunctionClassPerRun()(ctx)(n)

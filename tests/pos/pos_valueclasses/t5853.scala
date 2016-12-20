@@ -39,19 +39,19 @@ class Foo2 {
 }
 
 
-object Arrow {
-  implicit final class ArrowAssoc[A](val __leftOfArrow: A) extends AnyVal {
-    @inline def ->>[B](y: B): Tuple2[A, B] = Tuple2(__leftOfArrow, y)
-  }
+// object Arrow {
+//   implicit final class ArrowAssoc[A](val __leftOfArrow: A) extends AnyVal {
+//     @inline def ->>[B](y: B): (A, B) = (__leftOfArrow, y)
+//   }
 
-  def foo = 1 ->> 2
-}
+//   def foo = 1 ->> 2
+// }
 
 
-object SpecArrow {
-  implicit final class ArrowAssoc[A](val __leftOfArrow: A) extends AnyVal {
-    @inline def ->> [@specialized(Int) B](y: B): Tuple2[A, B] = Tuple2(__leftOfArrow, y)
-  }
+// object SpecArrow {
+//   implicit final class ArrowAssoc[A](val __leftOfArrow: A) extends AnyVal {
+//     @inline def ->> [@specialized(Int) B](y: B): (A, B) = (__leftOfArrow, y)
+//   }
 
-  def foo = 1 ->> 2
-}
+//   def foo = 1 ->> 2
+// }

@@ -60,7 +60,7 @@ object EtaExpansion {
   def liftArgs(defs: mutable.ListBuffer[Tree], methRef: Type, args: List[Tree])(implicit ctx: Context) =
     methRef.widen match {
       case MethodType(paramNames, paramTypes) =>
-        (args, paramNames, paramTypes).zipped map { (arg, name, tp) =>
+        (args, paramNames, paramTypes).zipped map { case (arg, name, tp) =>
           if (tp.isInstanceOf[ExprType]) arg
           else liftArg(defs, arg, if (name contains '$') "" else name.toString + "$")
         }

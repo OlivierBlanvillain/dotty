@@ -19,7 +19,12 @@ class TupleRewrites extends MiniPhaseTransform {
 
   def phaseName: String = "tupleRewrites"
 
-  override def checkPostCondition(tree: Tree)(implicit ctx: Context): Unit = ()
+  override def checkPostCondition(tree: Tree)(implicit ctx: Context): Unit =
+    tree match {
+      case Select(ident, _) if ident.symbol == defn.TupleConsSymbol =>
+        assert(false, s"Some TupleCons where not rewritten in $tree!")
+      case _ => ()
+    }
 
   /** Rewrites `TupleCons(a, TupleCons(b, ..., TNit))` to implementation specific constructors.
    *
@@ -37,16 +42,16 @@ class TupleRewrites extends MiniPhaseTransform {
       def unapply(tree: Apply)(implicit ctx: Context): Option[List[Tree]] =
         tree match {
           case Apply(TypeApply(Select(ident, nme.apply), _), head :: tail :: Nil)
-            if ident.symbol eq defn.TupleConsSymbol =>
+            if ident.symbol == defn.TupleConsSymbol =>
               tail match {
                 case _
-                  if tail.symbol eq defn.TNilSymbol =>
+                  if tail.symbol == defn.TNilSymbol =>
                     Some(head :: Nil)
-                case Apply(TypeApply(Select(tailIdent, nme.apply), _), args)
+                case Typed(Apply(TypeApply(Select(tailIdent, nme.apply), _), args), _)
                   if defn.TupleImplSymbols contains tailIdent.symbol =>
                     Some(head :: args)
-                case Apply(TypeApply(Select(tailIdent, nme.wrap), _), SeqLiteral(args, _) :: Nil)
-                  if tailIdent.symbol eq defn.TupleImplNSymbol =>
+                case Typed(Apply(TypeApply(Select(tailIdent, nme.wrap), _), SeqLiteral(args, _) :: Nil), _)
+                  if tailIdent.symbol == defn.TupleImplNSymbol =>
                     Some(head :: args)
                 case _ => None
               }
@@ -57,18 +62,20 @@ class TupleRewrites extends MiniPhaseTransform {
     tree match {
       case TupleApplies(args) =>
         val arity = args.length
-        if (arity <= MaxFlatTupleArity)
-          ref(defn.TupleImplType(arity).classSymbol.companionModule) // TupleImpl${arity}(args)
-            .select(nme.apply)
-            .appliedToTypes(args.map(_.tpe))
-            .appliedToArgs(args)
-        else {
-          val TupleConsTypeExtractor(headType, tailType) = tree.tpe
-          ref(defn.TupleImplNType.classSymbol.companionModule) // TupleImplN.wrap()
-            .select(nme.wrap)
-            .appliedToTypes(headType :: tailType :: Nil)
-            .appliedTo(SeqLiteral(args, ref(defn.AnyType)))
-        }
+        val newSelect =
+          if (arity <= MaxFlatTupleArity)
+            ref(defn.TupleImplType(arity).classSymbol.companionModule) // TupleImpl${arity}(args)
+              .select(nme.apply)
+              .appliedToTypes(args.map(_.tpe))
+              .appliedToArgs(args)
+          else {
+            val TupleConsTypeExtractor(headType, tailType) = tree.tpe
+            ref(defn.TupleImplNType.classSymbol.companionModule) // TupleImplN.wrap()
+              .select(nme.wrap)
+              .appliedToTypes(headType :: tailType :: Nil)
+              .appliedTo(SeqLiteral(args, ref(defn.AnyType)))
+          }
+        Typed(newSelect, TypeTree(tree.tpe))
       case _ => tree
     }
   }
@@ -105,23 +112,57 @@ class TupleRewrites extends MiniPhaseTransform {
     tree match {
       case Select(TupleTails(inner, tails), nme.head) =>
         val arity = tupleTypeArity(inner.tpe)
-        if (arity <= MaxFlatTupleArity)
-          Typed(
+        val newSelect =
+          if (arity <= MaxFlatTupleArity)
             inner // .asInstanceOf[TupleImpl$arity[_, _]]._${tail + 1}s.asInstanceOf[${tree.tpe}]
               .asInstance(defn.TupleImplType(arity))
               .select(nme.productAccessorName(tails + 1)) // t(0) <=> t._1, thus the +1
-              .asInstance(tree.tpe),
-            TypeTree(tree.tpe)
-          )
-        else
-          inner // .asInstanceOf[TupleImplN[_, _]].underlying(${tails}).asInstanceOf[${tree.tpe}]
-            .asInstance(defn.TupleImplNType)
-            .select(nme.underlying)
-            .select(nme.apply)
-            .appliedTo(Literal(Constant(tails)))
-            .asInstance(tree.tpe)
+              .asInstance(tree.tpe)
+          else
+            inner // .asInstanceOf[TupleImplN[_, _]].underlying(${tails}).asInstanceOf[${tree.tpe}]
+              .asInstance(defn.TupleImplNType)
+              .select(nme.underlying)
+              .select(nme.apply)
+              .appliedTo(Literal(Constant(tails)))
+              .asInstance(tree.tpe)
+        Typed(newSelect, TypeTree(tree.tpe))
       case _ => tree
     }
+  }
+
+  // override def transformTyped(tree: Typed)(implicit ctx: Context, info: TransformerInfo): Tree =
+  //   tree match {
+  //     case Typed(t: UnApply, _) => t
+  //     case _ => tree
+  //   }
+
+  // Matches a tree with shape `TupleCons.unapply(head, tail)` where `tail` itself a tuple
+  // with statically known lenght (TNil, TupleImpl1, TupleImpl2...).
+  object TupleUnapplies {
+    def unapply(tree: UnApply)(implicit ctx: Context): Option[List[Tree]] =
+      tree match {
+        case UnApply(TypeApply(Select(selectIndent, nme.unapply), _), Nil, firstPattern :: secondPattern :: Nil)
+          if selectIndent.symbol == defn.TupleConsSymbol =>
+            secondPattern match {
+              case _
+                if secondPattern.symbol == defn.TNilSymbol =>
+                  Some(List(firstPattern))
+              case Typed(UnApply(TypeApply(Select(ident, nme.unapply), _), Nil, patterns), _)
+                if defn.TupleImplSymbols contains ident.symbol =>
+                  Some(firstPattern :: patterns)
+              case Typed(UnApply(TypeApply(Select(ident, nme.unapplySeq), _), Nil, patterns), _)
+                if ident.symbol == defn.TupleUnapplySeqSymbol  =>
+                  Some(firstPattern :: patterns)
+              case UnApply(TypeApply(Select(ident, nme.unapply), _), Nil, patterns)
+                if defn.TupleImplSymbols contains ident.symbol =>
+                  Some(firstPattern :: patterns)
+              case UnApply(TypeApply(Select(ident, nme.unapplySeq), _), Nil, patterns)
+                if ident.symbol == defn.TupleUnapplySeqSymbol  =>
+                  Some(firstPattern :: patterns)
+              case _ => None
+            }
+        case _ => None
+      }
   }
 
   /** Rewrites `TupleCons.unapply(a, TupleCons.unapply(b, ..., TNit))` to implementation specific extractors.
@@ -132,33 +173,11 @@ class TupleRewrites extends MiniPhaseTransform {
    *  Similarly to `transformApply`, size `N` extractors will pass `N` times thought this transformation.
    */
   override def transformUnApply(tree: UnApply)(implicit ctx: Context, info: TransformerInfo): Tree = {
-    // Matches a tree with shape `TupleCons.unapply(head, tail)` where `tail` itself a tuple
-    // with statically known lenght (TNil, TupleImpl1, TupleImpl2...).
-    object TupleUnapplies {
-      def unapply(tree: UnApply)(implicit ctx: Context): Option[List[Tree]] =
-        tree match {
-          case UnApply(TypeApply(Select(selectIndent, nme.unapply), _), Nil, firstPattern :: secondPattern :: Nil)
-            if selectIndent.symbol eq defn.TupleConsSymbol =>
-              secondPattern match {
-                case _
-                  if secondPattern.symbol eq defn.TNilSymbol =>
-                    Some(List(firstPattern))
-                case UnApply(TypeApply(Select(ident, nme.unapply), _), Nil, patterns)
-                  if secondPattern.tpe.derivesFrom(defn.TupleConsType.symbol) =>
-                    Some(firstPattern :: patterns)
-                case UnApply(TypeApply(Select(ident, nme.unapplySeq), _), Nil, patterns)
-                  if ident.symbol eq defn.TupleUnapplySeqSymbol =>
-                    Some(firstPattern :: patterns)
-                case _ => None
-              }
-          case _ => None
-        }
-    }
 
     tree match {
       case TupleUnapplies(patterns) =>
         val arity = patterns.length
-        val call =
+        val newCall =
           if (arity <= MaxFlatTupleArity) // TupleImpl${arity}.unapply(patterns)
             ref(defn.TupleImplType(arity).classSymbol.companionModule)
               .select(nme.unapply)
@@ -170,8 +189,8 @@ class TupleRewrites extends MiniPhaseTransform {
               .select(nme.unapplySeq)
               .appliedToTypes(headType :: tailType :: Nil)
           }
-
-        UnApply(fun = call, implicits = Nil, patterns = patterns, proto = tree.tpe)
+        val newUnapply = UnApply(fun = newCall, implicits = Nil, patterns = patterns, proto = tree.tpe)
+        newUnapply
       case _ => tree
     }
   }
@@ -183,6 +202,14 @@ class TupleRewrites extends MiniPhaseTransform {
       case _ => None
     }
   }
+
+  // override def transformBlock(tree: Block)(implicit ctx: Context, info: TransformerInfo): Tree = {
+  //   println
+  //   println
+  //   println(tree.show)
+  //   println(tree.tpe.show)
+  //   tree
+  // }
 
   // override def transformTypeTree(tree: TypeTree)(implicit ctx: Context, info: TransformerInfo): Tree = {
   //   // Matches a type tree with shape `TupleCons[head, tail]` where `tail` itself a

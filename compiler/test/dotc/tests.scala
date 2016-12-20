@@ -172,7 +172,7 @@ class tests extends CompilerTest {
   @Test def pos_utf16 = compileFile(posSpecialDir, "utf16encoded", explicitUTF16)
 
   @Test def new_all = compileFiles(newDir, twice)
-  @Test def repl_all = replFiles(replDir)
+  // @Test def repl_all = replFiles(replDir)
 
   @Test def neg_all = compileFiles(negDir, verbose = true, compileSubDirs = false)
   @Test def neg_typedIdents() = compileDir(negDir, "typedIdents")
@@ -199,7 +199,7 @@ class tests extends CompilerTest {
   @Test def neg_noimports = compileFile(negCustomArgs, "noimports", List("-Yno-imports"))
   @Test def neg_noimpots2 = compileFile(negCustomArgs, "noimports2", List("-Yno-imports"))
 
-  @Test def run_all = runFiles(runDir)
+  // @Test def run_all = runFiles(runDir)
 
   def loadList(path: String) = Source.fromFile(path, "UTF8").getLines()
     .map(_.trim) // allow identation

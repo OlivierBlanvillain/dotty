@@ -1,10 +1,9 @@
+case class Box(t: (String, Int, A))
+case class A(i: Int, j: Int)
+case class XX[X, Y](i: X, j: Y)
+
 object Test {
   def main(args: Array[String]) = {
-
-    case class Box(t: (String, Int, A))
-    case class A(i: Int, j: Int)
-    case class XX[X, Y](i: X, j: Y)
-
     val x1 = Box(("a", 2, A(3, 4)))
 
     x1 match {
@@ -67,4 +66,14 @@ object Test {
 
     println("Yay!")
   }
+
+  // def any = {
+  //   val x: Any = null
+  //   x match { case Box((a3, b3, A(a1, a2))) => () }
+  //   x match { case (a2, b2) => () }
+  //   x match { case (a3, b3, c3) => () }
+  //   x match { case (a4, b4, c4, d4) => () }
+  //   x match { case (a5, b5, c5, d5, e5) => () }
+  //   x match { case (a5, b5, c5, d5, e5, f5) => () }
+  // }
 }

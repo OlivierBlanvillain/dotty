@@ -307,11 +307,6 @@ object StdNames {
     val _21 : N = "_21"
     val _22 : N = "_22"
 
-    val e1 : N  = "e1"
-    val e2 : N  = "e2"
-    val e3 : N  = "e3"
-    val e4 : N  = "e4"
-
     val ??? = encode("???")
 
     val genericWrapArray: N     = "genericWrapArray"

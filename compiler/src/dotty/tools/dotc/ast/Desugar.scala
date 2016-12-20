@@ -983,20 +983,21 @@ object desugar {
         t
       case Tuple(ts) =>
         val arity = ts.length
-        val nil = defn.TNilType.classSymbol.companionModule.valRef
         arity match {
           case 0 => unitLiteral
           case _ if ctx.mode is Mode.Type =>
-            // Transforming Tuple types: (T1, T2) → TupleCons[T1, TupleCons[T2, TNil]]
+            // Transforming Tuple types: (T1, T2) → TupleCons[T1, TupleCons[T2, TNil.type]]
+            val nil: Tree = SingletonTypeTree(ref(defn.TNilType.classSymbol.companionModule.valRef))
             def hconsType(l: Tree, r: Tree): Tree =
               AppliedTypeTree(ref(defn.TupleConsType), l :: r :: Nil)
-            ts.foldRight(ref(nil))(hconsType)
+            ts.foldRight(nil)(hconsType)
           case _ =>
             // Transforming Tuple trees: (T1, T2, ..., TN) → TupleCons(T1, TupleCons(T2, ... (TupleCons(TN, TNil))))
+            val nil = ref(defn.TNilType.classSymbol.companionModule.valRef)
             val cons = defn.TupleConsType.classSymbol.companionModule.valRef
             def consTree(l: Tree, r: Tree): Tree =
               Apply(ref(cons), l :: r :: Nil)
-            ts.foldRight(ref(nil))(consTree)
+            ts.foldRight(nil)(consTree)
         }
       case WhileDo(cond, body) =>
         // { <label> def while$(): Unit = if (cond) { body; while$() } ; while$() }

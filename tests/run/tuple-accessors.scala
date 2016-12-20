@@ -51,4 +51,13 @@ object Test {
 
     println("Yay!")
   }
+
+  def any = {
+    val x: Any = null
+    val X2(a2, b2) = x
+    val X3(a3, b3, c3) = x
+    val X4(a4, b4, c4, d4) = x
+    val X5(a5, b5, c5, d5, e5) = x
+    val X6(a6, b6, c6, d6, e6, f6) = x
+  }
 }

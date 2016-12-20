@@ -690,8 +690,8 @@ class Scala2Unpickler(bytes: Array[Byte], classRoot: ClassDenotation, moduleClas
       case CONSTANTtpe =>
         ConstantType(readConstantRef())
       case TYPEREFtpe =>
-        var pre: Type = readTypeRef()
-        val sym: Symbol = readSymbolRef()
+        var pre = readTypeRef()
+        val sym = readSymbolRef()
         pre match {
           case thispre: ThisType =>
             // The problem is that class references super.C get pickled as
@@ -719,8 +719,14 @@ class Scala2Unpickler(bytes: Array[Byte], classRoot: ClassDenotation, moduleClas
           }
           else TypeRef(pre, sym.name.asTypeName)
         val args = until(end, readTypeRef)
-        if (sym.showFullName == "scala.Tuple2")
-          args.reverse.foldLeft[Type](defn.TNilType) { case (acc, el) => defn.TupleConsType.safeAppliedTo(List(el, acc)) }
+        if (
+          sym.showFullName == "scala.Tuple1" ||
+          sym.showFullName == "scala.Tuple2" ||
+          sym.showFullName == "scala.Tuple3" ||
+          sym.showFullName == "scala.Tuple4"
+        ) args.reverse.foldLeft[Type](defn.TNilType.classSymbol.companionModule.valRef) {
+            case (acc, el) => defn.TupleConsType.safeAppliedTo(List(el, acc))
+          }
         else if (sym == defn.ByNameParamClass2x) ExprType(args.head)
         else if (args.nonEmpty) tycon.safeAppliedTo(EtaExpandIfHK(sym.typeParams, args))
         else if (sym.typeParams.nonEmpty) tycon.EtaExpand(sym.typeParams)

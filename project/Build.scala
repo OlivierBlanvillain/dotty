@@ -123,6 +123,12 @@ object DottyBuild extends Build {
         ";dotty-compiler/lockPartestFile" +
         ";dotty-compiler/test:test-only dotc.tests" +
         ";dotty-compiler/runPartestRunner"
+      ) ++
+      addCommandAlias(
+        "partest-mini",
+        ";packageAll" +
+        ";dotty-compiler/lockPartestFile" +
+        ";dotty-compiler/runPartestRunner"
       )
     ).
     settings(publishing)
