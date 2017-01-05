@@ -34,16 +34,6 @@ import dotty.tools.dotc.transform.ValueClasses._
 object Checking {
   import tpd._
 
-  type BoundsViolation = (Tree, String, Type)
-
-  /** The list of violations where arguments are not within bounds.
-   *  @param  args          The arguments
-   *  @param  boundss       The list of type bounds
-   *  @param  instantiate   A function that maps a bound type and the list of argument types to a resulting type.
-   *                        Needed to handle bounds that refer to other bounds.
-   */
-  def boundsViolations(args: List[Tree], boundss: List[TypeBounds], instantiate: (Type, List[Type]) => Type)(implicit ctx: Context): List[BoundsViolation] = Nil
-
   /** A general checkBounds method that can be used for TypeApply nodes as
    *  well as for AppliedTypeTree nodes. Also checks that type arguments to
    *  *-type parameters are fully applied.
@@ -53,7 +43,7 @@ object Checking {
       if (!bound.isHK && arg.tpe.isHK)
         ctx.error(ex"missing type parameter(s) for $arg", arg.pos)
     }
-    for ((arg, which, bound) <- boundsViolations(args, boundss, instantiate))
+    for ((arg, which, bound) <- ctx.boundsViolations(args, boundss, instantiate))
       ctx.error(
           ex"Type argument ${arg.tpe} does not conform to $which bound $bound ${err.whyNoMatchStr(arg.tpe, bound)}",
           arg.pos.focus)

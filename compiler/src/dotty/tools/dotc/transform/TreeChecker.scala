@@ -452,7 +452,7 @@ class TreeChecker extends Phase with SymTransformer {
           !tree.isEmpty &&
           !isPrimaryConstructorReturn &&
           !pt.isInstanceOf[FunProto])
-        assert(tree.tpe <:< pt || { println(core.TypeComparer.explained((tree.tpe <:< pt)(_))); false }, {
+        assert(tree.tpe <:< pt, {
           val mismatch = err.typeMismatchMsg(tree.tpe, pt)
           i"""|${mismatch.msg}
               |tree = $tree""".stripMargin
