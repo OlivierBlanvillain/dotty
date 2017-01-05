@@ -173,8 +173,7 @@ class TupleRewrites extends MiniPhaseTransform {
    *  Similarly to `transformApply`, size `N` extractors will pass `N` times thought this transformation.
    */
   override def transformUnApply(tree: UnApply)(implicit ctx: Context, info: TransformerInfo): Tree = {
-
-    tree match {
+    val nn = tree match {
       case TupleUnapplies(patterns) =>
         val arity = patterns.length
         val newCall =
@@ -193,6 +192,15 @@ class TupleRewrites extends MiniPhaseTransform {
         newUnapply
       case _ => tree
     }
+    println
+    println(tree)
+    println(tree.show)
+    println(tree.tpe)
+    println("---")
+    println(nn)
+    println(nn.show)
+    println
+    nn
   }
 
   // Extracts (A, B) from TupleCons[A, B].
@@ -202,14 +210,6 @@ class TupleRewrites extends MiniPhaseTransform {
       case _ => None
     }
   }
-
-  // override def transformBlock(tree: Block)(implicit ctx: Context, info: TransformerInfo): Tree = {
-  //   println
-  //   println
-  //   println(tree.show)
-  //   println(tree.tpe.show)
-  //   tree
-  // }
 
   // override def transformTypeTree(tree: TypeTree)(implicit ctx: Context, info: TransformerInfo): Tree = {
   //   // Matches a type tree with shape `TupleCons[head, tail]` where `tail` itself a

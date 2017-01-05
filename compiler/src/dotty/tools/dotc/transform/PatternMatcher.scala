@@ -1915,7 +1915,7 @@ class PatternMatcher extends MiniPhaseTransform with DenotTransformer {
 
         def err(msg: String)         = ctx.error(msg, tree.pos)
         def warn(msg: String)        = ctx.warning(msg, tree.pos)
-        def arityError(what: String) = err(s"${_id} $what patterns for $owner$offerString: expected $arityExpected, found $totalArity")
+        def arityError(what: String) = err(s"${_id} $what patterns for $owner$offerString: expected $arityExpected, found $totalArity. Working on ${tree.show} ($tree)")
 
         if (isStar && !isSeq)
           err("Star pattern must correspond with varargs or unapplySeq")

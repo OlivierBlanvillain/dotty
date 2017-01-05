@@ -720,10 +720,11 @@ class Scala2Unpickler(bytes: Array[Byte], classRoot: ClassDenotation, moduleClas
           else TypeRef(pre, sym.name.asTypeName)
         val args = until(end, readTypeRef)
         if (
-          sym.showFullName == "scala.Tuple1" ||
-          sym.showFullName == "scala.Tuple2" ||
-          sym.showFullName == "scala.Tuple3" ||
-          sym.showFullName == "scala.Tuple4"
+          false
+          // sym.showFullName == "scala.Tuple1" ||
+          // sym.showFullName == "scala.Tuple2" ||
+          // sym.showFullName == "scala.Tuple3" ||
+          // sym.showFullName == "scala.Tuple4"
         ) args.reverse.foldLeft[Type](defn.TNilType.classSymbol.companionModule.valRef) {
             case (acc, el) => defn.TupleConsType.safeAppliedTo(List(el, acc))
           }
