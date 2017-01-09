@@ -196,16 +196,14 @@ class TupleRewrites extends MiniPhaseTransform {
               .select(nme.unapplySeq)
               .appliedToTypes(headType :: tailType :: Nil)
           }
-        val base =
-          if (arity <= MaxFlatTupleArity)
-            defn.TupleImplType(arity)
-          else
-            defn.TupleUnapplySeqType
-        val tpe = RefinedType.make(base, base.typeParams.map(_.paramName), patterns.map(_.tpe.widen).map(t => TypeAlias(t, 0)))
-        println("(((())))")
-        println(tpe)
-        println
-        Typed(UnApply(fun = newCall, implicits = Nil, patterns = patterns, proto = tpe), TypeTree(tpe))
+        if (arity <= MaxFlatTupleArity) {
+          val base = defn.TupleImplType(arity)
+          val tpe = RefinedType.make(base, base.typeParams.map(_.paramName), patterns.map(t => TypeAlias(t.tpe.widen, 0)))
+          Typed(UnApply(fun = newCall, implicits = Nil, patterns = patterns, proto = tpe), TypeTree(tpe))
+        }
+        else
+          Typed(UnApply(fun = newCall, implicits = Nil, patterns = patterns, proto = tree.tpe), TypeTree(tree.tpe))
+          // defn.TupleUnapplySeqType
       case _ => tree
 
       // case TypedTupleUnapplies(pattern) =>
@@ -301,7 +299,13 @@ class TupleRewrites extends MiniPhaseTransform {
               .select(nme.unapplySeq)
               .appliedToTypes(headType :: tailType :: Nil)
           }
-        UnApply(fun = newCall, implicits = Nil, patterns = patterns, proto = tree.tpe)
+
+        if (arity <= MaxFlatTupleArity) {
+          val base = defn.TupleImplType(arity)
+          val tpe = RefinedType.make(base, base.typeParams.map(_.paramName), patterns.map(_.tpe.widen).map(t => TypeAlias(t, 0)))
+          UnApply(fun = newCall, implicits = Nil, patterns = patterns, proto = tpe)
+        } else
+          UnApply(fun = newCall, implicits = Nil, patterns = patterns, proto = tree.tpe)
       case _ => tree
     }
 
