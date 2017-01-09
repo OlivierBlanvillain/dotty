@@ -199,7 +199,7 @@ class tests extends CompilerTest {
   @Test def neg_noimports = compileFile(negCustomArgs, "noimports", List("-Yno-imports"))
   @Test def neg_noimpots2 = compileFile(negCustomArgs, "noimports2", List("-Yno-imports"))
 
-  // @Test def run_all = runFiles(runDir)
+  @Test def run_all = compileFiles(runDir)
 
   def loadList(path: String) = Source.fromFile(path, "UTF8").getLines()
     .map(_.trim) // allow identation

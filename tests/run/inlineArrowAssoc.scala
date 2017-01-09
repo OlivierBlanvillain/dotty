@@ -10,8 +10,9 @@ object Test {
   )
 
   final implicit class ArrowAssoc[A](private val self: A) extends AnyVal {
-    @inline def -> [B](y: B): Tuple2[A, B] = Tuple2(self, y)
-    def →[B](y: B): Tuple2[A, B] = ->(y)
+    // Using `type Tuple2[A, B] = ...`  instead of (A, B) triggers https://github.com/lampepfl/dotty/issues/1891
+    @inline def -> [B](y: B): (A, B) = (self, y)
+    def →[B](y: B): (A, B) = ->(y)
   }
 
   def main(args: Array[String]): Unit = {
