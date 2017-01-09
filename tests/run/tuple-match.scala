@@ -1,16 +1,19 @@
 object Test {
+  case class CC2[A, B](a: A, b: B)
+
   // val FOUR = (-1, -2, -3, "bingo donkey vegas")
   // val THREE = (-1, -2, -3)
 
   def f(x: Any) = x match {
     // case FOUR         => "FOUR"
-    case (_, _, 3, _) => "4, #3"
+    // case (_, _, 3, _) => "4, #3"
     // case (_, 2, _, _) => "4, #2"
     // case (_, 2, _)    => "3, #2"
     // // case Tuple1(1)    => "1, #1"
     // case (_, _, _, 4) => "4, #4"
     // case THREE        => "THREE"
-    // case (_, 2)       => "2, #2"
+    case (_, 2)       => "2, #2"
+    case CC2(_, 2)    => "v"
     // case _            => "default"
   }
 
@@ -25,3 +28,36 @@ object Test {
   //   println(f((-1, -2, -3)))
   // }
 }
+
+
+// package <empty> {
+//   final lazy module val Test: Test$ = new Test$()
+//   @scala.annotation.internal.SourceFile(
+//     "/home/olivier/workspace/dotty/tests/run/tuple-match.scala"
+//   ) final module class Test$() extends Object() {
+//     def f(x: Any): String =
+//       x match
+//         {
+//           case
+//             dotty.TupleImpl4.unapply[Any, Any, Int, Any](_, _, 3, _):
+//               dotty.TupleCons[Any, dotty.Tuple]
+//            => "4, #3"
+//         }
+//   }
+// }
+
+
+// package <empty> {
+//   final lazy module val Test: Test$ = new Test$()
+//   @scala.annotation.internal.SourceFile(
+//     "/home/olivier/workspace/dotty/tests/run/tuple-match.scala"
+//   ) final module class Test$() extends Object() {
+//     def f(x: Any): String =
+//       x match
+//         {
+//           case
+//             Tuple4.unapply[Any, Any, Any, Any](_, _, 3, _): (Any, Any, Any, Any)
+//            => "4, #3"
+//         }
+//   }
+// }

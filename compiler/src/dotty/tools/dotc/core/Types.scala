@@ -2098,6 +2098,7 @@ object Types {
   }
 
   object RefinedType {
+    @tailrec
     def make(parent: Type, names: List[Name], infos: List[Type])(implicit ctx: Context): Type =
       if (names.isEmpty) parent
       else make(RefinedType(parent, names.head, infos.head), names.tail, infos.tail)
