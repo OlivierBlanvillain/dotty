@@ -48,8 +48,6 @@ object Test {
     assert(d6 == 3)
     assert(e6 == "c")
     assert(f6 == 4)
-
-    println("Yay!")
   }
 
   def any = {
