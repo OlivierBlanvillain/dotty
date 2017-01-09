@@ -106,7 +106,7 @@ class tests extends CompilerTest {
     Directory(defaultOutputDir + "scala").deleteRecursively()
     Directory(defaultOutputDir + "java").deleteRecursively()
   }
-
+/*
   @Test def pickle_pickleOK = compileDir(testsDir, "pickling", testPickling)
 // This directory doesn't exist anymore
 // @Test def pickle_pickling = compileDir(coreDir, "pickling", testPickling)
@@ -198,9 +198,11 @@ class tests extends CompilerTest {
   @Test def neg_nopredef = compileFile(negCustomArgs, "nopredef", List("-Yno-predef"))
   @Test def neg_noimports = compileFile(negCustomArgs, "noimports", List("-Yno-imports"))
   @Test def neg_noimpots2 = compileFile(negCustomArgs, "noimports2", List("-Yno-imports"))
+*/
 
-  @Test def run_all = compileFiles(runDir)
+  @Test def run_all = runFiles(runDir)
 
+/*
   def loadList(path: String) = Source.fromFile(path, "UTF8").getLines()
     .map(_.trim) // allow identation
     .filter(!_.startsWith("#")) // allow comment lines prefixed by #
@@ -409,4 +411,4 @@ class tests extends CompilerTest {
     compileDir(dotcDir, "typer", opt)
     compileDir(dotcDir, "util", opt)
   }
-}
+*/}
