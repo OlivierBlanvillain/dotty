@@ -134,7 +134,7 @@ class Erasure extends Phase with DenotTransformer { thisTransformer =>
         i"The type $tp - ${tp.toString} of class ${tp.getClass} of tree $tree : ${tree.tpe} / ${tree.getClass} is illegal after erasure, phase = ${ctx.phase.prev}")
 }
 
-object Erasure extends TypeTestsCasts{
+object Erasure extends TypeTestsCasts {
 
   import tpd._
 
@@ -353,6 +353,14 @@ object Erasure extends TypeTestsCasts{
             defn.FunctionXXLClass
           else if (defn.isImplicitFunctionClass(owner))
             recur(defn.FunctionClass(owner.name.functionArity))
+          else if (owner == defn.TupleImplType(1).classSymbol.companionModule.symbol)
+            ??? // defn.ScalaTupleSymbols(1)
+          else if (owner == defn.TupleImplType(2).classSymbol.companionModule.symbol)
+            ??? // defn.ScalaTupleSymbols(2)
+          else if (owner == defn.TupleImplType(3).classSymbol.companionModule.symbol)
+            ??? // defn.ScalaTupleSymbols(3)
+          else if (owner == defn.TupleImplType(4).classSymbol.companionModule.symbol)
+            ??? // defn.ScalaTupleSymbols(4)
           else
             owner
         recur(sym.owner)

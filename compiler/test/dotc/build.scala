@@ -25,16 +25,16 @@ object build extends tests {
   }
 
   def main(args: Array[String]): Unit = {
-    // println("----------  Building bootstrapped dotty-lib  ----------------------------------------------")
-    // clearOutput()
-    // dottyBootedLib
-    // val p1 = Runtime.getRuntime.exec(Array("jar", "cf", "dotty-lib.jar", "-C", "out", "."))
-    // p1.waitFor()
+    println("----------  Building bootstrapped dotty-lib  ----------------------------------------------")
+    clearOutput()
+    dottyBootedLib
+    val p1 = Runtime.getRuntime.exec(Array("jar", "cf", "dotty-lib.jar", "-C", "out", "."))
+    p1.waitFor()
 
-    // println("----------  Building bootstrapped dotty depending on dotty-lib compiled by dotty ----------")
-    // clearOutput()
-    // dottyDependsOnBootedLib
-    // val p2 = Runtime.getRuntime.exec(Array("jar", "cf", "dotty.jar", "-C", "out", "."))
-    // p2.waitFor()
+    println("----------  Building bootstrapped dotty depending on dotty-lib compiled by dotty ----------")
+    clearOutput()
+    dottyDependsOnBootedLib
+    val p2 = Runtime.getRuntime.exec(Array("jar", "cf", "dotty.jar", "-C", "out", "."))
+    p2.waitFor()
   }
 }

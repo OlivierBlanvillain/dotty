@@ -698,10 +698,11 @@ class Definitions {
     else FunctionClass(n).typeRef
 
   lazy val TNilSymbol = TNilType.classSymbol.companionModule.symbol
-  lazy val TupleConsSymbol  = TupleConsType.classSymbol.companionModule.symbol
+  lazy val TupleConsSymbol = TupleConsType.classSymbol.companionModule.symbol
   lazy val TupleImplNSymbol = TupleImplNType.classSymbol.companionModule.symbol
   lazy val TupleUnapplySeqSymbol = TupleUnapplySeqType.classSymbol.companionModule.symbol
   lazy val TupleImplSymbols = TupleImplType.tail.map(_.classSymbol.companionModule.symbol).toSet
+  lazy val ScalaTupleSymbols = mkArityArray("scala.Tuple", 4, 1).map(_.classSymbol.companionModule.symbol)
 
   def scalaClassName(cls: Symbol)(implicit ctx: Context): TypeName =
     if (cls.isClass && cls.owner == ScalaPackageClass) cls.asClass.name else EmptyTypeName

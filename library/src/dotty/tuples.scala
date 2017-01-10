@@ -13,7 +13,8 @@ sealed trait TupleCons[+H, +T <: Tuple] extends Tuple {
 object TupleCons {
   def apply[H, T <: Tuple](h: H, t: T): TupleCons[H, T] =
     (t match {
-      case TupleImplN(underlying)    =>
+      case impln if impln.isInstanceOf[TupleImplN[_, _]] =>
+        val underlying = impln.asInstanceOf[TupleImplN[_, _]].underlying
         var s = underlying.size
         val a = new Array[Any](s + 1)
         a(0) = h

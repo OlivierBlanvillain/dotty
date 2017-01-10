@@ -2098,6 +2098,11 @@ object Types {
   }
 
   object RefinedType {
+    def makeFullyDefined(parent: Type, infos: List[Type])(implicit ctx: Context): Type = {
+      assert(infos.size == parent.typeParams.size)
+      make(parent, parent.typeParams.map(_.paramName), infos)
+    }
+
     @tailrec
     def make(parent: Type, names: List[Name], infos: List[Type])(implicit ctx: Context): Type =
       if (names.isEmpty) parent
