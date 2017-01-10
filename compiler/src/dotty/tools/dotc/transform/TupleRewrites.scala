@@ -130,56 +130,6 @@ class TupleRewrites extends MiniPhaseTransform {
     }
   }
 
-  // override def transformTyped(tree: Typed)(implicit ctx: Context, info: TransformerInfo): Tree =
-  //   tree match {
-  //     case Typed(t: UnApply, _) => t
-  //     case _ => tree
-  //   }
-
-  // Matches a tree with shape `TupleCons.unapply(head, tail)` where `tail` itself a tuple
-  // with statically known lenght (TNil, TupleImpl1, TupleImpl2...).
-  object TupleUnapplies {
-    def unapply(tree: UnApply)(implicit ctx: Context): Option[List[Tree]] =
-      tree match {
-        case UnApply(TypeApply(Select(selectIndent, nme.unapply), _), Nil, firstPattern :: secondPattern :: Nil)
-          if selectIndent.symbol == defn.TupleConsSymbol =>
-            secondPattern match {
-              case _
-                if secondPattern.symbol == defn.TNilSymbol =>
-                  Some(List(firstPattern))
-              case UnApply(TypeApply(Select(ident, nme.unapply), _), Nil, patterns)
-                if defn.TupleImplSymbols contains ident.symbol =>
-                  Some(firstPattern :: patterns)
-              case UnApply(TypeApply(Select(ident, nme.unapplySeq), _), Nil, patterns)
-                if ident.symbol == defn.TupleUnapplySeqSymbol  =>
-                  Some(firstPattern :: patterns)
-              case _ => None
-            }
-        case _ => None
-      }
-  }
-
-  object TypedTupleUnapplies {
-    def unapply(tree: Typed)(implicit ctx: Context): Option[List[Tree]] =
-      tree match {
-        case Typed(UnApply(TypeApply(Select(selectIndent, nme.unapply), _), Nil, firstPattern :: secondPattern :: Nil), _)
-          if selectIndent.symbol == defn.TupleConsSymbol =>
-            secondPattern match {
-              case _
-                if secondPattern.symbol == defn.TNilSymbol =>
-                  Some(List(firstPattern))
-              case Typed(UnApply(TypeApply(Select(ident, nme.unapply), _), Nil, patterns), _)
-                if defn.TupleImplSymbols contains ident.symbol =>
-                  Some(firstPattern :: patterns)
-              case Typed(UnApply(TypeApply(Select(ident, nme.unapplySeq), _), Nil, patterns), _)
-                if ident.symbol == defn.TupleUnapplySeqSymbol  =>
-                  Some(firstPattern :: patterns)
-              case _ => None
-            }
-        case _ => None
-      }
-  }
-
   /** Rewrites `TupleCons.unapply(a, TupleCons.unapply(b, ..., TNit))` to implementation specific extractors.
    *
    *  Below `MaxFlatTupleArity`, they become `TupleImpl$i.unapply(a, b, ...)`.
@@ -187,51 +137,93 @@ class TupleRewrites extends MiniPhaseTransform {
    *
    *  Similarly to `transformApply`, size `N` extractors will pass `N` times thought this transformation.
    */
-  override def transformUnApply(tree: UnApply)(implicit ctx: Context, info: TransformerInfo): Tree =
+  override def transformUnApply(tree: UnApply)(implicit ctx: Context, info: TransformerInfo): Tree = {
+    // Matches a tree with shape `TupleCons.unapply(head, tail)` where `tail` itself a tuple
+    // with statically known lenght (`TNil`, `TupleImpl1`, `TupleImpl2`...).
+    object TupleUnapplies {
+      def unapply(tree: UnApply)(implicit ctx: Context): Option[List[Tree]] =
+        tree match {
+          case UnApply(TypeApply(Select(selectIndent, nme.unapply), _), Nil, firstPattern :: secondPattern :: Nil)
+            if selectIndent.symbol == defn.TupleConsSymbol =>
+              secondPattern match {
+                case _
+                  if secondPattern.symbol == defn.TNilSymbol =>
+                    Some(List(firstPattern))
+                case UnApply(TypeApply(Select(ident, nme.unapply), _), Nil, patterns)
+                  if defn.TupleImplSymbols contains ident.symbol =>
+                    Some(firstPattern :: patterns)
+                case UnApply(TypeApply(Select(ident, nme.unapplySeq), _), Nil, patterns)
+                  if ident.symbol == defn.TupleUnapplySeqSymbol  =>
+                    Some(firstPattern :: patterns)
+                case _ => None
+              }
+          case _ => None
+        }
+    }
+
     tree match {
       case TupleUnapplies(patterns) => transformUnApplyPatterns(tree, patterns)
       case _ => tree
     }
+  }
 
-  /** Same than `transformUnApply` with Typed
-   *
-   *  Below `MaxFlatTupleArity`, they become `TupleImpl$i.unapply(a, b, ...): TPE`.
-   *  Above `MaxFlatTupleArity`, they become `TupleUnapplySeq.unapply(a, b, ...): TPE`.
-   *
-   *  Similarly to `transformApply`, size `N` extractors will pass `N` times thought this transformation.
-   */
-  // override def transformTyped(tree: Typed)(implicit ctx: Context, info: TransformerInfo): Tree =
-  //   tree match {
-  //     case TypedTupleUnapplies(patterns) =>
-  //       val unapply = transformUnApplyPatterns(tree, patterns)
-  //       Typed(unapply, TypeTree(unapply.tpe))
-  //     case _ => tree
-  //   }
+  /** Same then `transformUnApply` for unapply wrapped in Typed trees. */
+  override def transformTyped(tree: Typed)(implicit ctx: Context, info: TransformerInfo): Tree = {
+    object TypedTupleUnapplies {
+      def unapply(tree: Typed)(implicit ctx: Context): Option[List[Tree]] =
+        tree match {
+          case Typed(UnApply(TypeApply(Select(selectIndent, nme.unapply), _), Nil, firstPattern :: secondPattern :: Nil), _)
+            if selectIndent.symbol == defn.TupleConsSymbol =>
+              secondPattern match {
+                case _
+                  if secondPattern.symbol == defn.TNilSymbol =>
+                    Some(List(firstPattern))
+                case Typed(UnApply(TypeApply(Select(ident, nme.unapply), _), Nil, patterns), _)
+                  if defn.TupleImplSymbols contains ident.symbol =>
+                    Some(firstPattern :: patterns)
+                case Typed(UnApply(TypeApply(Select(ident, nme.unapplySeq), _), Nil, patterns), _)
+                  if ident.symbol == defn.TupleUnapplySeqSymbol  =>
+                    Some(firstPattern :: patterns)
+                case _ => None
+              }
+          case _ => None
+        }
+    }
 
-  private def transformUnApplyPatterns(tree: Tree, patterns: List[Tree])(implicit ctx: Context): UnApply = {
-    val arity = patterns.length
-    if (arity <= MaxFlatTupleArity) {
-      // TupleImpl${arity}.unapply(patterns)
-      val patternTypes = patterns.map(_.tpe.widen)
-      val tupleImplType = defn.TupleImplType(arity)
-      val unapply =
-        ref(tupleImplType.classSymbol.companionModule)
-          .select(nme.unapply)
-          .appliedToTypes(patternTypes)
-      val tpe = RefinedType.makeFullyDefined(tupleImplType, patternTypes)
-      UnApply(fun = unapply, implicits = Nil, patterns = patterns, proto = tpe)
-    } else {
-      // TupleUnapplySeq.unapplySeq(patterns)
-      val TupleConsTypeExtractor(headType, tailType) = tree.tpe
-      val unapply =
-        ref(defn.TupleUnapplySeqType.classSymbol.companionModule)
-          .select(nme.unapplySeq)
-          .appliedToTypes(headType :: tailType :: Nil)
-      UnApply(fun = unapply, implicits = Nil, patterns = patterns, proto = tree.tpe)
+    tree match {
+      case TypedTupleUnapplies(patterns) =>
+        val unapply = transformUnApplyPatterns(tree, patterns)
+        Typed(unapply, TypeTree(unapply.tpe))
+      case _ => tree
     }
   }
 
-  // Extracts (A, B) from TupleCons[A, B].
+  // Create an `UnApply` tree from a list of patters, used in both transformUnApply and transformTyped.
+  private def transformUnApplyPatterns(tree: Tree, patterns: List[Tree])(implicit ctx: Context): UnApply = {
+
+    val arity = patterns.length
+    if (arity <= MaxFlatTupleArity) {
+      // TupleImpl${arity}.unapply(patterns)
+      val baseType = defn.TupleImplType(arity)
+      val patternTypes = patterns.map(_.tpe.widen)
+      val refinedType = RefinedType.makeFullyDefined(baseType, patternTypes.map(t => TypeAlias(t, 0)))
+      val newCall =
+        ref(baseType.classSymbol.companionModule)
+          .select(nme.unapply)
+          .appliedToTypes(patternTypes)
+      UnApply(fun = newCall, implicits = Nil, patterns = patterns, proto = refinedType)
+    } else {
+      // TupleUnapplySeq.unapplySeq(patterns)
+      val TupleConsTypeExtractor(headType, tailType) = tree.tpe
+      val newCall =
+        ref(defn.TupleUnapplySeqType.classSymbol.companionModule)
+          .select(nme.unapplySeq)
+          .appliedToTypes(headType :: tailType :: Nil)
+      UnApply(fun = newCall, implicits = Nil, patterns = patterns, proto = tree.tpe)
+    }
+  }
+
+  // Extracts `(A, B)` from `TupleCons[A, B]`.
   private object TupleConsTypeExtractor {
     def unapply(tree: Type): Option[(Type, Type)] = tree match {
       case RefinedType(RefinedType(_, _, TypeAlias(headType)), _, TypeAlias(tailType)) => Some((headType, tailType))
@@ -239,36 +231,4 @@ class TupleRewrites extends MiniPhaseTransform {
       case _ => None
     }
   }
-
-  // override def transformTypeTree(tree: TypeTree)(implicit ctx: Context, info: TransformerInfo): Tree = {
-  //   // Matches a type tree with shape `TupleCons[head, tail]` where `tail` itself a
-  //   // tuple type with statically known lenght (TNil, TupleImpl1, TupleImpl2...).
-  //   object TupleTypes {
-  //     def unapply(tpe: Type)(implicit ctx: Context): Option[List[Type]] = unapply0(Nil, tpe, 0)
-  //     // @tailrec
-  //     def unapply0(acc: List[Type], tpe: Type, depth: Int)(implicit ctx: Context): Option[List[Type]] =
-  //       if (depth > MaxFlatTupleArity) None
-  //       else tpe match {
-  //         case TypeAlias(t) => unapply0(acc, t, depth)
-  //         case RefinedType(RefinedType(tupleCons, _, head), _, tail)
-  //           if tupleCons == defn.TupleConsType =>
-  //             unapply0(head :: acc, tail, depth + 1)
-  //         case TypeRef(ThisType(TypeRef(NoPrefix, dotty)), tnil)
-  //           if dotty.toString == "dotty" && tnil.toString == "TNil$" => // Could not find a better way to so this :()
-  //             Some(acc)
-  //         case _ =>
-  //           None
-  //       }
-  //   }
-
-  //   tree.tpe match {
-  //     case TupleTypes(types) if types.size == 2 =>
-  //       println("XXXXXXX " + types.size + " " + types)
-  //       TypeTree(dotty.tools.dotc.core.TypeApplications.AppliedType(defn.TupleImplType(2), types.reverse))
-  //     case _ =>
-  //       tree
-  //   }
-  // }
 }
-
-
