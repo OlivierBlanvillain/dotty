@@ -66,7 +66,7 @@ class TupleRewrites extends MiniPhaseTransform {
           if (arity <= MaxFlatTupleArity)
             ref(defn.TupleImplType(arity).classSymbol.companionModule) // TupleImpl${arity}(args)
               .select(nme.apply)
-              .appliedToTypes(args.map(_.tpe.widen))
+              .appliedToTypes(args.map(_.tpe))
               .appliedToArgs(args)
           else {
             val TupleConsTypeExtractor(headType, tailType) = tree.tpe
