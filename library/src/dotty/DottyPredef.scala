@@ -6,7 +6,7 @@ import scala.Predef.???
 import scala.collection.Seq
 
 /** unimplemented implicit for TypeTag */
-object DottyPredef {
+object DottyPredef extends UnderscoreTupleSyntax {
   implicit def typeTag[T]: TypeTag[T] = ???
 
   /** A fall-back implicit to compare values of any types.
