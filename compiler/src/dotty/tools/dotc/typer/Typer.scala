@@ -752,7 +752,7 @@ class Typer extends Namer with TypeAssigner with Applications with Implicits wit
         def tupleType(t: Type): List[Type] =
           t.baseArgTypes(cons) match {
             case x :: y :: Nil => x :: tupleType(y) // TupleCons[H, T <: Tuple]
-            case _ => Nil                           // TNil
+            case _ => Nil                           // Unit
           }
 
         isFullyDefined(formal, ForceDegree.noBottom) &&

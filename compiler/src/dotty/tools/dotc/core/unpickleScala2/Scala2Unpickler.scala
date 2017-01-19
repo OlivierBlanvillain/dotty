@@ -95,7 +95,22 @@ object Scala2Unpickler {
       else selfInfo
     val tempInfo = new TempClassInfo(denot.owner.thisType, denot.classSymbol, decls, ost)
     denot.info = tempInfo // first rough info to avoid CyclicReferences
-    var parentRefs = ctx.normalizeToClassRefs(parents, cls, decls)
+
+    val clsString = cls.toString
+    val splitted = clsString.split("class Tuple")
+    val pp =
+      if (clsString == "class Unit") parents :+ defn.TupleType
+      else if (splitted.size == 2 && splitted(1).forall(_.isDigit)) {
+          val i = splitted(1).toInt
+        val productTps = parents.collect { case t: RefinedType => t.baseArgTypes(defn.ProductNType(i).classSymbol) }.head
+        val newType = productTps.foldRight(defn.UnitType: Type) { case (current, previous) =>
+          RefinedType.makeFullyDefined(defn.TupleConsType, List(TypeAlias(current), TypeAlias(previous)))
+        }
+        parents :+ defn.TupleType :+ newType
+      } else parents
+
+    var parentRefs = ctx.normalizeToClassRefs(pp, cls, decls)
+
     if (parentRefs.isEmpty) parentRefs = defn.ObjectType :: Nil
     for (tparam <- tparams) {
       val tsym = decls.lookup(tparam.name)
@@ -719,15 +734,7 @@ class Scala2Unpickler(bytes: Array[Byte], classRoot: ClassDenotation, moduleClas
           }
           else TypeRef(pre, sym.name.asTypeName)
         val args = until(end, readTypeRef)
-        if (
-          sym.showFullName == "scala.Tuple1" ||
-          sym.showFullName == "scala.Tuple2" ||
-          sym.showFullName == "scala.Tuple3" ||
-          sym.showFullName == "scala.Tuple4"
-        ) args.reverse.foldLeft[Type](defn.TNilType.classSymbol.companionModule.valRef) {
-            case (acc, el) => defn.TupleConsType.safeAppliedTo(List(el, acc))
-          }
-        else if (sym == defn.ByNameParamClass2x) ExprType(args.head)
+        if (sym == defn.ByNameParamClass2x) ExprType(args.head)
         else if (args.nonEmpty) tycon.safeAppliedTo(EtaExpandIfHK(sym.typeParams, args))
         else if (sym.typeParams.nonEmpty) tycon.EtaExpand(sym.typeParams)
         else tycon

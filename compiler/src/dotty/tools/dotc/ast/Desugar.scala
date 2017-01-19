@@ -582,13 +582,7 @@ object desugar {
           val firstDef =
             ValDef(tmpName, TypeTree(), matchExpr)
               .withPos(pat.pos.union(rhs.pos)).withMods(patMods)
-          def selector(n: Int): Tree = {
-            // Generates suboptimal tuple accessors of the following shape, optimised later in TupleRewrites:
-            // `val x_1 = t.head; val x_2 = t.tail.head; val x_3 = t.tail.tail.head; ...`
-            val prod: Tree = Ident(tmpName)
-            val tails = (1 to n).foldLeft(prod) { case (tree, _) => Select(tree, nme.tail) }
-            Select(tails, nme.head)
-          }
+          def selector(n: Int) = Select(Ident(tmpName), nme.selectorName(n))
           val restDefs =
             for (((named, tpt), n) <- vars.zipWithIndex)
             yield
@@ -986,18 +980,16 @@ object desugar {
         arity match {
           case 0 => unitLiteral
           case _ if ctx.mode is Mode.Type =>
-            // Transforming Tuple types: (T1, T2) → TupleCons[T1, TupleCons[T2, TNil.type]]
-            val nil: Tree = SingletonTypeTree(ref(defn.TNilType.classSymbol.companionModule.valRef))
+            // Transforming Tuple types: (T1, T2) → TupleCons[T1, TupleCons[T2, Unit]]
             def hconsType(l: Tree, r: Tree): Tree =
               AppliedTypeTree(ref(defn.TupleConsType), l :: r :: Nil)
-            ts.foldRight(nil)(hconsType)
+            ts.foldRight(unitLiteral: Tree)(hconsType)
           case _ =>
-            // Transforming Tuple trees: (T1, T2, ..., TN) → TupleCons(T1, TupleCons(T2, ... (TupleCons(TN, TNil))))
-            val nil = ref(defn.TNilType.classSymbol.companionModule.valRef)
+            // Transforming Tuple trees: (T1, T2, ..., TN) → TupleCons(T1, TupleCons(T2, ... (TupleCons(TN, ()))))
             val cons = defn.TupleConsType.classSymbol.companionModule.valRef
             def consTree(l: Tree, r: Tree): Tree =
               Apply(ref(cons), l :: r :: Nil)
-            ts.foldRight(nil)(consTree)
+            ts.foldRight(unitLiteral: Tree)(consTree)
         }
       case WhileDo(cond, body) =>
         // { <label> def while$(): Unit = if (cond) { body; while$() } ; while$() }
