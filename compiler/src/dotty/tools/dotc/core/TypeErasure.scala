@@ -119,8 +119,14 @@ object TypeErasure {
    *
    *  @param tp            The type to erase.
   */
-  def erasure(tp: Type)(implicit ctx: Context): Type =
-    erasureFn(isJava = false, semiEraseVCs = false, isConstructor = false, wildcardOK = false)(tp)(erasureCtx)
+  def erasure(tp: Type)(implicit ctx: Context): Type = {
+    if (tp == defn.TupleConsType  ||
+        tp == defn.TupleImplNType ||
+        tp == defn.TupleType)
+      defn.ObjectType
+    else
+      erasureFn(isJava = false, semiEraseVCs = false, isConstructor = false, wildcardOK = false)(tp)(erasureCtx)
+  }
 
   /** The value class erasure of a Scala type, where value classes are semi-erased to
    *  ErasedValueType (they will be fully erased in [[ElimErasedValueType]]).

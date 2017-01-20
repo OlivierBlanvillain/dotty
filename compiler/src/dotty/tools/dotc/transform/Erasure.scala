@@ -343,7 +343,6 @@ object Erasure extends TypeTestsCasts {
      *      e.m -> e.[]m                if `m` is an array operation other than `clone`.
      */
     override def typedSelect(tree: untpd.Select, pt: Type)(implicit ctx: Context): Tree = {
-
       def mapOwner(sym: Symbol): Symbol = {
         def recur(owner: Symbol): Symbol =
           if ((owner eq defn.AnyClass) || (owner eq defn.AnyValClass)) {
