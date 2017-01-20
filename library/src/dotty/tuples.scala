@@ -57,17 +57,22 @@ object TupleCons {
     }).asInstanceOf[Option[scala.Tuple2[H, T]]]
 }
 
-class TupleImplN[H, T <: Tuple](val underlying: Array[Any]) extends TupleCons[H, T] {
+class TupleImplN[H, T <: Tuple](val underlying: Array[Any]) extends Product with TupleCons[H, T] {
   override def toString: String = underlying.mkString("(", ", ", ")")
+
+  def canEqual(that: Any): Boolean = that.isInstanceOf[TupleImplN[_, _]]
+  def productArity: Int = underlying.size
+  def productElement(n: Int): Any = underlying(n)
 }
 
 object TupleImplN {
   def wrap[H, T <: Tuple](seq: Seq[Any]): TupleImplN[H, T] =
     new TupleImplN(seq.toArray)
 
-  def unapplySeq[H, T <: Tuple](tuple: TupleCons[H, T]): Option[Seq[Any]] =
-    Some(tuple.asInstanceOf[TupleImplN[H, T]].underlying)
-}
-
-object TupleUnapplySeq {
+  // TODO: Remove type params!
+  def unapplySeq[H, T <: Tuple](tuple: Any): Option[Seq[Any]] =
+    tuple match {
+      case t: TupleImplN[_, _] => Some(t.underlying)
+      case _ => None
+    }
 }
