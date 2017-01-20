@@ -124,8 +124,9 @@ object TypeErasure {
         tp == defn.TupleImplNType ||
         tp == defn.TupleType)
       defn.ObjectType
-    else
+    else {
       erasureFn(isJava = false, semiEraseVCs = false, isConstructor = false, wildcardOK = false)(tp)(erasureCtx)
+    }
   }
 
   /** The value class erasure of a Scala type, where value classes are semi-erased to
@@ -152,10 +153,22 @@ object TypeErasure {
    */
   def erasedRef(tp: Type)(implicit ctx: Context): Type = tp match {
     case tp: TermRef =>
-      assert(tp.symbol.exists, tp)
-      val tp1 = ctx.makePackageObjPrefixExplicit(tp)
-      if (tp1 ne tp) erasedRef(tp1)
-      else TermRef(erasedRef(tp.prefix), tp.symbol.asTerm)
+      // if (tp.symbol == defn.TupleConsType.classSymbol.companionModule.symbol  ||
+      //     tp.symbol == defn.TupleImplNType.classSymbol.companionModule.symbol ||
+      //     tp.symbol == defn.TupleType.classSymbol.companionModule.symbol)
+      // defn.ObjectType
+      // // TermRef(defn.ObjectType.prefix, defn.ObjectType.asTerm)
+
+
+      // foo.bar
+
+
+      // else {
+        assert(tp.symbol.exists, tp)
+        val tp1 = ctx.makePackageObjPrefixExplicit(tp)
+        if (tp1 ne tp) erasedRef(tp1)
+        else TermRef(erasedRef(tp.prefix), tp.symbol.asTerm)
+      // }
     case tp: ThisType =>
       tp
     case tp =>
@@ -357,6 +370,8 @@ class TypeErasure(isJava: Boolean, semiEraseVCs: Boolean, isConstructor: Boolean
    *   - For any other type, exception.
    */
   private def apply(tp: Type)(implicit ctx: Context): Type = tp match {
+    case _ if tp == defn.TupleConsType || tp == defn.TupleType =>
+      defn.ProductType
     case _: ErasedValueType =>
       tp
     case tp: TypeRef =>
