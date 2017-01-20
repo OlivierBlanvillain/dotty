@@ -132,7 +132,7 @@ class TupleRewrites extends MiniPhaseTransform {
   /** Rewrites `TupleCons.unapply(a, TupleCons.unapply(b, ..., TNit))` to implementation specific extractors.
    *
    *  Below `MaxCaseClassTupleArity`, they become `TupleImpl$i.unapply(a, b, ...)`.
-   *  Above `MaxCaseClassTupleArity`, they become `TupleUnapplySeq.unapply(a, b, ...)`.
+   *  Above `MaxCaseClassTupleArity`, they become `TupleImplN.unapply(a, b, ...)`.
    *
    *  Similarly to `transformApply`, size `N` extractors will pass `N` times thought this transformation.
    */
@@ -151,7 +151,7 @@ class TupleRewrites extends MiniPhaseTransform {
                   if defn.TupleSymbols contains ident.symbol =>
                     Some(firstPattern :: patterns)
                 case UnApply(TypeApply(Select(ident, nme.unapplySeq), _), Nil, patterns)
-                  if ident.symbol == defn.TupleUnapplySeqSymbol  =>
+                  if ident.symbol == defn.TupleImplNSymbol  =>
                     Some(firstPattern :: patterns)
                 case _ => None
               }
@@ -179,7 +179,7 @@ class TupleRewrites extends MiniPhaseTransform {
                   if defn.TupleSymbols contains ident.symbol =>
                     Some(firstPattern :: patterns)
                 case Typed(UnApply(TypeApply(Select(ident, nme.unapplySeq), _), Nil, patterns), _)
-                  if ident.symbol == defn.TupleUnapplySeqSymbol  =>
+                  if ident.symbol == defn.TupleImplNSymbol  =>
                     Some(firstPattern :: patterns)
                 case _ => None
               }
@@ -213,7 +213,7 @@ class TupleRewrites extends MiniPhaseTransform {
       // TupleUnapplySeq.unapplySeq(patterns)
       val TupleConsTypeExtractor(headType, tailType) = tree.tpe
       val newCall =
-        ref(defn.TupleUnapplySeqType.classSymbol.companionModule)
+        ref(defn.TupleImplNType.classSymbol.companionModule)
           .select(nme.unapplySeq)
           .appliedToTypes(headType :: tailType :: Nil)
       UnApply(fun = newCall, implicits = Nil, patterns = patterns, proto = tree.tpe)

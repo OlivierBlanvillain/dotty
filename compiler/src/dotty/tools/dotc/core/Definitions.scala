@@ -693,11 +693,11 @@ class Definitions {
   lazy val TupleType: TypeRef = ctx.requiredClassRef("dotty.Tuple")
   lazy val TupleConsType: TypeRef = ctx.requiredClassRef("dotty.TupleCons")
   lazy val TupleImplNType: TypeRef = ctx.requiredClassRef("dotty.TupleImplN")
-  lazy val TupleUnapplySeqType: TypeRef = ctx.requiredClassRef("dotty.TupleUnapplySeq$")
+  // lazy val TupleUnapplySeqType: TypeRef = ctx.requiredClassRef("dotty.TupleUnapplySeq$")
   // lazy val TupleImplType: Array[TypeRef] = mkArityArray("dotty.TupleImpl", MaxCaseClassTupleArity, 1)
 
   lazy val ProductNType = mkArityArray("scala.Product", 22, 0)
-  lazy val TupleNType = mkArityArray("scala.Tuple", 22, 0)
+  lazy val TupleNType = mkArityArray("scala.Tuple", 22, 1)
 
   def FunctionClass(n: Int)(implicit ctx: Context) =
     if (n < MaxImplementedFunctionArity) FunctionClassPerRun()(ctx)(n)
@@ -717,7 +717,7 @@ class Definitions {
   // lazy val TNilSymbol = TNilType.classSymbol.companionModule.symbol
   lazy val TupleConsSymbol = TupleConsType.classSymbol.companionModule.symbol
   lazy val TupleImplNSymbol = TupleImplNType.classSymbol.companionModule.symbol
-  lazy val TupleUnapplySeqSymbol = TupleUnapplySeqType.classSymbol.companionModule.symbol
+  // lazy val TupleUnapplySeqSymbol = TupleUnapplySeqType.classSymbol.companionModule.symbol
   // lazy val TupleImplSymbols = TupleImplType.tail.map(_.classSymbol.companionModule.symbol).toSet
   lazy val TupleSymbols = TupleNType.tail.map(_.classSymbol.companionModule.symbol).toSet
 
