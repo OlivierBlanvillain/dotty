@@ -988,7 +988,7 @@ object desugar {
             // Transforming Tuple types: (T1, T2) → TupleCons[T1, TupleCons[T2, Unit]]
             def hconsType(l: Tree, r: Tree): Tree =
               AppliedTypeTree(ref(defn.TupleConsType), l :: r :: Nil)
-            ts.foldRight(unitLiteral: Tree)(hconsType)
+            ts.foldRight(TypeTree(defn.UnitType): Tree)(hconsType)
           case _ =>
             // Transforming Tuple trees: (T1, T2, ..., TN) → TupleCons(T1, TupleCons(T2, ... (TupleCons(TN, ()))))
             val cons = defn.TupleConsType.classSymbol.companionModule.valRef
