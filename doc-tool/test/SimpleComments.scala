@@ -4,7 +4,13 @@ package dottydoc
 import org.junit.Test
 import org.junit.Assert._
 
+<<<<<<< HEAD
 class TestSimpleComments extends DottyDocTest {
+||||||| merged common ancestors
+// class TestSimpleComments extends DottyTest {
+=======
+class TestSimpleComments extends DottyTest {
+>>>>>>> Restore doc-tool tests
 
   @Test def simpleComment = {
     val source =
@@ -22,7 +28,21 @@ class TestSimpleComments extends DottyDocTest {
         .flatMap(_.comment.map(_.body))
         .get
 
+<<<<<<< HEAD
       assertEquals(traitCmt, "<p>Hello, world!</p>")
     }
   }
 }
+||||||| merged common ancestors
+//       assertEquals(traitCmt, "<p>Hello, world!</p>")
+//     }
+//   }
+
+// }
+=======
+      assertEquals(traitCmt, "<p>Hello, world!</p>")
+    }
+  }
+
+}
+>>>>>>> Restore doc-tool tests
