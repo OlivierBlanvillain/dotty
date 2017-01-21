@@ -114,7 +114,7 @@ class tests extends CompilerTest {
   @Test def pickle_ast = compileDir(dotcDir, "ast", testPickling)
   @Test def pickle_inf = compileFile(posDir, "pickleinf", testPickling)
 
-  // @Test def pickle_core = compileDir(dotcDir, "core", testPickling, xerrors = 2) // two spurious comparison errors in Types and TypeOps
+  //@Test def pickle_core = compileDir(dotcDir, "core", testPickling, xerrors = 2) // two spurious comparison errors in Types and TypeOps
 
   @Test def pos_arraycopy =
     compileFile(runDir, "arraycopy", List("-Ylog-classpath"))
