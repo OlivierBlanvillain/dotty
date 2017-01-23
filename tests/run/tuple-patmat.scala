@@ -73,15 +73,4 @@ object Test {
     x match { case (a5, b5, c5, d5, e5) => () }
     x match { case (a5, b5, c5, d5, e5, f5) => () }
   }
-
-
-  trait Tree[A, B]
-
-  private[this] def compareDepth[A, B](left: Tree[A, B], right: Tree[A, B]): (List[Tree[A, B]], Boolean, Boolean, Int) =
-    null
-
-  val (zipper, levelled, leftMost, smallerDepth) = compareDepth(
-    new Tree[Int, String] {},
-    new Tree[Int, String] {}
-  )
 }

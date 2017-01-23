@@ -979,11 +979,11 @@ object desugar {
         val arity = ts.length
         arity match {
           case 0 => unitLiteral
-          case i if i < Definitions.MaxCaseClassTupleArity =>
-            if (ctx.mode is Mode.Type)
-              AppliedTypeTree(ref(defn.TupleNType(arity)), ts)
-            else
-              Apply(ref(defn.TupleNType(arity).classSymbol.companionModule.valRef), ts)
+          // case i if i < Definitions.MaxCaseClassTupleArity =>
+          //   if (ctx.mode is Mode.Type)
+          //     AppliedTypeTree(ref(defn.TupleNType(arity)), ts)
+          //   else
+          //     Apply(ref(defn.TupleNType(arity).classSymbol.companionModule.valRef), ts)
           case _ if ctx.mode is Mode.Type =>
             // Transforming Tuple types: (T1, T2) → TupleCons[T1, TupleCons[T2, Unit]]
             def hconsType(l: Tree, r: Tree): Tree =
