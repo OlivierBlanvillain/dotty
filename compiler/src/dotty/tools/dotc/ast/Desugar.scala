@@ -1005,25 +1005,28 @@ object desugar {
         t
       case Tuple(ts) =>
         val arity = ts.length
-        arity match {
-          case 0 => unitLiteral
-          case i if i < Definitions.MaxCaseClassTupleArity =>
-            if (ctx.mode is Mode.Type)
-              AppliedTypeTree(ref(defn.TupleNType(arity)), ts)
-            else
-              Apply(ref(defn.TupleNType(arity).classSymbol.companionModule.valRef), ts)
-          case _ if ctx.mode is Mode.Type =>
-            // Transforming Tuple types: (T1, T2) → TupleCons[T1, TupleCons[T2, Unit]]
-            def hconsType(l: Tree, r: Tree): Tree =
-              AppliedTypeTree(ref(defn.TupleConsType), l :: r :: Nil)
-            ts.foldRight(TypeTree(defn.UnitType): Tree)(hconsType)
-          case _ =>
-            // Transforming Tuple trees: (T1, T2, ..., TN) → TupleCons(T1, TupleCons(T2, ... (TupleCons(TN, ()))))
-            val cons = defn.TupleConsType.classSymbol.companionModule.valRef
-            def consTree(l: Tree, r: Tree): Tree =
-              Apply(ref(cons), l :: r :: Nil)
-            ts.foldRight(unitLiteral: Tree)(consTree)
-        }
+        if (arity == 0)
+          unitLiteral
+        else if (ctx.mode is Mode.Type)
+          AppliedTypeTree(ref(defn.TupleNType(arity)), ts)
+        else
+          Apply(ref(defn.TupleNType(arity).classSymbol.companionModule.valRef), ts)
+
+        // arity match {
+        //   case 0 => unitLiteral
+        //   case i if i < Definitions.MaxCaseClassTupleArity =>
+          // case _ if ctx.mode is Mode.Type =>
+          //   // Transforming Tuple types: (T1, T2) → TupleCons[T1, TupleCons[T2, Unit]]
+          //   def hconsType(l: Tree, r: Tree): Tree =
+          //     AppliedTypeTree(ref(defn.TupleConsType), l :: r :: Nil)
+          //   ts.foldRight(TypeTree(defn.UnitType): Tree)(hconsType)
+          // case _ =>
+          //   // Transforming Tuple trees: (T1, T2, ..., TN) → TupleCons(T1, TupleCons(T2, ... (TupleCons(TN, ()))))
+          //   val cons = defn.TupleConsType.classSymbol.companionModule.valRef
+          //   def consTree(l: Tree, r: Tree): Tree =
+          //     Apply(ref(cons), l :: r :: Nil)
+          //   ts.foldRight(unitLiteral: Tree)(consTree)
+        // }
       case WhileDo(cond, body) =>
         // { <label> def while$(): Unit = if (cond) { body; while$() } ; while$() }
         val call = Apply(Ident(nme.WHILE_PREFIX), Nil)

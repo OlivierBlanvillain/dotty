@@ -231,14 +231,19 @@ object NameOps {
       }
     }
 
-    def functionArity: Int = {
-      def test(prefix: Name): Int =
-        if (name.startsWith(prefix))
-          try name.drop(prefix.length).toString.toInt
-          catch { case ex: NumberFormatException => -1 }
-        else -1
-      test(tpnme.Function) max test(tpnme.ImplicitFunction)
-    }
+    private[this] def testArity(prefix: Name): Int =
+      if (name.startsWith(prefix))
+        try name.drop(prefix.length).toString.toInt
+        catch { case ex: NumberFormatException => -1 }
+      else -1
+
+    /** The arity of this Function name if it is one, -1 otherwise. */
+    def functionArity: Int =
+      testArity(tpnme.Function) max testArity(tpnme.ImplicitFunction)
+
+    /** The arity of this Tuple name if it is one, -1 otherwise. */
+    def tupleArity: Int =
+      testArity(tpnme.Tuple)
 
     /** The name of the generic runtime operation corresponding to an array operation */
     def genericArrayOp: TermName = name match {

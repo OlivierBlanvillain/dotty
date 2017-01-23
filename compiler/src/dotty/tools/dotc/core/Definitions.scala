@@ -133,6 +133,34 @@ class Definitions {
     newClassSymbol(ScalaPackageClass, name, Trait | NoInits, completer)
   }
 
+  private def newTupleNClass(name: TypeName) = {
+    val completer = new LazyType {
+      def complete(denot: SymDenotation)(implicit ctx: Context): Unit = {
+        val cls = denot.asClass.classSymbol
+        val decls = newScope
+        val arity = name.tupleArity
+        val argParams =
+          for (i <- List.range(0, arity)) yield
+            enterTypeParam(cls, name ++ "$T" ++ i.toString, Contravariant, decls)
+        val resParam = enterTypeParam(cls, name ++ "$R", Covariant, decls)
+        val (methodType, parentTraits) =
+          if (name.startsWith(tpnme.ImplicitFunction)) {
+            val superTrait =
+              FunctionType(arity).appliedTo(argParams.map(_.typeRef) ::: resParam.typeRef :: Nil)
+            (ImplicitMethodType, ctx.normalizeToClassRefs(superTrait :: Nil, cls, decls))
+          }
+          else (MethodType, Nil)
+        val applyMeth =
+          decls.enter(
+            newMethod(cls, nme.apply,
+              methodType(argParams.map(_.typeRef), resParam.typeRef), Deferred))
+        denot.info =
+          ClassInfo(ScalaPackageClass.thisType, cls, ObjectType :: parentTraits, decls)
+      }
+    }
+    newClassSymbol(ScalaPackageClass, name, Trait, completer
+  }
+
   private def newMethod(cls: ClassSymbol, name: TermName, info: Type, flags: FlagSet = EmptyFlags): TermSymbol =
     newSymbol(cls, name.encode, flags | Method, info).asTerm
 
@@ -689,15 +717,27 @@ class Definitions {
   private lazy val ImplementedFunctionType = mkArityArray("scala.Function", MaxImplementedFunctionArity, 0)
   def FunctionClassPerRun = new PerRun[Array[Symbol]](implicit ctx => ImplementedFunctionType.map(_.symbol.asClass))
 
+  private lazy val ImplementedTupleType = mkArityArray("scala.Tuple", MaxCaseClassTupleArity, 0)
+  def TupleClassPerRun = new PerRun[Array[Symbol]](implicit ctx => ImplementedTupleType.map(_.symbol.asClass))
+
+  def TupleClass(n: Int)(implicit ctx: Context) =
+    if (n <= MaxCaseClassTupleArity) TupleClassPerRun()(ctx)(n)
+    else ctx.requiredClass("scala.Tuple" + n.toString)
+
+  def TupleNType(n: Int)(implicit ctx: Context): TypeRef =
+    if (n <= MaxCaseClassTupleArity) ImplementedTupleType(n)
+    else TupleClass(n).typeRef
+
+  lazy val TupleType: TypeRef      = ctx.requiredClassRef("dotty.Tuple")
+  lazy val TupleConsType: TypeRef  = ctx.requiredClassRef("dotty.TupleCons")
+  lazy val TupleImplNType: TypeRef = ctx.requiredClassRef("dotty.TupleImplN") // TODO Rename LargeTuple?
+
   // lazy val TNilType: TypeRef = ctx.requiredClassRef("dotty.TNil$")
-  lazy val TupleType: TypeRef = ctx.requiredClassRef("dotty.Tuple")
-  lazy val TupleConsType: TypeRef = ctx.requiredClassRef("dotty.TupleCons")
-  lazy val TupleImplNType: TypeRef = ctx.requiredClassRef("dotty.TupleImplN")
   // lazy val TupleUnapplySeqType: TypeRef = ctx.requiredClassRef("dotty.TupleUnapplySeq$")
   // lazy val TupleImplType: Array[TypeRef] = mkArityArray("dotty.TupleImpl", MaxCaseClassTupleArity, 1)
 
   lazy val ProductNType = mkArityArray("scala.Product", 22, 0)
-  lazy val TupleNType = mkArityArray("scala.Tuple", 22, 1)
+  // lazy val TupleNType = mkArityArray("scala.Tuple", 22, 1)
 
   def FunctionClass(n: Int)(implicit ctx: Context) =
     if (n < MaxImplementedFunctionArity) FunctionClassPerRun()(ctx)(n)
@@ -711,7 +751,7 @@ class Definitions {
 
   def FunctionType(n: Int, isImplicit: Boolean = false)(implicit ctx: Context): TypeRef =
     if (isImplicit && !ctx.erasedTypes) ImplicitFunctionClass(n).typeRef
-    else if (n < MaxImplementedFunctionArity) ImplementedFunctionType(n)
+    else if (n < MaxImplementedFunctionArity) ImplementedFunctionType(n) // TODO: <=?
     else FunctionClass(n).typeRef
 
   // lazy val TNilSymbol = TNilType.classSymbol.companionModule.symbol
@@ -719,7 +759,7 @@ class Definitions {
   lazy val TupleImplNSymbol = TupleImplNType.classSymbol.companionModule.symbol
   // lazy val TupleUnapplySeqSymbol = TupleUnapplySeqType.classSymbol.companionModule.symbol
   // lazy val TupleImplSymbols = TupleImplType.tail.map(_.classSymbol.companionModule.symbol).toSet
-  lazy val TupleSymbols = TupleNType.tail.map(_.classSymbol.companionModule.symbol).toSet
+  // lazy val TupleSymbols = TupleNType.tail.map(_.classSymbol.companionModule.symbol).toSet
 
   /** If `cls` is a class in the scala package, its name, otherwise EmptyTypeName */
   def scalaClassName(cls: Symbol)(implicit ctx: Context): TypeName =
@@ -894,8 +934,11 @@ class Definitions {
 
   // ----- Initialization ---------------------------------------------------
 
-  private def maxImplemented(name: Name) =
-    if (name `startsWith` tpnme.Function) MaxImplementedFunctionArity else 0
+  private def maxImplementedFunction(name: Name) =
+    if (name startsWith tpnme.Function) MaxImplementedFunctionArity else 0
+
+  private def maxImplementedTuple(name: Name) =
+    if (name startsWith tpnme.Tuple) 2 else 0
 
   /** Give the scala package a scope where a FunctionN trait is automatically
    *  added when someone looks for it.
@@ -906,8 +949,11 @@ class Definitions {
     val newDecls = new MutableScope(oldDecls) {
       override def lookupEntry(name: Name)(implicit ctx: Context): ScopeEntry = {
         val res = super.lookupEntry(name)
-        if (res == null && name.isTypeName && name.functionArity > maxImplemented(name))
+        if (res == null && name.isTypeName && name.functionArity > maxImplementedFunction(name))
           newScopeEntry(newFunctionNTrait(name.asTypeName))
+        // TODO add `res == null`
+        if (name.isTypeName && name.tupleArity > maxImplementedTuple(name))
+          newScopeEntry(newTupleNClass(name.asTypeName))
         else res
       }
     }
