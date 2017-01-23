@@ -54,6 +54,9 @@ class Definitions {
   private def newClassSymbol(owner: Symbol, name: TypeName, flags: FlagSet, infoFn: ClassSymbol => Type) =
     ctx.newClassSymbol(owner, name, flags | Permanent, infoFn)
 
+  private def newModuleSymbol(owner: Symbol, name: TermName, modFlags: FlagSet, clsFlags: FlagSet, infoFn: (TermSymbol, ClassSymbol) => Type) =
+    ctx.newModuleSymbol(owner, name, modFlags, clsFlags, infoFn)
+
   private def enterCompleteClassSymbol(owner: Symbol, name: TypeName, flags: FlagSet, parents: List[TypeRef], decls: Scope = newScope) =
     ctx.newCompleteClassSymbol(owner, name, flags | Permanent, parents, decls).entered
 
@@ -133,32 +136,56 @@ class Definitions {
     newClassSymbol(ScalaPackageClass, name, Trait | NoInits, completer)
   }
 
-  private def newTupleNClass(name: TypeName) = {
+  // final case class extends Product2[T1, T2] with Product with Serializable
+
+  private def newTupleNClass(name: TermName) = {
     val completer = new LazyType {
       def complete(denot: SymDenotation)(implicit ctx: Context): Unit = {
         val cls = denot.asClass.classSymbol
         val decls = newScope
         val arity = name.tupleArity
-        val argParams =
-          for (i <- List.range(0, arity)) yield
-            enterTypeParam(cls, name ++ "$T" ++ i.toString, Contravariant, decls)
-        val resParam = enterTypeParam(cls, name ++ "$R", Covariant, decls)
-        val (methodType, parentTraits) =
-          if (name.startsWith(tpnme.ImplicitFunction)) {
-            val superTrait =
-              FunctionType(arity).appliedTo(argParams.map(_.typeRef) ::: resParam.typeRef :: Nil)
-            (ImplicitMethodType, ctx.normalizeToClassRefs(superTrait :: Nil, cls, decls))
-          }
-          else (MethodType, Nil)
-        val applyMeth =
-          decls.enter(
-            newMethod(cls, nme.apply,
-              methodType(argParams.map(_.typeRef), resParam.typeRef), Deferred))
+        val baseName = name.toTypeName
+        val argParams: List[TypeName] =
+          for (i <- List.range(0, arity))
+          yield baseName ++ "$T" ++ i.toString
+
+        def hlistType(pt: PolyType): Type =
+          pt.paramRefs
+            .map(_.underlying)
+            .foldLeft(defn.UnitType: Type) { case (current, previous) =>
+              RefinedType.makeFullyDefined(defn.TupleConsType, List(current, previous))
+            }
+
+        def emptyBounds(pt: PolyType): List[TypeBounds] =
+          pt.paramNames.map(_ => TypeBounds.empty)
+
+        // def apply[T1, T2, ....]: TupleCons[T1, TupleCons[T2, ... Unit]]
+        decls.enter(newMethod(cls, nme.apply, PolyType(argParams)(emptyBounds, hlistType)))
+
+        // class PolyType(val paramNames: List[TypeName], val variances: List[Int])(
+        //     paramBoundsExp: PolyType => List[TypeBounds], resultTypeExp: PolyType => Type)
+
+        // object PolyType {
+        //   def apply(paramNames: List[TypeName], variances: List[Int] = Nil)(
+        //       paramBoundsExp: PolyType => List[TypeBounds],
+        //       resultTypeExp: PolyType => Type)(implicit ctx: Context): PolyType = {
+        //     val vs = if (variances.isEmpty) paramNames.map(alwaysZero) else variances
+        //     unique(new PolyType(paramNames, vs)(paramBoundsExp, resultTypeExp))
+        //   }
+
+        // val resParam = enterTypeParam(cls, name ++ "$R", Covariant, decls)
+        // val (methodType, parentTraits) =
+        //   if (name.startsWith(tpnme.ImplicitFunction)) {
+        //     val superTrait =
+        //       FunctionType(arity).appliedTo(argParams.map(_.typeRef) ::: resParam.typeRef :: Nil)
+        //     (ImplicitMethodType, ctx.normalizeToClassRefs(superTrait :: Nil, cls, decls))
+        //   }
+        //   else (MethodType, Nil)
         denot.info =
-          ClassInfo(ScalaPackageClass.thisType, cls, ObjectType :: parentTraits, decls)
+          ClassInfo(ScalaPackageClass.thisType, cls, ObjectType :: Nil/*:: parentTraits*/, decls)
       }
     }
-    newClassSymbol(ScalaPackageClass, name, Trait, completer
+    newModuleSymbol(ScalaPackageClass, name, Module, Trait, completer)
   }
 
   private def newMethod(cls: ClassSymbol, name: TermName, info: Type, flags: FlagSet = EmptyFlags): TermSymbol =
@@ -938,7 +965,7 @@ class Definitions {
     if (name startsWith tpnme.Function) MaxImplementedFunctionArity else 0
 
   private def maxImplementedTuple(name: Name) =
-    if (name startsWith tpnme.Tuple) 2 else 0
+    if (name startsWith tpnme.Tuple) MaxCaseClassTupleArity else 0
 
   /** Give the scala package a scope where a FunctionN trait is automatically
    *  added when someone looks for it.
@@ -948,13 +975,22 @@ class Definitions {
     val oldDecls = oldInfo.decls
     val newDecls = new MutableScope(oldDecls) {
       override def lookupEntry(name: Name)(implicit ctx: Context): ScopeEntry = {
+        if (name.toString == "Tuple6") {
+          newScopeEntry(newTupleNClass(name.asTermName))
+        } else {
+
         val res = super.lookupEntry(name)
+        // if(res != null && res.toString.endsWith("Tuple3")) {
+        //   println(res.sym)
+        //   // println(res.sym.info)
+        // }
         if (res == null && name.isTypeName && name.functionArity > maxImplementedFunction(name))
           newScopeEntry(newFunctionNTrait(name.asTypeName))
         // TODO add `res == null`
-        if (name.isTypeName && name.tupleArity > maxImplementedTuple(name))
-          newScopeEntry(newTupleNClass(name.asTypeName))
+        // if (!name.isTypeName && name.tupleArity > maxImplementedTuple(name))
+        //   newScopeEntry(newTupleNClass(name.asTermName))
         else res
+        }
       }
     }
     ScalaPackageClass.info = oldInfo.derivedClassInfo(decls = newDecls)
