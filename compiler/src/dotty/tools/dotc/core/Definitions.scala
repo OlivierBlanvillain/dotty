@@ -145,14 +145,23 @@ class Definitions {
         val argParams =
           for (i <- List.range(0, arity)) yield
             enterTypeParam(cls, name ++ "$T" ++ i.toString, Covariant, decls)
-        val superTrait =
-          ProductType(arity).appliedTo(argParams.map(_.typeRef))
-        val applyMeth =
+        // def _N: $TN
+        argParams.zipWithIndex.foreach { case (arg, index) =>
           decls.enter(
-            newMethod(cls, nme.apply,
-              methodType(argParams.map(_.typeRef), resParam.typeRef), Deferred))
+            newMethod(cls, nme.productAccessorName(index),
+              MethodType(Nil, arg.typeRef), Deferred))
+        }
+        // def isEmpty: Boolean
+        decls.enter(
+          newMethod(cls, nme.isEmpty,
+            MethodType(Nil, defn.BooleanType), Deferred))
+        // def get: this.type
+        decls.enter(
+          newMethod(cls, nme.get,
+            MethodType(Nil, cls.typeRef), Deferred))
+
         denot.info =
-          ClassInfo(ScalaPackageClass.thisType, cls, ObjectType :: parentTraits, decls)
+          ClassInfo(ScalaPackageClass.thisType, cls, List(ObjectType), decls)
       }
     }
     newClassSymbol(ScalaPackageClass, name, Trait, completer)
