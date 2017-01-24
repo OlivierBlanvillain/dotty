@@ -145,11 +145,17 @@ class Definitions {
         val decls = newScope
         val arity = name.tupleArity
         val baseName = name.toTypeName
-        val argParams: List[TypeName] =
+        val argTypeNames: List[TypeName] =
           for (i <- List.range(0, arity))
           yield baseName ++ "$T" ++ i.toString
 
+        val argTermNames: List[TermName] =
+          for (i <- List.range(0, arity))
+          yield name ++ "$a" ++ i.toString
+
         def hlistType(pt: PolyType): Type =
+          // pt.paramRefs
+          //   .map(_.underlying)
           pt.paramRefs
             .map(_.underlying)
             .foldLeft(defn.UnitType: Type) { case (current, previous) =>
@@ -160,7 +166,14 @@ class Definitions {
           pt.paramNames.map(_ => TypeBounds.empty)
 
         // def apply[T1, T2, ....]: TupleCons[T1, TupleCons[T2, ... Unit]]
-        decls.enter(newMethod(cls, nme.apply, PolyType(argParams)(emptyBounds, hlistType)))
+        decls.enter(newMethod(cls, nme.apply, PolyType(argTypeNames)(emptyBounds,
+          // pt => MethodType(argTermNames, pt.paramRefs.map(_.underlying))(_ => hlistType(pt))
+          // pt => MethodType(argTermNames, pt.typeParams.map(_.toArg))(_ => defn.StringType)
+          pt => MethodType(argTermNames, pt.typeParams.map(_.toArg))(
+            mt =>
+              defn.TupleNType(2).appliedTo(mt.paramTypes.head, mt.paramTypes.last)
+          )
+        )))
 
         // class PolyType(val paramNames: List[TypeName], val variances: List[Int])(
         //     paramBoundsExp: PolyType => List[TypeBounds], resultTypeExp: PolyType => Type)
@@ -182,10 +195,10 @@ class Definitions {
         //   }
         //   else (MethodType, Nil)
         denot.info =
-          ClassInfo(ScalaPackageClass.thisType, cls, ObjectType :: Nil/*:: parentTraits*/, decls)
+          ClassInfo(JavaPackageClass.thisType, cls, ObjectType :: Nil/*:: parentTraits*/, decls)
       }
     }
-    newModuleSymbol(ScalaPackageClass, name, Module, Trait, completer)
+    newModuleSymbol(JavaPackageClass, name, Module, Trait, completer)
   }
 
   private def newMethod(cls: ClassSymbol, name: TermName, info: Type, flags: FlagSet = EmptyFlags): TermSymbol =
@@ -243,6 +256,7 @@ class Definitions {
   lazy val ScalaMathPackageVal = ctx.requiredPackage("scala.math")
   lazy val ScalaPackageClass = ScalaPackageVal.moduleClass.asClass
   lazy val JavaPackageVal = ctx.requiredPackage("java")
+  lazy val JavaPackageClass = JavaPackageVal.moduleClass.asClass
   lazy val JavaLangPackageVal = ctx.requiredPackage("java.lang")
   // fundamental modules
   lazy val SysPackage = ctx.requiredModule("scala.sys.package")
@@ -749,7 +763,7 @@ class Definitions {
 
   def TupleClass(n: Int)(implicit ctx: Context) =
     if (n <= MaxCaseClassTupleArity) TupleClassPerRun()(ctx)(n)
-    else ctx.requiredClass("scala.Tuple" + n.toString)
+    else ctx.requiredClass("scala.Tuple0" + n.toString)
 
   def TupleNType(n: Int)(implicit ctx: Context): TypeRef =
     if (n <= MaxCaseClassTupleArity) ImplementedTupleType(n)
@@ -975,22 +989,16 @@ class Definitions {
     val oldDecls = oldInfo.decls
     val newDecls = new MutableScope(oldDecls) {
       override def lookupEntry(name: Name)(implicit ctx: Context): ScopeEntry = {
-        if (name.toString == "Tuple6") {
-          newScopeEntry(newTupleNClass(name.asTermName))
-        } else {
-
         val res = super.lookupEntry(name)
-        // if(res != null && res.toString.endsWith("Tuple3")) {
-        //   println(res.sym)
-        //   // println(res.sym.info)
-        // }
         if (res == null && name.isTypeName && name.functionArity > maxImplementedFunction(name))
           newScopeEntry(newFunctionNTrait(name.asTypeName))
         // TODO add `res == null`
-        // if (!name.isTypeName && name.tupleArity > maxImplementedTuple(name))
-        //   newScopeEntry(newTupleNClass(name.asTermName))
+        // else if (res == null && name.isTypeName) {
+        //   ???
+        // }
+        else if (res == null && name.isTermName && name.tupleArity > maxImplementedTuple(name))
+          newScopeEntry(newTupleNClass(name.asTermName))
         else res
-        }
       }
     }
     ScalaPackageClass.info = oldInfo.derivedClassInfo(decls = newDecls)

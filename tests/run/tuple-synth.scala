@@ -9,7 +9,9 @@ object Test {
     val a5: Int = 5
     val a6: Boolean = false
 
-    Tuple6.apply[Int, String, Int, Int, Int, Boolean](a1, a2, a3, a4, a5, a6)
-      : TupleCons[Int, TupleCons[String, TupleCons[Int, TupleCons[Int, TupleCons[Int, Boolean]]]]]
+    // (Tuple06(a1, a2, a3, a4, a5, a6))
+    (Tuple06.apply[Int, String, Int, Int, Int, Boolean](a1, a2, a3, a4, a5, a6))
+      : scala.Tuple2[Int, Boolean]
+      // : TupleCons[Int, TupleCons[String, TupleCons[Int, TupleCons[Int, TupleCons[Int, Boolean]]]]]
   }
 }
