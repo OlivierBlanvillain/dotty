@@ -136,8 +136,6 @@ class Definitions {
     newClassSymbol(ScalaPackageClass, name, Trait | NoInits, completer)
   }
 
-  // final case class extends Product2[T1, T2] with Product with Serializable
-
   private def newTupleNClass(name: TermName) = {
     val completer = new LazyType {
       def complete(denot: SymDenotation)(implicit ctx: Context): Unit = {
@@ -153,25 +151,12 @@ class Definitions {
           for (i <- List.range(0, arity))
           yield name ++ "$a" ++ i.toString
 
-        def hlistType(pt: PolyType): Type =
-          // pt.paramRefs
-          //   .map(_.underlying)
-          pt.paramRefs
-            .map(_.underlying)
-            .foldLeft(defn.UnitType: Type) { case (current, previous) =>
-              RefinedType.makeFullyDefined(defn.TupleConsType, List(current, previous))
-            }
-
         def emptyBounds(pt: PolyType): List[TypeBounds] =
           pt.paramNames.map(_ => TypeBounds.empty)
 
-        // def apply[T1, T2, ....]: TupleCons[T1, TupleCons[T2, ... Unit]]
         decls.enter(newMethod(cls, nme.apply, PolyType(argTypeNames)(emptyBounds,
-          // pt => MethodType(argTermNames, pt.paramRefs.map(_.underlying))(_ => hlistType(pt))
-          // pt => MethodType(argTermNames, pt.typeParams.map(_.toArg))(_ => defn.StringType)
           pt => MethodType(argTermNames, pt.typeParams.map(_.toArg))(
-            mt =>
-              defn.TupleNType(2).appliedTo(mt.paramTypes.head, mt.paramTypes.last)
+            mt => mt.paramTypes.foldRight(defn.UnitType: Type)(defn.TupleConsType.appliedTo)
           )
         )))
 

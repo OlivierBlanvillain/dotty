@@ -11,7 +11,6 @@ object Test {
 
     // (Tuple06(a1, a2, a3, a4, a5, a6))
     (Tuple06.apply[Int, String, Int, Int, Int, Boolean](a1, a2, a3, a4, a5, a6))
-      : scala.Tuple2[Int, Boolean]
-      // : TupleCons[Int, TupleCons[String, TupleCons[Int, TupleCons[Int, TupleCons[Int, Boolean]]]]]
+      : TupleCons[Int, TupleCons[String, TupleCons[Int, TupleCons[Int, TupleCons[Int, TupleCons[Boolean, Unit]]]]]]
   }
 }
