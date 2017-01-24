@@ -12,10 +12,7 @@ object Test {
     val tc: TupleCons[Int, TupleCons[String, TupleCons[Int, TupleCons[Int, TupleCons[Int, TupleCons[Boolean, Unit]]]]]] =
       Tuple06.apply[Int, String, Int, Int, Int, Boolean](a1, a2, a3, a4, a5, a6)
 
-    val opt: Option[]
-    unapplySeq[H, T <: Tuple](tuple: Any): Option[Seq[Any]] =
-
-    Tuple06.unapply[Int, String, Int, Int, Int, Boolean](tc))
-      : TupleCons[Int, TupleCons[String, TupleCons[Int, TupleCons[Int, TupleCons[Int, TupleCons[Boolean, Unit]]]]]]
+    val opt: Option[Tuple06[Int, String, Int, Int, Int, Boolean]] =
+      Tuple06.unapply[Int, String, Int, Int, Int, Boolean](tc)
   }
 }

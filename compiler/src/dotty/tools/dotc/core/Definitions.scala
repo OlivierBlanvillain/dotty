@@ -136,7 +136,29 @@ class Definitions {
     newClassSymbol(ScalaPackageClass, name, Trait | NoInits, completer)
   }
 
-  private def newTupleNClass(name: TermName) = {
+  private def newTupleNTrait(name: TypeName) = {
+    val completer = new LazyType {
+      def complete(denot: SymDenotation)(implicit ctx: Context): Unit = {
+        val cls = denot.asClass.classSymbol
+        val decls = newScope
+        val arity = name.tupleArity
+        val argParams =
+          for (i <- List.range(0, arity)) yield
+            enterTypeParam(cls, name ++ "$T" ++ i.toString, Covariant, decls)
+        val superTrait =
+          ProductType(arity).appliedTo(argParams.map(_.typeRef))
+        val applyMeth =
+          decls.enter(
+            newMethod(cls, nme.apply,
+              methodType(argParams.map(_.typeRef), resParam.typeRef), Deferred))
+        denot.info =
+          ClassInfo(ScalaPackageClass.thisType, cls, ObjectType :: parentTraits, decls)
+      }
+    }
+    newClassSymbol(ScalaPackageClass, name, Trait, completer)
+  }
+
+  private def newTupleNComanion(name: TermName) = {
     val completer = new LazyType {
       def complete(denot: SymDenotation)(implicit ctx: Context): Unit = {
         val cls = denot.asClass.classSymbol
@@ -160,11 +182,18 @@ class Definitions {
           )
         )))
 
+        decls.enter(newMethod(cls, nme.unapply, PolyType(argTypeNames)(emptyBounds,
+          pt => MethodType(
+                  List(name ++ "$"),
+                  List(pt.typeParams.map(_.toArg).foldRight(defn.UnitType: Type)(defn.TupleConsType.appliedTo))
+                )(mt => defn.OptionType.appliedTo(defn.TupleNType(arity).appliedTo(pt.typeParams.map(_.toArg))))
+        )))
+
         denot.info =
-          ClassInfo(JavaPackageClass.thisType, cls, ObjectType :: Nil/*:: parentTraits*/, decls)
+          ClassInfo(ScalaPackageClass.thisType, cls, ObjectType :: Nil/*:: parentTraits*/, decls)
       }
     }
-    newModuleSymbol(JavaPackageClass, name, Module, Trait, completer)
+    newModuleSymbol(ScalaPackageClass, name, Module, Trait, completer)
   }
 
   private def newMethod(cls: ClassSymbol, name: TermName, info: Type, flags: FlagSet = EmptyFlags): TermSymbol =
@@ -963,7 +992,9 @@ class Definitions {
         //   ???
         // }
         else if (res == null && name.isTermName && name.tupleArity > maxImplementedTuple(name))
-          newScopeEntry(newTupleNClass(name.asTermName))
+          newScopeEntry(newTupleNComanion(name.asTermName))
+        else if (res == null && name.isTypeName && name.tupleArity > maxImplementedTuple(name))
+          newScopeEntry(newTupleNTrait(name.asTypeName))
         else res
       }
     }
