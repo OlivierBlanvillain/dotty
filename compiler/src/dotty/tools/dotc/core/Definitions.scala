@@ -160,25 +160,6 @@ class Definitions {
           )
         )))
 
-        // class PolyType(val paramNames: List[TypeName], val variances: List[Int])(
-        //     paramBoundsExp: PolyType => List[TypeBounds], resultTypeExp: PolyType => Type)
-
-        // object PolyType {
-        //   def apply(paramNames: List[TypeName], variances: List[Int] = Nil)(
-        //       paramBoundsExp: PolyType => List[TypeBounds],
-        //       resultTypeExp: PolyType => Type)(implicit ctx: Context): PolyType = {
-        //     val vs = if (variances.isEmpty) paramNames.map(alwaysZero) else variances
-        //     unique(new PolyType(paramNames, vs)(paramBoundsExp, resultTypeExp))
-        //   }
-
-        // val resParam = enterTypeParam(cls, name ++ "$R", Covariant, decls)
-        // val (methodType, parentTraits) =
-        //   if (name.startsWith(tpnme.ImplicitFunction)) {
-        //     val superTrait =
-        //       FunctionType(arity).appliedTo(argParams.map(_.typeRef) ::: resParam.typeRef :: Nil)
-        //     (ImplicitMethodType, ctx.normalizeToClassRefs(superTrait :: Nil, cls, decls))
-        //   }
-        //   else (MethodType, Nil)
         denot.info =
           ClassInfo(JavaPackageClass.thisType, cls, ObjectType :: Nil/*:: parentTraits*/, decls)
       }

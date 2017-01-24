@@ -9,8 +9,13 @@ object Test {
     val a5: Int = 5
     val a6: Boolean = false
 
-    // (Tuple06(a1, a2, a3, a4, a5, a6))
-    (Tuple06.apply[Int, String, Int, Int, Int, Boolean](a1, a2, a3, a4, a5, a6))
+    val tc: TupleCons[Int, TupleCons[String, TupleCons[Int, TupleCons[Int, TupleCons[Int, TupleCons[Boolean, Unit]]]]]] =
+      Tuple06.apply[Int, String, Int, Int, Int, Boolean](a1, a2, a3, a4, a5, a6)
+
+    val opt: Option[]
+    unapplySeq[H, T <: Tuple](tuple: Any): Option[Seq[Any]] =
+
+    Tuple06.unapply[Int, String, Int, Int, Int, Boolean](tc))
       : TupleCons[Int, TupleCons[String, TupleCons[Int, TupleCons[Int, TupleCons[Int, TupleCons[Boolean, Unit]]]]]]
   }
 }
