@@ -51,10 +51,10 @@ class Definitions {
   private def newSymbol[N <: Name](owner: Symbol, name: N, flags: FlagSet, info: Type) =
     ctx.newSymbol(owner, name, flags | Permanent, info)
 
-  private def newClassSymbol(owner: Symbol, name: TypeName, flags: FlagSet, infoFn: ClassSymbol => Type) =
+  private def newClassSymbol(owner: Symbol, name: TypeName, flags: FlagSet, infoFn: ClassSymbol => Type): ClassSymbol =
     ctx.newClassSymbol(owner, name, flags | Permanent, infoFn)
 
-  private def newModuleSymbol(owner: Symbol, name: TermName, modFlags: FlagSet, clsFlags: FlagSet, infoFn: (TermSymbol, ClassSymbol) => Type) =
+  private def newModuleSymbol(owner: Symbol, name: TermName, modFlags: FlagSet, clsFlags: FlagSet, infoFn: (TermSymbol, ClassSymbol) => Type): TermSymbol =
     ctx.newModuleSymbol(owner, name, modFlags, clsFlags, infoFn)
 
   private def enterCompleteClassSymbol(owner: Symbol, name: TypeName, flags: FlagSet, parents: List[TypeRef], decls: Scope = newScope) =
@@ -136,15 +136,17 @@ class Definitions {
     newClassSymbol(ScalaPackageClass, name, Trait | NoInits, completer)
   }
 
-  private def newTupleNTrait(name: TypeName) = {
-    val completer = new LazyType {
+  private def newTupleNTrait(name: String) = {
+    val termName: TermName = EmptyTermName ++ name
+    val typeName: TypeName = EmptyTypeName ++ name
+    val traitCompleter = new LazyType {
       def complete(denot: SymDenotation)(implicit ctx: Context): Unit = {
         val cls = denot.asClass.classSymbol
         val decls = newScope
-        val arity = name.tupleArity
+        val arity = typeName.tupleArity
         val argParams =
           for (i <- List.range(0, arity)) yield
-            enterTypeParam(cls, name ++ "$T" ++ i.toString, Covariant, decls)
+            enterTypeParam(cls, typeName ++ "$T" ++ i.toString, Covariant, decls)
         // def _N: $TN
         argParams.zipWithIndex.foreach { case (arg, index) =>
           decls.enter(
@@ -164,23 +166,18 @@ class Definitions {
           ClassInfo(ScalaPackageClass.thisType, cls, List(ObjectType), decls)
       }
     }
-    newClassSymbol(ScalaPackageClass, name, Trait, completer)
-  }
-
-  private def newTupleNComanion(name: TermName) = {
-    val completer = new LazyType {
+    val moduleCompleter = new LazyType {
       def complete(denot: SymDenotation)(implicit ctx: Context): Unit = {
         val cls = denot.asClass.classSymbol
         val decls = newScope
-        val arity = name.tupleArity
-        val baseName = name.toTypeName
+        val arity = termName.tupleArity
         val argTypeNames: List[TypeName] =
           for (i <- List.range(0, arity))
-          yield baseName ++ "$T" ++ i.toString
+          yield typeName ++ "$T" ++ i.toString
 
         val argTermNames: List[TermName] =
           for (i <- List.range(0, arity))
-          yield name ++ "$a" ++ i.toString
+          yield termName ++ "$a" ++ i.toString
 
         def emptyBounds(pt: PolyType): List[TypeBounds] =
           pt.paramNames.map(_ => TypeBounds.empty)
@@ -193,17 +190,26 @@ class Definitions {
 
         decls.enter(newMethod(cls, nme.unapply, PolyType(argTypeNames)(emptyBounds,
           pt => MethodType(
-                  List(name ++ "$"),
+                  List(termName ++ "$"),
                   List(pt.typeParams.map(_.toArg).foldRight(defn.UnitType: Type)(defn.TupleConsType.appliedTo))
-                )(mt => defn.OptionType.appliedTo(defn.TupleNType(arity).appliedTo(pt.typeParams.map(_.toArg))))
+                )(mt => defn.OptionType.appliedTo(defn.SyntheticTupleType(arity).appliedTo(pt.typeParams.map(_.toArg))))
         )))
 
         denot.info =
           ClassInfo(ScalaPackageClass.thisType, cls, ObjectType :: Nil/*:: parentTraits*/, decls)
       }
     }
-    newModuleSymbol(ScalaPackageClass, name, Module, Trait, completer)
+    val clazz  = newClassSymbol(ScalaPackageClass, typeName, Trait, traitCompleter)
+    val module = newModuleSymbol(ScalaPackageClass, termName, Module, Trait, moduleCompleter)
+    import transform.SymUtils._
+    // module.registerCompanionMethod(nme.COMPANION_CLASS_METHOD, clazz)
+    // ctx.synthesizeCompanionMethod(nme.COMPANION_MODULE_METHOD, module, clazz)
+    // clazz.registerCompanionMethod(nme.COMPANION_MODULE_METHOD, module)
+    List(clazz, module)
   }
+
+  // private def newTupleNComanion(name: TermName) = {
+  // }
 
   private def newMethod(cls: ClassSymbol, name: TermName, info: Type, flags: FlagSet = EmptyFlags): TermSymbol =
     newSymbol(cls, name.encode, flags | Method, info).asTerm
@@ -767,11 +773,14 @@ class Definitions {
 
   def TupleClass(n: Int)(implicit ctx: Context) =
     if (n <= MaxCaseClassTupleArity) TupleClassPerRun()(ctx)(n)
-    else ctx.requiredClass("scala.Tuple0" + n.toString)
+    else ctx.requiredClass("scala.Tuple" + n.toString)
 
   def TupleNType(n: Int)(implicit ctx: Context): TypeRef =
     if (n <= MaxCaseClassTupleArity) ImplementedTupleType(n)
     else TupleClass(n).typeRef
+
+  // def SyntheticTupleModule(n: Int)(implicit ctx: Context) = ctx.requiredClass("scala.Tuple0" + n.toString)
+  def SyntheticTupleType(n: Int)(implicit ctx: Context) = ctx.requiredClass("scala.Tuple0" + n.toString).typeRef
 
   lazy val TupleType: TypeRef      = ctx.requiredClassRef("dotty.Tuple")
   lazy val TupleConsType: TypeRef  = ctx.requiredClassRef("dotty.TupleCons")
@@ -1001,9 +1010,14 @@ class Definitions {
         //   ???
         // }
         else if (res == null && name.isTermName && name.tupleArity > maxImplementedTuple(name))
-          newScopeEntry(newTupleNComanion(name.asTermName))
-        else if (res == null && name.isTypeName && name.tupleArity > maxImplementedTuple(name))
-          newScopeEntry(newTupleNTrait(name.asTypeName))
+          null
+          // newScopeEntry(newTupleNComanion(name.asTermName))
+        else if (res == null && name.tupleArity > maxImplementedTuple(name)) {
+          if (name.isTypeName)
+            newTupleNTrait(name.toString).map(newScopeEntry).last
+          else
+            newTupleNTrait(name.toString).map(newScopeEntry).head
+        }
         else res
       }
     }
