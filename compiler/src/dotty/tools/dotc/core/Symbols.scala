@@ -182,6 +182,7 @@ trait Symbols { this: Context =>
 
   val companionMethodFlags = Flags.Synthetic | Flags.Private | Flags.Method
 
+  // TODO: Change either to ClassDenotation??
   def synthesizeCompanionMethod(name: Name, target: SymDenotation, owner: SymDenotation)(implicit ctx: Context) =
     if (owner.exists && target.exists && !owner.isAbsent && !target.isAbsent) {
       val existing = owner.unforcedDecls.lookup(name)

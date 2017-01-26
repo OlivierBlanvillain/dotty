@@ -1010,7 +1010,7 @@ object desugar {
         else if (ctx.mode is Mode.Type)
           AppliedTypeTree(ref(defn.SyntheticTupleType(arity)), ts)
         else
-          Apply(ref(defn.SyntheticTupleType(arity).classSymbol.companionModule.valRef), ts)
+          Apply(ref(defn.SyntheticTupleModule(arity).valRef), ts)
 
         // arity match {
         //   case 0 => unitLiteral

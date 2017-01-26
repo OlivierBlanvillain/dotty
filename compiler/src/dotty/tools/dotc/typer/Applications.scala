@@ -60,11 +60,16 @@ object Applications {
 
   /** Does `tp` fit the "get match" conditions as an unapply result type?
    *  This is the case of `tp` has a `get` member as well as a
-   *  parameterless `isDefined` member of result type `Boolean`.
+   *  parameterless `isEmpty` member of result type `Boolean`.
    */
-  def isGetMatch(tp: Type, errorPos: Position = NoPosition)(implicit ctx: Context) =
+  def isGetMatch(tp: Type, errorPos: Position = NoPosition)(implicit ctx: Context) = {
+    println
+    println(tp)
+    println(s"sRef(defn.BooleanClass): ${extractorMemberType(tp, nme.isEmpty, errorPos).isRef(defn.BooleanClass)}")
+    println(s"e.get, errorPos).exists: ${extractorMemberType(tp, nme.get, errorPos).exists}")
     extractorMemberType(tp, nme.isEmpty, errorPos).isRef(defn.BooleanClass) &&
     extractorMemberType(tp, nme.get, errorPos).exists
+  }
 
   def productSelectorTypes(tp: Type, errorPos: Position = NoPosition)(implicit ctx: Context): List[Type] = {
     val sels = for (n <- Iterator.from(0)) yield extractorMemberType(tp, nme.selectorName(n), errorPos)
@@ -92,8 +97,8 @@ object Applications {
     def seqSelector = defn.RepeatedParamType.appliedTo(unapplyResult.elemType :: Nil)
     def getTp = extractorMemberType(unapplyResult, nme.get, pos)
 
-    def fail = {
-      ctx.error(i"$unapplyResult is not a valid result type of an $unapplyName method of an extractor", pos)
+    def fail(s: String) = {
+      ctx.error(i"$s $unapplyResult is not a valid result type of an $unapplyName method of an extractor", pos)
       Nil
     }
 
@@ -102,9 +107,9 @@ object Applications {
       else if (isGetMatch(unapplyResult, pos)) {
         val seqArg = boundsToHi(getTp.elemType)
         if (seqArg.exists) args.map(Function.const(seqArg))
-        else fail
+        else fail("1")
       }
-      else fail
+      else fail("2")
     }
     else {
       assert(unapplyName == nme.unapply)
@@ -118,7 +123,7 @@ object Applications {
         productSelectorTypes(unapplyResult)
           // this will cause a "wrong number of arguments in pattern" error later on,
           // which is better than the message in `fail`.
-      else fail
+      else fail("4")
     }
   }
 

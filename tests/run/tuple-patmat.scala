@@ -17,8 +17,7 @@ object Test {
     //     assert(a2 == 4)
     // }
 
-    val x2: (String, Int) = ("a", 2)
-    println(x2)
+    // val x2 = ("a", 2)
 
     // x2 match {
     //   case (a2, b2) =>
@@ -28,17 +27,17 @@ object Test {
     //     assert(b2 == 2)
     // }
 
-    // val x3 = ("a", 2, "c")
+    val x3 = ("a", 2, "c")
 
-    // x3 match {
-    //   case (a3, b3, c3) =>
-    //     a3: String
-    //     b3: Int
-    //     c3: String
-    //     assert(a3 == "a")
-    //     assert(b3 == 2)
-    //     assert(c3 == "c")
-    // }
+    x3 match {
+      case (a3, b3, c3) =>
+        // a3: String
+        // b3: Int
+        // c3: String
+        // assert(a3 == "a")
+        // assert(b3 == 2)
+        // assert(c3 == "c")
+    }
 
     // val x4 = ("a", 2, "c", 4)
 

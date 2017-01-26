@@ -13,7 +13,7 @@ import scala.reflect.api.{ Universe => ApiUniverse }
 
 object Definitions {
   /** TODOC OLIVIER*/
-  val MaxCaseClassTupleArity = 4
+  val MaxCaseClassTupleArity = 0
 
   /** The maximum arity N of a function type that's implemented
    *  as a trait `scala.FunctionN`. Functions of higher arity are possible,
@@ -136,79 +136,152 @@ class Definitions {
     newClassSymbol(ScalaPackageClass, name, Trait | NoInits, completer)
   }
 
-  private def newTupleNTrait(name: String) = {
-    val termName: TermName = EmptyTermName ++ name
-    val typeName: TypeName = EmptyTypeName ++ name
-    val traitCompleter = new LazyType {
+  private def newTupleNTrait(name: TypeName): ClassSymbol = {
+    val completer = new LazyType {
       def complete(denot: SymDenotation)(implicit ctx: Context): Unit = {
         val cls = denot.asClass.classSymbol
         val decls = newScope
-        val arity = typeName.tupleArity
+        val arity = name.tupleArity
         val argParams =
           for (i <- List.range(0, arity)) yield
-            enterTypeParam(cls, typeName ++ "$T" ++ i.toString, Covariant, decls)
+            enterTypeParam(cls, name ++ "$T" ++ i.toString, Synthetic, decls)
         // def _N: $TN
         argParams.zipWithIndex.foreach { case (arg, index) =>
+          println("--------------------------------------")
+          println(ExprType(arg.typeRef))
           decls.enter(
             newMethod(cls, nme.productAccessorName(index),
-              MethodType(Nil, arg.typeRef), Deferred))
+              ExprType(arg.typeRef)))
         }
         // def isEmpty: Boolean
-        decls.enter(
-          newMethod(cls, nme.isEmpty,
-            MethodType(Nil, defn.BooleanType), Deferred))
+        decls.enter(newMethod(cls, nme.isEmpty, ExprType(defn.BooleanType)))
         // def get: this.type
-        decls.enter(
-          newMethod(cls, nme.get,
-            MethodType(Nil, cls.typeRef), Deferred))
+        decls.enter(newMethod(cls, nme.get, ExprType(cls.thisType)))
+        denot.info = ClassInfo(ScalaPackageClass.thisType, cls, ObjectType ::
 
-        denot.info =
-          ClassInfo(ScalaPackageClass.thisType, cls, List(ObjectType), decls)
+          ctx.normalizeToClassRefs(defn.ProductNType(arity).appliedTo(argParams.map(_.typeRef)) :: Nil, cls, decls)
+
+        , decls)
       }
     }
-    val moduleCompleter = new LazyType {
+    newClassSymbol(ScalaPackageClass, name, Trait, completer)
+  }
+
+  private def newTupleNCompanion(name: TermName): TermSymbol = {
+    val completer = new LazyType {
       def complete(denot: SymDenotation)(implicit ctx: Context): Unit = {
         val cls = denot.asClass.classSymbol
         val decls = newScope
-        val arity = termName.tupleArity
+        val arity = name.tupleArity
+        val baseName = name.toTypeName
         val argTypeNames: List[TypeName] =
           for (i <- List.range(0, arity))
-          yield typeName ++ "$T" ++ i.toString
+          yield baseName ++ "$T" ++ i.toString
 
         val argTermNames: List[TermName] =
           for (i <- List.range(0, arity))
-          yield termName ++ "$a" ++ i.toString
+          yield name ++ "$a" ++ i.toString
 
         def emptyBounds(pt: PolyType): List[TypeBounds] =
           pt.paramNames.map(_ => TypeBounds.empty)
-
+        // def apply[T1, T2, ...](a1: T1, a2: T2, ...): TupleN[T1, T2, ...]
         decls.enter(newMethod(cls, nme.apply, PolyType(argTypeNames)(emptyBounds,
           pt => MethodType(argTermNames, pt.typeParams.map(_.toArg))(
-            mt => mt.paramTypes.foldRight(defn.UnitType: Type)(defn.TupleConsType.appliedTo)
+            // mt => mt.paramTypes.foldRight(defn.UnitType: Type)(defn.TupleConsType.appliedTo)
+            mt => defn.SyntheticTupleType(arity).appliedTo(mt.paramTypes)
           )
         )))
 
-        decls.enter(newMethod(cls, nme.unapply, PolyType(argTypeNames)(emptyBounds,
-          pt => MethodType(
-                  List(termName ++ "$"),
-                  List(pt.typeParams.map(_.toArg).foldRight(defn.UnitType: Type)(defn.TupleConsType.appliedTo))
-                )(mt => defn.OptionType.appliedTo(defn.SyntheticTupleType(arity).appliedTo(pt.typeParams.map(_.toArg))))
+        // def unapply[T1, T2, ...](t: TupleN[T1, T2, ...]): TupleN[T1, T2, ...]
+        decls.enter(newMethod(cls, nme.unapply, PolyType(argTypeNames)(emptyBounds, pt =>
+          MethodType(
+            List(name ++ "$"),
+            List(defn.SyntheticTupleType(arity).appliedTo(pt.typeParams.map(_.toArg)))
+            // List(pt.typeParams.map(_.toArg).foldRight(defn.UnitType: Type)(defn.TupleConsType.appliedTo))
+          // )(mt => defn.OptionType.appliedTo(defn.SyntheticTupleType(arity).appliedTo(pt.typeParams.map(_.toArg))))
+          )(mt => mt.paramTypes.head) // defn.SyntheticTupleType(arity).appliedTo(pt.typeParams.map(_.toArg)))
         )))
 
         denot.info =
           ClassInfo(ScalaPackageClass.thisType, cls, ObjectType :: Nil/*:: parentTraits*/, decls)
       }
     }
-    val clazz  = newClassSymbol(ScalaPackageClass, typeName, Trait, traitCompleter)
-    val module = newModuleSymbol(ScalaPackageClass, termName, Module, Trait, moduleCompleter)
-    import transform.SymUtils._
-    // module.registerCompanionMethod(nme.COMPANION_CLASS_METHOD, clazz)
-    // ctx.synthesizeCompanionMethod(nme.COMPANION_MODULE_METHOD, module, clazz)
-    // clazz.registerCompanionMethod(nme.COMPANION_MODULE_METHOD, module)
-    List(clazz, module)
+    newModuleSymbol(ScalaPackageClass, name, Module, Trait, completer)
   }
 
-  // private def newTupleNComanion(name: TermName) = {
+  // private def newTupleNTrait(name: String) = {
+  //   val termName: TermName = EmptyTermName ++ name
+  //   val typeName: TypeName = EmptyTypeName ++ name
+  //   val traitCompleter = new LazyType {
+  //     def complete(denot: SymDenotation)(implicit ctx: Context): Unit = {
+  //       val cls = denot.asClass.classSymbol
+  //       val decls = newScope
+  //       val arity = typeName.tupleArity
+  //       val argParams =
+  //         for (i <- List.range(0, arity)) yield
+  //           enterTypeParam(cls, typeName ++ "$T" ++ i.toString, Covariant, decls)
+  //       // def _N: $TN
+  //       argParams.zipWithIndex.foreach { case (arg, index) =>
+  //         decls.enter(
+  //           newMethod(cls, nme.productAccessorName(index),
+  //             MethodType(Nil, arg.typeRef), Deferred))
+  //       }
+  //       // def isEmpty: Boolean
+  //       decls.enter(
+  //         newMethod(cls, nme.isEmpty,
+  //           MethodType(Nil, defn.BooleanType), Deferred))
+  //       // def get: this.type
+  //       decls.enter(
+  //         newMethod(cls, nme.get,
+  //           MethodType(Nil, cls.typeRef), Deferred))
+
+  //       denot.info =
+  //         ClassInfo(ScalaPackageClass.thisType, cls, List(ObjectType), decls)
+  //     }
+  //   }
+  //   val moduleCompleter = new LazyType {
+  //     def complete(denot: SymDenotation)(implicit ctx: Context): Unit = {
+  //       val cls = denot.asClass.classSymbol
+  //       val decls = newScope
+  //       val arity = termName.tupleArity
+  //       val argTypeNames: List[TypeName] =
+  //         for (i <- List.range(0, arity))
+  //         yield typeName ++ "$T" ++ i.toString
+
+  //       val argTermNames: List[TermName] =
+  //         for (i <- List.range(0, arity))
+  //         yield termName ++ "$a" ++ i.toString
+
+  //       def emptyBounds(pt: PolyType): List[TypeBounds] =
+  //         pt.paramNames.map(_ => TypeBounds.empty)
+
+  //       decls.enter(newMethod(cls, nme.apply, PolyType(argTypeNames)(emptyBounds,
+  //         pt => MethodType(argTermNames, pt.typeParams.map(_.toArg))(
+  //           mt => mt.paramTypes.foldRight(defn.UnitType: Type)(defn.TupleConsType.appliedTo)
+  //         )
+  //       )))
+
+  //       decls.enter(newMethod(cls, nme.unapply, PolyType(argTypeNames)(emptyBounds,
+  //         pt => MethodType(
+  //                 List(termName ++ "$"),
+  //                 List(pt.typeParams.map(_.toArg).foldRight(defn.UnitType: Type)(defn.TupleConsType.appliedTo))
+  //               )(mt => defn.OptionType.appliedTo(defn.SyntheticTupleType(arity).appliedTo(pt.typeParams.map(_.toArg))))
+  //       )))
+
+  //       denot.info =
+  //         ClassInfo(ScalaPackageClass.thisType, cls, ObjectType :: Nil/*:: parentTraits*/, decls)
+  //     }
+  //   }
+  //   val module = newModuleSymbol(ScalaPackageClass, termName, Module, Trait, moduleCompleter)
+  //   val clazz  = newClassSymbol(ScalaPackageClass, typeName, Trait, traitCompleter)
+  //   import transform.SymUtils._
+  //   // module.registerCompanionMethod(nme.COMPANION_CLASS_METHOD, clazz)
+  //   // ctx.synthesizeCompanionMethod(nme.COMPANION_MODULE_METHOD, clazz, module)
+  //   // clazz.registerCompanionMethod(nme.COMPANION_MODULE_METHOD, module)
+  //   List(clazz, module)
+  // }
+
+  // private def newTupleNCompanion(name: TermName) = {
   // }
 
   private def newMethod(cls: ClassSymbol, name: TermName, info: Type, flags: FlagSet = EmptyFlags): TermSymbol =
@@ -768,18 +841,18 @@ class Definitions {
   private lazy val ImplementedFunctionType = mkArityArray("scala.Function", MaxImplementedFunctionArity, 0)
   def FunctionClassPerRun = new PerRun[Array[Symbol]](implicit ctx => ImplementedFunctionType.map(_.symbol.asClass))
 
-  private lazy val ImplementedTupleType = mkArityArray("scala.Tuple", MaxCaseClassTupleArity, 0)
+  private lazy val ImplementedTupleType = mkArityArray("scala.Tuple", 22, 0) // TODO 22
   def TupleClassPerRun = new PerRun[Array[Symbol]](implicit ctx => ImplementedTupleType.map(_.symbol.asClass))
 
   def TupleClass(n: Int)(implicit ctx: Context) =
     if (n <= MaxCaseClassTupleArity) TupleClassPerRun()(ctx)(n)
-    else ctx.requiredClass("scala.Tuple" + n.toString)
+    else ??? // ctx.requiredClass("scala.Tuple" + n.toString)
 
   def TupleNType(n: Int)(implicit ctx: Context): TypeRef =
     if (n <= MaxCaseClassTupleArity) ImplementedTupleType(n)
-    else TupleClass(n).typeRef
+    else ??? // TupleClass(n).typeRef
 
-  // def SyntheticTupleModule(n: Int)(implicit ctx: Context) = ctx.requiredClass("scala.Tuple0" + n.toString)
+  def SyntheticTupleModule(n: Int)(implicit ctx: Context) = ctx.requiredModule("scala.Tuple0" + n.toString)
   def SyntheticTupleType(n: Int)(implicit ctx: Context) = ctx.requiredClass("scala.Tuple0" + n.toString).typeRef
 
   lazy val TupleType: TypeRef      = ctx.requiredClassRef("dotty.Tuple")
@@ -1005,18 +1078,16 @@ class Definitions {
         val res = super.lookupEntry(name)
         if (res == null && name.isTypeName && name.functionArity > maxImplementedFunction(name))
           newScopeEntry(newFunctionNTrait(name.asTypeName))
-        // TODO add `res == null`
-        // else if (res == null && name.isTypeName) {
-        //   ???
-        // }
-        else if (res == null && name.isTermName && name.tupleArity > maxImplementedTuple(name))
-          null
-          // newScopeEntry(newTupleNComanion(name.asTermName))
-        else if (res == null && name.tupleArity > maxImplementedTuple(name)) {
-          if (name.isTypeName)
-            newTupleNTrait(name.toString).map(newScopeEntry).last
-          else
-            newTupleNTrait(name.toString).map(newScopeEntry).head
+        else if (res == null && name.tupleArity != -1) { // maxImplementedTuple(name)) {
+          val clazz: Symbol = newTupleNTrait(Names.typeName(name.toString))
+          val clazzEntry = newScopeEntry(clazz)
+          val module: Symbol = newTupleNCompanion(Names.termName(name.toString))
+          val moduleEntry = newScopeEntry(module)
+
+          // ctx.synthesizeCompanionMethod(nme.COMPANION_CLASS_METHOD, clazz, module)
+          // ctx.synthesizeCompanionMethod(nme.COMPANION_MODULE_METHOD, module, clazz)
+
+          if (name.isTypeName) clazzEntry else moduleEntry
         }
         else res
       }
