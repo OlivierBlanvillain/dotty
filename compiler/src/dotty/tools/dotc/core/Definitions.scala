@@ -794,14 +794,17 @@ class Definitions {
     TupleType(elems.size).appliedTo(elems)
   }
 
-  def isProductSubType(tp: Type)(implicit ctx: Context) =
+  /** Is this type eligible for name based pattern matching?
+   *
+   *  That means either extending `scala.ProductN` or `NameBasedPattern`.
+   *  Ideally only the second condition should be used, first on is kept
+   *  for compatibility with scala2 compiled case classes.
+   */
+  def isNameBasedPatternSubType(tp: Type)(implicit ctx: Context) =
     (tp.derivesFrom(ProductType.symbol) && tp.baseClasses.exists(isProductClass)) ||
     tp.derivesFrom(NameBasedPatternType.symbol)
 
-  def productArity(tp: Type)(implicit ctx: Context) =
-    if (isProductSubType(tp)) typer.Applications.productSelectorTypes(tp).size else -1
-
-  /** Is `tp` (an alias) of either a scala.FunctionN or a scala.ImplicitFunctionN ? */
+  /** Is `tp` (an alias) of either a scala.FunctionN or a scala.ImplicitFunctionN? */
   def isFunctionType(tp: Type)(implicit ctx: Context) = {
     val arity = functionArity(tp)
     val sym = tp.dealias.typeSymbol
