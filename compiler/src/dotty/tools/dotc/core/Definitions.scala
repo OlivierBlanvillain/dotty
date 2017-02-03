@@ -797,15 +797,11 @@ class Definitions {
   }
 
   def isProductSubType(tp: Type)(implicit ctx: Context) =
-    (tp derivesFrom ProductType.symbol) && tp.baseClasses.exists(isProductClass)
+    (tp.derivesFrom(ProductType.symbol) && tp.baseClasses.exists(isProductClass)) ||
+    tp.derivesFrom(NameBasedPatternType.symbol)
 
   def productArity(tp: Type)(implicit ctx: Context) =
-    if (tp derivesFrom ProductType.symbol)
-      tp.baseClasses.find(isProductClass) match {
-        case Some(prod) => prod.typeParams.length
-        case None => -1
-      }
-    else -1
+    if (isProductSubType(tp)) typer.Applications.productSelectorTypes(tp).size else -1
 
   /** Is `tp` (an alias) of either a scala.FunctionN or a scala.ImplicitFunctionN ? */
   def isFunctionType(tp: Type)(implicit ctx: Context) = {
