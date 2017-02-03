@@ -287,7 +287,8 @@ object desugar {
       case _ => false
     }
 
-    val isCaseClass = mods.is(Case) && !mods.is(Module)
+    val isCaseClass  = mods.is(Case) && !mods.is(Module)
+    val isCaseObject = mods.is(Case) && mods.is(Module)
     val isValueClass = parents.nonEmpty && isAnyVal(parents.head)
       // This is not watertight, but `extends AnyVal` will be replaced by `inline` later.
 
@@ -332,8 +333,8 @@ object desugar {
     lazy val creatorExpr = New(classTypeRef, constrVparamss nestedMap refOfDef)
 
     // Methods to add to a case class C[..](p1: T1, ..., pN: Tn)(moreParams)
-    //     def isDefined = true
     //     def productArity = N
+    //     def productElement(i: Int): Any = i match { ... }
     //     def _1 = this.p1
     //     ...
     //     def _N = this.pN
@@ -344,14 +345,35 @@ object desugar {
     // Note: copy default parameters need @uncheckedVariance; see
     // neg/t1843-variances.scala for a test case. The test would give
     // two errors without @uncheckedVariance, one of them spurious.
-    val caseClassMeths =
-      if (isCaseClass) {
-        def syntheticProperty(name: TermName, rhs: Tree) =
-          DefDef(name, Nil, Nil, TypeTree(), rhs).withMods(synthetic)
+    val caseClassMeths = {
+      def syntheticProperty(name: TermName, rhs: Tree) =
+        DefDef(name, Nil, Nil, TypeTree(), rhs).withMods(synthetic)
+      // The override here is less than ideal: user defined productArity / productElement
+      // methods would be silently ignored. This is necessary to compile `scala.TupleN`.
+      // The long term solution is to remove `ProductN` entirely from stdlib.
+      def productArity =
+        DefDef(nme.productArity, Nil, Nil, TypeTree(), Literal(Constant(arity)))
+          .withMods(Modifiers(Synthetic | Override))
+      def productElement = {
+        val param = makeSyntheticParameter(tpt = ref(defn.IntType))
+        // case N => _${N + 1}
+        val cases = 0.until(arity).map { i =>
+          CaseDef(Literal(Constant(i)), EmptyTree, Select(This(EmptyTypeIdent), nme.selectorName(i)))
+        }
+        val ioob  = ref(defn.IndexOutOfBoundsException.typeRef)
+        val error = Throw(New(ioob, List(List(Select(refOfDef(param), nme.toString_)))))
+        // case _ => throw new IndexOutOfBoundsException(i.toString)
+        val defaultCase = CaseDef(untpd.Ident(nme.WILDCARD), EmptyTree, error)
+        val body = Match(refOfDef(param), (cases :+ defaultCase).toList)
+        DefDef(nme.productElement, Nil, List(List(param)), TypeTree(defn.AnyType), body)
+          .withMods(Modifiers(Synthetic | Override))
+      }
+      def productElemMeths = {
         val caseParams = constrVparamss.head.toArray
-        val productElemMeths =
-          for (i <- 0 until arity if nme.selectorName(i) `ne` caseParams(i).name)
-          yield syntheticProperty(nme.selectorName(i), Select(This(EmptyTypeIdent), caseParams(i).name))
+        for (i <- 0 until arity if nme.selectorName(i) `ne` caseParams(i).name)
+        yield syntheticProperty(nme.selectorName(i), Select(This(EmptyTypeIdent), caseParams(i).name))
+      }
+      def copyMeths = {
         def isRepeated(tree: Tree): Boolean = tree match {
           case PostfixOp(_, nme.raw.STAR) => true
           case ByNameTypeTree(tree1) => isRepeated(tree1)
@@ -361,34 +383,32 @@ object desugar {
           case ValDef(_, tpt, _) => isRepeated(tpt)
           case _ => false
         })
-
-        val copyMeths =
-          if (mods.is(Abstract) || hasRepeatedParam) Nil  // cannot have default arguments for repeated parameters, hence copy method is not issued
-          else {
-            def copyDefault(vparam: ValDef) =
-              makeAnnotated("scala.annotation.unchecked.uncheckedVariance", refOfDef(vparam))
-            val copyFirstParams = derivedVparamss.head.map(vparam =>
-              cpy.ValDef(vparam)(rhs = copyDefault(vparam)))
-            val copyRestParamss = derivedVparamss.tail.nestedMap(vparam =>
-              cpy.ValDef(vparam)(rhs = EmptyTree))
-            DefDef(nme.copy, derivedTparams, copyFirstParams :: copyRestParamss, TypeTree(), creatorExpr)
-              .withMods(synthetic) :: Nil
-          }
-        copyMeths ::: productElemMeths.toList
+        if (mods.is(Abstract) || hasRepeatedParam) Nil // Cannot have default arguments for repeated parameters, hence copy method is not issued
+        else {
+          def copyDefault(vparam: ValDef) =
+            makeAnnotated("scala.annotation.unchecked.uncheckedVariance", refOfDef(vparam))
+          val copyFirstParams = derivedVparamss.head.map(vparam =>
+            cpy.ValDef(vparam)(rhs = copyDefault(vparam)))
+          val copyRestParamss = derivedVparamss.tail.nestedMap(vparam =>
+            cpy.ValDef(vparam)(rhs = EmptyTree))
+          DefDef(nme.copy, derivedTparams, copyFirstParams :: copyRestParamss, TypeTree(), creatorExpr)
+            .withMods(synthetic) :: Nil
+        }
       }
-      else Nil
 
-    def anyRef = ref(defn.AnyRefAlias.typeRef)
-    def productConstr(n: Int) = {
-      val tycon = scalaDot((tpnme.Product.toString + n).toTypeName)
-      val targs = constrVparamss.head map (_.tpt)
-      if (targs.isEmpty) tycon else AppliedTypeTree(tycon, targs)
+      if (isCaseClass)
+        productElement :: productArity :: copyMeths ::: productElemMeths.toList
+      else if (isCaseObject)
+        productElement :: productArity :: Nil
+      else Nil
     }
 
-    // Case classes and case objects get a ProductN parent
-    var parents1 = parents
-    if (mods.is(Case) && arity <= Definitions.MaxTupleArity)
-      parents1 = parents1 :+ productConstr(arity)
+    def anyRef = ref(defn.AnyRefAlias.typeRef)
+
+    // Case classes and case objects get NameBasedPattern and Product parents
+    val parents1: List[Tree] =
+      if (mods.is(Case)) parents :+ scalaDot(nme.Product.toTypeName) :+ scalaDot(nme.NameBasedPattern.toTypeName)
+      else parents
 
     // The thicket which is the desugared version of the companion object
     //     synthetic object C extends parentTpt { defs }
