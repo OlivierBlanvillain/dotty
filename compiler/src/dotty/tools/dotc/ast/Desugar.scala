@@ -333,8 +333,6 @@ object desugar {
     lazy val creatorExpr = New(classTypeRef, constrVparamss nestedMap refOfDef)
 
     // Methods to add to a case class C[..](p1: T1, ..., pN: Tn)(moreParams)
-    //     def productArity = N
-    //     def productElement(i: Int): Any = i match { ... }
     //     def _1 = this.p1
     //     ...
     //     def _N = this.pN
@@ -342,18 +340,17 @@ object desugar {
     //              pN: TN = pN: @uncheckedVariance)(moreParams) =
     //       new C[...](p1, ..., pN)(moreParams)
     //
+    // Above arity 22 we also synthesize:
+    //     def productArity = N
+    //     def productElement(i: Int): Any = i match { ... }
+    //
     // Note: copy default parameters need @uncheckedVariance; see
     // neg/t1843-variances.scala for a test case. The test would give
     // two errors without @uncheckedVariance, one of them spurious.
     val caseClassMeths = {
       def syntheticProperty(name: TermName, rhs: Tree) =
         DefDef(name, Nil, Nil, TypeTree(), rhs).withMods(synthetic)
-      // The override here is less than ideal: user defined productArity / productElement
-      // methods would be silently ignored. This is necessary to compile `scala.TupleN`.
-      // The long term solution is to remove `ProductN` entirely from stdlib.
-      def productArity =
-        DefDef(nme.productArity, Nil, Nil, TypeTree(), Literal(Constant(arity)))
-          .withMods(Modifiers(Synthetic | Override))
+      def productArity = syntheticProperty(nme.productArity, Literal(Constant(arity)))
       def productElement = {
         val param = makeSyntheticParameter(tpt = ref(defn.IntType))
         // case N => _${N + 1}
@@ -366,7 +363,7 @@ object desugar {
         val defaultCase = CaseDef(untpd.Ident(nme.WILDCARD), EmptyTree, error)
         val body = Match(refOfDef(param), (cases :+ defaultCase).toList)
         DefDef(nme.productElement, Nil, List(List(param)), TypeTree(defn.AnyType), body)
-          .withMods(Modifiers(Synthetic | Override))
+          .withMods(synthetic)
       }
       def productElemMeths = {
         val caseParams = constrVparamss.head.toArray
@@ -396,18 +393,31 @@ object desugar {
         }
       }
 
+      // Above MaxTupleArity we extend Product instead of ProductN, in this
+      // case we need to synthesise productElement & productArity.
+      def largeProductMeths =
+        if (arity > Definitions.MaxTupleArity) List(productElement, productArity)
+        else Nil
+
       if (isCaseClass)
-        productElement :: productArity :: copyMeths ::: productElemMeths.toList
-      else if (isCaseObject)
-        productElement :: productArity :: Nil
+        largeProductMeths ::: copyMeths ::: productElemMeths.toList
       else Nil
     }
 
     def anyRef = ref(defn.AnyRefAlias.typeRef)
+    def productConstr(n: Int) = {
+      val tycon = scalaDot((tpnme.Product.toString + n).toTypeName)
+      val targs = constrVparamss.head map (_.tpt)
+      if (targs.isEmpty) tycon else AppliedTypeTree(tycon, targs)
+    }
+    def product =
+      if (arity > Definitions.MaxTupleArity) scalaDot(nme.Product.toTypeName)
+      else productConstr(arity)
 
-    // Case classes and case objects get NameBasedPattern and Product parents
+    // Case classes and case objects get NameBasedPattern and Product/ProductN parents
     val parents1: List[Tree] =
-      if (mods.is(Case)) parents :+ scalaDot(nme.Product.toTypeName) :+ scalaDot(nme.NameBasedPattern.toTypeName)
+      if (mods.is(Case))
+        parents :+ product :+ scalaDot(nme.NameBasedPattern.toTypeName)
       else parents
 
     // The thicket which is the desugared version of the companion object
