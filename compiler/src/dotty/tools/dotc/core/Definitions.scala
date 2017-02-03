@@ -796,9 +796,9 @@ class Definitions {
 
   /** Is this type eligible for name based pattern matching?
    *
-   *  That means either extending `scala.ProductN` or `NameBasedPattern`.
-   *  Ideally only the second condition should be used, first on is kept
-   *  for compatibility with scala2 compiled case classes.
+   *  That means either extending `scala.ProductN` OR `NameBasedPattern`.
+   *  In the long term, we can remove the first condition by having
+   *  `scala.ProductN` inherit `NameBasedPattern`.
    */
   def isNameBasedPatternSubType(tp: Type)(implicit ctx: Context) =
     (tp.derivesFrom(ProductType.symbol) && tp.baseClasses.exists(isProductClass)) ||
