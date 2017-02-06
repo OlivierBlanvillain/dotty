@@ -143,25 +143,22 @@ class Definitions {
         val decls = newScope
         val arity = name.tupleArity
         val argParams =
-          for (i <- List.range(0, arity)) yield
-            enterTypeParam(cls, name ++ "$T" ++ i.toString, Synthetic, decls)
-        // def _N: $TN
-        argParams.zipWithIndex.foreach { case (arg, index) =>
-          // println("--------------------------------------")
-          // println(ExprType(arg.typeRef))
-          decls.enter(
-            newMethod(cls, nme.productAccessorName(index + 1),
-              ExprType(arg.typeRef)))
-        }
-        // def isEmpty: Boolean
-        // decls.enter(newMethod(cls, nme.isEmpty, ExprType(defn.BooleanType)))
-        // // def get: this.type
-        // decls.enter(newMethod(cls, nme.get, ExprType(cls.thisType)))
-        denot.info = ClassInfo(ScalaPackageClass.thisType, cls, ObjectType ::
-          // NameBasedPatternType :: Nil
-          ctx.normalizeToClassRefs(defn.ProductNType(arity).appliedTo(argParams.map(_.typeRef)) :: Nil, cls, decls)
+          for (i <- List.range(0, arity))
+          yield enterTypeParam(cls, name ++ "$T" ++ i.toString, Synthetic, decls)
+        val argTypes = argParams.map(arg => ExprType(arg.typeRef))
 
-        , decls)
+        // def _N: $TN
+        argTypes.zipWithIndex.foreach { case (arg, index) =>
+          decls.enter(newMethod(cls, nme.productAccessorName(index + 1), arg))
+        }
+
+        val tupleType = argTypes.foldRight(defn.UnitType: Type) { case (current, previous) =>
+          defn.TupleConsType.appliedTo(List(current, previous))
+        }
+
+        val parents = ObjectType :: NameBasedPatternType :: ctx.normalizeToClassRefs(List(tupleType), cls, decls)
+          // ctx.normalizeToClassRefs(defn.ProductNType(arity).appliedTo(argParams.map(_.typeRef)) :: Nil, cls, decls)
+        denot.info = ClassInfo(ScalaPackageClass.thisType, cls, parents, decls)
       }
     }
     newClassSymbol(ScalaPackageClass, name, Trait, completer)

@@ -19,4 +19,15 @@ object Test {
 
     wat((1, 2, 3, 4))
   }
+
+  // def compatScala2: Unit = {
+  //   val l = Map(1 -> "s").toList.head
+
+  //   l match {
+  //     case (i: Int, s: String) =>
+  //       assert(i == 1)
+  //       assert(s == "s")
+  //     case _ => ???
+  //   }
+  // }
 }
