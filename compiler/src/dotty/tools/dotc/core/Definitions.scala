@@ -147,8 +147,8 @@ class Definitions {
             enterTypeParam(cls, name ++ "$T" ++ i.toString, Synthetic, decls)
         // def _N: $TN
         argParams.zipWithIndex.foreach { case (arg, index) =>
-          println("--------------------------------------")
-          println(ExprType(arg.typeRef))
+          // println("--------------------------------------")
+          // println(ExprType(arg.typeRef))
           decls.enter(
             newMethod(cls, nme.productAccessorName(index),
               ExprType(arg.typeRef)))
@@ -158,8 +158,8 @@ class Definitions {
         // def get: this.type
         decls.enter(newMethod(cls, nme.get, ExprType(cls.thisType)))
         denot.info = ClassInfo(ScalaPackageClass.thisType, cls, ObjectType ::
-
-          ctx.normalizeToClassRefs(defn.ProductNType(arity).appliedTo(argParams.map(_.typeRef)) :: Nil, cls, decls)
+          NameBasedPatternType :: Nil
+          // ctx.normalizeToClassRefs(defn.ProductNType(arity).appliedTo(argParams.map(_.typeRef)) :: Nil, cls, decls)
 
         , decls)
       }
@@ -1078,7 +1078,7 @@ class Definitions {
         val res = super.lookupEntry(name)
         if (res == null && name.isTypeName && name.functionArity > maxImplementedFunction(name))
           newScopeEntry(newFunctionNTrait(name.asTypeName))
-        else if (res == null && name.tupleArity != -1) { // maxImplementedTuple(name)) {
+        else if (res == null && name.tupleArity /*!= -1) {*/ > maxImplementedTuple(name)) {
           val clazz: Symbol = newTupleNTrait(Names.typeName(name.toString))
           val clazzEntry = newScopeEntry(clazz)
           val module: Symbol = newTupleNCompanion(Names.termName(name.toString))

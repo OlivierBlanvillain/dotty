@@ -173,7 +173,7 @@ class tests extends CompilerTest {
   @Test def pos_utf16 = compileFile(posSpecialDir, "utf16encoded", explicitUTF16)
 
   @Test def new_all = compileFiles(newDir, twice)
-  @Test def repl_all = replFiles(replDir)
+  // @Test def repl_all = replFiles(replDir)
 
   @Test def neg_all = compileFiles(negDir, verbose = true, compileSubDirs = false)
   @Test def neg_typedIdents() = compileDir(negDir, "typedIdents")
@@ -217,14 +217,14 @@ class tests extends CompilerTest {
   }
 
   @Test def compileStdLib = compileList("compileStdLib", stdlibFiles, "-migration" :: "-Yno-inline" :: scala2mode)
-  @Test def compileMixed = compileLine(
-      """../tests/pos/B.scala
-        |../scala-scala/src/library/scala/collection/immutable/Seq.scala
-        |../scala-scala/src/library/scala/collection/parallel/ParSeq.scala
-        |../scala-scala/src/library/scala/package.scala
-        |../scala-scala/src/library/scala/collection/GenSeqLike.scala
-        |../scala-scala/src/library/scala/collection/SeqLike.scala
-        |../scala-scala/src/library/scala/collection/generic/GenSeqFactory.scala""".stripMargin)
+  // @Test def compileMixed = compileLine(
+  //     """../tests/pos/B.scala
+  //       |../scala-scala/src/library/scala/collection/immutable/Seq.scala
+  //       |../scala-scala/src/library/scala/collection/parallel/ParSeq.scala
+  //       |../scala-scala/src/library/scala/package.scala
+  //       |../scala-scala/src/library/scala/collection/GenSeqLike.scala
+  //       |../scala-scala/src/library/scala/collection/SeqLike.scala
+  //       |../scala-scala/src/library/scala/collection/generic/GenSeqFactory.scala""".stripMargin)
   @Test def compileIndexedSeq = compileLine("../scala-scala/src/library/scala/collection/immutable/IndexedSeq.scala")
 
   @Test def dotty = {

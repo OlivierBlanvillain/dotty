@@ -63,10 +63,10 @@ object Applications {
    *  parameterless `isEmpty` member of result type `Boolean`.
    */
   def isGetMatch(tp: Type, errorPos: Position = NoPosition)(implicit ctx: Context) = {
-    println
-    println(tp)
-    println(s"sRef(defn.BooleanClass): ${extractorMemberType(tp, nme.isEmpty, errorPos).isRef(defn.BooleanClass)}")
-    println(s"e.get, errorPos).exists: ${extractorMemberType(tp, nme.get, errorPos).exists}")
+    // println
+    // println(tp)
+    // println(s"sRef(defn.BooleanClass): ${extractorMemberType(tp, nme.isEmpty, errorPos).isRef(defn.BooleanClass)}")
+    // println(s"e.get, errorPos).exists: ${extractorMemberType(tp, nme.get, errorPos).exists}")
     extractorMemberType(tp, nme.isEmpty, errorPos).isRef(defn.BooleanClass) &&
     extractorMemberType(tp, nme.get, errorPos).exists
   }
@@ -923,6 +923,9 @@ trait Applications extends Compatibility { self: Typer with Dynamic =>
           argTypes = argTypes.take(args.length) ++
             List.fill(argTypes.length - args.length)(WildcardType)
         }
+        println("--------")
+        println(s"bunchedArgs: $bunchedArgs")
+        println(s"argTypes: $argTypes")
         val unapplyPatterns = (bunchedArgs, argTypes).zipped map (typed(_, _))
         val result = assignType(cpy.UnApply(tree)(unapplyFn, unapplyImplicits, unapplyPatterns), ownType)
         unapp.println(s"unapply patterns = $unapplyPatterns")
