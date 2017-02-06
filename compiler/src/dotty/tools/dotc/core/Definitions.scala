@@ -150,16 +150,16 @@ class Definitions {
           // println("--------------------------------------")
           // println(ExprType(arg.typeRef))
           decls.enter(
-            newMethod(cls, nme.productAccessorName(index),
+            newMethod(cls, nme.productAccessorName(index + 1),
               ExprType(arg.typeRef)))
         }
         // def isEmpty: Boolean
-        decls.enter(newMethod(cls, nme.isEmpty, ExprType(defn.BooleanType)))
-        // def get: this.type
-        decls.enter(newMethod(cls, nme.get, ExprType(cls.thisType)))
+        // decls.enter(newMethod(cls, nme.isEmpty, ExprType(defn.BooleanType)))
+        // // def get: this.type
+        // decls.enter(newMethod(cls, nme.get, ExprType(cls.thisType)))
         denot.info = ClassInfo(ScalaPackageClass.thisType, cls, ObjectType ::
-          NameBasedPatternType :: Nil
-          // ctx.normalizeToClassRefs(defn.ProductNType(arity).appliedTo(argParams.map(_.typeRef)) :: Nil, cls, decls)
+          // NameBasedPatternType :: Nil
+          ctx.normalizeToClassRefs(defn.ProductNType(arity).appliedTo(argParams.map(_.typeRef)) :: Nil, cls, decls)
 
         , decls)
       }
@@ -193,14 +193,10 @@ class Definitions {
         )))
 
         // def unapply[T1, T2, ...](t: TupleN[T1, T2, ...]): TupleN[T1, T2, ...]
-        decls.enter(newMethod(cls, nme.unapply, PolyType(argTypeNames)(emptyBounds, pt =>
-          MethodType(
-            List(name ++ "$"),
-            List(defn.SyntheticTupleType(arity).appliedTo(pt.typeParams.map(_.toArg)))
-            // List(pt.typeParams.map(_.toArg).foldRight(defn.UnitType: Type)(defn.TupleConsType.appliedTo))
-          // )(mt => defn.OptionType.appliedTo(defn.SyntheticTupleType(arity).appliedTo(pt.typeParams.map(_.toArg))))
-          )(mt => mt.paramTypes.head) // defn.SyntheticTupleType(arity).appliedTo(pt.typeParams.map(_.toArg)))
-        )))
+        decls.enter(newMethod(cls, nme.unapply, PolyType(argTypeNames)(emptyBounds, pt => {
+          val rez = defn.SyntheticTupleType(arity).appliedTo(pt.typeParams.map(_.toArg))
+          MethodType(List(name ++ "$"), List(rez))(_ => rez)
+        })))
 
         denot.info =
           ClassInfo(ScalaPackageClass.thisType, cls, ObjectType :: Nil/*:: parentTraits*/, decls)

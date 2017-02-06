@@ -923,9 +923,17 @@ trait Applications extends Compatibility { self: Typer with Dynamic =>
           argTypes = argTypes.take(args.length) ++
             List.fill(argTypes.length - args.length)(WildcardType)
         }
-        println("--------")
-        println(s"bunchedArgs: $bunchedArgs")
-        println(s"argTypes: $argTypes")
+
+        // -------- NamedBasedPattern
+        // bunchedArgs: List(Tuple(List(Ident(a3), Ident(b3), Ident(c3))))
+        // argTypes: List(RefinedType(RefinedType(RefinedType(TypeRef(ThisType(TypeRef(NoPrefix,scala)),Tuple03), Tuple03$T0, TypeAlias
+        // (TypeVar(PolyParam(Tuple03$T0)), 0)), Tuple03$T1, TypeAlias(TypeVar(PolyParam(Tuple03$T1)), 0)), Tuple03$T2, TypeAlias(TypeV
+        // ar(PolyParam(Tuple03$T2)), 0)))
+
+        // -------- ProductN
+        // bunchedArgs: List(Ident(a3), Ident(b3), Ident(c3))
+        // argTypes: List(TypeVar(PolyParam(Tuple03$T1)), TypeVar(PolyParam(Tuple03$T2)), TypeVar(PolyParam(Tuple03$T2)))
+
         val unapplyPatterns = (bunchedArgs, argTypes).zipped map (typed(_, _))
         val result = assignType(cpy.UnApply(tree)(unapplyFn, unapplyImplicits, unapplyPatterns), ownType)
         unapp.println(s"unapply patterns = $unapplyPatterns")
