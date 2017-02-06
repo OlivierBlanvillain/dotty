@@ -362,7 +362,6 @@ object desugar {
         }
         val ioob  = ref(defn.IndexOutOfBoundsException.typeRef)
         val error = Throw(New(ioob, List(List(Select(refOfDef(param), nme.toString_)))))
-        // case _ => throw new IndexOutOfBoundsException(i.toString)
         val defaultCase = CaseDef(untpd.Ident(nme.WILDCARD), EmptyTree, error)
         val body = Match(refOfDef(param), (cases :+ defaultCase).toList)
         DefDef(nme.productElement, Nil, List(List(param)), TypeTree(defn.AnyType), body)
