@@ -185,7 +185,19 @@ class Definitions {
         decls.enter(newMethod(cls, nme.apply, PolyType(argTypeNames)(emptyBounds,
           pt => MethodType(argTermNames, pt.typeParams.map(_.toArg))(
             // mt => mt.paramTypes.foldRight(defn.UnitType: Type)(defn.TupleConsType.appliedTo)
-            mt => defn.SyntheticTupleType(arity).appliedTo(mt.paramTypes)
+            // mt => defn.SyntheticTupleType(arity).appliedTo(mt.paramTypes)
+            mt => {
+              val (h :: t) = mt.paramTypes
+              val t2 = t.foldRight(defn.UnitType: Type) { case (l, r) =>
+                defn.TupleConsType.appliedTo(TypeAlias(l) :: TypeAlias(r) :: Nil)
+              }
+              defn.TupleImplNType.appliedTo(h, t2)
+            }
+            //   tailType.map(_.tpe).foldRight(defn.UnitType: Type) { case (l, r) =>
+            //     RefinedType.makeFullyDefined(defn.TupleConsType, (l :: r :: Nil).map(t => TypeAlias(t)))
+            //   }
+            // ref(defn.TupleImplNType.classSymbol.companionModule) // TupleImplN.wrap()
+            // mt => defn.SyntheticTupleType(arity).appliedTo(mt.paramTypes)
           )
         )))
 

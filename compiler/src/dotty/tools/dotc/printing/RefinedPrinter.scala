@@ -128,7 +128,7 @@ class RefinedPrinter(_ctx: Context) extends PlainPrinter(_ctx) {
         if (tycon.isRepeatedParam) return toTextLocal(args.head) ~ "*"
         if (defn.isFunctionClass(cls)) return toTextFunction(args, isImplicit = false)
         if (defn.isImplicitFunctionClass(cls)) return toTextFunction(args, isImplicit = true)
-        if (defn.isTupleClass(cls)) return toTextTuple(args)
+        // if (defn.isTupleClass(cls)) return toTextTuple(args)
         return (toTextLocal(tycon) ~ "[" ~ Text(args map argText, ", ") ~ "]").close
       case tp: TypeRef =>
         val hideType = tp.symbol is AliasPreferred

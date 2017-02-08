@@ -1000,9 +1000,13 @@ object desugar {
         val arity = ts.length
         if (arity == 0)
           unitLiteral
-        else if (ctx.mode is Mode.Type)
+        else if ((ctx.mode is Mode.Type) && arity < Definitions.MaxCaseClassTupleArity)
           AppliedTypeTree(ref(defn.SyntheticTupleType(arity)), ts)
-        else
+        else if (ctx.mode is Mode.Type) {
+          def hconsType(l: Tree, r: Tree): Tree =
+            AppliedTypeTree(ref(defn.TupleConsType), l :: r :: Nil)
+          ts.foldRight(TypeTree(defn.UnitType): Tree)(hconsType)
+        } else
           Apply(ref(defn.SyntheticTupleModule(arity).valRef), ts)
 
         // arity match {
@@ -1010,9 +1014,9 @@ object desugar {
         //   case i if i < Definitions.MaxCaseClassTupleArity =>
           // case _ if ctx.mode is Mode.Type =>
           //   // Transforming Tuple types: (T1, T2) → TupleCons[T1, TupleCons[T2, Unit]]
-          //   def hconsType(l: Tree, r: Tree): Tree =
-          //     AppliedTypeTree(ref(defn.TupleConsType), l :: r :: Nil)
-          //   ts.foldRight(TypeTree(defn.UnitType): Tree)(hconsType)
+            // def hconsType(l: Tree, r: Tree): Tree =
+            //   AppliedTypeTree(ref(defn.TupleConsType), l :: r :: Nil)
+            // ts.foldRight(TypeTree(defn.UnitType): Tree)(hconsType)
           // case _ =>
           //   // Transforming Tuple trees: (T1, T2, ..., TN) → TupleCons(T1, TupleCons(T2, ... (TupleCons(TN, ()))))
           //   val cons = defn.TupleConsType.classSymbol.companionModule.valRef

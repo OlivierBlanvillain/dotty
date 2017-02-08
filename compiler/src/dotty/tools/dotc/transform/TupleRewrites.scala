@@ -5,63 +5,76 @@ import core.Symbols._
 import core.StdNames._
 import ast.Trees._
 import core.Types._
+import core.DenotTransformers.InfoTransformer
 import dotty.tools.dotc.core.Contexts.Context
 import dotty.tools.dotc.transform.TreeTransforms.{MiniPhaseTransform, TransformerInfo}
 
 import dotty.tools.dotc.core.Definitions.MaxCaseClassTupleArity
 import dotty.tools.dotc.core.Constants.Constant
 import annotation.tailrec
+import core.NameOps._
 
 /** TODOC OLIVIER
  */
-class TupleRewrites extends MiniPhaseTransform {
+class TupleRewrites extends MiniPhaseTransform /*with InfoTransformer*/ {
   import dotty.tools.dotc.ast.tpd._
 
   def phaseName: String = "tupleRewrites"
 
-  // override def transformApply(tree: Apply)(implicit ctx: Context, info: TransformerInfo): Tree = {
-  //   // Matches a tree with shape `TupleCons.apply(head, tail)` where `tail` itself a tuple
-  //   // with statically known lenght (Unit, TupleImpl1, TupleImpl2...). */
-  //   object TupleApplies {
-  //     def unapply(tree: Apply)(implicit ctx: Context): Option[List[Tree]] =
-  //       tree match {
-  //         case Apply(TypeApply(Select(ident, nme.apply), _), head :: tail :: Nil)
-  //           if ident.symbol == defn.TupleConsSymbol =>
-  //             tail match {
-  //               case Literal(Constant(())) =>
-  //                 Some(head :: Nil)
-  //               case Typed(Apply(TypeApply(Select(tailIdent, nme.apply), _), args), _)
-  //                 if defn.TupleSymbols contains tailIdent.symbol =>
-  //                   Some(head :: args)
-  //               case Typed(Apply(TypeApply(Select(tailIdent, nme.wrap), _), SeqLiteral(args, _) :: Nil), _)
-  //                 if tailIdent.symbol == defn.TupleImplNSymbol =>
-  //                   Some(head :: args)
-  //               case _ => None
-  //             }
-  //         case _ => None
-  //       }
-  //   }
+  // def transformInfo(tp: Type, sym: Symbol)(implicit ctx: Context): Type = sym match {
+  //   // case sym if isRef() sym: Symbol if sym.name.tupleArity > MaxCaseClassTupleArity =>
+  //   //   defn.TupleImplNType
+  //     // tp
 
-  //   tree match {
-  //     case TupleApplies(args) =>
-  //       val arity = args.length
-  //       val newSelect =
-  //         if (arity <= MaxCaseClassTupleArity)
-  //           ref(defn.TupleNType(arity).classSymbol.companionModule) // TupleImpl${arity}(args)
-  //             .select(nme.apply)
-  //             .appliedToTypes(args.map(_.tpe))
-  //             .appliedToArgs(args)
-  //         else {
-  //           val TupleConsTypeExtractor(headType, tailType) = tree.tpe
-  //           ref(defn.TupleImplNType.classSymbol.companionModule) // TupleImplN.wrap()
-  //             .select(nme.wrap)
-  //             .appliedToTypes(headType :: tailType :: Nil)
-  //             .appliedTo(SeqLiteral(args, ref(defn.AnyType)))
-  //         }
-  //       Typed(newSelect, TypeTree(tree.tpe))
-  //     case _ => tree
-  //   }
+  //   //   sym.companionClass match {
+  //   //     case origClass: ClassSymbol if isDerivedValueClass(origClass) =>
+  //   //       val cinfo = tp.asInstanceOf[ClassInfo]
+  //   //       val decls1 = cinfo.decls.cloneScope
+  //   //       ctx.atPhase(this.next) { implicit ctx =>
+  //   //         // Remove synthetic cast methods introduced by ExtensionMethods,
+  //   //         // they are no longer needed after this phase.
+  //   //         decls1.unlink(cinfo.decl(nme.U2EVT).symbol)
+  //   //         decls1.unlink(cinfo.decl(nme.EVT2U).symbol)
+  //   //       }
+  //   //       cinfo.derivedClassInfo(decls = decls1)
+  //   //     case _ =>
+  //   //       tp
+  //   //   }
+  //   case _ =>
+  //     // elimEVT(tp)
+  //     println(s"transformInfo $tp")
+  //     println(s"sym $sym")
+  //     println
+  //     tp
   // }
+
+  // def elimEVT(tp: Type)(implicit ctx: Context): Type = tp match {
+  //   case ErasedValueType(_, underlying) =>
+  //     elimEVT(underlying)
+  //   case tp: MethodType =>
+  //     val paramTypes = tp.paramTypes.mapConserve(elimEVT)
+  //     val retType = elimEVT(tp.resultType)
+  //     tp.derivedMethodType(tp.paramNames, paramTypes, retType)
+  //   case _ =>
+  //     tp
+  // }
+
+  override def transformApply(tree: Apply)(implicit ctx: Context, info: TransformerInfo): Tree = {
+    tree match {
+      case Apply(TypeApply(Select(ident, nme.apply), headType :: tailType), args)
+        if ident.symbol.name.tupleArity > MaxCaseClassTupleArity =>
+          println(ident.symbol.name)
+          val tailTupleType =
+            tailType.map(_.tpe).foldRight(defn.UnitType: Type) { case (l, r) =>
+              RefinedType.makeFullyDefined(defn.TupleConsType, (l :: r :: Nil).map(t => TypeAlias(t)))
+            }
+          ref(defn.TupleImplNType.classSymbol.companionModule) // TupleImplN.wrap()
+            .select(nme.wrap)
+            .appliedToTypeTrees(headType :: TypeTree(tailTupleType) :: Nil)
+            .appliedTo(SeqLiteral(args, ref(defn.AnyType)))
+      case _ => tree
+    }
+  }
 
   // override def transformUnApply(tree: UnApply)(implicit ctx: Context, info: TransformerInfo): Tree = {
   //   // Matches a tree with shape `TupleCons.unapply(head, tail)` where `tail` itself a tuple
