@@ -63,7 +63,6 @@ class TupleRewrites extends MiniPhaseTransform /*with InfoTransformer*/ {
     tree match {
       case Apply(TypeApply(Select(ident, nme.apply), headType :: tailType), args)
         if ident.symbol.name.tupleArity > MaxCaseClassTupleArity =>
-          println(ident.symbol.name)
           val tailTupleType =
             tailType.map(_.tpe).foldRight(defn.UnitType: Type) { case (l, r) =>
               RefinedType.makeFullyDefined(defn.TupleConsType, (l :: r :: Nil).map(t => TypeAlias(t)))
@@ -72,6 +71,23 @@ class TupleRewrites extends MiniPhaseTransform /*with InfoTransformer*/ {
             .select(nme.wrap)
             .appliedToTypeTrees(headType :: TypeTree(tailTupleType) :: Nil)
             .appliedTo(SeqLiteral(args, ref(defn.AnyType)))
+      case _ => tree
+    }
+  }
+
+  override def transformUnApply(tree: UnApply)(implicit ctx: Context, info: TransformerInfo): Tree = {
+    tree match {
+      case UnApply(TypeApply(Select(selectIndent, nme.unapply), headType :: tailType), Nil, patterns)
+        if selectIndent.symbol.name.tupleArity > MaxCaseClassTupleArity =>
+          val tailTupleType =
+            tailType.map(_.tpe).foldRight(defn.UnitType: Type) { case (l, r) =>
+              RefinedType.makeFullyDefined(defn.TupleConsType, (l :: r :: Nil).map(t => TypeAlias(t)))
+            }
+          val newCall =
+            ref(defn.TupleImplNType.classSymbol.companionModule)
+              .select(nme.unapplySeq)
+              .appliedToTypeTrees(headType :: TypeTree(tailTupleType) :: Nil)
+          UnApply(fun = newCall, implicits = Nil, patterns = patterns, proto = tree.tpe)
       case _ => tree
     }
   }

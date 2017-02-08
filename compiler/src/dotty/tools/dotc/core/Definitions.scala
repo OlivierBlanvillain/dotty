@@ -203,8 +203,13 @@ class Definitions {
 
         // def unapply[T1, T2, ...](t: TupleN[T1, T2, ...]): TupleN[T1, T2, ...]
         decls.enter(newMethod(cls, nme.unapply, PolyType(argTypeNames)(emptyBounds, pt => {
-          val rez = defn.SyntheticTupleType(arity).appliedTo(pt.typeParams.map(_.toArg))
-          MethodType(List(name ++ "$"), List(rez))(_ => rez)
+          val (h :: t) = pt.typeParams.map(_.toArg)
+          val t2 = t.foldRight(defn.UnitType: Type) { case (l, r) =>
+            defn.TupleConsType.appliedTo(TypeAlias(l) :: TypeAlias(r) :: Nil)
+          }
+          val impl  = defn.TupleImplNType.appliedTo(h, t2)
+          val synth = defn.SyntheticTupleType(arity).appliedTo(pt.typeParams.map(_.toArg))
+          MethodType(List(name ++ "$"), List(impl))(_ => synth)
         })))
 
         denot.info =
