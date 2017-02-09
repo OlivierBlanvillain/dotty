@@ -200,8 +200,8 @@ class tests extends CompilerTest {
   def neg_noimports = compileFile(negCustomArgs, "noimports", List("-Yno-imports"))
   def neg_noimpots2 = compileFile(negCustomArgs, "noimports2", List("-Yno-imports"))
 
-  def run_all = runFiles(runDir)
-  def run_all = runFiles(testsDir + "run/tuples/")
+  // def run_all = runFiles(runDir)
+  @Test def run_all = runFiles(testsDir + "run/tuples/")
 
   private val stdlibFiles: List[String] = StdLibSources.whitelisted
 
