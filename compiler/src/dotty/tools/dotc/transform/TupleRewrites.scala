@@ -33,8 +33,9 @@ class TupleRewrites extends MiniPhaseTransform {
     tree match {
       case Apply(TypeApply(Select(ident, nme.apply), headType :: tailType), args) =>
         println
-        println(ident)
-        println(ident.symbol.info.decls.lookup(nme.unapply).info)
+        println(s"$ident")
+        println("apply: "   + ident.symbol.info.decls.lookup(nme.apply).info)
+        println("unapply: " + ident.symbol.info.decls.lookup(nme.unapply).info)
         tree
       case _ => tree
     }
