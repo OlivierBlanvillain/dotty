@@ -53,25 +53,25 @@ trait UnderscoreTupleSyntax {
   // }
 
   implicit class Tuple1Assessors[A](l: Product with TupleCons[A, Unit with Tuple]) {
-    def _1 = l.asInstanceOf[dotty.TupleImplN[_, _]].underlying(1).asInstanceOf[A]
+    def _1 = l.asInstanceOf[dotty.TupleImplN[_, _]].underlying(0).asInstanceOf[A]
   }
 
   implicit class Tuple2Assessors[A, B](l: Product with TupleCons[A, TupleCons[B, Unit with Tuple]]) {
-    def _1 = l.asInstanceOf[dotty.TupleImplN[_, _]].underlying(1).asInstanceOf[A]
-    def _2 = l.asInstanceOf[dotty.TupleImplN[_, _]].underlying(2).asInstanceOf[B]
+    def _1 = l.asInstanceOf[dotty.TupleImplN[_, _]].underlying(0).asInstanceOf[A]
+    def _2 = l.asInstanceOf[dotty.TupleImplN[_, _]].underlying(1).asInstanceOf[B]
   }
 
   implicit class Tuple3Assessors[A, B, C](l: Product with TupleCons[A, TupleCons[B, TupleCons[C, Unit with Tuple]]]) {
-    def _1 = l.asInstanceOf[dotty.TupleImplN[_, _]].underlying(1).asInstanceOf[A]
-    def _2 = l.asInstanceOf[dotty.TupleImplN[_, _]].underlying(2).asInstanceOf[B]
-    def _3 = l.asInstanceOf[dotty.TupleImplN[_, _]].underlying(3).asInstanceOf[C]
+    def _1 = l.asInstanceOf[dotty.TupleImplN[_, _]].underlying(0).asInstanceOf[A]
+    def _2 = l.asInstanceOf[dotty.TupleImplN[_, _]].underlying(1).asInstanceOf[B]
+    def _3 = l.asInstanceOf[dotty.TupleImplN[_, _]].underlying(2).asInstanceOf[C]
   }
 
   implicit class Tuple4Assessors[A, B, C, D](l: Product with TupleCons[A, TupleCons[B, TupleCons[C, TupleCons[D, Unit with Tuple]]]]) {
-    def _1 = l.asInstanceOf[dotty.TupleImplN[_, _]].underlying(1).asInstanceOf[A]
-    def _2 = l.asInstanceOf[dotty.TupleImplN[_, _]].underlying(2).asInstanceOf[B]
-    def _3 = l.asInstanceOf[dotty.TupleImplN[_, _]].underlying(3).asInstanceOf[C]
-    def _4 = l.asInstanceOf[dotty.TupleImplN[_, _]].underlying(4).asInstanceOf[D]
+    def _1 = l.asInstanceOf[dotty.TupleImplN[_, _]].underlying(0).asInstanceOf[A]
+    def _2 = l.asInstanceOf[dotty.TupleImplN[_, _]].underlying(1).asInstanceOf[B]
+    def _3 = l.asInstanceOf[dotty.TupleImplN[_, _]].underlying(2).asInstanceOf[C]
+    def _4 = l.asInstanceOf[dotty.TupleImplN[_, _]].underlying(3).asInstanceOf[D]
   }
 
   implicit class Tuple5Assessors[A, B, C, D, E](l: Product with TupleCons[A, TupleCons[B, TupleCons[C, TupleCons[D, TupleCons[E, Unit with Tuple]]]]]) {

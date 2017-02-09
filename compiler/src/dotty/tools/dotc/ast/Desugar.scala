@@ -1000,13 +1000,13 @@ object desugar {
         val arity = ts.length
         if (arity == 0)
           unitLiteral
-        else if ((ctx.mode is Mode.Type)) // && arity < Definitions.MaxCaseClassTupleArity) TODO OLIVIER
+        else if ((ctx.mode is Mode.Type) && arity < Definitions.MaxCaseClassTupleArity)
           AppliedTypeTree(ref(defn.SyntheticTupleType(arity)), ts)
-        // else if (ctx.mode is Mode.Type) {
-        //   def hconsType(l: Tree, r: Tree): Tree =
-        //     AppliedTypeTree(ref(defn.TupleConsType), l :: r :: Nil)
-        //   ts.foldRight(TypeTree(defn.UnitType): Tree)(hconsType)
-        // }
+        else if (ctx.mode is Mode.Type) {
+          def hconsType(l: Tree, r: Tree): Tree =
+            AppliedTypeTree(ref(defn.TupleConsType), l :: r :: Nil)
+          ts.foldRight(TypeTree(defn.UnitType): Tree)(hconsType)
+        }
         else
           Apply(ref(defn.SyntheticTupleModule(arity).valRef), ts)
 
