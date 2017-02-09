@@ -184,32 +184,26 @@ class Definitions {
         // def apply[T1, T2, ...](a1: T1, a2: T2, ...): TupleN[T1, T2, ...]
         decls.enter(newMethod(cls, nme.apply, PolyType(argTypeNames)(emptyBounds,
           pt => MethodType(argTermNames, pt.typeParams.map(_.toArg))(
-            // mt => mt.paramTypes.foldRight(defn.UnitType: Type)(defn.TupleConsType.appliedTo)
-            // mt => defn.SyntheticTupleType(arity).appliedTo(mt.paramTypes)
-            mt => {
-              val (h :: t) = mt.paramTypes
-              val t2 = t.foldRight(defn.UnitType: Type) { case (l, r) =>
-                defn.TupleConsType.appliedTo(TypeAlias(l) :: TypeAlias(r) :: Nil)
-              }
-              defn.TupleImplNType.appliedTo(h, t2)
-            }
-            //   tailType.map(_.tpe).foldRight(defn.UnitType: Type) { case (l, r) =>
-            //     RefinedType.makeFullyDefined(defn.TupleConsType, (l :: r :: Nil).map(t => TypeAlias(t)))
+            mt => defn.SyntheticTupleType(arity).appliedTo(mt.paramTypes)
+            // mt => {
+            //   val (h :: t) = mt.paramTypes
+            //   val t2 = t.foldRight(defn.UnitType: Type) { case (l, r) =>
+            //     defn.TupleConsType.appliedTo(TypeAlias(l) :: TypeAlias(r) :: Nil)
             //   }
-            // ref(defn.TupleImplNType.classSymbol.companionModule) // TupleImplN.wrap()
-            // mt => defn.SyntheticTupleType(arity).appliedTo(mt.paramTypes)
+            //   defn.TupleImplNType.appliedTo(h, t2)
+            // }
           )
         )))
 
         // def unapply[T1, T2, ...](t: TupleN[T1, T2, ...]): TupleN[T1, T2, ...]
         decls.enter(newMethod(cls, nme.unapply, PolyType(argTypeNames)(emptyBounds, pt => {
-          val (h :: t) = pt.typeParams.map(_.toArg)
-          val t2 = t.foldRight(defn.UnitType: Type) { case (l, r) =>
-            defn.TupleConsType.appliedTo(TypeAlias(l) :: TypeAlias(r) :: Nil)
-          }
-          val impl  = defn.TupleImplNType.appliedTo(h, t2)
+          // val (h :: t) = pt.typeParams.map(_.toArg)
+          // val t2 = t.foldRight(defn.UnitType: Type) { case (l, r) =>
+          //   defn.TupleConsType.appliedTo(TypeAlias(l) :: TypeAlias(r) :: Nil)
+          // }
+          // val impl  = defn.TupleImplNType.appliedTo(h, t2)
           val synth = defn.SyntheticTupleType(arity).appliedTo(pt.typeParams.map(_.toArg))
-          MethodType(List(name ++ "$"), List(impl))(_ => synth)
+          MethodType(List(name ++ "x$1"), List(synth))(mt => mt.paramTypes.head)
         })))
 
         denot.info =

@@ -29,21 +29,30 @@ class TupleRewrites extends MiniPhaseTransform {
   //     case _ => ()
   //   }
 
-  // override def transformApply(tree: Apply)(implicit ctx: Context, info: TransformerInfo): Tree = {
-  //   tree match {
-  //     case Apply(TypeApply(Select(ident, nme.apply), headType :: tailType), args)
-  //       if ident.symbol.name.tupleArity > MaxCaseClassTupleArity =>
-  //         val tailTupleType =
-  //           tailType.map(_.tpe).foldRight(defn.UnitType: Type) { case (l, r) =>
-  //             RefinedType.makeFullyDefined(defn.TupleConsType, (l :: r :: Nil).map(t => TypeAlias(t)))
-  //           }
-  //         ref(defn.TupleImplNType.classSymbol.companionModule) // TupleImplN.wrap()
-  //           .select(nme.wrap)
-  //           .appliedToTypeTrees(headType :: TypeTree(tailTupleType) :: Nil)
-  //           .appliedTo(SeqLiteral(args, ref(defn.AnyType)))
-  //     case _ => tree
-  //   }
-  // }
+  override def transformApply(tree: Apply)(implicit ctx: Context, info: TransformerInfo): Tree = {
+    tree match {
+      case Apply(TypeApply(Select(ident, nme.apply), headType :: tailType), args) =>
+        println
+        println(ident)
+        println(ident.symbol.info.decls.toList.last.info)
+        tree
+      case _ => tree
+    }
+
+    // tree match {
+    //   case Apply(TypeApply(Select(ident, nme.apply), headType :: tailType), args)
+    //     if ident.symbol.name.tupleArity > MaxCaseClassTupleArity =>
+    //       val tailTupleType =
+    //         tailType.map(_.tpe).foldRight(defn.UnitType: Type) { case (l, r) =>
+    //           RefinedType.makeFullyDefined(defn.TupleConsType, (l :: r :: Nil).map(t => TypeAlias(t)))
+    //         }
+    //       ref(defn.TupleImplNType.classSymbol.companionModule) // TupleImplN.wrap()
+    //         .select(nme.wrap)
+    //         .appliedToTypeTrees(headType :: TypeTree(tailTupleType) :: Nil)
+    //         .appliedTo(SeqLiteral(args, ref(defn.AnyType)))
+    //   case _ => tree
+    // }
+  }
 
   // override def transformUnApply(tree: UnApply)(implicit ctx: Context, info: TransformerInfo): Tree = {
   //   tree match {
