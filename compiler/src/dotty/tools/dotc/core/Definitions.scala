@@ -203,7 +203,9 @@ class Definitions {
           // }
           // val impl  = defn.TupleImplNType.appliedTo(h, t2)
           val synth = defn.SyntheticTupleType(arity).appliedTo(pt.typeParams.map(_.toArg))
-          MethodType(List(name ++ "x$1"), List(synth))(mt => mt.paramTypes.head)
+          MethodType(List(nme.syntheticParamName(0)), List(synth))(
+            mt => defn.OptionType.appliedTo(mt.paramTypes.head)
+          )
         })))
 
         denot.info =
