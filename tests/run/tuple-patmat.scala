@@ -1,21 +1,21 @@
-// case class Box(t: (String, Int, A))
-// case class A(i: Int, j: Int)
+case class Box(t: (String, Int, A))
+case class A(i: Int, j: Int)
 
 object Test {
   def main(args: Array[String]) = {
-    // val x1 = Box(("a", 2, A(3, 4)))
+    val x1 = Box(("a", 2, A(3, 4)))
 
-    // x1 match {
-    //   case Box((a3, b3, A(a1, a2))) =>
-    //     a3: String
-    //     b3: Int
-    //     a1: Int
-    //     a2: Int
-    //     assert(a3 == "a")
-    //     assert(b3 == 2)
-    //     assert(a1 == 3)
-    //     assert(a2 == 4)
-    // }
+    x1 match {
+      case Box((a3, b3, A(a1, a2))) =>
+        a3: String
+        b3: Int
+        a1: Int
+        a2: Int
+        assert(a3 == "a")
+        assert(b3 == 2)
+        assert(a1 == 3)
+        assert(a2 == 4)
+    }
 
     val x2 = ("a", 2)
 
@@ -87,14 +87,4 @@ object Test {
         assert(f6 == 6)
     }
   }
-
-  // def any = {
-  //   val x: Any = null
-  //   x match { case Box((a3, b3, A(a1, a2))) => () }
-  //   x match { case (a2, b2) => () }
-  //   x match { case (a3, b3, c3) => () }
-  //   x match { case (a4, b4, c4, d4) => () }
-  //   x match { case (a5, b5, c5, d5, e5) => () }
-  //   x match { case (a6, b6, c6, d6, e6, f6) => () }
-  // }
 }
