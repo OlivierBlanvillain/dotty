@@ -65,6 +65,7 @@ class Erasure extends Phase with DenotTransformer { thisTransformer =>
         else oldSymbol
         val oldOwner = ref.owner
         val newOwner = if (oldOwner eq defn.AnyClass) defn.ObjectClass else oldOwner
+          // if ((oldOwner eq defn.TupleClass) || (oldOwner eq defn.TupleConsClass)) ??? else oldOwner
         val oldInfo = ref.info
         val newInfo = transformInfo(ref.symbol, oldInfo)
         val oldFlags = ref.flags
@@ -352,11 +353,8 @@ object Erasure extends TypeTestsCasts {
             defn.FunctionXXLClass
           else if (defn.isImplicitFunctionClass(owner))
             recur(defn.FunctionClass(owner.name.functionArity))
-          else if ((owner eq defn.TupleClass) || (owner eq defn.TupleConsClass))// (defn.isUnimplementedTupleClass(owner) || )
-
-
-
-            defn.ProductClass
+          // else if ((owner eq defn.TupleClass) || (owner eq defn.TupleConsClass))// (defn.isUnimplementedTupleClass(owner) || )
+          //   defn.ProductClass
           else
             owner
         recur(sym.owner)
