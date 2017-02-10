@@ -507,7 +507,7 @@ class Definitions {
     def BoxedUnit_UNIT(implicit ctx: Context) = BoxedUnitClass.linkedClass.requiredValue("UNIT")
 
   lazy val BoxedBooleanType: TypeRef = ctx.requiredClassRef("java.lang.Boolean")
-  def BoxedBooleanClass(implicit ctx: Context) = BoxedBooleanType.symbol.asClass
+  def BoxedBooleanClass = BoxedBooleanType.symbol.asClass
   lazy val BoxedByteType: TypeRef = ctx.requiredClassRef("java.lang.Byte")
   def BoxedByteClass(implicit ctx: Context) = BoxedByteType.symbol.asClass
   lazy val BoxedShortType: TypeRef = ctx.requiredClassRef("java.lang.Short")
@@ -786,9 +786,13 @@ class Definitions {
   def SyntheticTupleModule(n: Int)(implicit ctx: Context) = ctx.requiredModule("scala.Tuple0" + n.toString)
   def SyntheticTupleType(n: Int)(implicit ctx: Context) = ctx.requiredClass("scala.Tuple0" + n.toString).typeRef
 
-  lazy val TupleType: TypeRef      = ctx.requiredClassRef("dotty.Tuple")
-  lazy val TupleConsType: TypeRef  = ctx.requiredClassRef("dotty.TupleCons")
-  lazy val TupleImplNType: TypeRef = ctx.requiredClassRef("dotty.TupleImplN") // TODO Rename LargeTuple?
+  lazy val TupleClass      = ctx.requiredClass("dotty.Tuple")
+  lazy val TupleConsClass  = ctx.requiredClass("dotty.TupleCons")
+  lazy val TupleImplNClass = ctx.requiredClass("dotty.TupleImplN") // TODO Rename LargeTuple?
+
+  lazy val TupleType: TypeRef      = TupleClass
+  lazy val TupleConsType: TypeRef  = TupleConsClass
+  lazy val TupleImplNType: TypeRef = TupleImplNClass
 
   // lazy val TNilType: TypeRef = ctx.requiredClassRef("dotty.TNil$")
   // lazy val TupleUnapplySeqType: TypeRef = ctx.requiredClassRef("dotty.TupleUnapplySeq$")
@@ -813,8 +817,8 @@ class Definitions {
     else FunctionClass(n).typeRef
 
   // lazy val TNilSymbol = TNilType.classSymbol.companionModule.symbol
-  lazy val TupleConsSymbol = TupleConsType.classSymbol.companionModule.symbol
-  lazy val TupleImplNSymbol = TupleImplNType.classSymbol.companionModule.symbol
+  // lazy val TupleConsSymbol = TupleConsType.classSymbol.companionModule.symbol
+  // lazy val TupleImplNSymbol = TupleImplNType.classSymbol.companionModule.symbol
   // lazy val TupleUnapplySeqSymbol = TupleUnapplySeqType.classSymbol.companionModule.symbol
   // lazy val TupleImplSymbols = TupleImplType.tail.map(_.classSymbol.companionModule.symbol).toSet
   // lazy val TupleSymbols = TupleNType.tail.map(_.classSymbol.companionModule.symbol).toSet
@@ -844,6 +848,8 @@ class Definitions {
     isFunctionClass(cls) && cls.name.functionArity > MaxImplementedFunctionArity
   def isAbstractFunctionClass(cls: Symbol) = isVarArityClass(cls, tpnme.AbstractFunction)
   def isTupleClass(cls: Symbol) = isVarArityClass(cls, tpnme.Tuple)
+  def isUnimplementedTupleClass(cls: Symbol) =
+    isTupleClass(cls) && cls.name.tupleArity > MaxCaseClassTupleArity
   def isProductClass(cls: Symbol) = isVarArityClass(cls, tpnme.Product)
 
   val predefClassNames: Set[Name] =

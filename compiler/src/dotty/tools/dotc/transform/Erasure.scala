@@ -352,6 +352,11 @@ object Erasure extends TypeTestsCasts {
             defn.FunctionXXLClass
           else if (defn.isImplicitFunctionClass(owner))
             recur(defn.FunctionClass(owner.name.functionArity))
+          else if ((owner eq defn.TupleClass) || (owner eq defn.TupleConsClass))// (defn.isUnimplementedTupleClass(owner) || )
+
+
+
+            defn.ProductClass
           else
             owner
         recur(sym.owner)

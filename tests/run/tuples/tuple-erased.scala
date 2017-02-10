@@ -5,18 +5,29 @@ object Test {
     val t1: Any = (1, 2)
     val t2: Any = (1, 2, 4, 5, 6)
 
-    println(t1.asInstanceOf[Tuple])
-    println(t2.asInstanceOf[Tuple])
+    assert(t1.asInstanceOf[Tuple] == t1)
+    assert(t2.asInstanceOf[Tuple] == t1)
+
+    assert(t1.isInstanceOf[Tuple])
+    assert(t2.isInstanceOf[Tuple])
+
+    assert(t1.asInstanceOf[Product] == t1)
+    assert(t2.asInstanceOf[Product] == t1)
+
+    assert(t1.isInstanceOf[Product])
+    assert(t2.isInstanceOf[Product])
+
+    assert(t1.asInstanceOf[TupleCons[_, _]] == t1)
+    assert(t2.asInstanceOf[TupleCons[_, _]] == t1)
+
+    assert(t1.isInstanceOf[TupleCons[_, _]])
+    assert(t2.isInstanceOf[TupleCons[_, _]])
 
     val x: Unit = ()
     x: Tuple
 
-    val y: TupleCons[Int, Unit] = null
+    val y: TupleCons[Int, TupleCons[String, Unit]] = (1, "s")
     y: Product
-
-
-    def wat[T1, T2, T3, T4](t: Product & TupleCons[T1, TupleCons[T2, TupleCons[T3, TupleCons[T4, Tuple & Unit]]]]) = 1
-
-    wat((1, 2, 3, 4))
+    y: Tuple
   }
 }
