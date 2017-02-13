@@ -372,14 +372,14 @@ class TypeErasure(isJava: Boolean, semiEraseVCs: Boolean, isConstructor: Boolean
    *   - For any other type, exception.
    */
   private def apply(tp: Type)(implicit ctx: Context): Type = tp match {
-    case _ if tp == defn.TupleConsType || tp == defn.TupleType =>
-      defn.ProductType
+    case _ if tp.isRef(defn.TupleConsClass) || tp.isRef(defn.TupleClass) =>
+      defn.ObjectType
     case _: ErasedValueType =>
       tp
     case tp: TypeRef =>
       val sym = tp.symbol
-      if (sym == defn.TupleClass) defn.ProductType
-      else if (!sym.isClass) this(tp.info)
+      // if (sym == defn.TupleClass) defn.ObjectType else
+      if (!sym.isClass) this(tp.info)
       else if (semiEraseVCs && isDerivedValueClass(sym)) eraseDerivedValueClassRef(tp)
       else if (sym == defn.ArrayClass) apply(tp.appliedTo(TypeBounds.empty)) // i966 shows that we can hit a raw Array type.
       else if (defn.isUnimplementedFunctionClass(sym)) defn.FunctionXXLType
