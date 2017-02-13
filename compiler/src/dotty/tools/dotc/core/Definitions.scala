@@ -869,7 +869,7 @@ class Definitions {
   lazy val UnqualifiedOwnerTypes: Set[NamedType] =
     RootImportTypes.toSet[NamedType] ++ RootImportTypes.map(_.symbol.moduleClass.typeRef)
 
-  lazy val PhantomClasses = Set[Symbol](AnyClass, AnyValClass, NullClass, NothingClass)
+  lazy val PhantomClasses = Set[Symbol](AnyClass, AnyValClass, NullClass, NothingClass, TupleClass)
 
   /** Classes that are known not to have an initializer irrespective of
    *  whether NoInits is set. Note: FunctionXXLClass is in this set
@@ -1022,6 +1022,7 @@ class Definitions {
 
   /** Lists core classes that don't have underlying bytecode, but are synthesized on-the-fly in every reflection universe */
   lazy val syntheticScalaClasses = List(
+    TupleClass,
     AnyClass,
     AnyRefAlias,
     RepeatedParamClass,

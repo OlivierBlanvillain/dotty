@@ -38,12 +38,13 @@ object TypeErasure {
    *  eliminated by ElimErasedValueType).
    */
   def isErasedType(tp: Type)(implicit ctx: Context): Boolean = tp match {
+    case tp if tp.isRef(defn.TupleClass) => true
     case _: ErasedValueType =>
       true
     case tp: TypeRef =>
       val sym = tp.symbol
       sym.isClass &&
-      sym != defn.AnyClass && sym != defn.ArrayClass &&
+      sym != defn.TupleClass && sym != defn.AnyClass && sym != defn.ArrayClass &&
       !defn.isUnimplementedFunctionClass(sym) && !defn.isImplicitFunctionClass(sym)
     case _: TermRef =>
       true
@@ -267,6 +268,7 @@ object TypeErasure {
             case bc :: bcs1 =>
               if (cls2.derivesFrom(bc))
                 if (!bc.is(Trait) && bc != defn.AnyClass) bc
+                else if (!bc.is(Trait) && bc != defn.TupleClass) bc
                 else loop(bcs1, if (bestSoFar.derivesFrom(bc)) bestSoFar else bc)
               else
                 loop(bcs1, bestSoFar)
@@ -376,7 +378,8 @@ class TypeErasure(isJava: Boolean, semiEraseVCs: Boolean, isConstructor: Boolean
       tp
     case tp: TypeRef =>
       val sym = tp.symbol
-      if (!sym.isClass) this(tp.info)
+      if (sym == defn.TupleClass) defn.ProductType
+      else if (!sym.isClass) this(tp.info)
       else if (semiEraseVCs && isDerivedValueClass(sym)) eraseDerivedValueClassRef(tp)
       else if (sym == defn.ArrayClass) apply(tp.appliedTo(TypeBounds.empty)) // i966 shows that we can hit a raw Array type.
       else if (defn.isUnimplementedFunctionClass(sym)) defn.FunctionXXLType
@@ -444,7 +447,7 @@ class TypeErasure(isJava: Boolean, semiEraseVCs: Boolean, isConstructor: Boolean
    *  `PolyType`s are treated. `eraseInfo` maps them them to method types, whereas `apply` maps them
    *  to the underlying type.
    */
-  def eraseInfo(tp: Type, sym: Symbol)(implicit ctx: Context) = tp match {
+  def eraseInfo(tp: Type, sym: Symbol)(implicit ctx: Context): Type = tp match {
     case ExprType(rt) =>
       if (sym is Param) apply(tp)
         // Note that params with ExprTypes are eliminated by ElimByName,
@@ -457,7 +460,8 @@ class TypeErasure(isJava: Boolean, semiEraseVCs: Boolean, isConstructor: Boolean
         case rt: MethodType => rt
         case rt => MethodType(Nil, Nil, rt)
       }
-    case tp => this(tp)
+    case tp =>
+      this(tp)
   }
 
   private def eraseDerivedValueClassRef(tref: TypeRef)(implicit ctx: Context): Type = {
@@ -492,6 +496,8 @@ class TypeErasure(isJava: Boolean, semiEraseVCs: Boolean, isConstructor: Boolean
     if (cls.owner == defn.ScalaPackageClass) {
       if (cls == defn.AnyClass || cls == defn.AnyValClass || cls == defn.SingletonClass)
         return defn.ObjectClass
+      if (cls == defn.TupleClass)
+        return defn.ProductClass
       if (cls == defn.UnitClass)
         return defn.BoxedUnitClass
     }

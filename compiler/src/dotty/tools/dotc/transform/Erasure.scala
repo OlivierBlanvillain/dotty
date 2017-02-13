@@ -46,7 +46,17 @@ class Erasure extends Phase with DenotTransformer { thisTransformer =>
         }
 
       assert(ctx.phase == this, s"transforming $ref at ${ctx.phase}")
-      if (ref.symbol eq defn.ObjectClass) {
+      if (ref.symbol eq defn.TupleClass) {
+        // After erasure, all former Any members are now Object members
+        val ClassInfo(pre, _, ps, decls, selfInfo) = ref.info
+        val extendedScope = decls.cloneScope
+        for (decl <- defn.TupleClass.classInfo.decls)
+          if (!decl.isConstructor) extendedScope.enter(decl)
+        ref.copySymDenotation(
+          info = transformInfo(ref.symbol,
+              ClassInfo(pre, defn.ProductClass, ps, extendedScope, selfInfo))
+        )
+      } else if (ref.symbol eq defn.ObjectClass) {
         // After erasure, all former Any members are now Object members
         val ClassInfo(pre, _, ps, decls, selfInfo) = ref.info
         val extendedScope = decls.cloneScope
@@ -60,12 +70,12 @@ class Erasure extends Phase with DenotTransformer { thisTransformer =>
       else {
         val oldSymbol = ref.symbol
         val newSymbol =
-          if ((oldSymbol.owner eq defn.AnyClass) && oldSymbol.isConstructor)
-            defn.ObjectClass.primaryConstructor
-        else oldSymbol
+          if ((oldSymbol.owner eq defn.AnyClass) && oldSymbol.isConstructor) defn.ObjectClass.primaryConstructor
+          else if (oldSymbol.owner eq defn.TupleClass) defn.ProductClass.primaryConstructor
+          else oldSymbol
         val oldOwner = ref.owner
-        val newOwner = if (oldOwner eq defn.AnyClass) defn.ObjectClass else oldOwner
-          // if ((oldOwner eq defn.TupleClass) || (oldOwner eq defn.TupleConsClass)) ??? else oldOwner
+        val newOwner = if (oldOwner eq defn.AnyClass) defn.ObjectClass else // else oldOwner
+          if (oldOwner eq defn.TupleClass) defn.ProductClass else oldOwner
         val oldInfo = ref.info
         val newInfo = transformInfo(ref.symbol, oldInfo)
         val oldFlags = ref.flags
@@ -353,8 +363,8 @@ object Erasure extends TypeTestsCasts {
             defn.FunctionXXLClass
           else if (defn.isImplicitFunctionClass(owner))
             recur(defn.FunctionClass(owner.name.functionArity))
-          // else if ((owner eq defn.TupleClass) || (owner eq defn.TupleConsClass))// (defn.isUnimplementedTupleClass(owner) || )
-          //   defn.ProductClass
+          else if (owner == defn.TupleClass)
+            defn.ProductClass
           else
             owner
         recur(sym.owner)
