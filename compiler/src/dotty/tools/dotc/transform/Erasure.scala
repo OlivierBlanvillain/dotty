@@ -46,17 +46,18 @@ class Erasure extends Phase with DenotTransformer { thisTransformer =>
         }
 
       assert(ctx.phase == this, s"transforming $ref at ${ctx.phase}")
-      if (ref.symbol eq defn.TupleClass) {
-        // After erasure, all former Any members are now Object members
-        val ClassInfo(pre, _, ps, decls, selfInfo) = ref.info
-        val extendedScope = decls.cloneScope
-        for (decl <- defn.TupleClass.classInfo.decls)
-          if (!decl.isConstructor) extendedScope.enter(decl)
-        ref.copySymDenotation(
-          info = transformInfo(ref.symbol,
-              ClassInfo(pre, defn.ProductClass, ps, extendedScope, selfInfo))
-        )
-      } else if (ref.symbol eq defn.ObjectClass) {
+      // if (ref.symbol eq defn.TupleClass) {
+      //   // After erasure, all former Any members are now Object members
+      //   val ClassInfo(pre, _, ps, decls, selfInfo) = ref.info
+      //   val extendedScope = decls.cloneScope
+      //   for (decl <- defn.TupleClass.classInfo.decls)
+      //     if (!decl.isConstructor) extendedScope.enter(decl)
+      //   ref.copySymDenotation(
+      //     info = transformInfo(ref.symbol,
+      //         ClassInfo(pre, defn.ProductClass, ps, extendedScope, selfInfo))
+      //   )
+      // } else
+      if (ref.symbol eq defn.ObjectClass) {
         // After erasure, all former Any members are now Object members
         val ClassInfo(pre, _, ps, decls, selfInfo) = ref.info
         val extendedScope = decls.cloneScope

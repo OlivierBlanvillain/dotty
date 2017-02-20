@@ -38,13 +38,14 @@ object TypeErasure {
    *  eliminated by ElimErasedValueType).
    */
   def isErasedType(tp: Type)(implicit ctx: Context): Boolean = tp match {
-    case tp if tp.isRef(defn.TupleClass) => true
+    // case tp if tp.isRef(defn.TupleClass) => true
     case _: ErasedValueType =>
       true
     case tp: TypeRef =>
       val sym = tp.symbol
       sym.isClass &&
-      sym != defn.TupleClass && sym != defn.AnyClass && sym != defn.ArrayClass &&
+      /*sym != defn.TupleClass && */
+      sym != defn.AnyClass && sym != defn.ArrayClass &&
       !defn.isUnimplementedFunctionClass(sym) && !defn.isImplicitFunctionClass(sym)
     case _: TermRef =>
       true
@@ -121,13 +122,13 @@ object TypeErasure {
    *  @param tp            The type to erase.
   */
   def erasure(tp: Type)(implicit ctx: Context): Type = {
-    if (tp == defn.TupleConsType  ||
-        tp == defn.TupleImplNType ||
-        tp == defn.TupleType)
-      defn.ObjectType
-    else {
+    // if (tp == defn.TupleConsType  ||
+    //     tp == defn.TupleImplNType ||
+    //     tp == defn.TupleType)
+    //   defn.ObjectType
+    // else {
       erasureFn(isJava = false, semiEraseVCs = false, isConstructor = false, wildcardOK = false)(tp)(erasureCtx)
-    }
+    // }
   }
 
   /** The value class erasure of a Scala type, where value classes are semi-erased to
@@ -154,22 +155,10 @@ object TypeErasure {
    */
   def erasedRef(tp: Type)(implicit ctx: Context): Type = tp match {
     case tp: TermRef =>
-      // if (tp.symbol == defn.TupleConsType.classSymbol.companionModule.symbol  ||
-      //     tp.symbol == defn.TupleImplNType.classSymbol.companionModule.symbol ||
-      //     tp.symbol == defn.TupleType.classSymbol.companionModule.symbol)
-      // defn.ObjectType
-      // // TermRef(defn.ObjectType.prefix, defn.ObjectType.asTerm)
-
-
-      // foo.bar
-
-
-      // else {
-        assert(tp.symbol.exists, tp)
-        val tp1 = ctx.makePackageObjPrefixExplicit(tp)
-        if (tp1 ne tp) erasedRef(tp1)
-        else TermRef(erasedRef(tp.prefix), tp.symbol.asTerm)
-      // }
+      assert(tp.symbol.exists, tp)
+      val tp1 = ctx.makePackageObjPrefixExplicit(tp)
+      if (tp1 ne tp) erasedRef(tp1)
+      else TermRef(erasedRef(tp.prefix), tp.symbol.asTerm)
     case tp: ThisType =>
       tp
     case tp =>
@@ -268,7 +257,7 @@ object TypeErasure {
             case bc :: bcs1 =>
               if (cls2.derivesFrom(bc))
                 if (!bc.is(Trait) && bc != defn.AnyClass) bc
-                else if (!bc.is(Trait) && bc != defn.TupleClass) bc
+                // else if (!bc.is(Trait) && bc != defn.TupleClass) bc
                 else loop(bcs1, if (bestSoFar.derivesFrom(bc)) bestSoFar else bc)
               else
                 loop(bcs1, bestSoFar)
@@ -372,7 +361,9 @@ class TypeErasure(isJava: Boolean, semiEraseVCs: Boolean, isConstructor: Boolean
    *   - For any other type, exception.
    */
   private def apply(tp: Type)(implicit ctx: Context): Type = tp match {
-    case _ if tp.isRef(defn.TupleConsClass) || tp.isRef(defn.TupleClass) =>
+    case _ if tp.isRef(defn.TupleConsClass) =>
+      defn.ProductType
+    case _ if tp.isRef(defn.TupleClass) =>
       defn.ObjectType
     case _: ErasedValueType =>
       tp
@@ -460,8 +451,7 @@ class TypeErasure(isJava: Boolean, semiEraseVCs: Boolean, isConstructor: Boolean
         case rt: MethodType => rt
         case rt => MethodType(Nil, Nil, rt)
       }
-    case tp =>
-      this(tp)
+    case tp => this(tp)
   }
 
   private def eraseDerivedValueClassRef(tref: TypeRef)(implicit ctx: Context): Type = {
@@ -496,8 +486,8 @@ class TypeErasure(isJava: Boolean, semiEraseVCs: Boolean, isConstructor: Boolean
     if (cls.owner == defn.ScalaPackageClass) {
       if (cls == defn.AnyClass || cls == defn.AnyValClass || cls == defn.SingletonClass)
         return defn.ObjectClass
-      if (cls == defn.TupleClass)
-        return defn.ProductClass
+      // if (cls == defn.TupleClass)
+      //   return defn.ProductClass
       if (cls == defn.UnitClass)
         return defn.BoxedUnitClass
     }
