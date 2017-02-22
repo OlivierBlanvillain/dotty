@@ -51,11 +51,11 @@ object Applications {
    *  type  for a pattern with `numArgs` subpatterns.
    *
    *  This is the case if:
-   *    - `tp` is a subtype of the Product<numArgs> class or `NameBasedPattern` trait
+   *    - `tp` is a subtype of the Product trait
    *    - `tp` has members `_1` to `_N` where `N == numArgs`
    */
-  def isNameBasedMatch(tp: Type, numArgs: Int)(implicit ctx: Context) =
-    0 <= numArgs && defn.isNameBasedPatternSubType(tp) &&
+  def isProductMatch(tp: Type, numArgs: Int)(implicit ctx: Context) =
+    numArgs > 0 && defn.isProductSubType(tp) &&
     productSelectorTypes(tp).size == numArgs
 
   /** Does `tp` fit the "get match" conditions as an unapply result type?

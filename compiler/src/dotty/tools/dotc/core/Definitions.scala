@@ -508,7 +508,6 @@ class Definitions {
   def DynamicClass(implicit ctx: Context) = DynamicType.symbol.asClass
   lazy val OptionType: TypeRef                  = ctx.requiredClassRef("scala.Option")
   def OptionClass(implicit ctx: Context) = OptionType.symbol.asClass
-  lazy val NameBasedPatternType: TypeRef        = ctx.requiredClassRef("scala.NameBasedPattern")
   lazy val ProductType: TypeRef                 = ctx.requiredClassRef("scala.Product")
   def ProductClass(implicit ctx: Context) = ProductType.symbol.asClass
     lazy val Product_canEqualR = ProductClass.requiredMethodRef(nme.canEqual_)
@@ -794,15 +793,8 @@ class Definitions {
     TupleType(elems.size).appliedTo(elems)
   }
 
-  /** Is this type eligible for name based pattern matching?
-   *
-   *  That means either extending `scala.ProductN` OR `NameBasedPattern`.
-   *  In the long term, we can remove the first condition by having
-   *  `scala.ProductN` inherit `NameBasedPattern`.
-   */
   def isNameBasedPatternSubType(tp: Type)(implicit ctx: Context) =
-    (tp.derivesFrom(ProductType.symbol) && tp.baseClasses.exists(isProductClass)) ||
-    tp.derivesFrom(NameBasedPatternType.symbol)
+    tp.derivesFrom(ProductType.symbol)
 
   /** Is `tp` (an alias) of either a scala.FunctionN or a scala.ImplicitFunctionN? */
   def isFunctionType(tp: Type)(implicit ctx: Context) = {

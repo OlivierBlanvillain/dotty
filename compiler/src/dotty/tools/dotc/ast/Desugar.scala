@@ -414,10 +414,10 @@ object desugar {
       if (arity > Definitions.MaxTupleArity) scalaDot(nme.Product.toTypeName)
       else productConstr(arity)
 
-    // Case classes and case objects get NameBasedPattern and Product/ProductN parents
+    // Case classes and case objects get Product/ProductN parents
     val parents1: List[Tree] =
       if (mods.is(Case))
-        parents :+ product :+ scalaDot(nme.NameBasedPattern.toTypeName)
+        parents :+ product
       else parents
 
     // The thicket which is the desugared version of the companion object
