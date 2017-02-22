@@ -236,7 +236,7 @@ class PatternMatcher extends MiniPhaseTransform with DenotTransformer {
         // returns MatchMonad[U]
         def flatMap(prev: Tree, b: Symbol, next: Tree): Tree = {
           val resultArity = productArity(b.info)
-          if (isNameBasedMatch(prev.tpe, resultArity)) {
+          if (isProductMatch(prev.tpe, resultArity)) {
             val nullCheck: Tree = prev.select(defn.Object_ne).appliedTo(Literal(Constant(null)))
             ifThenElseZero(
               nullCheck,
@@ -1430,7 +1430,7 @@ class PatternMatcher extends MiniPhaseTransform with DenotTransformer {
 
       def resultInMonad  =
         if (aligner.isBool) defn.UnitType
-        else if (isNameBasedMatch(resultType, aligner.prodArity)) resultType
+        else if (isProductMatch(resultType, aligner.prodArity)) resultType
         else if (isGetMatch(resultType)) extractorMemberType(resultType, nme.get)
         else resultType
 
@@ -1474,7 +1474,7 @@ class PatternMatcher extends MiniPhaseTransform with DenotTransformer {
       protected def seqTree(binder: Symbol)                = tupleSel(binder)(firstIndexingBinder + 1)
       protected def tupleSel(binder: Symbol)(i: Int): Tree = {
         val accessors =
-          if (defn.isNameBasedPatternSubType(binder.info))
+          if (defn.isProductSubType(binder.info))
             productSelectors(binder.info)
           else binder.caseAccessors
         val res =
@@ -1631,7 +1631,7 @@ class PatternMatcher extends MiniPhaseTransform with DenotTransformer {
           ref(binder) :: Nil
         }
         else if ((aligner.isSingle && aligner.extractor.prodArity == 1) &&
-                 !isNameBasedMatch(binderTypeTested, aligner.prodArity) && isGetMatch(binderTypeTested))
+                 !isProductMatch(binderTypeTested, aligner.prodArity) && isGetMatch(binderTypeTested))
           List(ref(binder))
         else
           subPatRefs(binder)
@@ -1882,11 +1882,11 @@ class PatternMatcher extends MiniPhaseTransform with DenotTransformer {
 
         val expanded: List[Type] = /*(
           if (result =:= defn.BooleanType) Nil
-          else if (defn.isNameBasedPatternSubType(result)) productSelectorTypes(result)
+          else if (defn.isProductSubType(result)) productSelectorTypes(result)
           else if (result.classSymbol is Flags.CaseClass) result.decls.filter(x => x.is(Flags.CaseAccessor) && x.is(Flags.Method)).map(_.info).toList
           else result.select(nme.get) :: Nil
           )*/
-          if (isNameBasedMatch(resultType, args.length)) productSelectorTypes(resultType)
+          if (isProductMatch(resultType, args.length)) productSelectorTypes(resultType)
           else if (isGetMatch(resultType)) getUnapplySelectors(resultOfGet, args)
           else if (resultType isRef defn.BooleanClass) Nil
           else {

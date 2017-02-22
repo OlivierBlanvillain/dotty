@@ -793,7 +793,7 @@ class Definitions {
     TupleType(elems.size).appliedTo(elems)
   }
 
-  def isNameBasedPatternSubType(tp: Type)(implicit ctx: Context) =
+  def isProductSubType(tp: Type)(implicit ctx: Context) =
     tp.derivesFrom(ProductType.symbol)
 
   /** Is `tp` (an alias) of either a scala.FunctionN or a scala.ImplicitFunctionN? */
