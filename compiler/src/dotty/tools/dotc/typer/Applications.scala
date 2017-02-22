@@ -72,7 +72,7 @@ object Applications {
   }
 
   def productArity(tp: Type)(implicit ctx: Context) =
-    if (defn.isNameBasedPatternSubType(tp)) productSelectorTypes(tp).size else -1
+    if (defn.isProductSubType(tp)) productSelectorTypes(tp).size else -1
 
   def productSelectors(tp: Type)(implicit ctx: Context): List[Symbol] = {
     val sels = for (n <- Iterator.from(0)) yield tp.member(nme.selectorName(n)).symbol
@@ -108,13 +108,13 @@ object Applications {
     }
     else {
       assert(unapplyName == nme.unapply)
-      if (isNameBasedMatch(unapplyResult, args.length))
+      if (isProductMatch(unapplyResult, args.length))
         productSelectorTypes(unapplyResult)
       else if (isGetMatch(unapplyResult, pos))
         getUnapplySelectors(getTp, args, pos)
       else if (unapplyResult isRef defn.BooleanClass)
         Nil
-      else if (defn.isNameBasedPatternSubType(unapplyResult))
+      else if (defn.isProductSubType(unapplyResult))
         productSelectorTypes(unapplyResult)
           // this will cause a "wrong number of arguments in pattern" error later on,
           // which is better than the message in `fail`.
