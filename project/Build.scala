@@ -647,7 +647,7 @@ object DottyInjectedPlugin extends AutoPlugin {
   // Dummy scala-library artefact. This is useful because sbt projects
   // automatically depend on scalaOrganization.value % "scala-library" % scalaVersion.value
   lazy val `scala-library` = project.
-    dependsOn(`dotty-library`).
+    dependsOn(`dotty-library-bootstrapped`).
     settings(
       crossPaths := false
     ).

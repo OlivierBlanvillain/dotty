@@ -5,8 +5,7 @@ sealed trait Tuple
 sealed trait TupleCons[+H, +T <: Tuple] extends Tuple
 
 object TupleCons {
-  def apply[H, T <: Tuple, HACK1, HACK2](h: H, t: HACK1)
-  (implicit ev1: HACK1 =:= T, ev2: HACK2 =:= TupleCons[H, T] ): HACK2 =
+  def apply[H, T <: Tuple, TupleCons[H, T]](h: H, t: T): TupleCons[H, T] =
     ((t: Any) match {
       case impln: TupleImplN[_, _] =>
         val underlying = impln.underlying
@@ -31,9 +30,9 @@ object TupleCons {
       //   a(3) = e3
       //   a(4) = e4
       //   new TupleImplN(a)
-    }).asInstanceOf[HACK2]
+    }).asInstanceOf[TupleCons[H, T]]
 
-  def unapply[H, T <: Tuple, HACK](t: HACK)(implicit ev: HACK =:= TupleCons[H, T]): Option[scala.Tuple2[H, T]] =
+  def unapply[H, T <: Tuple, TupleCons[H, T]](t: TupleCons[H, T]): Option[scala.Tuple2[H, T]] =
     Some(t match {
       case impln: TupleImplN[_, _] =>
         val underlying = impln.underlying
