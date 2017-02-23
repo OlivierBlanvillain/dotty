@@ -1,7 +1,7 @@
 package dotty
 
 trait UnderscoreTupleSyntax {
-  // implicit class Ops2[T1, T2](val x: TupleCons[T1, TupleCons[T2, Unit with Tuple]]) {
+  // implicit class Ops2[T1, T2](val x: TupleCons[T1, TupleCons[T2, Unit]]) {
   //   import scala.runtime._
   //   import scala.collection._
 
@@ -25,7 +25,7 @@ trait UnderscoreTupleSyntax {
   //     ): Tuple2Zipped[El1, Repr1, El2, Repr2] = new Tuple2Zipped((x._1, x._2))
   // }
 
-  // implicit class Ops3[T1, T2, T3](val x: TupleCons[T1, TupleCons[T2, TupleCons[T3, Unit with Tuple]]]) {
+  // implicit class Ops3[T1, T2, T3](val x: TupleCons[T1, TupleCons[T2, TupleCons[T3, Unit]]]) {
   //   import scala.runtime._
   //   import scala.collection._
 
@@ -52,29 +52,29 @@ trait UnderscoreTupleSyntax {
   //     ): Tuple3Zipped[El1, Repr1, El2, Repr2, El3, Repr3] = new Tuple3Zipped((x._1, x._2, x._3))
   // }
 
-  implicit class Tuple1Assessors[A](l: Product with TupleCons[A, Unit with Tuple]) {
+  implicit class Tuple1Assessors[A](l: TupleCons[A, Unit]) {
     def _1 = l.asInstanceOf[dotty.TupleImplN[_, _]].underlying(0).asInstanceOf[A]
   }
 
-  implicit class Tuple2Assessors[A, B](l: Product with TupleCons[A, TupleCons[B, Unit with Tuple]]) {
+  implicit class Tuple2Assessors[A, B](l: TupleCons[A, TupleCons[B, Unit]]) {
     def _1 = l.asInstanceOf[dotty.TupleImplN[_, _]].underlying(0).asInstanceOf[A]
     def _2 = l.asInstanceOf[dotty.TupleImplN[_, _]].underlying(1).asInstanceOf[B]
   }
 
-  implicit class Tuple3Assessors[A, B, C](l: Product with TupleCons[A, TupleCons[B, TupleCons[C, Unit with Tuple]]]) {
+  implicit class Tuple3Assessors[A, B, C](l: TupleCons[A, TupleCons[B, TupleCons[C, Unit]]]) {
     def _1 = l.asInstanceOf[dotty.TupleImplN[_, _]].underlying(0).asInstanceOf[A]
     def _2 = l.asInstanceOf[dotty.TupleImplN[_, _]].underlying(1).asInstanceOf[B]
     def _3 = l.asInstanceOf[dotty.TupleImplN[_, _]].underlying(2).asInstanceOf[C]
   }
 
-  implicit class Tuple4Assessors[A, B, C, D](l: Product with TupleCons[A, TupleCons[B, TupleCons[C, TupleCons[D, Unit with Tuple]]]]) {
+  implicit class Tuple4Assessors[A, B, C, D](l: TupleCons[A, TupleCons[B, TupleCons[C, TupleCons[D, Unit]]]]) {
     def _1 = l.asInstanceOf[dotty.TupleImplN[_, _]].underlying(0).asInstanceOf[A]
     def _2 = l.asInstanceOf[dotty.TupleImplN[_, _]].underlying(1).asInstanceOf[B]
     def _3 = l.asInstanceOf[dotty.TupleImplN[_, _]].underlying(2).asInstanceOf[C]
     def _4 = l.asInstanceOf[dotty.TupleImplN[_, _]].underlying(3).asInstanceOf[D]
   }
 
-  implicit class Tuple5Assessors[A, B, C, D, E](l: Product with TupleCons[A, TupleCons[B, TupleCons[C, TupleCons[D, TupleCons[E, Unit with Tuple]]]]]) {
+  implicit class Tuple5Assessors[A, B, C, D, E](l: TupleCons[A, TupleCons[B, TupleCons[C, TupleCons[D, TupleCons[E, Unit]]]]]) {
     def _1 = l.asInstanceOf[dotty.TupleImplN[_, _]].underlying(0).asInstanceOf[A]
     def _2 = l.asInstanceOf[dotty.TupleImplN[_, _]].underlying(1).asInstanceOf[B]
     def _3 = l.asInstanceOf[dotty.TupleImplN[_, _]].underlying(2).asInstanceOf[C]
@@ -82,7 +82,7 @@ trait UnderscoreTupleSyntax {
     def _5 = l.asInstanceOf[dotty.TupleImplN[_, _]].underlying(4).asInstanceOf[E]
   }
 
-  implicit class Tuple6Assessors[A, B, C, D, E, F](l: Product with TupleCons[A, TupleCons[B, TupleCons[C, TupleCons[D, TupleCons[E, TupleCons[F, Unit with Tuple]]]]]]) {
+  implicit class Tuple6Assessors[A, B, C, D, E, F](l: TupleCons[A, TupleCons[B, TupleCons[C, TupleCons[D, TupleCons[E, TupleCons[F, Unit]]]]]]) {
     def _1 = l.asInstanceOf[dotty.TupleImplN[_, _]].underlying(0).asInstanceOf[A]
     def _2 = l.asInstanceOf[dotty.TupleImplN[_, _]].underlying(1).asInstanceOf[B]
     def _3 = l.asInstanceOf[dotty.TupleImplN[_, _]].underlying(2).asInstanceOf[C]
