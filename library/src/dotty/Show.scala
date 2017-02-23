@@ -93,7 +93,8 @@ object Show {
 
   implicit def showMap[K,V](implicit sk: Show[K], sv: Show[V]): Show[Map[K,V]] = new Show[Map[K,V]] {
     def show(m: Map[K, V]) =
-      "Map(" + m.map { case (k, v) => sk.show(k) + " -> " + sv.show(v) } .mkString (", ") + ")"
+      "Map()"
+      // "Map(" + m.map { case (k, v) => sk.show(k) + " -> " + sv.show(v) } .mkString (", ") + ")"
   }
 
   implicit def showMapOfNothing: Show[Map[Nothing,Nothing]] = new Show[Map[Nothing,Nothing]] {
