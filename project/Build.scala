@@ -120,10 +120,10 @@ object DottyBuild extends Build {
   //   this is only necessary for compatibility with sbt which currently hardcodes the "dotty" artifact name
   lazy val dotty = project.in(file(".")).
     // FIXME: we do not aggregate `bin` because its tests delete jars, thus breaking other tests
-    aggregate(`dotty-interfaces`, `dotty-library-bootstrapped`, `dotty-compiler`, dottySbtBridgeRef,
+    aggregate(`dotty-interfaces`, `dotty-library`, `dotty-compiler`, dottySbtBridgeRef,
       `scala-library`, `scala-compiler`, `scala-reflect`, `scalap`).
     dependsOn(`dotty-compiler`).
-    dependsOn(`dotty-library-bootstrapped`).
+    dependsOn(`dotty-library`).
     settings(
       addCommandAlias("run", "dotty-compiler/run") ++
       addCommandAlias(
@@ -219,14 +219,14 @@ object DottyBuild extends Build {
 
       repl := Def.inputTaskDyn {
         val args: Seq[String] = spaceDelimited("<arg>").parsed
-        val dottyLib = packageAll.value("dotty-library-bootstrapped")
+        val dottyLib = packageAll.value("dotty-library")
         (runMain in Compile).toTask(
           s" dotty.tools.dotc.repl.Main -classpath $dottyLib " + args.mkString(" ")
         )
       }.evaluated,
 
       genDocs := Def.inputTaskDyn {
-        val dottyLib = packageAll.value("dotty-library-bootstrapped")
+        val dottyLib = packageAll.value("dotty-library")
         val dottyInterfaces = packageAll.value("dotty-interfaces")
         val otherDeps = (dependencyClasspath in Compile).value.map(_.data).mkString(":")
         val sources = (managedSources in (Compile, compile)).value ++ (unmanagedSources in (Compile, compile)).value
@@ -257,12 +257,12 @@ object DottyBuild extends Build {
         else if (scalaLib == "") {
           println("Couldn't find scala-library on classpath, please run using script in bin dir instead")
         } else {
-          val dottyLib = packageAll.value("dotty-library-bootstrapped")
+          val dottyLib = packageAll.value("dotty-library")
           s"""$java -classpath .:$dottyLib:$scalaLib ${args.mkString(" ")}""" !
         }
       },
       run := Def.inputTaskDyn {
-        val dottyLib = packageAll.value("dotty-library-bootstrapped")
+        val dottyLib = packageAll.value("dotty-library")
         val args: Seq[String] = spaceDelimited("<arg>").parsed
 
         val fullArgs = args.span(_ != "-classpath") match {
@@ -301,7 +301,7 @@ object DottyBuild extends Build {
         val args = Def.spaceDelimited("<arg>").parsed
         val jars = List(
           (packageBin in Compile).value.getAbsolutePath,
-          packageAll.value("dotty-library-bootstrapped"),
+          packageAll.value("dotty-library"),
           packageAll.value("dotty-interfaces")
         ) ++ getJarPaths(partestDeps.value, ivyPaths.value.ivyHome)
         val dottyJars  =
@@ -385,7 +385,7 @@ object DottyBuild extends Build {
 
         val jars = List(
           "-Ddotty.tests.classes.interfaces=" + pA("dotty-interfaces"),
-          "-Ddotty.tests.classes.library=" + pA("dotty-library-bootstrapped"),
+          "-Ddotty.tests.classes.library=" + pA("dotty-library"),
           "-Ddotty.tests.classes.compiler=" + pA("dotty-compiler")
         )
 
@@ -395,7 +395,7 @@ object DottyBuild extends Build {
 
   lazy val `dotty-compiler` = project.in(file("compiler")).
     dependsOn(`dotty-interfaces`).
-    // dependsOn(`dotty-library-bootstrapped`).
+    dependsOn(`dotty-library`).
     settings(sourceStructure).
     settings(dottyCompilerSettings).
     settings(
@@ -422,7 +422,7 @@ object DottyBuild extends Build {
         Map(
           "dotty-interfaces" -> (packageBin in (`dotty-interfaces`, Compile)).value,
           "dotty-compiler" -> (packageBin in Compile).value,
-          "dotty-library-bootstrapped" -> (packageBin in (`dotty-library-bootstrapped`, Compile)).value,
+          "dotty-library" -> (packageBin in (`dotty-library`, Compile)).value,
           "dotty-compiler-test" -> (packageBin in Test).value
         ) map { case (k, v) => (k, v.getAbsolutePath) }
       }
@@ -430,7 +430,7 @@ object DottyBuild extends Build {
     settings(publishing)
 
   lazy val `dotty-compiler-bootstrapped` = project.in(file("compiler")).
-    // dependsOn(`dotty-library-bootstrapped`).
+    dependsOn(`dotty-library-bootstrapped`).
     settings(sourceStructure).
     settings(commonBootstrappedSettings).
     settings(dottyCompilerSettings).
@@ -441,7 +441,7 @@ object DottyBuild extends Build {
       packageAll := {
         (packageAll in `dotty-compiler`).value ++ Seq(
           ("dotty-compiler" -> (packageBin in Compile).value.getAbsolutePath),
-          ("dotty-library-bootstrapped" -> (packageBin in (`dotty-library-bootstrapped`, Compile)).value.getAbsolutePath)
+          ("dotty-library" -> (packageBin in (`dotty-library-bootstrapped`, Compile)).value.getAbsolutePath)
         )
       }
     )
@@ -465,15 +465,15 @@ object DottyBuild extends Build {
       )
   )
 
-  // lazy val `dotty-library-bootstrapped` = project.in(file("library")).
-  //   settings(sourceStructure).
-  //   settings(dottyLibrarySettings).
+  lazy val `dotty-library` = project.in(file("library")).
+    settings(sourceStructure).
+    settings(dottyLibrarySettings).
+    settings(publishing)
 
   lazy val `dotty-library-bootstrapped` = project.in(file("library")).
     settings(sourceStructure).
     settings(commonBootstrappedSettings).
-    settings(dottyLibrarySettings).
-    settings(publishing)
+    settings(dottyLibrarySettings)
 
   // until sbt/sbt#2402 is fixed (https://github.com/sbt/sbt/issues/2402)
   lazy val cleanSbtBridge = TaskKey[Unit]("cleanSbtBridge", "delete dotty-sbt-bridge cache")
@@ -526,7 +526,7 @@ object DottyBuild extends Build {
       ScriptedPlugin.scripted := {
         val x1 = (publishLocal in `dotty-interfaces`).value
         val x2 = (publishLocal in `dotty-compiler`).value
-        val x3 = (publishLocal in `dotty-library-bootstrapped`).value
+        val x3 = (publishLocal in `dotty-library`).value
         val x4 = (publishLocal in dotty).value // Needed because sbt currently hardcodes the dotty artifact
         ScriptedPlugin.scriptedTask.evaluated
       }
@@ -647,7 +647,7 @@ object DottyInjectedPlugin extends AutoPlugin {
   // Dummy scala-library artefact. This is useful because sbt projects
   // automatically depend on scalaOrganization.value % "scala-library" % scalaVersion.value
   lazy val `scala-library` = project.
-    dependsOn(`dotty-library-bootstrapped`).
+    dependsOn(`dotty-library`).
     settings(
       crossPaths := false
     ).

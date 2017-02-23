@@ -52,29 +52,29 @@ trait UnderscoreTupleSyntax {
   //     ): Tuple3Zipped[El1, Repr1, El2, Repr2, El3, Repr3] = new Tuple3Zipped((x._1, x._2, x._3))
   // }
 
-  implicit class Tuple1Assessors[A](l: TupleCons[A, Unit]) {
+  implicit class Tuple1Assessors[A](l: TupleCons[A, Unit with Tuple]) {
     def _1 = l.asInstanceOf[dotty.TupleImplN[_, _]].underlying(0).asInstanceOf[A]
   }
 
-  implicit class Tuple2Assessors[A, B](l: TupleCons[A, TupleCons[B, Unit]]) {
+  implicit class Tuple2Assessors[A, B](l: TupleCons[A, TupleCons[B, Unit with Tuple]]) {
     def _1 = l.asInstanceOf[dotty.TupleImplN[_, _]].underlying(0).asInstanceOf[A]
     def _2 = l.asInstanceOf[dotty.TupleImplN[_, _]].underlying(1).asInstanceOf[B]
   }
 
-  implicit class Tuple3Assessors[A, B, C](l: TupleCons[A, TupleCons[B, TupleCons[C, Unit]]]) {
+  implicit class Tuple3Assessors[A, B, C](l: TupleCons[A, TupleCons[B, TupleCons[C, Unit with Tuple]]]) {
     def _1 = l.asInstanceOf[dotty.TupleImplN[_, _]].underlying(0).asInstanceOf[A]
     def _2 = l.asInstanceOf[dotty.TupleImplN[_, _]].underlying(1).asInstanceOf[B]
     def _3 = l.asInstanceOf[dotty.TupleImplN[_, _]].underlying(2).asInstanceOf[C]
   }
 
-  implicit class Tuple4Assessors[A, B, C, D](l: TupleCons[A, TupleCons[B, TupleCons[C, TupleCons[D, Unit]]]]) {
+  implicit class Tuple4Assessors[A, B, C, D](l: TupleCons[A, TupleCons[B, TupleCons[C, TupleCons[D, Unit with Tuple]]]]) {
     def _1 = l.asInstanceOf[dotty.TupleImplN[_, _]].underlying(0).asInstanceOf[A]
     def _2 = l.asInstanceOf[dotty.TupleImplN[_, _]].underlying(1).asInstanceOf[B]
     def _3 = l.asInstanceOf[dotty.TupleImplN[_, _]].underlying(2).asInstanceOf[C]
     def _4 = l.asInstanceOf[dotty.TupleImplN[_, _]].underlying(3).asInstanceOf[D]
   }
 
-  implicit class Tuple5Assessors[A, B, C, D, E](l: TupleCons[A, TupleCons[B, TupleCons[C, TupleCons[D, TupleCons[E, Unit]]]]]) {
+  implicit class Tuple5Assessors[A, B, C, D, E](l: TupleCons[A, TupleCons[B, TupleCons[C, TupleCons[D, TupleCons[E, Unit with Tuple]]]]]) {
     def _1 = l.asInstanceOf[dotty.TupleImplN[_, _]].underlying(0).asInstanceOf[A]
     def _2 = l.asInstanceOf[dotty.TupleImplN[_, _]].underlying(1).asInstanceOf[B]
     def _3 = l.asInstanceOf[dotty.TupleImplN[_, _]].underlying(2).asInstanceOf[C]
@@ -82,7 +82,7 @@ trait UnderscoreTupleSyntax {
     def _5 = l.asInstanceOf[dotty.TupleImplN[_, _]].underlying(4).asInstanceOf[E]
   }
 
-  implicit class Tuple6Assessors[A, B, C, D, E, F](l: TupleCons[A, TupleCons[B, TupleCons[C, TupleCons[D, TupleCons[E, TupleCons[F, Unit]]]]]]) {
+  implicit class Tuple6Assessors[A, B, C, D, E, F](l: TupleCons[A, TupleCons[B, TupleCons[C, TupleCons[D, TupleCons[E, TupleCons[F, Unit with Tuple]]]]]]) {
     def _1 = l.asInstanceOf[dotty.TupleImplN[_, _]].underlying(0).asInstanceOf[A]
     def _2 = l.asInstanceOf[dotty.TupleImplN[_, _]].underlying(1).asInstanceOf[B]
     def _3 = l.asInstanceOf[dotty.TupleImplN[_, _]].underlying(2).asInstanceOf[C]
