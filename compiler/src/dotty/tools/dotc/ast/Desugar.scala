@@ -1008,7 +1008,7 @@ object desugar {
           else
             ts.foldRight(TypeTree(defn.UnitType): Tree)(hconsType)
         }
-        else Apply(ref(defn.TupleNClass(arity).valRef), ts)
+        else Apply(ref(defn.TupleNType(arity).symbol.companionModule.valRef), ts)
 
         // arity match {
         //   case 0 => unitLiteral
