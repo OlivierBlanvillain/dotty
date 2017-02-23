@@ -13,7 +13,7 @@ import scala.reflect.api.{ Universe => ApiUniverse }
 
 object Definitions {
   /** TODOC OLIVIER*/
-  val MaxCaseClassTupleArity = 2
+  val MaxCaseClassTupleArity = 22
 
   /** The maximum arity N of a function type that's implemented
    *  as a trait `scala.FunctionN`. Functions of higher arity are possible,
@@ -204,7 +204,7 @@ class Definitions {
             defn.TupleConsType.appliedTo(TypeAlias(l) :: TypeAlias(r) :: Nil)
           }
           val impl  = defn.TupleImplNType.appliedTo(head, folded)
-          val synth = defn.SyntheticTupleType(arity).appliedTo(pt.typeParams.map(t => TypeAlias(t.toArg, 1)))
+          val synth = defn.TupleNType(arity).appliedTo(pt.typeParams.map(t => TypeAlias(t.toArg, 1)))
           MethodType(List(nme.syntheticParamName(0)), List(impl))(_ => synth)
         })))
 
@@ -556,7 +556,7 @@ class Definitions {
   lazy val BoxedNumberClass          = ctx.requiredClass("java.lang.Number")
   lazy val ThrowableClass            = ctx.requiredClass("java.lang.Throwable")
   lazy val ClassCastExceptionClass   = ctx.requiredClass("java.lang.ClassCastException")
-  lazy val JavaSerializableClass     = ctx.requiredClass("java.lang.Serializable")
+  lazy val JavaSerializableClass     = ctx.requiredClass("java.io.Serializable")
   lazy val ComparableClass           = ctx.requiredClass("java.lang.Comparable")
 
   // in scalac modified to have Any as parent
@@ -772,19 +772,19 @@ class Definitions {
   private lazy val ImplementedFunctionType = mkArityArray("scala.Function", MaxImplementedFunctionArity, 0)
   def FunctionClassPerRun = new PerRun[Array[Symbol]](implicit ctx => ImplementedFunctionType.map(_.symbol.asClass))
 
-  private lazy val ImplementedTupleType = mkArityArray("scala.Tuple", 22, 0) // TODO 22
-  def TupleClassPerRun = new PerRun[Array[Symbol]](implicit ctx => ImplementedTupleType.map(_.symbol.asClass))
+  private lazy val ImplementedTupleNType = mkArityArray("scala.Tuple", MaxCaseClassTupleArity, 0)
+  def TupleNClassPerRun = new PerRun[Array[Symbol]](implicit ctx => ImplementedTupleNType.map(_.symbol.asClass))
 
-  def TupleClass(n: Int)(implicit ctx: Context) =
-    if (n <= MaxCaseClassTupleArity) TupleClassPerRun()(ctx)(n)
-    else ??? // ctx.requiredClass("scala.Tuple" + n.toString)
+  def TupleNType(n: Int)(implicit ctx: Context): TypeRef = TupleNClass(n).typeRef
+  def TupleNClass(n: Int)(implicit ctx: Context): Symbol =
+    if (n <= MaxCaseClassTupleArity) TupleNClassPerRun()(ctx)(n)
+    else ctx.requiredModule("scala.Tuple" + n.toString)
 
-  def TupleNType(n: Int)(implicit ctx: Context): TypeRef =
-    if (n <= MaxCaseClassTupleArity) ImplementedTupleType(n)
-    else ??? // TupleClass(n).typeRef
+    // if (n <= MaxCaseClassTupleArity) ImplementedTupleType(n)
+    // else ??? // TupleClass(n).typeRef
 
-  def SyntheticTupleModule(n: Int)(implicit ctx: Context) = ctx.requiredModule("scala.Tuple" + n.toString)
-  def SyntheticTupleType(n: Int)(implicit ctx: Context) = ctx.requiredClass("scala.Tuple" + n.toString).typeRef
+  // def SyntheticTupleModule(n: Int)(implicit ctx: Context) =
+  // def SyntheticTupleType(n: Int)(implicit ctx: Context) = ctx.requiredClass("scala.Tuple" + n.toString).typeRef
 
   lazy val TupleClass      = ctx.requiredClass("dotty.Tuple")
   lazy val TupleConsClass  = ctx.requiredClass("dotty.TupleCons")

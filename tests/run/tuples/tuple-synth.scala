@@ -29,10 +29,10 @@ object Test {
     //   Tuple06.unapply[Int, String, Int, Int, Int, Boolean](tc)
 
     val tc =
-      Tuple06(a1, a2, a3, a4, a5, a6)
+      Tuple6(a1, a2, a3, a4, a5, a6)
 
     tc match {
-      case Tuple06(_, _, _, _, _, _) => ()
+      case Tuple6(_, _, _, _, _, _) => ()
     }
 
     val f =
