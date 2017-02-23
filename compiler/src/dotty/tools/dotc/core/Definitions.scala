@@ -783,8 +783,8 @@ class Definitions {
     if (n <= MaxCaseClassTupleArity) ImplementedTupleType(n)
     else ??? // TupleClass(n).typeRef
 
-  def SyntheticTupleModule(n: Int)(implicit ctx: Context) = ctx.requiredModule("scala.Tuple0" + n.toString)
-  def SyntheticTupleType(n: Int)(implicit ctx: Context) = ctx.requiredClass("scala.Tuple0" + n.toString).typeRef
+  def SyntheticTupleModule(n: Int)(implicit ctx: Context) = ctx.requiredModule("scala.Tuple" + n.toString)
+  def SyntheticTupleType(n: Int)(implicit ctx: Context) = ctx.requiredClass("scala.Tuple" + n.toString).typeRef
 
   lazy val TupleClass      = ctx.requiredClass("dotty.Tuple")
   lazy val TupleConsClass  = ctx.requiredClass("dotty.TupleCons")
