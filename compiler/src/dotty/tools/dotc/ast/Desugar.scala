@@ -1003,12 +1003,16 @@ object desugar {
         else if (ctx.mode is Mode.Type) {
           def hconsType(l: Tree, r: Tree): Tree =
             AppliedTypeTree(ref(defn.TupleConsType), l :: r :: Nil)
-          if (arity < Definitions.MaxCaseClassTupleArity)
+          if (arity <= Definitions.MaxCaseClassTupleArity)
             AppliedTypeTree(ref(defn.TupleNType(arity)), ts)
           else
             ts.foldRight(TypeTree(defn.UnitType): Tree)(hconsType)
         }
-        else Apply(ref(defn.TupleNType(arity).symbol.companionModule.valRef), ts)
+        else if (arity <= Definitions.MaxCaseClassTupleArity)
+          Apply(ref(defn.TupleNType(arity).symbol.companionModule.valRef), ts)
+        else
+          // Apply(ref(defn.TupleNType(arity).symbol.companionModule.valRef), ts)
+          Apply(ref(defn.TupleNClass(arity).valRef), ts)
 
         // arity match {
         //   case 0 => unitLiteral
