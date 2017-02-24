@@ -13,7 +13,7 @@ import scala.reflect.api.{ Universe => ApiUniverse }
 
 object Definitions {
   /** TODOC OLIVIER*/
-  val MaxCaseClassTupleArity = 3
+  val MaxCaseClassTupleArity = 4
 
   /** The maximum arity N of a function type that's implemented
    *  as a trait `scala.FunctionN`. Functions of higher arity are possible,
@@ -772,7 +772,7 @@ class Definitions {
   private lazy val ImplementedFunctionType = mkArityArray("scala.Function", MaxImplementedFunctionArity, 0)
   def FunctionClassPerRun = new PerRun[Array[Symbol]](implicit ctx => ImplementedFunctionType.map(_.symbol.asClass))
 
-  lazy val ProductNType = mkArityArray("scala.Product", MaxCaseClassTupleArity, 0)
+  lazy val ProductNType = mkArityArray("scala.Product", 22, 0) // TODO 22
   private lazy val ImplementedTupleNType = mkArityArray("scala.Tuple", MaxCaseClassTupleArity, 2)
   private def TupleNClassPerRun = new PerRun[Array[Symbol]](implicit ctx => ImplementedTupleNType.map(_.symbol.asClass))
 
