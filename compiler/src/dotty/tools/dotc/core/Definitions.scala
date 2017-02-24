@@ -772,19 +772,19 @@ class Definitions {
   private lazy val ImplementedFunctionType = mkArityArray("scala.Function", MaxImplementedFunctionArity, 0)
   def FunctionClassPerRun = new PerRun[Array[Symbol]](implicit ctx => ImplementedFunctionType.map(_.symbol.asClass))
 
-  private lazy val ImplementedTupleNType = mkArityArray("scala.Tuple", MaxCaseClassTupleArity, 0)
-  def TupleNClassPerRun = new PerRun[Array[Symbol]](implicit ctx => ImplementedTupleNType.map(_.symbol.asClass))
+  lazy val ProductNType = mkArityArray("scala.Product", MaxCaseClassTupleArity, 0)
+  private lazy val ImplementedTupleNType = mkArityArray("scala.Tuple", MaxCaseClassTupleArity, 2)
+  private def TupleNClassPerRun = new PerRun[Array[Symbol]](implicit ctx => ImplementedTupleNType.map(_.symbol.asClass))
 
-  def TupleNType(n: Int)(implicit ctx: Context): TypeRef = TupleNClass(n).typeRef
-  def TupleNClass(n: Int)(implicit ctx: Context): Symbol =
+  def TupleNClass(n: Int)(implicit ctx: Context): Symbol = {
     if (n <= MaxCaseClassTupleArity) TupleNClassPerRun()(ctx)(n)
-    else ctx.requiredModule("scala.Tuple" + n.toString)
+    else ctx.requiredClass("scala.Tuple" + n.toString)
+  }
 
-    // if (n <= MaxCaseClassTupleArity) ImplementedTupleType(n)
-    // else ??? // TupleClass(n).typeRef
-
-  // def SyntheticTupleModule(n: Int)(implicit ctx: Context) =
-  // def SyntheticTupleType(n: Int)(implicit ctx: Context) = ctx.requiredClass("scala.Tuple" + n.toString).typeRef
+  def TupleNType(n: Int)(implicit ctx: Context): TypeRef = {
+    if (n <= MaxCaseClassTupleArity) ImplementedTupleNType(n)
+    else TupleNClass(n).typeRef
+  }
 
   lazy val TupleClass      = ctx.requiredClass("dotty.Tuple")
   lazy val TupleConsClass  = ctx.requiredClass("dotty.TupleCons")
@@ -794,7 +794,6 @@ class Definitions {
   lazy val TupleConsType  = TupleConsClass.typeRef
   lazy val TupleImplNType = TupleImplNClass.typeRef
 
-  lazy val ProductNType = mkArityArray("scala.Product", 22, 0)
 
   def FunctionClass(n: Int)(implicit ctx: Context) =
     if (n < MaxImplementedFunctionArity) FunctionClassPerRun()(ctx)(n)
