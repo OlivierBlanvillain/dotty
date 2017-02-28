@@ -22,17 +22,17 @@ object Test {
     val a5: Int = 5
     val a6: Boolean = false
 
-    // val tc: Tuple06[Int, String, Int, Int, Int, Boolean] =
-    //   Tuple06.apply[Int, String, Int, Int, Int, Boolean](a1, a2, a3, a4, a5, a6)
+    val tc0: (Int, String, Int, Int, Int, Boolean) =
+      Tuple06.apply[Int, String, Int, Int, Int, Boolean](a1, a2, a3, a4, a5, a6)
 
-    // val opt: Option[Tuple06[Int, String, Int, Int, Int, Boolean]] =
-    //   Tuple06.unapply[Int, String, Int, Int, Int, Boolean](tc)
+    val opt0: (Int, String, Int, Int, Int, Boolean) =
+      Tuple06.unapply(tc0)
 
     val tc =
-      Tuple6(a1, a2, a3, a4, a5, a6)
+      Tuple06(a1, a2, a3, a4, a5, a6)
 
     tc match {
-      case Tuple6(_, _, _, _, _, _) => ()
+      case Tuple06(_, _, _, _, _, _) => ()
     }
 
     val f =

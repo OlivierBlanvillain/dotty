@@ -199,13 +199,17 @@ class Definitions {
 
         // def unapply[T1, T2, ...](t: TupleN[T1, T2, ...]): TupleN[T1, T2, ...]
         decls.enter(newMethod(cls, nme.unapply, PolyType(argTypeNames)(emptyBounds, pt => {
-          val (head :: tail) = pt.typeParams.map(_.toArg)
-          val folded = tail.foldRight(defn.UnitType: Type) { case (l, r) =>
+          // val (head :: tail) =
+          // val folded = tail.foldRight(defn.UnitType: Type) { case (l, r) =>
+          //   defn.TupleConsType.appliedTo(TypeAlias(l) :: TypeAlias(r) :: Nil)
+          // }
+          // val impl  = defn.TupleImplNType.appliedTo(head, folded)
+
+          val t2 = pt.typeParams.map(_.toArg).foldRight(defn.UnitType: Type) { case (l, r) =>
             defn.TupleConsType.appliedTo(TypeAlias(l) :: TypeAlias(r) :: Nil)
           }
-          val impl  = defn.TupleImplNType.appliedTo(head, folded)
           val synth = defn.TupleNType(arity).appliedTo(pt.typeParams.map(t => TypeAlias(t.toArg, 1)))
-          MethodType(List(nme.syntheticParamName(0)), List(impl))(_ => synth)
+          MethodType(paramNames = List(nme.syntheticParamName(0)), paramTypes = List(t2))(_ => synth)
         })))
 
         denot.info =
