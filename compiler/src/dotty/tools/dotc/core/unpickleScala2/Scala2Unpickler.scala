@@ -95,7 +95,23 @@ object Scala2Unpickler {
       else selfInfo
     val tempInfo = new TempClassInfo(denot.owner.thisType, denot.classSymbol, decls, ost)
     denot.info = tempInfo // first rough info to avoid CyclicReferences
-    var parentRefs = ctx.normalizeToClassRefs(parents, cls, decls)
+
+    val clsString = cls.toString
+    val splitted = clsString.split("class Tuple")
+    val pp =
+      if (clsString == "class TupleCons") parents :+ defn.ProductType // TODO Remove product?
+      else if (clsString == "class Unit") parents :+ defn.TupleType
+      else if (splitted.size == 2 && splitted(1).forall(_.isDigit)) {
+          val i = splitted(1).toInt
+        val productTps = parents.collect { case t: RefinedType => t.baseArgTypes(defn.ProductNType(i).classSymbol) }.head
+        val newType = productTps.foldRight(defn.UnitType: Type) { case (current, previous) =>
+          RefinedType.makeFullyDefined(defn.TupleConsType, List(TypeAlias(current), TypeAlias(previous)))
+        }
+        parents :+ defn.TupleType :+ newType
+      } else parents
+
+    var parentRefs = ctx.normalizeToClassRefs(pp, cls, decls)
+
     if (parentRefs.isEmpty) parentRefs = defn.ObjectType :: Nil
     for (tparam <- tparams) {
       val tsym = decls.lookup(tparam.name)
@@ -724,7 +740,7 @@ class Scala2Unpickler(bytes: Array[Byte], classRoot: ClassDenotation, moduleClas
           sym.showFullName == "scala.Tuple2" ||
           sym.showFullName == "scala.Tuple3" ||
           sym.showFullName == "scala.Tuple4"
-        ) args.reverse.foldLeft[Type](defn.TNilType.classSymbol.companionModule.valRef) {
+        ) args.reverse.foldLeft[Type](defn.UnitType: Type) {
             case (acc, el) => defn.TupleConsType.safeAppliedTo(List(el, acc))
           }
         else if (sym == defn.ByNameParamClass2x) ExprType(args.head)

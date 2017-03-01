@@ -999,13 +999,13 @@ object desugar {
           case 0 => unitLiteral
           case _ if ctx.mode is Mode.Type =>
             // Transforming Tuple types: (T1, T2) → TupleCons[T1, TupleCons[T2, TNil.type]]
-            val nil: Tree = SingletonTypeTree(ref(defn.TNilType.classSymbol.companionModule.valRef))
+            val nil: Tree = TypeTree(defn.UnitType)
             def hconsType(l: Tree, r: Tree): Tree =
               AppliedTypeTree(ref(defn.TupleConsType), l :: r :: Nil)
             ts.foldRight(nil)(hconsType)
           case _ =>
             // Transforming Tuple trees: (T1, T2, ..., TN) → TupleCons(T1, TupleCons(T2, ... (TupleCons(TN, TNil))))
-            val nil = ref(defn.TNilType.classSymbol.companionModule.valRef)
+            val nil: Tree = unitLiteral
             val cons = defn.TupleConsType.classSymbol.companionModule.valRef
             def consTree(l: Tree, r: Tree): Tree =
               Apply(ref(cons), l :: r :: Nil)
