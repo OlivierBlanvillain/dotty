@@ -4,6 +4,13 @@ trait Tuple
 
 trait TupleCons[+H, +T <: Tuple] extends Tuple
 
+class Pair[A, B](a: A, b: B) {
+  def isEmpty = false
+  def get     = this
+  def _1      = a
+  def _2      = b
+}
+
 object TupleCons {
   def apply[H, T <: Tuple](h: H, t: T): TupleCons[H, T] =
     ((t: Any) match {
@@ -32,8 +39,8 @@ object TupleCons {
         new TupleImplN(a)
     }).asInstanceOf[TupleCons[H, T]]
 
-  def unapply[H, T <: Tuple](t: TupleCons[H, T]): Option[scala.Tuple2[H, T]] =
-    Some((t: Any) match {
+  def unapply[H, T <: Tuple](t: TupleCons[H, T]): Pair[H, T] =
+    ((t: Any) match {
       case impln: TupleImplN[_, _] =>
         val underlying = impln.underlying
         var s = underlying.size
@@ -53,12 +60,12 @@ object TupleCons {
             new TupleImplN(a)
           }
         val head = underlying(0)
-        new scala.Tuple2(head, tail)
-      case scala.Tuple1(e1)             => new scala.Tuple2(e1, ())
-      case scala.Tuple2(e1, e2)         => new scala.Tuple2(e1, new scala.Tuple1(e2))
-      case scala.Tuple3(e1, e2, e3)     => new scala.Tuple2(e1, new scala.Tuple2(e2, e3))
-      case scala.Tuple4(e1, e2, e3, e4) => new scala.Tuple2(e1, new scala.Tuple3(e2, e3, e4))
-    }).asInstanceOf[Option[scala.Tuple2[H, T]]]
+        new Pair(head, tail)
+      case scala.Tuple1(e1)             => new Pair(e1, ())
+      case scala.Tuple2(e1, e2)         => new Pair(e1, new scala.Tuple1(e2))
+      case scala.Tuple3(e1, e2, e3)     => new Pair(e1, new scala.Tuple2(e2, e3))
+      case scala.Tuple4(e1, e2, e3, e4) => new Pair(e1, new scala.Tuple3(e2, e3, e4))
+    }).asInstanceOf[Pair[H, T]]
 }
 
 class TupleImplN[H, T <: Tuple](val underlying: Array[Any]) extends Product with TupleCons[H, T] {
