@@ -347,7 +347,8 @@ class LazyVals extends MiniPhaseTransform with IdentityDenotTransformer {
         // compute or create appropriate offsetSymol, bitmap and bits used by current ValDef
         appendOffsetDefs.get(claz) match {
           case Some(info) =>
-            val flagsPerLong = (64 / dotty.runtime.LazyVals.BITS_PER_LAZY_VAL).toInt
+            val BITS_PER_LAZY_VAL = 2L
+            val flagsPerLong = (64 / BITS_PER_LAZY_VAL).toInt
             info.ord += 1
             ord = info.ord % flagsPerLong
             val id = info.ord / flagsPerLong

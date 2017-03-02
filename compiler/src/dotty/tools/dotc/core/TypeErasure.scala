@@ -351,6 +351,10 @@ class TypeErasure(isJava: Boolean, semiEraseVCs: Boolean, isConstructor: Boolean
    *   - For any other type, exception.
    */
   private def apply(tp: Type)(implicit ctx: Context): Type = tp match {
+    case _ if tp.isRef(defn.TupleConsType.symbol) =>
+      defn.ProductType
+    case _ if tp.isRef(defn.TupleType.symbol) || tp.toString.endsWith("dotty)),Tuple)") =>
+      defn.ObjectType
     case _: ErasedValueType =>
       tp
     case tp: TypeRef =>

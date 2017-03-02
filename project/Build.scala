@@ -306,7 +306,7 @@ object DottyBuild extends Build {
         }
       },
       run := Def.inputTaskDyn {
-        val dottyLib = packageAll.value("dotty-library")
+        val dottyLib = packageAll.value("dotty-library-bootstrapped")
         val args: Seq[String] = spaceDelimited("<arg>").parsed
 
         val fullArgs = args.span(_ != "-classpath") match {
@@ -349,7 +349,7 @@ object DottyBuild extends Build {
           packageAll.value("dotty-interfaces")
         ) ++ getJarPaths(partestDeps.value, ivyPaths.value.ivyHome)
         val dottyJars  =
-          s"""-dottyJars ${jars.length + 2} dotty.jar dotty-lib.jar ${jars.mkString(" ")}"""
+          s"""-dottyJars ${jars.length + 2} dotty.jar  ${jars.mkString(" ")}""" // dotty-lib.jar
         // Provide the jars required on the classpath of run tests
         runTask(Test, "dotty.partest.DPConsoleRunner", dottyJars + " " + args.mkString(" "))
       }.evaluated,
@@ -431,8 +431,8 @@ object DottyBuild extends Build {
           else List()
 
         val jars = List(
-          "-Ddotty.tests.classes.interfaces=" + pA("dotty-interfaces-bootstrapped"),
-          "-Ddotty.tests.classes.library=" + pA("dotty-library"),
+          "-Ddotty.tests.classes.interfaces=" + pA("dotty-interfaces"),
+          "-Ddotty.tests.classes.library=" + pA("dotty-library-bootstrapped"),
           "-Ddotty.tests.classes.compiler=" + pA("dotty-compiler")
         )
 
@@ -442,7 +442,7 @@ object DottyBuild extends Build {
 
   lazy val `dotty-compiler` = project.in(file("compiler")).
     dependsOn(`dotty-interfaces`).
-    dependsOn(`dotty-library-bootstrapped`).
+    // dependsOn(`dotty-library-bootstrapped`).
     settings(sourceStructure).
     settings(dottyCompilerSettings).
     settings(
@@ -469,7 +469,7 @@ object DottyBuild extends Build {
         Map(
           "dotty-interfaces" -> (packageBin in (`dotty-interfaces`, Compile)).value,
           "dotty-compiler" -> (packageBin in Compile).value,
-          "dotty-library-bootstrapped" -> (packageBin in (`dotty-library`, Compile)).value,
+          "dotty-library-bootstrapped" -> (packageBin in (`dotty-library-bootstrapped`, Compile)).value,
           "dotty-compiler-test" -> (packageBin in Test).value
         ) map { case (k, v) => (k, v.getAbsolutePath) }
       }
@@ -488,7 +488,7 @@ object DottyBuild extends Build {
       packageAll := {
         (packageAll in `dotty-compiler`).value ++ Seq(
           ("dotty-compiler" -> (packageBin in Compile).value.getAbsolutePath),
-          ("dotty-library" -> (packageBin in (`dotty-library-bootstrapped`, Compile)).value.getAbsolutePath)
+          ("dotty-library-bootstrapped" -> (packageBin in (`dotty-library-bootstrapped`, Compile)).value.getAbsolutePath)
         )
       }
     )
