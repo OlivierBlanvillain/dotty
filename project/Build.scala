@@ -129,10 +129,10 @@ object DottyBuild extends Build {
   //   this is only necessary for compatibility with sbt which currently hardcodes the "dotty" artifact name
   lazy val dotty = project.in(file(".")).
     // FIXME: we do not aggregate `bin` because its tests delete jars, thus breaking other tests
-    aggregate(`dotty-interfaces`, `dotty-library`, `dotty-compiler`, dottySbtBridgeRef,
+    aggregate(`dotty-interfaces`, `dotty-library-bootstrapped`, `dotty-compiler`, dottySbtBridgeRef,
       `scala-library`, `scala-compiler`, `scala-reflect`, `scalap`).
     dependsOn(`dotty-compiler`).
-    dependsOn(`dotty-library`).
+    dependsOn(`dotty-library-bootstrapped`).
     settings(
       triggeredMessage in ThisBuild := Watched.clearWhenTriggered,
 
@@ -573,7 +573,7 @@ object DottyBuild extends Build {
       ScriptedPlugin.scripted := {
         val x1 = (publishLocal in `dotty-interfaces`).value
         val x2 = (publishLocal in `dotty-compiler`).value
-        val x3 = (publishLocal in `dotty-library`).value
+        val x3 = (publishLocal in `dotty-library-bootstrapped`).value
         val x4 = (publishLocal in dotty).value // Needed because sbt currently hardcodes the dotty artifact
         ScriptedPlugin.scriptedTask.evaluated
       }
