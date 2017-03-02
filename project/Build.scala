@@ -512,15 +512,17 @@ object DottyBuild extends Build {
       )
   )
 
-  lazy val `dotty-library` = project.in(file("library")).
-    settings(sourceStructure).
-    settings(dottyLibrarySettings).
-    settings(publishing)
+  // lazy val `dotty-library` = project.in(file("library")).
+  //   settings(sourceStructure).
+  //   settings(dottyLibrarySettings).
+  //   settings(publishing)
 
   lazy val `dotty-library-bootstrapped` = project.in(file("library")).
     settings(sourceStructure).
     settings(commonBootstrappedSettings).
-    settings(dottyLibrarySettings)
+    settings(libraryDependencies += "ch.epfl.lamp" %% "dotty-library" % "0.1.1-SNAPSHOT").
+    settings(dottyLibrarySettings).
+    settings(publishing)
 
   // until sbt/sbt#2402 is fixed (https://github.com/sbt/sbt/issues/2402)
   lazy val cleanSbtBridge = TaskKey[Unit]("cleanSbtBridge", "delete dotty-sbt-bridge cache")
@@ -697,7 +699,7 @@ object DottyInjectedPlugin extends AutoPlugin {
   // Dummy scala-library artefact. This is useful because sbt projects
   // automatically depend on scalaOrganization.value % "scala-library" % scalaVersion.value
   lazy val `scala-library` = project.
-    dependsOn(`dotty-library`).
+    // dependsOn(`dotty-library-bootstrapped`).
     settings(
       crossPaths := false
     ).
