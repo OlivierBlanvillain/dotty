@@ -346,6 +346,7 @@ object DottyBuild extends Build {
         val jars = List(
           (packageBin in Compile).value.getAbsolutePath,
           packageAll.value("dotty-library"),
+          // packageAll.value("dotty-library-bootstrapped") ø
           packageAll.value("dotty-interfaces")
         ) ++ getJarPaths(partestDeps.value, ivyPaths.value.ivyHome)
         val dottyJars  =
@@ -470,6 +471,7 @@ object DottyBuild extends Build {
           "dotty-interfaces" -> (packageBin in (`dotty-interfaces`, Compile)).value,
           "dotty-compiler" -> (packageBin in Compile).value,
           "dotty-library" -> (packageBin in (`dotty-library`, Compile)).value,
+          // "dotty-library-bootstrapped" -> (packageBin in (`dotty-library-bootstrapped`, Compile)).value, ø
           "dotty-compiler-test" -> (packageBin in Test).value
         ) map { case (k, v) => (k, v.getAbsolutePath) }
       }
