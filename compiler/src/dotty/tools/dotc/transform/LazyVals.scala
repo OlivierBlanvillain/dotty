@@ -398,13 +398,19 @@ class LazyVals extends MiniPhaseTransform with IdentityDenotTransformer {
 object LazyVals {
   object lazyNme {
     object RLazyVals {
-      import dotty.runtime.LazyVals._
-      val get               = Names.get.toTermName
-      val setFlag           = Names.setFlag.toTermName
-      val wait4Notification = Names.wait4Notification.toTermName
-      val state             = Names.state.toTermName
-      val cas               = Names.cas.toTermName
-      val getOffset         = Names.getOffset.toTermName
+      val get               = "get".toTermName
+      val setFlag           = "setFlag".toTermName
+      val wait4Notification = "wait4Notification".toTermName
+      val state             = "STATE".toTermName
+      val cas               = "CAS".toTermName
+      val getOffset         = "getOffset".toTermName
+      // import dotty.runtime.LazyVals._
+      // val get               = Names.get.toTermName
+      // val setFlag           = Names.setFlag.toTermName
+      // val wait4Notification = Names.wait4Notification.toTermName
+      // val state             = Names.state.toTermName
+      // val cas               = Names.cas.toTermName
+      // val getOffset         = Names.getOffset.toTermName
     }
     val flag        = "flag".toTermName
     val result      = "result".toTermName

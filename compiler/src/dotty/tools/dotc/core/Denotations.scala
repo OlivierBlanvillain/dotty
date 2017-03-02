@@ -71,7 +71,7 @@ import Decorators.SymbolIteratorDecorator
  */
 object Denotations {
 
-  implicit def eqDenotation: Eq[Denotation, Denotation] = Eq
+  // implicit def eqDenotation: Eq[Denotation, Denotation] = Eq
 
   /** A denotation is the result of resolving
    *  a name (either simple identifier or select) during a given period.
