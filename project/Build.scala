@@ -345,8 +345,8 @@ object DottyBuild extends Build {
         val args = Def.spaceDelimited("<arg>").parsed
         val jars = List(
           (packageBin in Compile).value.getAbsolutePath,
-          packageAll.value("dotty-library"),
-          // packageAll.value("dotty-library-bootstrapped") ø
+          // packageAll.value("dotty-library"), ø
+          packageAll.value("dotty-library-bootstrapped"),
           packageAll.value("dotty-interfaces")
         ) ++ getJarPaths(partestDeps.value, ivyPaths.value.ivyHome)
         val dottyJars  =
@@ -467,7 +467,9 @@ object DottyBuild extends Build {
 
       // packageAll packages all and then returns a map with the abs location
       packageAll := {
-        Map(
+        Map("dotty-library-bootstrapped" -> file(
+          "/home/olivier/workspace/dotty/lib.jar"
+        )) ++ Map(
           "dotty-interfaces" -> (packageBin in (`dotty-interfaces`, Compile)).value,
           "dotty-compiler" -> (packageBin in Compile).value,
           "dotty-library" -> (packageBin in (`dotty-library`, Compile)).value,

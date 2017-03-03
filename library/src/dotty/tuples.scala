@@ -26,16 +26,16 @@ object TupleCons {
         new TupleImplN(a)
       // case ()                           => val a = new Array[Any](1); a(0) = h; new TupleImplN(a)
       case ()                           => new scala.Tuple1(h)
-      case scala.Tuple1(e1)             => new scala.Tuple2(h, e1)
-      case scala.Tuple2(e1, e2)         => new scala.Tuple3(h, e1, e2)
-      case scala.Tuple3(e1, e2, e3)     => new scala.Tuple4(h, e1, e2, e3)
-      case scala.Tuple4(e1, e2, e3, e4) =>
+      case t: scala.Tuple1[_]           => new scala.Tuple2(h, t._1)
+      case t: scala.Tuple2[_, _]        => new scala.Tuple3(h, t._1, t._2)
+      case t: scala.Tuple3[_, _, _]     => new scala.Tuple4(h, t._1, t._2, t._3)
+      case t: scala.Tuple4[_, _, _, _]  =>
         val a = new Array[Any](5)
         a(0) = h
-        a(1) = e1
-        a(2) = e2
-        a(3) = e3
-        a(4) = e4
+        a(1) = t._1
+        a(2) = t._2
+        a(3) = t._3
+        a(4) = t._4
         new TupleImplN(a)
     }).asInstanceOf[TupleCons[H, T]]
 
@@ -61,10 +61,10 @@ object TupleCons {
           }
         val head = underlying(0)
         new Pair(head, tail)
-      case scala.Tuple1(e1)             => new Pair(e1, ())
-      case scala.Tuple2(e1, e2)         => new Pair(e1, new scala.Tuple1(e2))
-      case scala.Tuple3(e1, e2, e3)     => new Pair(e1, new scala.Tuple2(e2, e3))
-      case scala.Tuple4(e1, e2, e3, e4) => new Pair(e1, new scala.Tuple3(e2, e3, e4))
+      case t: scala.Tuple1[_]          => new Pair(t._1, ())
+      case t: scala.Tuple2[_, _]       => new Pair(t._1, new scala.Tuple1(t._2))
+      case t: scala.Tuple3[_, _, _]    => new Pair(t._1, new scala.Tuple2(t._2, t._3))
+      case t: scala.Tuple4[_, _, _, _] => new Pair(t._1, new scala.Tuple3(t._2, t._3, t._4))
     }).asInstanceOf[Pair[H, T]]
 }
 
