@@ -93,19 +93,19 @@ object Test {
 
     assert(map.get("name") == "foo")
     assert(map.get("genre") == true)
-    // assert(map.get("moneyz") == 123)
-    // assert(map.get("cat") == "bar")
+    assert(map.get("moneyz") == 123)
+    assert(map.get("cat") == "bar")
 
-    // val map2: MapType = (
-    //   "name"   -- "foo",
-    //   "genre"  -- true,
-    //   "moneyz" -- 123,
-    //   "cat"    -- "bar"
-    // )
+    val map2: MapType = (
+      "name"   -- "foo",
+      "genre"  -- true,
+      "moneyz" -- 123,
+      "cat"    -- "bar"
+    )
 
-    // assert(map2.get("name") == "foo")
-    // assert(map2.get("genre") == true)
-    // assert(map2.get("moneyz") == 123)
-    // assert(map2.get("cat") == "bar")
+    assert(map2.get("name") == "foo")
+    assert(map2.get("genre") == true)
+    assert(map2.get("moneyz") == 123)
+    assert(map2.get("cat") == "bar")
   }
 }

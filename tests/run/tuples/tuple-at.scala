@@ -35,9 +35,9 @@ object At {
     (implicit a: PhantomAt[L, N, O], i: Nat2Int[N]): At[L, N, O] =
       new At[L, N, O] {
         def apply(l: L): O = (l match {
-          case Tuple1(e1)         => e1
-          case Tuple2(e1, e2)     => if (i.value == 0) e1 else e2
-          case Tuple3(e1, e2, e3) => if (i.value == 0) e1 else if (i.value == 1) e2 else e3
+          case scala.Tuple1(e1)         => e1
+          case scala.Tuple2(e1, e2)     => if (i.value == 0) e1 else e2
+          case scala.Tuple3(e1, e2, e3) => if (i.value == 0) e1 else if (i.value == 1) e2 else e3
           case t: TupleImplN[_, _] => t.underlying(i.value)
         }).asInstanceOf[O]
       }
@@ -83,7 +83,7 @@ object Test {
 
     // assert(u.at(0)  == "s")
 
-    implicitly[PhantomAt[(String, Int, Int, Int, Boolean), Zero, String]]
+    // implicitly[PhantomAt[(String, Int, Int, Int, Boolean), Zero, String]]
     // val tuple: (String, Int, Int, Int, Boolean) = ("s", 1, 2, 3, true)
 
     // assert(tuple.at(0) == "s")

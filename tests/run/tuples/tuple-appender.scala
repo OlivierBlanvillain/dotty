@@ -15,8 +15,10 @@ object SlowAppender {
     (implicit a: SlowAppender[T, L, O]): SlowAppender[H :: T, L, H :: O] =
       new SlowAppender[H :: T, L, H :: O] {
         def apply(l1: H :: T, l2: L): H :: O = {
-          val TupleCons(head, tail) = l1
-          TupleCons(head, a(tail, l2))
+          l1 match {
+            case TupleCons(head, tail) =>
+              TupleCons(head, a(tail, l2))
+          }
         }
       }
 }
