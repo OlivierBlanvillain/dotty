@@ -1,4 +1,8 @@
-sbt "run $(find library/ -name '*.scala' -or -name '*.java')"
+sbt "run $(find library/ -name '*.scala')"
+
+javac -d . -cp \
+  $(find ~/.ivy2/ -name scala-library-2.11.5.jar) \
+  $(find library/ -name '*.java')
 
 jar cMf lib.jar \
   $(find dotty/ -name *.class) \
