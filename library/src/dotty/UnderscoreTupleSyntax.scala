@@ -40,25 +40,34 @@ trait UnderscoreTupleSyntax {
     def _4: D = l match { case TupleCons(_, TupleCons(_, TupleCons(_, TupleCons(x, _)))) => x }
   }
 
-  // type Tuple4[A, B, C, D] = TupleCons[A, TupleCons[B, TupleCons[C, TupleCons[D, Tuple with Unit]]]]
+  type Tuple4[A, B, C, D] = TupleCons[A, TupleCons[B, TupleCons[C, TupleCons[D, Tuple with Unit]]]]
 
-  // def Tuple4[A, B, C, D](a: A, b: B, c: C, d: D): TupleCons[A, TupleCons[B, TupleCons[C, TupleCons[D, Tuple with Unit]]]] = TupleCons(a, TupleCons(b, TupleCons(c, TupleCons(d, ().asInstanceOf[Tuple with Unit]))))
+  def Tuple4[A, B, C, D](a: A, b: B, c: C, d: D): TupleCons[A, TupleCons[B, TupleCons[C, TupleCons[D, Tuple with Unit]]]] = TupleCons(a, TupleCons(b, TupleCons(c, TupleCons(d, ().asInstanceOf[Tuple with Unit]))))
 
-  // implicit class Tuple5Assessors[A, B, C, D, E](l: TupleCons[A, TupleCons[B, TupleCons[C, TupleCons[D, TupleCons[E, Tuple with Unit]]]]]) {
-  //   def _1: A = l.head; def _2: B = l.tail.head; def _3: C = l.tail.tail.head; def _4: D = l.tail.tail.tail.head; def _5: E = l.tail.tail.tail.tail.head
-  // }
+  implicit class Tuple5Assessors[A, B, C, D, E](l: TupleCons[A, TupleCons[B, TupleCons[C, TupleCons[D, TupleCons[E, Tuple with Unit]]]]]) {
+    def _1: A = l match { case TupleCons(x, _) => x }
+    def _2: B = l match { case TupleCons(_, TupleCons(x, _)) => x }
+    def _3: C = l match { case TupleCons(_, TupleCons(_, TupleCons(x, _))) => x }
+    def _4: D = l match { case TupleCons(_, TupleCons(_, TupleCons(_, TupleCons(x, _)))) => x }
+    def _5: E = l match { case TupleCons(_, TupleCons(_, TupleCons(_, TupleCons(_, TupleCons(x, _))))) => x }
+  }
 
-  // type Tuple5[A, B, C, D, E] = TupleCons[A, TupleCons[B, TupleCons[C, TupleCons[D, TupleCons[E, Tuple with Unit]]]]]
+  type Tuple5[A, B, C, D, E] = TupleCons[A, TupleCons[B, TupleCons[C, TupleCons[D, TupleCons[E, Tuple with Unit]]]]]
 
-  // def Tuple5[A, B, C, D, E](a: A, b: B, c: C, d: D, e: E): TupleCons[A, TupleCons[B, TupleCons[C, TupleCons[D, TupleCons[E, Tuple with Unit]]]]] = TupleCons(a, TupleCons(b, TupleCons(c, TupleCons(d, TupleCons(e, ().asInstanceOf[Tuple with Unit])))))
+  def Tuple5[A, B, C, D, E](a: A, b: B, c: C, d: D, e: E): TupleCons[A, TupleCons[B, TupleCons[C, TupleCons[D, TupleCons[E, Tuple with Unit]]]]] = TupleCons(a, TupleCons(b, TupleCons(c, TupleCons(d, TupleCons(e, ().asInstanceOf[Tuple with Unit])))))
 
-  // implicit class Tuple6Assessors[A, B, C, D, E, F](l: TupleCons[A, TupleCons[B, TupleCons[C, TupleCons[D, TupleCons[E, TupleCons[F, Tuple with Unit]]]]]]) {
-  //   def _1: A = l.head; def _2: B = l.tail.head; def _3: C = l.tail.tail.head; def _4: D = l.tail.tail.tail.head; def _5: E = l.tail.tail.tail.tail.head; def _6: F = l.tail.tail.tail.tail.tail.head
-  // }
+  implicit class Tuple6Assessors[A, B, C, D, E, F](l: TupleCons[A, TupleCons[B, TupleCons[C, TupleCons[D, TupleCons[E, TupleCons[F, Tuple with Unit]]]]]]) {
+    def _1: A = l match { case TupleCons(x, _) => x }
+    def _2: B = l match { case TupleCons(_, TupleCons(x, _)) => x }
+    def _3: C = l match { case TupleCons(_, TupleCons(_, TupleCons(x, _))) => x }
+    def _4: D = l match { case TupleCons(_, TupleCons(_, TupleCons(_, TupleCons(x, _)))) => x }
+    def _5: E = l match { case TupleCons(_, TupleCons(_, TupleCons(_, TupleCons(_, TupleCons(x, _))))) => x }
+    def _6: F = l match { case TupleCons(_, TupleCons(_, TupleCons(_, TupleCons(_, TupleCons(_, TupleCons(x, _)))))) => x }
+  }
 
-  // type Tuple6[A, B, C, D, E, F] = TupleCons[A, TupleCons[B, TupleCons[C, TupleCons[D, TupleCons[E, TupleCons[F, Tuple with Unit]]]]]]
+  type Tuple6[A, B, C, D, E, F] = TupleCons[A, TupleCons[B, TupleCons[C, TupleCons[D, TupleCons[E, TupleCons[F, Tuple with Unit]]]]]]
 
-  // def Tuple6[A, B, C, D, E, F](a: A, b: B, c: C, d: D, e: E, f: F): TupleCons[A, TupleCons[B, TupleCons[C, TupleCons[D, TupleCons[E, TupleCons[F, Tuple with Unit]]]]]] = TupleCons(a, TupleCons(b, TupleCons(c, TupleCons(d, TupleCons(e, TupleCons(f, ().asInstanceOf[Tuple with Unit]))))))
+  def Tuple6[A, B, C, D, E, F](a: A, b: B, c: C, d: D, e: E, f: F): TupleCons[A, TupleCons[B, TupleCons[C, TupleCons[D, TupleCons[E, TupleCons[F, Tuple with Unit]]]]]] = TupleCons(a, TupleCons(b, TupleCons(c, TupleCons(d, TupleCons(e, TupleCons(f, ().asInstanceOf[Tuple with Unit]))))))
 
   // implicit class Tuple7Assessors[A, B, C, D, E, F, G](l: TupleCons[A, TupleCons[B, TupleCons[C, TupleCons[D, TupleCons[E, TupleCons[F, TupleCons[G, Tuple with Unit]]]]]]]) {
   //   def _1: A = l.head; def _2: B = l.tail.head; def _3: C = l.tail.tail.head; def _4: D = l.tail.tail.tail.head; def _5: E = l.tail.tail.tail.tail.head; def _6: F = l.tail.tail.tail.tail.tail.head; def _7: G = l.tail.tail.tail.tail.tail.tail.head
