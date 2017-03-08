@@ -166,6 +166,12 @@ class Definitions {
     arr
   }
 
+  private def mkArityArray(name: Int => String, arity: Int, countFrom: Int): Array[TypeRef] = {
+    val arr = new Array[TypeRef](arity + 1)
+    for (i <- countFrom to arity) arr(i) = ctx.requiredClassRef(name(i))
+    arr
+  }
+
   private def completeClass(cls: ClassSymbol): ClassSymbol = {
     ensureConstructor(cls, EmptyScope)
     if (cls.linkedClass.exists) cls.linkedClass.info = NoType
@@ -692,10 +698,14 @@ class Definitions {
   // TODO ø: remove this one
   def TupleNModules(implicit ctx: Context) = TupleNType.map(t => if (t == null) t else t.classSymbol.companionModule.symbol)
 
-  lazy val TupleType: TypeRef = ctx.requiredClassRef("dotty.Tuple")
-  lazy val TupleConsType: TypeRef = ctx.requiredClassRef("dotty.TupleCons")
-  lazy val TupleUnapplySeqType: TypeRef = ctx.requiredClassRef("dotty.TupleUnapplySeq$")
-  lazy val LargeTupleType: TypeRef = ctx.requiredClassRef("dotty.LargeTuple")
+  lazy val TupleType           = ctx.requiredClassRef("dotty.Tuple")
+  lazy val TupleConsType       = ctx.requiredClassRef("dotty.TupleCons")
+  lazy val TupleUnapplySeqType = ctx.requiredClassRef("dotty.TupleUnapplySeq$")
+  lazy val LargeTupleType      = ctx.requiredClassRef("dotty.LargeTuple")
+
+  lazy val DottyTupleNType  = mkArityArray("dotty.DottyTuple", 4, 1)
+  private lazy val DottyTupleNModule  = mkArityArray({ i: Int => "dotty.DottyTuple" + i + "$" }, 4, 1)
+  lazy val DottyTupleNModuleSet  = DottyTupleNModule.map(t => if (t == null) t else t.symbol).toSet
 
   lazy val ProductNType = mkArityArray("scala.Product", 22, 0)
 

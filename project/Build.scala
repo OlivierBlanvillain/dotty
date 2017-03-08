@@ -310,7 +310,7 @@ object DottyBuild extends Build {
         val args: Seq[String] = spaceDelimited("<arg>").parsed
 
         val fullArgs = args.span(_ != "-classpath") match {
-          case (beforeCp, Nil) => beforeCp ++ ("-classpath" :: dottyLib :: Nil)
+          case (beforeCp, Nil) => beforeCp ++ ("-classpath" :: "/home/olivier/workspace/dotty/lib.jar" :: Nil) // ø
           case (beforeCp, rest) => beforeCp ++ rest
         }
 
@@ -467,13 +467,12 @@ object DottyBuild extends Build {
 
       // packageAll packages all and then returns a map with the abs location
       packageAll := {
-        Map("dotty-library-bootstrapped" -> file(
-          "/home/olivier/workspace/dotty/lib.jar"
-        )) ++ Map(
+        Map(
+          "dotty-library-bootstrapped" -> file("/home/olivier/workspace/dotty/lib.jar"),
+          "dotty-library" -> file("/home/olivier/workspace/dotty/lib.jar")
+        ) ++ Map(
           "dotty-interfaces" -> (packageBin in (`dotty-interfaces`, Compile)).value,
           "dotty-compiler" -> (packageBin in Compile).value,
-          "dotty-library" -> (packageBin in (`dotty-library`, Compile)).value,
-          // "dotty-library-bootstrapped" -> (packageBin in (`dotty-library-bootstrapped`, Compile)).value, ø
           "dotty-compiler-test" -> (packageBin in Test).value
         ) map { case (k, v) => (k, v.getAbsolutePath) }
       }
@@ -492,7 +491,7 @@ object DottyBuild extends Build {
       packageAll := {
         (packageAll in `dotty-compiler`).value ++ Seq(
           ("dotty-compiler" -> (packageBin in Compile).value.getAbsolutePath),
-          ("dotty-library" -> (packageBin in (`dotty-library-bootstrapped`, Compile)).value.getAbsolutePath)
+          ("dotty-library" -> "/home/olivier/workspace/dotty/lib.jar")
         )
       }
     )
