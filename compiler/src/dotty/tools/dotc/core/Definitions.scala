@@ -695,7 +695,7 @@ class Definitions {
   lazy val TupleType: TypeRef = ctx.requiredClassRef("dotty.Tuple")
   lazy val TupleConsType: TypeRef = ctx.requiredClassRef("dotty.TupleCons")
   lazy val TupleUnapplySeqType: TypeRef = ctx.requiredClassRef("dotty.TupleUnapplySeq$")
-  lazy val TupleImplNType: TypeRef = ctx.requiredClassRef("dotty.TupleImplN")
+  lazy val LargeTupleType: TypeRef = ctx.requiredClassRef("dotty.LargeTuple")
 
   lazy val ProductNType = mkArityArray("scala.Product", 22, 0)
 
@@ -712,7 +712,7 @@ class Definitions {
     else FunctionClass(n, isImplicit).typeRef
 
   lazy val TupleConsSymbol = TupleConsType.classSymbol.companionModule.symbol
-  lazy val TupleImplNSymbol = TupleImplNType.classSymbol.companionModule.symbol
+  lazy val LargeTupleSymbol = LargeTupleType.classSymbol.companionModule.symbol
   lazy val TupleUnapplySeqSymbol = TupleUnapplySeqType.classSymbol.companionModule.symbol
 
   /** If `cls` is a class in the scala package, its name, otherwise EmptyTypeName */

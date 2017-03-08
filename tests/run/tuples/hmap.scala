@@ -1,4 +1,4 @@
-import dotty.{Tuple, TupleCons, TupleImplN}
+import dotty.{Tuple, TupleCons, LargeTuple}
 import dotty.{TupleCons => ::}
 
 // Type level natural numbers ---------------------------------------------------------------------

@@ -1,4 +1,4 @@
-import dotty.{Tuple, TupleCons, TupleImplN}
+import dotty.{Tuple, TupleCons, LargeTuple}
 import dotty.{TupleCons => ::}
 
 trait SlowAppender[L1 <: Tuple, L2 <: Tuple, type Out <: Tuple] {
@@ -35,11 +35,11 @@ object Appender {
       new Appender[L1, L2, Out] {
         def apply(l1: L1, l2: L2): Out = {
           def toArr[T <: Tuple](t: T): Array[Any] = t match {
-            case t: TupleImplN[_, _] => t.underlying
+            case t: LargeTuple[_, _] => t.underlying
             case p: Product => p.productIterator.toArray
             case () => Array()
           }
-          new TupleImplN(Array.concat(toArr(l1) ++ toArr(l2)).toArray).asInstanceOf[Out]
+          new LargeTuple(Array.concat(toArr(l1) ++ toArr(l2)).toArray).asInstanceOf[Out]
         }
       }
 }

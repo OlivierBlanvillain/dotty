@@ -29,7 +29,7 @@ class TupleRewrites extends MiniPhaseTransform {
   /** Rewrites `TupleCons(a, TupleCons(b, ..., TNit))` to implementation specific constructors.
    *
    *  Below `MaxCaseClassTupleArity`, they become `TupleImpl$i(a, b, ...)`.
-   *  Above `MaxCaseClassTupleArity`, they become `TupleImplN(Array.apply(a, b, ...)`.
+   *  Above `MaxCaseClassTupleArity`, they become `LargeTuple(Array.apply(a, b, ...)`.
    *
    *  Note that because of bottom up traversal, the transformation of a tuple constructor of size `N`
    *  will go thought this transformation `N` times, thus generating `N` `TupleCons(a, opt)` where `opt`
@@ -50,7 +50,7 @@ class TupleRewrites extends MiniPhaseTransform {
                   if defn.TupleNModules contains tailIdent.symbol =>
                     Some(head :: args)
                 case Typed(Apply(TypeApply(Select(tailIdent, nme.wrap), _), SeqLiteral(args, _) :: Nil), _)
-                  if tailIdent.symbol == defn.TupleImplNSymbol =>
+                  if tailIdent.symbol == defn.LargeTupleSymbol =>
                     Some(head :: args)
                 case _ => None
               }
@@ -69,7 +69,7 @@ class TupleRewrites extends MiniPhaseTransform {
               .appliedToArgs(args)
           else {
             val TupleConsTypeExtractor(headType, tailType) = tree.tpe
-            ref(defn.TupleImplNType.classSymbol.companionModule) // TupleImplN.wrap()
+            ref(defn.LargeTupleType.classSymbol.companionModule) // LargeTuple.wrap()
               .select(nme.wrap)
               .appliedToTypes(headType :: tailType :: Nil)
               .appliedTo(SeqLiteral(args, ref(defn.AnyType)))
@@ -118,8 +118,8 @@ class TupleRewrites extends MiniPhaseTransform {
               .select(nme.productAccessorName(tails + 1)) // t(0) <=> t._1, thus the +1
               .asInstance(tree.tpe)
           else
-            inner // .asInstanceOf[TupleImplN[_, _]].underlying(${tails}).asInstanceOf[${tree.tpe}]
-              .asInstance(defn.TupleImplNType)
+            inner // .asInstanceOf[LargeTuple[_, _]].underlying(${tails}).asInstanceOf[${tree.tpe}]
+              .asInstance(defn.LargeTupleType)
               .select(nme.underlying)
               .select(nme.apply)
               .appliedTo(Literal(Constant(tails)))

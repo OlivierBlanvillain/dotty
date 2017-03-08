@@ -14,7 +14,7 @@ class Pair[A, B](a: A, b: B) {
 object TupleCons {
   def apply[H, T <: Tuple](h: H, t: T): TupleCons[H, T] =
     ((t: Any) match {
-      case impln: TupleImplN[_, _] =>
+      case impln: LargeTuple[_, _] =>
         val underlying = impln.underlying
         var s = underlying.size
         val a = new Array[Any](s + 1)
@@ -23,8 +23,8 @@ object TupleCons {
           a(s) = underlying(s - 1)
           s = s - 1
         }
-        new TupleImplN(a)
-      // case ()                           => val a = new Array[Any](1); a(0) = h; new TupleImplN(a)
+        new LargeTuple(a)
+      // case ()                           => val a = new Array[Any](1); a(0) = h; new LargeTuple(a)
       case ()                           => new scala.Tuple1(h)
       case t: scala.Tuple1[_]           => new scala.Tuple2(h, t._1)
       case t: scala.Tuple2[_, _]        => new scala.Tuple3(h, t._1, t._2)
@@ -36,12 +36,12 @@ object TupleCons {
         a(2) = t._2
         a(3) = t._3
         a(4) = t._4
-        new TupleImplN(a)
+        new LargeTuple(a)
     }).asInstanceOf[TupleCons[H, T]]
 
   def unapply[H, T <: Tuple](t: TupleCons[H, T]): Pair[H, T] =
     ((t: Any) match {
-      case impln: TupleImplN[_, _] =>
+      case impln: LargeTuple[_, _] =>
         val underlying = impln.underlying
         var s = underlying.size
         val tail =
@@ -57,7 +57,7 @@ object TupleCons {
               a(s - 1) = underlying(s)
               s = s - 1
             }
-            new TupleImplN(a)
+            new LargeTuple(a)
           }
         val head = underlying(0)
         new Pair(head, tail)
@@ -68,28 +68,28 @@ object TupleCons {
     }).asInstanceOf[Pair[H, T]]
 }
 
-class TupleImplN[H, T <: Tuple](val underlying: Array[Any]) extends Product with TupleCons[H, T] {
+class LargeTuple[H, T <: Tuple](val underlying: Array[Any]) extends Product with TupleCons[H, T] {
   override def toString: String = underlying.mkString("(", ", ", ")")
 
-  def canEqual(that: Any): Boolean = that.isInstanceOf[TupleImplN[_, _]]
+  def canEqual(that: Any): Boolean = that.isInstanceOf[LargeTuple[_, _]]
   def productArity: Int = underlying.size
   def productElement(n: Int): Any = underlying(n)
 
   override def equals(o: Any): Boolean =
     o match {
-      case n: TupleImplN[_, _] => n.underlying.sameElements(underlying)
+      case n: LargeTuple[_, _] => n.underlying.sameElements(underlying)
       case _ => false
     }
 }
 
-object TupleImplN {
-  def wrap[H, T <: Tuple](seq: Seq[Any]): TupleImplN[H, T] =
-    new TupleImplN(seq.toArray)
+object LargeTuple {
+  def wrap[H, T <: Tuple](seq: Seq[Any]): LargeTuple[H, T] =
+    new LargeTuple(seq.toArray)
 
   // TODO: Remove type params!
   def unapplySeq[H, T <: Tuple](tuple: Any): Option[Seq[Any]] =
     tuple match {
-      case t: TupleImplN[_, _] => Some(t.underlying)
+      case t: LargeTuple[_, _] => Some(t.underlying)
       case _ => None
     }
 }
