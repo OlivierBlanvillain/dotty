@@ -94,22 +94,22 @@ object TupleImplN {
     }
 }
 
-object TupleImpl1 {
+object DottyTuple1 {
   def apply[T1](_1: T1): TupleCons[T1, Tuple with Unit] = ???
   def unapply[T1](t: TupleCons[T1, Tuple with Unit]): scala.Product1[T1] = ???
 }
 
-object TupleImpl2 {
+object DottyTuple2 {
   def apply[T1, T2](_1: T1, _2: T2): TupleCons[T1, TupleCons[T2, Tuple with Unit]] = ???
   def unapply[T1, T2](t: TupleCons[T1, TupleCons[T2, Tuple with Unit]]): scala.Product2[T1, T2] = ???
 }
 
-object TupleImpl3 {
+object DottyTuple3 {
   def apply[T1, T2, T3](_1: T1, _2: T2, _3: T3): TupleCons[T1, TupleCons[T2, TupleCons[T3, Tuple with Unit]]] = ???
   def unapply[T1, T2, T3](t: TupleCons[T1, TupleCons[T2, TupleCons[T3, Tuple with Unit]]]): scala.Product3[T1, T2, T3] = ???
 }
 
-object TupleImpl4 {
+object DottyTuple4 {
   def apply[T1, T2, T3, T4](_1: T1, _2: T2, _3: T3, _4: T4): TupleCons[T1, TupleCons[T2, TupleCons[T3, TupleCons[T4, Tuple with Unit]]]] = ???
   def unapply[T1, T2, T3, T4](t: TupleCons[T1, TupleCons[T2, TupleCons[T3, TupleCons[T4, Tuple with Unit]]]]): scala.Product4[T1, T2, T3, T4] = ???
 }

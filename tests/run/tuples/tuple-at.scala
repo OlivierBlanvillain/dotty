@@ -1,4 +1,4 @@
-import dotty.{Tuple, TupleCons, TupleImplN}
+import dotty.{Tuple, TupleCons, LargeTuple}
 import dotty.{TupleCons => ::}
 
 // Type level natural numbers ---------------------------------------------------------------------
@@ -38,7 +38,7 @@ object At {
           case scala.Tuple1(e1)         => e1
           case scala.Tuple2(e1, e2)     => if (i.value == 0) e1 else e2
           case scala.Tuple3(e1, e2, e3) => if (i.value == 0) e1 else if (i.value == 1) e2 else e3
-          case t: TupleImplN[_, _] => t.underlying(i.value)
+          case t: LargeTuple[_, _] => t.underlying(i.value)
         }).asInstanceOf[O]
       }
 }

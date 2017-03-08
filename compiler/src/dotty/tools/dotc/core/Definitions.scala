@@ -687,14 +687,15 @@ class Definitions {
   private lazy val ImplementedFunctionType = mkArityArray("scala.Function", MaxImplementedFunctionArity, 0)
   def FunctionClassPerRun = new PerRun[Array[Symbol]](implicit ctx => ImplementedFunctionType.map(_.symbol.asClass))
 
+
+  lazy val TupleNType = mkArityArray("scala.Tuple", MaxCaseClassTupleArity, 1)
+  // TODO ø: remove this one
+  def TupleNModules(implicit ctx: Context) = TupleNType.map(t => if (t == null) t else t.classSymbol.companionModule.symbol)
+
   lazy val TupleType: TypeRef = ctx.requiredClassRef("dotty.Tuple")
   lazy val TupleConsType: TypeRef = ctx.requiredClassRef("dotty.TupleCons")
   lazy val TupleUnapplySeqType: TypeRef = ctx.requiredClassRef("dotty.TupleUnapplySeq$")
   lazy val TupleImplNType: TypeRef = ctx.requiredClassRef("dotty.TupleImplN")
-  lazy val TupleImpl1Class: TypeRef = ctx.requiredClassRef("dotty.TupleImpl1$")
-  lazy val TupleImpl2Class: TypeRef = ctx.requiredClassRef("dotty.TupleImpl2$")
-  lazy val TupleImpl3Class: TypeRef = ctx.requiredClassRef("dotty.TupleImpl3$")
-  lazy val TupleImpl4Class: TypeRef = ctx.requiredClassRef("dotty.TupleImpl4$")
 
   lazy val ProductNType = mkArityArray("scala.Product", 22, 0)
 
