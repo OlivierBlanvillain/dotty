@@ -695,17 +695,18 @@ class Definitions {
 
 
   lazy val TupleNType = mkArityArray("scala.Tuple", MaxCaseClassTupleArity, 1)
+
   // TODO ø: remove this one
   def TupleNModules(implicit ctx: Context) = TupleNType.map(t => if (t == null) t else t.classSymbol.companionModule.symbol)
 
   lazy val TupleType           = ctx.requiredClassRef("dotty.Tuple")
   lazy val TupleConsType       = ctx.requiredClassRef("dotty.TupleCons")
-  lazy val TupleUnapplySeqType = ctx.requiredClassRef("dotty.TupleUnapplySeq$")
+  lazy val TupleUnapplySeqType = ctx.requiredClassRef("dotty.LargeTupleUnapplySeq$")
   lazy val LargeTupleType      = ctx.requiredClassRef("dotty.LargeTuple")
 
   lazy val DottyTupleNType  = mkArityArray("dotty.DottyTuple", 4, 1)
-  private lazy val DottyTupleNModule  = mkArityArray({ i: Int => "dotty.DottyTuple" + i + "$" }, 4, 1)
-  lazy val DottyTupleNModuleSet  = DottyTupleNModule.map(t => if (t == null) t else t.symbol).toSet
+  lazy val DottyTupleNModule  = mkArityArray({ i: Int => "dotty.DottyTuple" + i + "$" }, 4, 1)
+  lazy val DottyTupleNModuleSet = DottyTupleNModule.map(t => if (t == null) t else t.classSymbol.companionModule.symbol).toSet
 
   lazy val ProductNType = mkArityArray("scala.Product", 22, 0)
 

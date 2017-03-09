@@ -85,7 +85,9 @@ class LargeTuple[H, T <: Tuple](val underlying: Array[Any]) extends Product with
 object LargeTuple {
   def wrap[H, T <: Tuple](seq: Seq[Any]): LargeTuple[H, T] =
     new LargeTuple(seq.toArray)
+}
 
+object LargeTupleUnapplySeq {
   // TODO: Remove type params!
   def unapplySeq[H, T <: Tuple](tuple: Any): Option[Seq[Any]] =
     tuple match {

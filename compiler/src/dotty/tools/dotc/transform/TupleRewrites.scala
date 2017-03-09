@@ -19,10 +19,11 @@ class TupleRewrites extends MiniPhaseTransform {
 
   def phaseName: String = "tupleRewrites"
 
+  /** TODOC OLIVIER */
   override def checkPostCondition(tree: Tree)(implicit ctx: Context): Unit =
     tree match {
-      case Select(ident, _) if ident.symbol == defn.TupleConsSymbol =>
-        assert(false, s"Some TupleCons where not rewritten in $tree!")
+      case Select(ident, _) if ident.symbol == defn.TupleConsSymbol && start != end =>
+        assert(false, s"Reference to TupleCons comming from desugaring survived tupleRewrites.")
       case _ => ()
     }
 
@@ -47,8 +48,7 @@ class TupleRewrites extends MiniPhaseTransform {
                 case Literal(Constant(())) =>
                     Some(head :: Nil)
                 case Typed(Apply(TypeApply(Select(tailIdent, nme.apply), _), args), _)
-                  // if defn.DottyTupleNModuleSet contains tailIdent.symbol
-                  =>
+                  if defn.DottyTupleNModuleSet contains tailIdent.symbol =>
                     Some(head :: args)
                 case Typed(Apply(TypeApply(Select(tailIdent, nme.wrap), _), SeqLiteral(args, _) :: Nil), _)
                   if tailIdent.symbol == defn.LargeTupleSymbol =>
@@ -70,7 +70,7 @@ class TupleRewrites extends MiniPhaseTransform {
               .appliedToArgs(args)
           else {
             val TupleConsTypeExtractor(headType, tailType) = tree.tpe
-            ref(defn.LargeTupleType.classSymbol.companionModule) // LargeTuple.wrap()
+            ref(defn.LargeTupleType.classSymbol.companionModule) // LargeTuple.wrap(args)
               .select(nme.wrap)
               .appliedToTypes(headType :: tailType :: Nil)
               .appliedTo(SeqLiteral(args, ref(defn.AnyType)))
@@ -127,8 +127,7 @@ class TupleRewrites extends MiniPhaseTransform {
                 case Literal(Constant(())) =>
                     Some(List(firstPattern))
                 case Typed(UnApply(TypeApply(Select(ident, nme.unapply), _), Nil, patterns), _)
-                  // if defn.DottyTupleNModuleSet contains ident.symbol
-                  =>
+                  if defn.DottyTupleNModuleSet contains ident.symbol =>
                     Some(firstPattern :: patterns)
                 case Typed(UnApply(TypeApply(Select(ident, nme.unapplySeq), _), Nil, patterns), _)
                   if ident.symbol == defn.TupleUnapplySeqSymbol  =>
@@ -149,10 +148,8 @@ class TupleRewrites extends MiniPhaseTransform {
 
   // Create an `UnApply` tree from a list of patters, used in both transformUnApply and transformTyped.
   private def transformUnApplyPatterns(tree: Tree, patterns: List[Tree])(implicit ctx: Context): UnApply = {
-
     val arity = patterns.length
     if (arity <= MaxCaseClassTupleArity) {
-      // DottyTuple${arity}.unapply(patterns)
       val patternTypes = patterns.map(_.tpe.widen)
       val refinedType =
         patternTypes
@@ -161,16 +158,14 @@ class TupleRewrites extends MiniPhaseTransform {
           .foldLeft[Type](defn.UnitType) {
             case (acc, el) => defn.TupleConsType.safeAppliedTo(List(el, acc))
           }
-
-      val newCall =
+      val newCall = // DottyTuple${arity}.unapply(patterns)
         ref(defn.DottyTupleNType(arity).classSymbol.companionModule)
           .select(nme.unapply)
           .appliedToTypes(patternTypes)
       UnApply(fun = newCall, implicits = Nil, patterns = patterns, proto = refinedType)
     } else {
-      // TupleUnapplySeq.unapplySeq(patterns)
       val TupleConsTypeExtractor(headType, tailType) = tree.tpe
-      val newCall =
+      val newCall = // TupleUnapplySeq.unapplySeq(patterns)
         ref(defn.TupleUnapplySeqType.classSymbol.companionModule)
           .select(nme.unapplySeq)
           .appliedToTypes(headType :: tailType :: Nil)

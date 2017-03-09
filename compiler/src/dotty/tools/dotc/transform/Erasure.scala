@@ -343,7 +343,6 @@ object Erasure extends TypeTestsCasts {
      *      e.m -> e.[]m                if `m` is an array operation other than `clone`.
      */
     override def typedSelect(tree: untpd.Select, pt: Type)(implicit ctx: Context): Tree = {
-
       def mapOwner(sym: Symbol): Symbol = {
         def recur(owner: Symbol): Symbol =
           if ((owner eq defn.AnyClass) || (owner eq defn.AnyValClass)) {
@@ -351,8 +350,9 @@ object Erasure extends TypeTestsCasts {
             defn.ObjectClass
           } else if (defn.isSyntheticFunctionClass(owner))
             defn.erasedFunctionClass(owner)
-          else
-            owner
+          else if(owner.toString.contains("DottyTuple"))
+            defn.TupleNType(2).classSymbol.companionModule.symbol
+          else owner
         recur(sym.owner)
       }
 
@@ -360,6 +360,17 @@ object Erasure extends TypeTestsCasts {
       val owner = mapOwner(origSym)
       val sym = if (owner eq origSym.owner) origSym else owner.info.decl(origSym.name).symbol
       assert(sym.exists, origSym.showLocated)
+
+      if (defn.DottyTupleNModuleSet contains tree.qualifier.symbol) {
+        val tpee = NamedType.withFixedSym(tree.tpe, sym)
+        println(tpee)
+        return untpd.Select(ref(defn.TupleNType(2).classSymbol.companionModule), nme.apply)
+          .withPos(tree.pos)
+          .withType(tpee)
+        // val newType = tree.tpe
+        // val newTree = untpd.Select(ref(defn.TupleNType(2).classSymbol.companionModule), nme.apply)
+        // return newTree.withType(newType).withPos(tree.pos)
+      }
 
       def select(qual: Tree, sym: Symbol): Tree = {
         val name = tree.typeOpt match {
