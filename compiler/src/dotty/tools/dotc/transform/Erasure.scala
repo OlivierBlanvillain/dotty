@@ -362,27 +362,24 @@ object Erasure extends TypeTestsCasts {
       assert(sym.exists, origSym.showLocated)
 
       if (defn.DottyTupleNModuleSet contains tree.qualifier.symbol) {
-
-
         // val tpee = NamedType.withFixedSym(tree.tpe, sym)
-        import dotty.tools.dotc.core.Signature
-        val sig  = Signature(List("java.Object".toTypeName, "java.Object".toTypeName), "scala.Tuple2".toTypeName)
-        val tpee = TermRef.withSig(tree.tpe, sym.asTerm) // .name.asTermName, sig)
+        // import dotty.tools.dotc.core.Signature
+        // val sig  = Signature(List("java.Object".toTypeName, "java.Object".toTypeName), "scala.Tuple2".toTypeName)
+        // val tpee = TermRef.withSig(tree.tpe, sym.asTerm) // .name.asTermName, sig)
 
-    // def withSig(prefix: Type, name: TermName, sig: Signature)(implicit ctx: Context): TermRef =
+        // def withSig(prefix: Type, name: TermName, sig: Signature)(implicit ctx: Context): TermRef =
 
-    // def withFixedSym(prefix: Type, name: TermName, sym: TermSymbol)(implicit ctx: Context): TermRef =
-    //   unique(new TermRefWithFixedSym(prefix, name, sym))
+        // def withFixedSym(prefix: Type, name: TermName, sym: TermSymbol)(implicit ctx: Context): TermRef =
+        //   unique(new TermRefWithFixedSym(prefix, name, sym))
 
-    // else TermRef.withFixedSym(prefix, sym.name.asTermName, sym.asTerm)
+        // else TermRef.withFixedSym(prefix, sym.name.asTermName, sym.asTerm)
 
-
-        println("-------------------")
-        println(tree.tpe)
-        println("-------------------")
-        println(tpee)
-        println(tpee.prefix)
-        println(tpee.name)
+        // println("-------------------")
+        // println(tree.tpe)
+        // println("-------------------")
+        // println(tpee)
+        // println(tpee.prefix)
+        // println(tpee.name)
 
 
         // val thizType =
@@ -413,9 +410,7 @@ object Erasure extends TypeTestsCasts {
         val tupleCompanion = defn.TupleNType(2).classSymbol.companionModule.symbol
         val applyMethod = tupleCompanion.info.decl(nme.apply).symbol
 
-
-        val r = ref(tupleCompanion).select(applyMethod)
-                .withPos(tree.pos)
+        val r = ref(tupleCompanion).select(applyMethod).withPos(tree.pos)
 
         println(s"tupleCompanion: $tupleCompanion")
         println(s"applyMethod: $applyMethod")
