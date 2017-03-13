@@ -1569,7 +1569,7 @@ object Types {
       checkedPeriod = Nowhere
     }
 
-    private def withSig(sig: Signature)(implicit ctx: Context): NamedType =
+    def withSig(sig: Signature)(implicit ctx: Context): NamedType =
       TermRef.withSig(prefix, name.asTermName, sig)
 
     protected def loadDenot(implicit ctx: Context): Denotation = {

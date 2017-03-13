@@ -362,21 +362,69 @@ object Erasure extends TypeTestsCasts {
       assert(sym.exists, origSym.showLocated)
 
       if (defn.DottyTupleNModuleSet contains tree.qualifier.symbol) {
-        val tpee = NamedType.withFixedSym(tree.tpe, sym)
+
+
+        // val tpee = NamedType.withFixedSym(tree.tpe, sym)
+        import dotty.tools.dotc.core.Signature
+        val sig  = Signature(List("java.Object".toTypeName, "java.Object".toTypeName), "scala.Tuple2".toTypeName)
+        val tpee = TermRef.withSig(tree.tpe, sym.asTerm) // .name.asTermName, sig)
+
+    // def withSig(prefix: Type, name: TermName, sig: Signature)(implicit ctx: Context): TermRef =
+
+    // def withFixedSym(prefix: Type, name: TermName, sym: TermSymbol)(implicit ctx: Context): TermRef =
+    //   unique(new TermRefWithFixedSym(prefix, name, sym))
+
+    // else TermRef.withFixedSym(prefix, sym.name.asTermName, sym.asTerm)
+
+
+        println("-------------------")
+        println(tree.tpe)
+        println("-------------------")
         println(tpee)
-        return untpd.Select(ref(defn.TupleNType(2).classSymbol.companionModule), nme.apply)
-          .withPos(tree.pos)
-          .withType(tpee)
-        // val newType = tree.tpe
-        // val newTree = untpd.Select(ref(defn.TupleNType(2).classSymbol.companionModule), nme.apply)
-        // return newTree.withType(newType).withPos(tree.pos)
+        println(tpee.prefix)
+        println(tpee.name)
+
+
+        // val thizType =
+        //   defn.TupleNType(2).classSymbol.thisType
+
+        // val termRF =
+        //   TermRef.all(TermRef.withSig(thizType, nme.apply, sig), nme.apply)
+        //   // TermRef.thizType
+
+        // println
+        // println("termRF")
+        // println(termRF)
+
+        // TermRef(
+        //   ThisType(TypeRef(ThisType(TypeRef(NoPrefix,scala)),Tuple2)),apply
+        // )/withSig(Signature(List(java.Object, java.Object),scala.Tuple2))
+
+
+        // TermRef(
+        //   TermRef(
+        //     TermRef(ThisType(TypeRef(NoPrefix,dotty)),DottyTuple2)
+        //     /withSig(Signature(List(),)),
+        //     "apply")
+        //     /withSig(Signature(List(java.lang.Object, java.lang.Object),dotty.TupleCons)),
+        //   "apply"
+        // )
+
+        val tupleCompanion = defn.TupleNType(2).classSymbol.companionModule.symbol
+        val applyMethod = tupleCompanion.info.decl(nme.apply).symbol
+
+
+        val r = ref(tupleCompanion).select(applyMethod)
+                .withPos(tree.pos)
+
+        println(s"tupleCompanion: $tupleCompanion")
+        println(s"applyMethod: $applyMethod")
+        println(s"r: $r")
+        println(r.tpe)
+        return r
       }
 
       def select(qual: Tree, sym: Symbol): Tree = {
-        val name = tree.typeOpt match {
-          case tp: NamedType if tp.name.isShadowedName => sym.name.shadowedName
-          case _ => sym.name
-        }
         untpd.cpy.Select(tree)(qual, sym.name)
           .withType(NamedType.withFixedSym(qual.tpe, sym))
       }
@@ -457,9 +505,9 @@ object Erasure extends TypeTestsCasts {
       }
     }
 
-	/** Besides normal typing, this method collects all arguments
-	 *  to a compacted function into a single argument of array type.
-	 */
+  /** Besides normal typing, this method collects all arguments
+   *  to a compacted function into a single argument of array type.
+   */
     override def typedApply(tree: untpd.Apply, pt: Type)(implicit ctx: Context): Tree = {
       val Apply(fun, args) = tree
       if (fun.symbol == defn.dummyApply)
