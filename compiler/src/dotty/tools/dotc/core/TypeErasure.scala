@@ -2,6 +2,8 @@ package dotty.tools
 package dotc
 package core
 
+import dotty.tools.dotc.transform.HACK
+
 import Symbols._, Types._, Contexts._, Flags._, Names._, StdNames._, Decorators._
 import Flags.JavaDefined
 import NameOps._
@@ -342,7 +344,7 @@ class TypeErasure(isJava: Boolean, semiEraseVCs: Boolean, isConstructor: Boolean
    *   - For any other uncurried method type (Fs)T, (|Fs|)|T|.
    *   - For a curried method type (Fs1)(Fs2)T, (|Fs1|,Es2)ET where (Es2)ET = |(Fs2)T|.
    *   - For a polymorphic type [Ts](Ps)T, |(Ps)T|
-   *   _ For a polymorphic type [Ts]T where T is not a method type, ()|T|
+   *   - For a polymorphic type [Ts]T where T is not a method type, ()|T|
    *   - For the class info type of java.lang.Object, the same type without any parents.
    *   - For a class info type of a value class, the same type without any parents.
    *   - For any other class info type with parents Ps, the same type with
@@ -352,7 +354,23 @@ class TypeErasure(isJava: Boolean, semiEraseVCs: Boolean, isConstructor: Boolean
    */
   private def apply(tp: Type)(implicit ctx: Context): Type = tp match {
     case _ if tp.isRef(defn.TupleConsType.symbol) =>
-      defn.ProductType
+      val unitTref = defn.UnitType.classSymbol.thisType.asInstanceOf[ThisType].tref
+      def tupleArity(t: Type, acc: Int = 0): Int = t match {
+        case RefinedType(RefinedType(_, _, TypeAlias(headType)), _, TypeAlias(tailType)) =>
+          tupleArity(tailType, acc + 1)
+        case `unitTref` =>
+          acc
+        case _ => -1
+      }
+      val arity = tupleArity(tp)
+      if (arity > 0 && arity <= Definitions.MaxCaseClassTupleArity) {
+        defn.TupleNType(arity) // TupleNType(arity)
+      } else {
+        // println(s"-------- arity: $arity")
+        // println(tp)
+        defn.ProductType
+      }
+
     case _ if tp.isRef(defn.TupleType.symbol) || tp.toString.endsWith("dotty)),Tuple)") =>
       defn.ObjectType
     case _: ErasedValueType =>

@@ -154,7 +154,7 @@ class tests extends CompilerTest {
   def pos_extmethods = compileFile(posDir, "extmethods", twice)
   def pos_companions = compileFile(posDir, "companions", twice)
 
-  def pos_all = compileFiles(posDir) // twice omitted to make tests run faster
+  @Test def pos_all = compileFiles(posDir) // twice omitted to make tests run faster
 
   def pos_scala2_all = compileFiles(posScala2Dir, scala2mode)
 
@@ -199,6 +199,7 @@ class tests extends CompilerTest {
   def neg_noimpots2 = compileFile(negCustomArgs, "noimports2", List("-Yno-imports"))
 
   @Test def run_all = runFiles(runDir + "tuples/")
+  // @Test def run_all = runFiles(runDir)
   // def run_all = runFiles(runDir)
   // @Test def run_all = runFiles(runDir + "tuples/")
   // @Test def run_all = compileFiles(runDir + "tuples/")
