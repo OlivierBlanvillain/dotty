@@ -764,7 +764,6 @@ class Typer extends Namer with TypeAssigner with Applications with Implicits wit
             case x :: y :: Nil => x :: tupleType(y) // TupleCons[H, T <: Tuple]
             case _ => Nil                           // TNil
           }
-
         isFullyDefined(formal, ForceDegree.noBottom) &&
         formal.derivesFrom(cons) &&
         tupleType(formal).corresponds(params) {

@@ -47,12 +47,16 @@ object Applications {
     ref.info.widenExpr.dealias
   }
 
-  /** Does `tp` fit the "product match" conditions as an unapply result type
-   *  for a pattern with `numArgs` subpatterns>
-   *  This is the case of `tp` is a subtype of the Product<numArgs> class.
+  /** Does `tp` fit the "name based pattern match" conditions as an unapply result
+   *  type  for a pattern with `numArgs` subpatterns.
+   *
+   *  This is the case if:
+   *    - `tp` is a subtype of the Product trait
+   *    - `tp` has members `_1` to `_N` where `N == numArgs`
    */
   def isProductMatch(tp: Type, numArgs: Int)(implicit ctx: Context) =
-    0 <= numArgs && tp.derivesFrom(defn.ProductNType(numArgs).typeSymbol)
+    numArgs > 0 && defn.isProductSubType(tp) &&
+    productSelectorTypes(tp).size == numArgs
 
   /** Does `tp` fit the "get match" conditions as an unapply result type?
    *  This is the case of `tp` has a `get` member as well as a
@@ -66,6 +70,9 @@ object Applications {
     val sels = for (n <- Iterator.from(0)) yield extractorMemberType(tp, nme.selectorName(n), errorPos)
     sels.takeWhile(_.exists).toList
   }
+
+  def productArity(tp: Type)(implicit ctx: Context) =
+    if (defn.isProductSubType(tp)) productSelectorTypes(tp).size else -1
 
   def productSelectors(tp: Type)(implicit ctx: Context): List[Symbol] = {
     val sels = for (n <- Iterator.from(0)) yield tp.member(nme.selectorName(n)).symbol

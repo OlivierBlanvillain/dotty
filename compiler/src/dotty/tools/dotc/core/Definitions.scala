@@ -14,7 +14,7 @@ import scala.reflect.api.{ Universe => ApiUniverse }
 
 object Definitions {
   /** TODOC OLIVIER*/
-  val MaxCaseClassTupleArity = 22
+  val MaxCaseClassTupleArity = 4
 
   /** The maximum arity N of a function type that's implemented
    *  as a trait `scala.FunctionN`. Functions of higher arity are possible,
@@ -476,6 +476,7 @@ class Definitions {
 
   lazy val JavaCloneableClass        = ctx.requiredClass("java.lang.Cloneable")
   lazy val NullPointerExceptionClass = ctx.requiredClass("java.lang.NullPointerException")
+  lazy val IndexOutOfBoundsException = ctx.requiredClass("java.lang.IndexOutOfBoundsException")
   lazy val ClassClass                = ctx.requiredClass("java.lang.Class")
   lazy val BoxedNumberClass          = ctx.requiredClass("java.lang.Number")
   lazy val ThrowableClass            = ctx.requiredClass("java.lang.Throwable")
@@ -693,7 +694,6 @@ class Definitions {
   private lazy val ImplementedFunctionType = mkArityArray("scala.Function", MaxImplementedFunctionArity, 0)
   def FunctionClassPerRun = new PerRun[Array[Symbol]](implicit ctx => ImplementedFunctionType.map(_.symbol.asClass))
 
-
   lazy val TupleNType = mkArityArray("scala.Tuple", MaxCaseClassTupleArity, 1)
 
   // TODO ø: remove this one
@@ -704,9 +704,10 @@ class Definitions {
   lazy val TupleUnapplySeqType = ctx.requiredClassRef("dotty.LargeTupleUnapplySeq$")
   lazy val LargeTupleType      = ctx.requiredClassRef("dotty.LargeTuple")
 
-  lazy val DottyTupleNType  = mkArityArray("dotty.DottyTuple", 4, 1)
+  lazy val DottyTupleNType    = mkArityArray("dotty.DottyTuple", 4, 1)
   lazy val DottyTupleNModule  = mkArityArray({ i: Int => "dotty.DottyTuple" + i + "$" }, 4, 1)
-  lazy val DottyTupleNModuleSet = DottyTupleNModule.map(t => if (t == null) t else t.classSymbol.companionModule.symbol).toSet
+  lazy val DottyTupleNCompanion = DottyTupleNModule.map(t => if (t == null) t else t.classSymbol.companionModule.symbol)
+  lazy val DottyTupleNModuleSet = DottyTupleNCompanion.toSet
 
   lazy val ProductNType = mkArityArray("scala.Product", 22, 0)
 
@@ -850,17 +851,9 @@ class Definitions {
     tp.derivesFrom(TupleType.symbol)
 
   def isProductSubType(tp: Type)(implicit ctx: Context) =
-    (tp derivesFrom ProductType.symbol) && tp.baseClasses.exists(isProductClass)
+    tp.derivesFrom(ProductType.symbol)
 
-  def productArity(tp: Type)(implicit ctx: Context) =
-    if (tp derivesFrom ProductType.symbol)
-      tp.baseClasses.find(isProductClass) match {
-        case Some(prod) => prod.typeParams.length
-        case None => -1
-      }
-    else -1
-
-  /** Is `tp` (an alias) of either a scala.FunctionN or a scala.ImplicitFunctionN ? */
+  /** Is `tp` (an alias) of either a scala.FunctionN or a scala.ImplicitFunctionN? */
   def isFunctionType(tp: Type)(implicit ctx: Context) = {
     val arity = functionArity(tp)
     val sym = tp.dealias.typeSymbol
