@@ -408,12 +408,12 @@ object Erasure extends TypeTestsCasts {
         // )
 
         val tupleCompanion = defn.TupleNType(2).classSymbol.companionModule.symbol
-        val applyMethod = tupleCompanion.info.decl(nme.apply).symbol
+        // val applyMethod = tupleCompanion.info.decl(nme.apply).symbol
 
-        val r = ref(tupleCompanion).select(applyMethod).withPos(tree.pos)
+        val r = ref(tupleCompanion).select(nme.apply).withPos(tree.pos)
 
         println(s"tupleCompanion: $tupleCompanion")
-        println(s"applyMethod: $applyMethod")
+        // println(s"applyMethod: $applyMethod")
         println(s"r: $r")
         println(r.tpe)
         return r

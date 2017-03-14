@@ -19,13 +19,13 @@ object Test {
 
     val x2 = ("a", 2)
 
-    // x2 match {
-    //   case (a2, b2) =>
-    //     a2: String
-    //     b2: Int
-    //     assert(a2 == "a")
-    //     assert(b2 == 2)
-    // }
+    x2 match {
+      case (a2, b2) =>
+        a2: String
+        b2: Int
+        assert(a2 == "a")
+        assert(b2 == 2)
+    }
 
     // val x3 = ("a", 2, "c")
 
