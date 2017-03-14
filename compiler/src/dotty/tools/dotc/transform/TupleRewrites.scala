@@ -151,13 +151,14 @@ class TupleRewrites extends MiniPhaseTransform {
     val arity = patterns.length
     if (arity <= MaxCaseClassTupleArity) {
       val patternTypes = patterns.map(_.tpe.widen)
-      val refinedType =
-        patternTypes
-          .map(t => TypeAlias(t, 0))
-          .reverse
-          .foldLeft[Type](defn.UnitType) {
-            case (acc, el) => defn.TupleConsType.safeAppliedTo(List(el, acc))
-          }
+      val refinedType  = defn.TupleNType(arity).safeAppliedTo(patternTypes)
+      // val refinedType =
+      //   patternTypes
+      //     .map(t => TypeAlias(t, 0))
+      //     .reverse
+      //     .foldLeft[Type](defn.UnitType) {
+      //       case (acc, el) => defn.TupleConsType.safeAppliedTo(List(el, acc))
+      //     }
       val newCall = // DottyTuple${arity}.unapply(patterns)
         ref(defn.DottyTupleNType(arity).classSymbol.companionModule)
           .select(nme.unapply)

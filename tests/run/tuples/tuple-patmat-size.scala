@@ -9,6 +9,7 @@ object Test {
     //     assert(b2 == 2)
     //   case (a3, b3, c3) =>
     //     ???
+    //   case _ => ???
     // }
 
     (x2: Any) match {
@@ -17,6 +18,7 @@ object Test {
       case (a2, b2) =>
         assert(a2 == "a")
         assert(b2 == 2)
+      case _ => ???
     }
 
     // (x3: Any) match {
