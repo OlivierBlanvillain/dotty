@@ -184,7 +184,7 @@ object M5 {
   def zipFun[a,b](xs:List[a], ys:List[b]):List[Tuple2[a,b]] = (xs,ys) match {
     case (List(), _) => List()
     case (_, List()) => List()
-    case (x :: xs1, y :: ys1) => (x, y) :: zipFun(xs1, ys1)
+    case ((x: `a`) :: (xs1: List[`a`]), (y: `b`) :: (ys1: List[`b`])) => (x, y) :: zipFun[a,b](xs1, ys1)
   }
 
   def test_zipFun[a,b](xs: List[a], ys: List[b]) = {
@@ -216,9 +216,9 @@ object M5 {
 
 object M6 {
 
-  def zipFun[a,b](xs:List[a], ys:List[b]):List[Tuple2[a,b]] = ((xs,ys): @unchecked) match {
+  def zipFun[a, b](xs:List[a], ys:List[b]):List[(a, b)] = (xs, ys) match {
     // !!! case (List(), _), (_, List()) => List()
-    case (x :: xs1, y :: ys1) => (x, y) :: zipFun(xs1, ys1)
+    case ((x: `a`) :: (xs1: List[`a`]), (y: `b`) :: (ys1: List[`b`])) => (x, y) :: zipFun(xs1, ys1)
   }
 
   def test_zipFun[a,b](xs: List[a], ys: List[b]) = {
@@ -472,7 +472,7 @@ object Utils {
     case (List(), List()) =>  0
     case (List(), _     ) => -1
     case (_     , List()) => +1
-    case (x::xs , y::ys ) => {
+    case ((x: String)::(xs: List[String]) , (y: String)::(ys: List[String]) ) => {
       val diff = x.compareTo(y);
       if (diff != 0) diff else compare(xs,ys)
     }
