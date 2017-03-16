@@ -490,12 +490,8 @@ class TypeErasure(isJava: Boolean, semiEraseVCs: Boolean, isConstructor: Boolean
   }
 
   /** The erasure of a function result type. */
-  private def eraseResult(tp: Type)(implicit ctx: Context): Type = {
-    if(tp.toString.contains("TupleCons")) println("========= eraseResult")
-    if(tp.toString.contains("TupleCons")) println(s"in:  $tp")
-    val out = tp match {
+  private def eraseResult(tp: Type)(implicit ctx: Context): Type = tp match {
     case tp: TypeRef =>
-      if(tp.toString.contains("TupleCons")) println("case tp: TypeRef =>")
       val sym = tp.typeSymbol
       if (sym eq defn.UnitClass) sym.typeRef
       // For a value class V, "new V(x)" should have type V for type adaptation to work
@@ -503,15 +499,10 @@ class TypeErasure(isJava: Boolean, semiEraseVCs: Boolean, isConstructor: Boolean
       // constructor method should not be semi-erased.
       else if (isConstructor && isDerivedValueClass(sym)) eraseNormalClassRef(tp)
       else this(tp)
-    // case RefinedType(parent, _, _) if !(parent isRef defn.ArrayClass) =>
-    //   if(tp.toString.contains("TupleCons")) println("case RefinedType(parent, _, _) if !(parent isRef defn.ArrayClass) =>")
-    //   eraseResult(parent)
+    case RefinedType(parent, _, _) if !(parent isRef defn.ArrayClass) =>
+      eraseResult(parent)
     case _ =>
-      if(tp.toString.contains("TupleCons")) println("case _ =>")
       this(tp)
-  }
-    if(tp.toString.contains("TupleCons")) println(s"out: $out")
-    out
   }
 
   private def normalizeClass(cls: ClassSymbol)(implicit ctx: Context): ClassSymbol = {
