@@ -193,7 +193,7 @@ object LispCaseClasses extends Lisp {
       (ps, args) match {
         case (List(), List()) =>
           env
-        case (p :: ps1, arg :: args1) =>
+        case ((p: String) :: (ps1: List[String]), (arg: Data) :: (args1: List[Data])) =>
           extendEnv(env.extend(p, arg), ps1, args1)
         case _ =>
           lispError("wrong number of arguments")
@@ -384,7 +384,7 @@ object LispAny extends Lisp {
       (ps, args) match {
         case (List(), List()) =>
           env
-        case (p :: ps1, arg :: args1) =>
+        case ((p: String) :: (ps1: List[String]), (arg: Data) :: (args1: List[Data])) =>
           extendEnv(env.extend(p, arg), ps1, args1)
         case _ =>
           lispError("wrong number of arguments")

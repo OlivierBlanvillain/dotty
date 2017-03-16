@@ -14,9 +14,9 @@ object NoConstraint extends Constraint {
 
 class Adder(a1: Quantity,a2: Quantity,sum: Quantity) extends Constraint {
   def newValue = (a1.getValue, a2.getValue, sum.getValue) match {
-    case (Some(x1), Some(x2), _      ) => sum.setValue(x1 + x2, this)
-    case (Some(x1), _       , Some(r)) => a2.setValue(r - x1, this)
-    case (_       , Some(x2), Some(r)) => a1.setValue(r - x2, this)
+    case (Some(x1: Double), Some(x2: Double), _      ) => sum.setValue(x1 + x2, this)
+    case (Some(x1: Double), _       , Some(r: Double)) => a2.setValue(r - x1, this)
+    case (_       , Some(x2: Double), Some(r: Double)) => a1.setValue(r - x2, this)
     case _                             =>
   }
   def dropValue: Unit = {
@@ -32,9 +32,9 @@ class Multiplier(m1: Quantity, m2: Quantity, prod: Quantity)
   def newValue = (m1.getValue, m2.getValue, prod.getValue) match {
     case (Some(0d), _       , _      ) => prod.setValue(0, this);
     case (_       , Some(0d), _      ) => prod.setValue(0, this);
-    case (Some(x1), Some(x2), _      ) => prod.setValue(x1 * x2, this)
-    case (Some(x1), _       , Some(r)) => m2.setValue(r / x1, this)
-    case (_,        Some(x2), Some(r)) => m1.setValue(r / x2, this)
+    case (Some(x1: Double), Some(x2: Double), _      ) => prod.setValue(x1 * x2, this)
+    case (Some(x1: Double), _       , Some(r: Double)) => m2.setValue(r / x1, this)
+    case (_,        Some(x2: Double), Some(r: Double)) => m1.setValue(r / x2, this)
     case _                             =>
   }
   def dropValue: Unit = {
@@ -47,9 +47,9 @@ class Multiplier(m1: Quantity, m2: Quantity, prod: Quantity)
 
 class Squarer(square: Quantity, root: Quantity) extends Constraint {
   def newValue: Unit = (square.getValue, root.getValue) match {
-    case (Some(x), _      )if (x < 0) => sys.error("Square of negative number")
-    case (Some(x), _      )           => root.setValue(Math.sqrt(x), this)
-    case (_      , Some(x))           => square.setValue(x*x, this)
+    case (Some(x: Double), _      )if (x < 0) => sys.error("Square of negative number")
+    case (Some(x: Double), _      )           => root.setValue(Math.sqrt(x), this)
+    case (_      , Some(x: Double))           => square.setValue(x*x, this)
     case _                            =>
   }
   def dropValue: Unit = {
@@ -61,8 +61,8 @@ class Squarer(square: Quantity, root: Quantity) extends Constraint {
 
 class Eq(a: Quantity, b: Quantity) extends Constraint {
   def newValue = ((a.getValue, b.getValue): @unchecked) match {
-    case (Some(x), _      ) => b.setValue(x, this);
-    case (_      , Some(y)) => a.setValue(y, this);
+    case (Some(x: Double), _      ) => b.setValue(x, this);
+    case (_      , Some(y: Double)) => a.setValue(y, this);
   }
   def dropValue: Unit = {
     a.forgetValue(this); b.forgetValue(this);

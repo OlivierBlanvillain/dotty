@@ -23,10 +23,10 @@ class Tokenizer(s: String, delimiters: String) extends Iterator[String] {
       var ch = s.charAt(i); i = i + 1;
       if (isDelimiter(ch)) ch.toString()
       else {
-	while (i < s.length() &&
-	       s.charAt(i) > ' ' &&
-	       !isDelimiter(s.charAt(i))){ i = i + 1 }
-	s.substring(start, i)
+        while (i < s.length() &&
+               s.charAt(i) > ' ' &&
+               !isDelimiter(s.charAt(i))){ i = i + 1 }
+        s.substring(start, i)
       }
     } else "";
 
@@ -98,10 +98,10 @@ object Terms {
 
   def unify(xs: List[Term], ys: List[Term], s: Subst): Option[Subst] = (xs, ys) match {
     case (List(), List()) => Some(s)
-    case (x :: xs1, y :: ys1) =>
+    case ((x: Term) :: (xs1: List[Term]), (y: Term) :: (ys1: List[Term])) =>
       unify(x, y, s) match {
-	case Some(s1) => unify(xs1, ys1, s1)
-	case None => None
+        case Some(s1) => unify(xs1, ys1, s1)
+        case None => None
       }
     case _ => None
   }
@@ -136,14 +136,14 @@ object Programs {
 
     def solve2(query: List[Term], s: Subst): Stream[Subst] = query match {
       case List() =>
-	Stream.cons(s, Stream.empty)
+        Stream.cons(s, Stream.empty)
       case Con("not", qs) :: query1 =>
-	if (solve1(qs, s).isEmpty) Stream.cons(s, Stream.empty)
-	else Stream.empty
+        if (solve1(qs, s).isEmpty) Stream.cons(s, Stream.empty)
+        else Stream.empty
       case q :: query1 =>
-	for (clause <- list2stream(clauses);
-	     s1 <- tryClause(clause.newInstance, q, s);
-	     s2 <- solve1(query1, s1)) yield s2
+        for (clause <- list2stream(clauses);
+             s1 <- tryClause(clause.newInstance, q, s);
+             s2 <- solve1(query1, s1)) yield s2
     }
 
     def solve1(query: List[Term], s: Subst): Stream[Subst] = {
@@ -179,12 +179,12 @@ class Parser(s: String) {
     val a = token;
     token = it.next;
     Con(a,
-	if (token equals "(") {
-	  token = it.next;
-	  val ts: List[Term] = if (token equals ")") List() else rep(term);
-	  if (token equals ")") token = it.next else syntaxError("`)' expected");
-	  ts
-	} else List())
+        if (token equals "(") {
+          token = it.next;
+          val ts: List[Term] = if (token equals ")") List() else rep(term);
+          if (token equals ")") token = it.next else syntaxError("`)' expected");
+          ts
+        } else List())
   }
 
   def term: Term = {
@@ -200,7 +200,7 @@ class Parser(s: String) {
         token = it.next;
         Clause(NoTerm, rep(constructor));
       } else {
-	Clause(
+        Clause(
           constructor,
           if (token equals ":-") { token = it.next; rep(constructor) } else List())
       }
@@ -219,27 +219,27 @@ object Prolog {
     var tvs: List[String] = List();
     { input =>
       new Parser(input).all foreach { c =>
-	if (c.lhs == NoTerm) {
-	  c.rhs match {
-	    case List(Con("more", List())) =>
+        if (c.lhs == NoTerm) {
+          c.rhs match {
+            case List(Con("more", List())) =>
               solutions = solutions.tail;
-	    case _ =>
+            case _ =>
               solutions = solve(c.rhs, program);
-	      tvs = c.tyvars;
+              tvs = c.tyvars;
           }
-	  if (solutions.isEmpty) {
+          if (solutions.isEmpty) {
             Console.println("no")
-	  } else {
-	    val s: Subst = solutions.head
-	      .filter(b => tvs contains b.name)
-	      .map(b => Binding(b.name, b.term map solutions.head))
+          } else {
+            val s: Subst = solutions.head
+              .filter(b => tvs contains b.name)
+              .map(b => Binding(b.name, b.term map solutions.head))
               .reverse;
-	    if (s.isEmpty) Console.println("yes")
-	    else Console.println(s);
+            if (s.isEmpty) Console.println("yes")
+            else Console.println(s);
           }
-	} else {
-	  program = program ::: List(c);
-	}
+        } else {
+          program = program ::: List(c);
+        }
       }
     }
   }

@@ -26,7 +26,7 @@ object Test {
       case C2(a, b, c) =>
         assert(a == -1)
         assert(b == -2)
-        assert(b == -3)
+        assert(c == -3)
     }
 
     // Interestingly things also compile with a single pattern, in which case

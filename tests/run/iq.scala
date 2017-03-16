@@ -20,7 +20,7 @@ object iq {
     val q2 = q.enqueue(42).enqueue(0)
     val qa = q :+ 42 :+ 0
     assert(q2 == qa)
-    
+
     val qb = 42 +: 0 +: q
     assert(q2 == qb)
     val qc = 42 +: q :+ 0
@@ -30,7 +30,7 @@ object iq {
     Console.println("qa: " + qa)
     Console.println("qb: " + qb)
     Console.println("qc: " + qc)
-    
+
     /* Test is empty and dequeue.
      * Expected: Head: 42
      */
@@ -40,7 +40,7 @@ object iq {
         q2
       }
       else {
-	val (head, q3) = q2.dequeue
+        val (head, q3) = q2.dequeue
         Console.println("Head: " + head)
         q3
       }
