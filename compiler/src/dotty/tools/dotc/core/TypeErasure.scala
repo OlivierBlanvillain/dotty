@@ -360,22 +360,24 @@ class TypeErasure(isJava: Boolean, semiEraseVCs: Boolean, isConstructor: Boolean
           tupleArity(tailType, acc + 1)
         case `unitTref` =>
           acc
+        case _ if t.toString == "ClassInfo(ThisType(TypeRef(NoPrefix,scala)), class Unit)" =>
+          acc
         case AnnotatedType(tpe, _) =>
           tupleArity(tpe, acc)
         case tp: TypeProxy =>
           tupleArity(tp.underlying, acc)
         case _ =>
-          // println
-          // println(s"DIED $t")
+          println
+          println(s"DIED $t")
           -1
       }
 
       val arity = tupleArity(tp)
       if (arity > 0 && arity <= Definitions.MaxCaseClassTupleArity) {
-        defn.TupleNType(arity) // TupleNType(arity)
+        defn.TupleNType(arity)
       } else {
-        // println(s"-------- arity: $arity")
-        // println(tp)
+        println(s"-------- arity: $arity")
+        println(tp)
         defn.ProductType
       }
 
