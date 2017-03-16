@@ -4,12 +4,7 @@ trait Tuple
 
 trait TupleCons[+H, +T <: Tuple] extends Tuple
 
-class Pair[A, B](a: A, b: B) {
-  def isEmpty = false
-  def get     = this
-  def _1      = a
-  def _2      = b
-}
+case class Pair[+A, +B](a: A, b: B)
 
 object TupleCons {
   def apply[H, T <: Tuple](h: H, t: T): TupleCons[H, T] =
