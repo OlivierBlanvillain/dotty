@@ -352,8 +352,7 @@ class TypeErasure(isJava: Boolean, semiEraseVCs: Boolean, isConstructor: Boolean
    *   - For NoType or NoPrefix, the type itself.
    *   - For any other type, exception.
    */
-  private def apply(tp: Type)(implicit ctx: Context): Type = {
-    val out = tp match {
+  private def apply(tp: Type)(implicit ctx: Context): Type = tp match {
     case _ if tp.isRef(defn.TupleConsType.symbol) =>
       val unitTref = defn.UnitType.classSymbol.thisType.asInstanceOf[ThisType].tref
       def tupleArity(t: Type, acc: Int = 0): Int = t match {
@@ -366,8 +365,8 @@ class TypeErasure(isJava: Boolean, semiEraseVCs: Boolean, isConstructor: Boolean
         case tp: TypeProxy =>
           tupleArity(tp.underlying, acc)
         case _ =>
-          println
-          println(s"DIED $t")
+          // println
+          // println(s"DIED $t")
           -1
       }
 
@@ -439,14 +438,6 @@ class TypeErasure(isJava: Boolean, semiEraseVCs: Boolean, isConstructor: Boolean
     case tp: TypeProxy =>
       this(tp.underlying)
   }
-  if(out.toString.contains("Product")) {
-    println
-    println("----------------------_")
-    println(s"in:  $tp")
-    println(s"out: $out")
-  }
-  out
-  }
 
   private def eraseArray(tp: RefinedType)(implicit ctx: Context) = {
     val defn.ArrayOf(elemtp) = tp
@@ -499,7 +490,7 @@ class TypeErasure(isJava: Boolean, semiEraseVCs: Boolean, isConstructor: Boolean
       // constructor method should not be semi-erased.
       else if (isConstructor && isDerivedValueClass(sym)) eraseNormalClassRef(tp)
       else this(tp)
-    case RefinedType(parent, _, _) if !(parent isRef defn.ArrayClass) =>
+    case RefinedType(parent, _, _) if !(parent isRef defn.ArrayClass) && !(tp isRef defn.TupleConsType.symbol) =>
       eraseResult(parent) // ø
     case _ =>
       this(tp)
