@@ -367,8 +367,8 @@ class TypeErasure(isJava: Boolean, semiEraseVCs: Boolean, isConstructor: Boolean
         case tp: TypeProxy =>
           tupleArity(tp.underlying, acc)
         case _ =>
-          println
-          println(s"DIED $t")
+          // println
+          // println(s"DIED $t")
           -1
       }
 
@@ -376,8 +376,8 @@ class TypeErasure(isJava: Boolean, semiEraseVCs: Boolean, isConstructor: Boolean
       if (arity > 0 && arity <= Definitions.MaxCaseClassTupleArity) {
         defn.TupleNType(arity)
       } else {
-        println(s"-------- arity: $arity")
-        println(tp)
+        // println(s"-------- arity: $arity")
+        // println(tp)
         defn.ProductType
       }
 

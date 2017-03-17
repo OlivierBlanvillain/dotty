@@ -83,7 +83,6 @@ object LargeTuple {
 }
 
 object LargeTupleUnapplySeq {
-  // TODO: Remove type params!
   def unapplySeq[H, T <: Tuple](tuple: Any): Option[Seq[Any]] =
     tuple match {
       case t: LargeTuple[_, _] => Some(t.underlying)
