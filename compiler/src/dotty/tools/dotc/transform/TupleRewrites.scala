@@ -40,21 +40,22 @@ class TupleRewrites extends MiniPhaseTransform {
     // Matches a tree with shape `TupleCons.apply(head, tail)` where `tail` itself a tuple
     // with statically known lenght (TNil, TupleImpl1, TupleImpl2...). */
     object TupleApplies {
-      def unapply(tree: Apply)(implicit ctx: Context): Option[List[Tree]] =
+      def unapply(tree: Apply)(implicit ctx: Context): Option[(List[Tree], TupleType)] =
         tree match {
-          case Apply(TypeApply(Select(ident, nme.apply), _), head :: tail :: Nil)
+          case Apply(TypeApply(Select(ident, nme.apply), fstTpe :: _), head :: tail :: Nil)
             if ident.symbol == defn.TupleConsSymbol =>
               tail match {
                 case Literal(Constant(())) =>
-                    Some(head :: Nil)
+                    Some((head :: Nil, UnfoldedTupleType(fstTpe.tpe :: Nil)))
 
-                case Typed(Apply(TypeApply(Select(tailIdent, nme.apply), _), args), _)
+                case Typed(Apply(TypeApply(Select(tailIdent, nme.apply), tailTpes), args), _)
                   if defn.DottyTupleNModuleSet contains tailIdent.symbol =>
-                    Some(head :: args)
+                    Some((head :: args, UnfoldedTupleType(fstTpe.tpe :: tailTpes.map(_.tpe))))
 
-                case Typed(Apply(TypeApply(Select(tailIdent, nme.wrap), _), SeqLiteral(args, _) :: Nil), _)
+                case Typed(Apply(TypeApply(Select(tailIdent, nme.wrap), tailTpes), SeqLiteral(args, _) :: Nil), _)
                   if tailIdent.symbol == defn.LargeTupleSymbol =>
-                    Some(head :: args)
+                    val foldedTailType = defn.TupleConsType.safeAppliedTo(tailTpes.map(_.tpe))
+                    Some((head :: args, FoldedTupleType(fstTpe.tpe, foldedTailType)))
 
                 case _ => None
               }
@@ -63,21 +64,19 @@ class TupleRewrites extends MiniPhaseTransform {
     }
 
     tree match {
-      case TupleApplies(args) =>
+      case TupleApplies(args, types) =>
         val arity = args.length
         val newSelect =
           if (arity <= MaxCaseClassTupleArity)
             ref(defn.DottyTupleNType(arity).classSymbol.companionModule) // DottyTuple${arity}(args)
               .select(nme.apply)
-              .appliedToTypes(args.map(_.tpe))
+              .appliedToTypes(types.unfolded.types)
               .appliedToArgs(args)
-          else {
-            val TupleConsTypeExtractor(headType, tailType) = tree.tpe
+          else
             ref(defn.LargeTupleType.classSymbol.companionModule) // LargeTuple.wrap(args)
               .select(nme.wrap)
-              .appliedToTypes(headType :: tailType :: Nil)
+              .appliedToTypes(types.folded.types)
               .appliedTo(SeqLiteral(args, ref(defn.AnyType)))
-          }
         Typed(newSelect, TypeTree(tree.tpe))
       case _ => tree
     }
@@ -135,6 +134,8 @@ class TupleRewrites extends MiniPhaseTransform {
                 case Literal(Constant(())) =>
                     Some((List(fstPat), UnfoldedTupleType(fstTpe.tpe :: Nil)))
 
+                // TODO OLIVIER: factor out!
+
                 case Typed(UnApply(TypeApply(Select(ident, nme.unapply), tailTpes), Nil, tailPats), _)
                   if defn.DottyTupleNModuleSet contains ident.symbol =>
                     Some((fstPat :: tailPats, UnfoldedTupleType(fstTpe.tpe :: tailTpes.map(_.tpe))))
@@ -153,8 +154,7 @@ class TupleRewrites extends MiniPhaseTransform {
     tree match {
       case TypedTupleUnapplies(patterns, types) =>
         val unapply = transformUnApplyPatterns(tree, patterns, types)
-        // Typed(unapply, tree.tpt) ø
-        Typed(unapply, TypeTree(unapply.tpe))
+        Typed(unapply, tree.tpt)
       case _ => tree
     }
   }
@@ -163,7 +163,7 @@ class TupleRewrites extends MiniPhaseTransform {
   private def transformUnApplyPatterns(tree: Tree, patterns: List[Tree], types: TupleType)(implicit ctx: Context): UnApply = {
     val arity = patterns.length
     if (arity <= MaxCaseClassTupleArity) {
-      val unfoldedTypes: List[Type] = types.unfolded.elements
+      val unfoldedTypes: List[Type] = types.unfolded.types
       val refinedType  = defn.TupleNType(arity).safeAppliedTo(unfoldedTypes)
       val newCall = // DottyTuple${arity}.unapply(patterns)
         ref(defn.DottyTupleNType(arity).classSymbol.companionModule)
@@ -171,11 +171,10 @@ class TupleRewrites extends MiniPhaseTransform {
           .appliedToTypes(unfoldedTypes)
       UnApply(fun = newCall, implicits = Nil, patterns = patterns, proto = refinedType)
     } else {
-      val foldedTypes = types.folded
       val newCall = // TupleUnapplySeq.unapplySeq(patterns)
         ref(defn.TupleUnapplySeqType.classSymbol.companionModule)
           .select(nme.unapplySeq)
-          .appliedToTypes(foldedTypes.head :: foldedTypes.tail :: Nil)
+          .appliedToTypes(types.folded.types)
       UnApply(fun = newCall, implicits = Nil, patterns = patterns, proto = tree.tpe)
     }
   }
@@ -186,6 +185,7 @@ class TupleRewrites extends MiniPhaseTransform {
   }
 
   private case class FoldedTupleType(head: Type, tail: Type) extends TupleType {
+    def types: List[Type] = head :: tail :: Nil
     def folded(implicit ctx: Context): FoldedTupleType = this
     def unfolded(implicit ctx: Context): UnfoldedTupleType = {
       def unfold(acc: List[Type], next: Type): List[Type] = next match {
@@ -197,27 +197,17 @@ class TupleRewrites extends MiniPhaseTransform {
     }
   }
 
-  private case class UnfoldedTupleType(elements: List[Type]) extends TupleType {
+  private case class UnfoldedTupleType(types: List[Type]) extends TupleType {
     def unfolded(implicit ctx: Context): UnfoldedTupleType = this
     def folded(implicit ctx: Context): FoldedTupleType =
       FoldedTupleType(
-        elements.head,
-        elements.tail
+        types.head,
+        types.tail
           .map(t => TypeAlias(t, 0))
           .reverse
           .foldLeft[Type](defn.UnitType) {
             case (acc, el) => defn.TupleConsType.safeAppliedTo(el :: acc :: Nil)
           }
       )
-  }
-
-  // Extracts `(A, B)` from `TupleCons[A, B]`.
-  // ø REMOVE!!!!
-  private object TupleConsTypeExtractor {
-    def unapply(tree: Type): Option[(Type, Type)] = tree match {
-      case RefinedType(RefinedType(_, _, TypeAlias(headType)), _, TypeAlias(tailType)) => Some((headType, tailType))
-      case AnnotatedType(t, _) => unapply(t)
-      case _ => None
-    }
   }
 }
