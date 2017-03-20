@@ -116,7 +116,6 @@ class TupleRewrites extends MiniPhaseTransform {
           case _ => None
         }
     }
-
     tree match {
       case TupleUnapplies(patterns, types) =>
         transformUnApplyPatterns(tree, patterns, types)
@@ -124,24 +123,26 @@ class TupleRewrites extends MiniPhaseTransform {
     }
   }
 
+
   /** Same then `transformUnApply` for unapply wrapped in Typed trees. */
   override def transformTyped(tree: Typed)(implicit ctx: Context, info: TransformerInfo): Tree = {
     object TypedTupleUnapplies {
-      def unapply(tree: Typed)(implicit ctx: Context): Option[List[Tree]] =
+      def unapply(tree: Typed)(implicit ctx: Context): Option[(List[Tree], TupleType)] =
         tree match {
-          case Typed(UnApply(TypeApply(Select(selectIndent, nme.unapply), _), Nil, fstPat :: sndPat :: Nil), _)
+          case Typed(UnApply(TypeApply(Select(selectIndent, nme.unapply), fstTpe :: _), Nil, fstPat :: sndPat :: Nil), _)
             if selectIndent.symbol == defn.TupleConsSymbol =>
               sndPat match {
                 case Literal(Constant(())) =>
-                    Some(List(fstPat))
+                    Some((List(fstPat), UnfoldedTupleType(fstTpe.tpe :: Nil)))
 
-                case Typed(UnApply(TypeApply(Select(ident, nme.unapply), _), Nil, patterns), _)
+                case Typed(UnApply(TypeApply(Select(ident, nme.unapply), tailTpes), Nil, tailPats), _)
                   if defn.DottyTupleNModuleSet contains ident.symbol =>
-                    Some(fstPat :: patterns)
+                    Some((fstPat :: tailPats, UnfoldedTupleType(fstTpe.tpe :: tailTpes.map(_.tpe))))
 
-                case Typed(UnApply(TypeApply(Select(ident, nme.unapplySeq), _), Nil, patterns), _)
+                case Typed(UnApply(TypeApply(Select(ident, nme.unapplySeq), tailTpes), Nil, tailPats), _)
                   if ident.symbol == defn.TupleUnapplySeqSymbol  =>
-                    Some(fstPat :: patterns)
+                    val foldedTailType = defn.TupleConsType.safeAppliedTo(tailTpes.map(_.tpe))
+                    Some((fstPat :: tailPats, FoldedTupleType(fstTpe.tpe, foldedTailType)))
 
                 case _ => None
               }
@@ -150,8 +151,9 @@ class TupleRewrites extends MiniPhaseTransform {
     }
 
     tree match {
-      case TypedTupleUnapplies(patterns) =>
-        val unapply = transformUnApplyPatterns(tree, patterns)
+      case TypedTupleUnapplies(patterns, types) =>
+        val unapply = transformUnApplyPatterns(tree, patterns, types)
+        // Typed(unapply, tree.tpt) ø
         Typed(unapply, TypeTree(unapply.tpe))
       case _ => tree
     }
