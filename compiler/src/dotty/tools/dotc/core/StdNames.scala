@@ -227,7 +227,7 @@ object StdNames {
     final val ScalaSignatureATTR: N         = "ScalaSig"
     final val TASTYATTR: N                  = "TASTY"
     final val SignatureATTR: N              = "Signature"
-    // final val SourceFileATTR: N             = "SourceFile"
+    final val SourceFileATTR: N             = "SourceFile"
     final val SyntheticATTR: N              = "Synthetic"
 
 // ----- Term names -----------------------------------------

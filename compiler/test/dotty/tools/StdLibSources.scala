@@ -7,7 +7,7 @@ import scala.io.Source
 object StdLibSources {
 
   /* For debug only */
-  private val useExplicitWhiteList = false
+  private val useExplicitWhiteList = true
 
   private final val stdLibPath = "../scala-scala/src/library/"
 
