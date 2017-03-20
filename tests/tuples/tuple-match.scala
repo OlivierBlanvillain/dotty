@@ -1,6 +1,6 @@
 object Test {
-  val FOUR = (-1, -2, -3, "bingo donkey vegas")
-  val THREE = (-1, -2, -3)
+  // val FOUR = (-1, -2, -3, "bingo donkey vegas")
+  // val THREE = (-1, -2, -3)
 
   def f(x: Any) = x match {
     // case FOUR         => "FOUR"

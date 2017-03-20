@@ -93,7 +93,7 @@ object LargeTupleUnapplySeq {
 trait  DottyTuple1
 object DottyTuple1 {
   def apply[T1](_1: T1): TupleCons[T1, Unit] = ???
-  def unapply[T1](t: TupleCons[T1, Unit]): Option[scala.Product1[T1]] = ???
+  def unapply[T1](t: TupleCons[T1, Unit]): Option[T1] = ???
 }
 
 trait  DottyTuple2
