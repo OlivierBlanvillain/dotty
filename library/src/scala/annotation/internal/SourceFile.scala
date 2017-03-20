@@ -5,6 +5,6 @@ package scala.annotation.internal
 /** An annotation to record a Scala2 pickled alias.
  *  @param aliased  A TermRef pointing to the aliased field.
  */
-class SourceFile(path: String) /*extends Annotation */{
+abstract class SourceFile /*extends Annotation */{
 
 }
