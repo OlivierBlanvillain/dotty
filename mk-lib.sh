@@ -1,3 +1,5 @@
+set -eux
+
 sbt "run $(find lib/ -name '*.scala')"
 
 javac -d . \

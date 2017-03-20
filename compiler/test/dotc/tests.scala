@@ -371,8 +371,11 @@ class tests extends CompilerTest {
     // first compile dotty
     compileDir(dottyDir, ".", List("-deep", "-Ycheck-reentrant", "-strict") ++ logging)(allowDeepSubtypes)
 
-    compileDir(libDir, "dotty", "-deep" :: opt)
-    compileDir(libDir, "scala", "-deep" :: opt)
+
+    compileDir("../library/", "src", "-deep" :: opt) // ø meh
+    // compileDir(libDir, "dotty", "-deep" :: opt)
+    // compileDir(libDir, "scala", "-deep" :: opt)
+
     compileDir(dottyDir, "tools", opt)
     compileDir(toolsDir, "dotc", opt)
     compileDir(dotcDir, "ast", opt)
