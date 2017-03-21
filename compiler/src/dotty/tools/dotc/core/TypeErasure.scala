@@ -373,7 +373,7 @@ class TypeErasure(isJava: Boolean, semiEraseVCs: Boolean, isConstructor: Boolean
       }
 
       val arity = tupleArity(tp)
-      if (arity > 0 && arity <= Definitions.MaxCaseClassTupleArity) {
+      if (arity > 0 && arity <= Definitions.MaxImplementedTupleArity) {
         defn.TupleNType(arity)
       } else {
         // println(s"-------- arity: $arity")

@@ -393,10 +393,10 @@ object desugar {
         }
       }
 
-      // Above MaxCaseClassTupleArity we extend Product instead of ProductN, in this
+      // Above MaxImplementedTupleArity we extend Product instead of ProductN, in this
       // case we need to synthesise productElement & productArity.
       def largeProductMeths =
-        if (arity > Definitions.MaxCaseClassTupleArity) List(productElement, productArity)
+        if (arity > Definitions.MaxImplementedTupleArity) List(productElement, productArity)
         else Nil
 
       if (isCaseClass)
@@ -411,7 +411,7 @@ object desugar {
       if (targs.isEmpty) tycon else AppliedTypeTree(tycon, targs)
     }
     def product =
-      if (arity > Definitions.MaxCaseClassTupleArity) scalaDot(nme.Product.toTypeName)
+      if (arity > Definitions.MaxImplementedTupleArity) scalaDot(nme.Product.toTypeName)
       else productConstr(arity)
 
     // Case classes and case objects get Product/ProductN parents

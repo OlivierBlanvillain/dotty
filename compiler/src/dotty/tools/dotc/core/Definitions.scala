@@ -14,7 +14,7 @@ import scala.reflect.api.{ Universe => ApiUniverse }
 
 object Definitions {
   /** TODOC OLIVIER*/
-  val MaxCaseClassTupleArity = 4
+  val MaxImplementedTupleArity = 4
 
   /** The maximum arity N of a function type that's implemented
    *  as a trait `scala.FunctionN`. Functions of higher arity are possible,
@@ -694,7 +694,7 @@ class Definitions {
   private lazy val ImplementedFunctionType = mkArityArray("scala.Function", MaxImplementedFunctionArity, 0)
   def FunctionClassPerRun = new PerRun[Array[Symbol]](implicit ctx => ImplementedFunctionType.map(_.symbol.asClass))
 
-  lazy val TupleNType = mkArityArray("scala.Tuple", MaxCaseClassTupleArity, 1)
+  lazy val TupleNType = mkArityArray("scala.Tuple", MaxImplementedTupleArity, 1)
 
   // TODO ø: remove this one
   def TupleNModules(implicit ctx: Context) = TupleNType.map(t => if (t == null) t else t.classSymbol.companionModule.symbol)

@@ -8,7 +8,7 @@ import core.Types._
 import dotty.tools.dotc.core.Contexts.Context
 import dotty.tools.dotc.transform.TreeTransforms.{MiniPhaseTransform, TransformerInfo}
 
-import dotty.tools.dotc.core.Definitions.MaxCaseClassTupleArity
+import dotty.tools.dotc.core.Definitions.MaxImplementedTupleArity
 import dotty.tools.dotc.core.Constants.Constant
 import annotation.tailrec
 
@@ -29,8 +29,8 @@ class TupleRewrites extends MiniPhaseTransform {
 
   /** Rewrites `TupleCons(a, TupleCons(b, ..., TNit))` to implementation specific constructors.
    *
-   *  Below `MaxCaseClassTupleArity`, they become `DottyTuple$i(a, b, ...)`.
-   *  Above `MaxCaseClassTupleArity`, they become `LargeTuple(Array.apply(a, b, ...)`.
+   *  Below `MaxImplementedTupleArity`, they become `DottyTuple$i(a, b, ...)`.
+   *  Above `MaxImplementedTupleArity`, they become `LargeTuple(Array.apply(a, b, ...)`.
    *
    *  Note that because of bottom up traversal, the transformation of a tuple constructor of size `N`
    *  will go thought this transformation `N` times, thus generating `N` `TupleCons(a, opt)` where `opt`
@@ -67,7 +67,7 @@ class TupleRewrites extends MiniPhaseTransform {
       case TupleApplies(args, types) =>
         val arity = args.length
         val newSelect =
-          if (arity <= MaxCaseClassTupleArity)
+          if (arity <= MaxImplementedTupleArity)
             ref(defn.DottyTupleNType(arity).classSymbol.companionModule) // DottyTuple${arity}(args)
               .select(nme.apply)
               .appliedToTypes(types.unfolded.types)
@@ -84,8 +84,8 @@ class TupleRewrites extends MiniPhaseTransform {
 
   /** Rewrites `TupleCons.unapply(a, TupleCons.unapply(b, ..., TNit))` to implementation specific extractors.
    *
-   *  Below `MaxCaseClassTupleArity`, they become `DottyTuple$i.unapply(a, b, ...)`.
-   *  Above `MaxCaseClassTupleArity`, they become `TupleUnapplySeq.unapply(a, b, ...)`.
+   *  Below `MaxImplementedTupleArity`, they become `DottyTuple$i.unapply(a, b, ...)`.
+   *  Above `MaxImplementedTupleArity`, they become `TupleUnapplySeq.unapply(a, b, ...)`.
    *
    *  Similarly to `transformApply`, size `N` extractors will pass `N` times thought this transformation.
    */
@@ -165,7 +165,7 @@ class TupleRewrites extends MiniPhaseTransform {
     // if (arity == 1) {
     //   ???
     // } else
-    if (arity <= MaxCaseClassTupleArity) {
+    if (arity <= MaxImplementedTupleArity) {
       val unfoldedTypes: List[Type] = types.unfolded.types
       val refinedType  = defn.TupleNType(arity).safeAppliedTo(unfoldedTypes)
       val newCall = // DottyTuple${arity}.unapply(patterns)
