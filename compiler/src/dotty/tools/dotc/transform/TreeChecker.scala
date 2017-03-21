@@ -459,7 +459,6 @@ class TreeChecker extends Phase with SymTransformer {
         assert(tree.tpe <:< pt, {
           val mismatch = err.typeMismatchMsg(tree.tpe, pt)
           i"""|${mismatch.msg}
-              |source = ${ctx.source}
               |tree = $tree""".stripMargin
         })
       tree
