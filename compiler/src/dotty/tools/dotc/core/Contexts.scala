@@ -66,8 +66,6 @@ object Contexts {
                             with Cloneable { thiscontext =>
     implicit def ctx: Context = this
 
-    var yolo: Int = -1
-
     /** The context base at the root */
     val base: ContextBase
 
