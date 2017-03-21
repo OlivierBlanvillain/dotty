@@ -162,9 +162,6 @@ class TupleRewrites extends MiniPhaseTransform {
   // Create an `UnApply` tree from a list of patters, used in both transformUnApply and transformTyped.
   private def transformUnApplyPatterns(tree: Tree, patterns: List[Tree], types: TupleType)(implicit ctx: Context): UnApply = {
     val arity = patterns.length
-    // if (arity == 1) {
-    //   ???
-    // } else
     if (arity <= MaxImplementedTupleArity) {
       val unfoldedTypes: List[Type] = types.unfolded.types
       val refinedType  = defn.TupleNType(arity).safeAppliedTo(unfoldedTypes)

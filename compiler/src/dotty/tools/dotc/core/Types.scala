@@ -39,8 +39,6 @@ object Types {
 
   @sharable private var nextId = 0
 
-  // implicit def eqType: Eq[Type, Type] = Eq
-
   /** Main class representing types.
    *
    *  The principal subclasses and sub-objects are as follows:
@@ -1569,7 +1567,7 @@ object Types {
       checkedPeriod = Nowhere
     }
 
-    def withSig(sig: Signature)(implicit ctx: Context): NamedType =
+    private def withSig(sig: Signature)(implicit ctx: Context): NamedType =
       TermRef.withSig(prefix, name.asTermName, sig)
 
     protected def loadDenot(implicit ctx: Context): Denotation = {
