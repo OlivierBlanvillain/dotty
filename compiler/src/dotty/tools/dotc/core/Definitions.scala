@@ -13,7 +13,13 @@ import util.common.alwaysZero
 import scala.reflect.api.{ Universe => ApiUniverse }
 
 object Definitions {
-  /** TODOC OLIVIER*/
+  /** The maximum arity N of Tuple implemented as `scala.TupleN` case classes.
+   *  Tuple of higher arity switch to an array representation
+   *  but are mapped in erasure to functions taking a single parameter of type
+   *  Object[].
+   *  The limit 22 is chosen for Scala2x interop. It could be something
+   *  else without affecting the set of programs that can be compiled.
+   */
   val MaxImplementedTupleArity = 4
 
   /** The maximum arity N of a function type that's implemented
@@ -696,15 +702,13 @@ class Definitions {
 
   lazy val TupleNType = mkArityArray("scala.Tuple", MaxImplementedTupleArity, 1)
 
-  // TODO ø: remove this one
-  def TupleNModules(implicit ctx: Context) = TupleNType.map(t => if (t == null) t else t.classSymbol.companionModule.symbol)
-
   lazy val TupleType           = ctx.requiredClassRef("dotty.Tuple")
   lazy val TupleConsType       = ctx.requiredClassRef("dotty.TupleCons")
   lazy val TupleUnapplySeqType = ctx.requiredClassRef("dotty.LargeTupleUnapplySeq$")
   lazy val LargeTupleType      = ctx.requiredClassRef("dotty.LargeTuple")
 
   lazy val DottyTupleNType    = mkArityArray("dotty.DottyTuple", 4, 1)
+  // TODO OLIVIER: clean this mess :/
   lazy val DottyTupleNModule  = mkArityArray({ i: Int => "dotty.DottyTuple" + i + "$" }, 4, 1)
   lazy val DottyTupleNCompanion = DottyTupleNModule.map(t => if (t == null) t else t.classSymbol.companionModule.symbol)
   lazy val DottyTupleNModuleSet = DottyTupleNCompanion.toSet

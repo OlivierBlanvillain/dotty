@@ -2,8 +2,6 @@ package dotty.tools
 package dotc
 package core
 
-import dotty.tools.dotc.transform.HACK
-
 import Symbols._, Types._, Contexts._, Flags._, Names._, StdNames._, Decorators._
 import Flags.JavaDefined
 import NameOps._

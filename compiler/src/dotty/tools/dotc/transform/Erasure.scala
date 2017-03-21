@@ -411,10 +411,7 @@ object Erasure extends TypeTestsCasts {
         // println("############*")
         // println("PP " + tree.tpe)
 
-        HACK.arity = arity
-        val r = ref(tupleCompanion).select(tree.name).withPos(tree.pos)
-        HACK.arity = -1
-        r
+        ref(tupleCompanion).select(tree.name).withPos(tree.pos)
 
         // val t = r.tpe.asInstanceOf[TermRef]
         // import dotty.tools.dotc.core.Signature
