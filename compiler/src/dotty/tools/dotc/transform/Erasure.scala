@@ -350,9 +350,8 @@ object Erasure extends TypeTestsCasts {
             defn.ObjectClass
           } else if (defn.isSyntheticFunctionClass(owner))
             defn.erasedFunctionClass(owner)
-          // else if(owner.toString.contains("DottyTuple"))
-          //   defn.TupleNType(2).classSymbol.companionModule.symbol
-          else owner
+          else
+            owner
         recur(sym.owner)
       }
 
@@ -407,31 +406,7 @@ object Erasure extends TypeTestsCasts {
       if (defn.DottyTupleNModuleSet contains tree.qualifier.symbol) {
         val arity = defn.DottyTupleNCompanion.indexOf(tree.qualifier.symbol)
         val tupleCompanion = defn.TupleNType(arity).classSymbol.companionModule.symbol
-
-        // println("############*")
-        // println("PP " + tree.tpe)
-
         ref(tupleCompanion).select(tree.name).withPos(tree.pos)
-
-        // val t = r.tpe.asInstanceOf[TermRef]
-        // import dotty.tools.dotc.core.Signature
-        // val sig = Signature(List(defn.ObjectType.name, defn.ObjectType.name), defn.TupleNType(2).name)
-        // // val t2 = TermRef.withSig(t.prefix, t.name, )
-        // val t2 = t match {
-        //   case tpe: TermRefWithFixedSym =>
-        //     println("<>©<>©<>©<>©<>")
-        //     println(tpe.signature.resSig)
-        //     println(defn.ProductType.name)
-        //     tpe.withSig(tpe.signature.copy(resSig = tpe.signature.resSig.toString.toTypeName)) // TupleNType(2).name))
-        //     // new TermRefWithFixedSym(tpe.prefix, tpe.name, tpe.fixedSym)
-        // }
-        // // TermRef
-        // // r.withType(r.tpe.withSig(null))
-        // // println("t " + t)
-        // // println("t " + t.signature)
-        // // println("t " + t2)
-        // // println("t " + t2.signature)
-        // r.withType(t2)
       } else {
         recur(typed(tree.qualifier, AnySelectionProto))
       }
@@ -472,9 +447,9 @@ object Erasure extends TypeTestsCasts {
       }
     }
 
-  /** Besides normal typing, this method collects all arguments
-   *  to a compacted function into a single argument of array type.
-   */
+    /** Besides normal typing, this method collects all arguments
+     *  to a compacted function into a single argument of array type.
+     */
     override def typedApply(tree: untpd.Apply, pt: Type)(implicit ctx: Context): Tree = {
       val Apply(fun, args) = tree
       if (fun.symbol == defn.dummyApply)

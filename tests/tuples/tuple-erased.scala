@@ -29,8 +29,8 @@ object Test {
 
     assert(x.asInstanceOf[Any] == x)
 
-    // val y: TupleCons[Int, TupleCons[String, Unit]] = (1, "s")
-    // y: Product
-    // y: Tuple
+    val y: TupleCons[Int, TupleCons[String, Unit]] = (1, "s")
+    y: Product
+    y: Tuple
   }
 }

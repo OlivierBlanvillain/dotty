@@ -20,7 +20,7 @@ object Test {
     println(f((1, 20, 30, 4)))
     println(f((1, 2, 3)))
     println(f((1, 2)))
-    println(f(Tuple1(1)))
+    println(f(dotty.TupleCons(1, ())))
     println(f((-1, -2, -3, "bingo donkey vegas")))
     println(f((-1, -2, -3)))
   }

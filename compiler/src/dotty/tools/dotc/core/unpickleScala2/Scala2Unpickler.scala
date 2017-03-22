@@ -735,7 +735,7 @@ class Scala2Unpickler(bytes: Array[Byte], classRoot: ClassDenotation, moduleClas
           }
           else TypeRef(pre, sym.name.asTypeName)
         val args = until(end, readTypeRef)
-        if (
+        if ( // TODO OLIVIER CLEAN; BUMP to 22!
           !(source.name     == "Tuple1.class" ||
             source.name     == "Tuple2.class" ||
             source.name     == "Tuple3.class" ||
