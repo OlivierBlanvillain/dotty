@@ -58,14 +58,135 @@ object Test {
     val x6 = X6("a", 2, "b", 3, "c", 4)
     val X6(a6, b6, c6, d6, e6, f6) = x6
 
-    assert(a6 == "a")
-    assert(b6 == 2)
-    assert(c6 == "b")
-    assert(d6 == 3)
-    assert(e6 == "c")
-    assert(f6 == 4)
-    e6: String
-    f6: Int
+    val x21 = X21(1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21)
+    val X21(w1, w2, w3, w4, w5, w6, w7, w8, w9, w10, w11, w12, w13, w14, w15, w16, w17, w18, w19, w20, w21) = x21
+
+    assert(w1 == 1)
+    assert(w2 == 2)
+    assert(w3 == 3)
+    assert(w4 == 4)
+    assert(w5 == 5)
+    assert(w6 == 6)
+    assert(w7 == 7)
+    assert(w8 == 8)
+    assert(w9 == 9)
+    assert(w10 == 10)
+    assert(w11 == 11)
+    assert(w12 == 12)
+    assert(w13 == 13)
+    assert(w14 == 14)
+    assert(w15 == 15)
+    assert(w16 == 16)
+    assert(w17 == 17)
+    assert(w18 == 18)
+    assert(w19 == 19)
+    assert(w20 == 20)
+    assert(w21 == 21)
+
+    w1: Int
+    w2: Int
+    w20: Int
+    w21: Int
+
+    val x22 = X22(1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22)
+    val X22(v1, v2, v3, v4, v5, v6, v7, v8, v9, v10, v11, v12, v13, v14, v15, v16, v17, v18, v19, v20, v21, v22) = v22
+
+    assert(v1 == 1)
+    assert(v2 == 2)
+    assert(v3 == 3)
+    assert(v4 == 4)
+    assert(v5 == 5)
+    assert(v6 == 6)
+    assert(v7 == 7)
+    assert(v8 == 8)
+    assert(v9 == 9)
+    assert(v10 == 10)
+    assert(v11 == 11)
+    assert(v12 == 12)
+    assert(v13 == 13)
+    assert(v14 == 14)
+    assert(v15 == 15)
+    assert(v16 == 16)
+    assert(v17 == 17)
+    assert(v18 == 18)
+    assert(v19 == 19)
+    assert(v20 == 20)
+    assert(v21 == 21)
+    assert(v22 == 22)
+
+    v1: Int
+    v2: Int
+    v21: Int
+    v22: Int
+
+    // We can't go above that, since patDef is implemented with direct _i
+    // calls. If could update the desugaring to use var + pattern matching,
+    // which would lift the (last?) 22 limitation.
+
+    // val x23 = X23(1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23)
+    // val X23(y1, y2, y3, y4, y5, y6, y7, y8, y9, y10, y11, y12, y13, y14, y15, y16, y17, y18, y19, y20, y21, y22, y23) = x23
+
+    // assert(y1 == 1)
+    // assert(y2 == 2)
+    // assert(y3 == 3)
+    // assert(y4 == 4)
+    // assert(y5 == 5)
+    // assert(y6 == 6)
+    // assert(y7 == 7)
+    // assert(y8 == 8)
+    // assert(y9 == 9)
+    // assert(y10 == 10)
+    // assert(y11 == 11)
+    // assert(y12 == 12)
+    // assert(y13 == 13)
+    // assert(y14 == 14)
+    // assert(y15 == 15)
+    // assert(y16 == 16)
+    // assert(y17 == 17)
+    // assert(y18 == 18)
+    // assert(y19 == 19)
+    // assert(y20 == 20)
+    // assert(y21 == 21)
+    // assert(y22 == 22)
+    // assert(y23 == 23)
+
+    // y1: Int
+    // y2: Int
+    // y22: Int
+    // y23: Int
+
+    // val x24 = X24(1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24)
+    // val X24(z1, z2, z3, z4, z5, z6, z7, z8, z9, z10, z11, z12, z13, z14, z15, z16, z17, z18, z19, z20, z21, z22, z23, z24) = x24
+
+    // assert(z1 == 1)
+    // assert(z2 == 2)
+    // assert(z3 == 3)
+    // assert(z4 == 4)
+    // assert(z5 == 5)
+    // assert(z6 == 6)
+    // assert(z7 == 7)
+    // assert(z8 == 8)
+    // assert(z9 == 9)
+    // assert(z10 == 10)
+    // assert(z11 == 11)
+    // assert(z12 == 12)
+    // assert(z13 == 13)
+    // assert(z14 == 14)
+    // assert(z15 == 15)
+    // assert(z16 == 16)
+    // assert(z17 == 17)
+    // assert(z18 == 18)
+    // assert(z19 == 19)
+    // assert(z20 == 20)
+    // assert(z21 == 21)
+    // assert(z22 == 22)
+    // assert(z23 == 23)
+    // assert(z24 == 24)
+
+    // z1: Int
+    // z2: Int
+    // z23: Int
+    // z24: Int
   }
 
   def any = {
@@ -75,9 +196,9 @@ object Test {
     val X4(a4, b4, c4, d4) = x
     val X5(a5, b5, c5, d5, e5) = x
     val X6(a6, b6, c6, d6, e6, f6) = x
-    val X21(e1, e2, e3, e4, e5, e6, e7, e8, e9, e10, e11, e12, e13, e14, e15, e16, e17, e18, e19, e20, e21) = x
-    val X22(e1, e2, e3, e4, e5, e6, e7, e8, e9, e10, e11, e12, e13, e14, e15, e16, e17, e18, e19, e20, e21, e22) = x
-    val X23(e1, e2, e3, e4, e5, e6, e7, e8, e9, e10, e11, e12, e13, e14, e15, e16, e17, e18, e19, e20, e21, e22, e23) = x
-    val X24(e1, e2, e3, e4, e5, e6, e7, e8, e9, e10, e11, e12, e13, e14, e15, e16, e17, e18, e19, e20, e21, e22, e23, e24) = x
+    val X21(w1, w2, w3, w4, w5, w6, w7, w8, w9, w10, w11, w12, w13, w14, w15, w16, w17, w18, w19, w20, w21) = x
+    val X22(x1, x2, x3, x4, x5, x6, x7, x8, x9, x10, x11, x12, x13, x14, x15, x16, x17, x18, x19, x20, x21, x22) = x
+    // val X23(y1, y2, y3, y4, y5, y6, y7, y8, y9, y10, y11, y12, y13, y14, y15, y16, y17, y18, y19, y20, y21, y22, y23) = x
+    // val X24(z1, z2, z3, z4, z5, z6, z7, z8, z9, z10, z11, z12, z13, z14, z15, z16, z17, z18, z19, z20, z21, z22, z23, z24) = x
   }
 }

@@ -1,198 +1,416 @@
 package dotty
 
+import dotty.{TupleCons => TC}
+
 trait ScalaTupleCompat {
   implicit class ArrowAssoc[A](a: A) {
-    def -> [B](b: B): TupleCons[A, TupleCons[B, Unit]] = TupleCons(a, TupleCons(b, ()))
+    def -> [B](b: B): TC[A, TC[B, Unit]] = TC(a, TC(b, ()))
   }
 
-  implicit class Tuple1Assessors[A](l: TupleCons[A, Unit]) {
-    def _1: A = l match { case TupleCons(x, _) => x }
+  implicit class Tuple1Assessors[A](l: TC[A, Unit]) {
+    def _1 = l match { case TC(x, _) => x }
   }
 
-  type Tuple1[A] = TupleCons[A, Unit]
+  type Tuple1[A] = TC[A, Unit]
 
-  def Tuple1[A](a: A): TupleCons[A, Unit] = TupleCons(a, ())
+  def Tuple1[A](a: A): TC[A, Unit] = TC(a, ())
 
-  implicit class Tuple2Assessors[A, B](l: TupleCons[A, TupleCons[B, Unit]]) {
-    def _1: A = l match { case TupleCons(x, _) => x }
-    def _2: B = l match { case TupleCons(_, TupleCons(x, _)) => x }
+  implicit class Tuple2Assessors[A, B](l: TC[A, TC[B, Unit]]) {
+    def _1 = l match { case TC(x, _) => x }
+    def _2 = l match { case TC(_, TC(x, _)) => x }
   }
 
-  type Tuple2[A, B] = TupleCons[A, TupleCons[B, Unit]]
+  type Tuple2[A, B] = TC[A, TC[B, Unit]]
 
-  def Tuple2[A, B](a: A, b: B): TupleCons[A, TupleCons[B, Unit]] = TupleCons(a, TupleCons(b, ()))
+  def Tuple2[A, B](a: A, b: B): TC[A, TC[B, Unit]] = TC(a, TC(b, ()))
 
-  implicit class Tuple3Assessors[A, B, C](l: TupleCons[A, TupleCons[B, TupleCons[C, Unit]]]) {
-    def _1: A = l match { case TupleCons(x, _) => x }
-    def _2: B = l match { case TupleCons(_, TupleCons(x, _)) => x }
-    def _3: C = l match { case TupleCons(_, TupleCons(_, TupleCons(x, _))) => x }
+  implicit class Tuple3Assessors[A, B, C](l: TC[A, TC[B, TC[C, Unit]]]) {
+    def _1 = l match { case TC(x, _) => x }
+    def _2 = l match { case TC(_, TC(x, _)) => x }
+    def _3 = l match { case TC(_, TC(_, TC(x, _))) => x }
   }
 
-  type Tuple3[A, B, C] = TupleCons[A, TupleCons[B, TupleCons[C, Unit]]]
+  type Tuple3[A, B, C] = TC[A, TC[B, TC[C, Unit]]]
 
-  def Tuple3[A, B, C](a: A, b: B, c: C): TupleCons[A, TupleCons[B, TupleCons[C, Unit]]] = TupleCons(a, TupleCons(b, TupleCons(c, ())))
+  def Tuple3[A, B, C](a: A, b: B, c: C): TC[A, TC[B, TC[C, Unit]]] = TC(a, TC(b, TC(c, ())))
 
-  implicit class Tuple4Assessors[A, B, C, D](l: TupleCons[A, TupleCons[B, TupleCons[C, TupleCons[D, Unit]]]]) {
-    def _1: A = l match { case TupleCons(x, _) => x }
-    def _2: B = l match { case TupleCons(_, TupleCons(x, _)) => x }
-    def _3: C = l match { case TupleCons(_, TupleCons(_, TupleCons(x, _))) => x }
-    def _4: D = l match { case TupleCons(_, TupleCons(_, TupleCons(_, TupleCons(x, _)))) => x }
+  implicit class Tuple4Assessors[A, B, C, D](l: TC[A, TC[B, TC[C, TC[D, Unit]]]]) {
+    def _1 = l match { case TC(x, _) => x }
+    def _2 = l match { case TC(_, TC(x, _)) => x }
+    def _3 = l match { case TC(_, TC(_, TC(x, _))) => x }
+    def _4 = l match { case TC(_, TC(_, TC(_, TC(x, _)))) => x }
   }
 
-  type Tuple4[A, B, C, D] = TupleCons[A, TupleCons[B, TupleCons[C, TupleCons[D, Unit]]]]
+  type Tuple4[A, B, C, D] = TC[A, TC[B, TC[C, TC[D, Unit]]]]
 
-  def Tuple4[A, B, C, D](a: A, b: B, c: C, d: D): TupleCons[A, TupleCons[B, TupleCons[C, TupleCons[D, Unit]]]] = TupleCons(a, TupleCons(b, TupleCons(c, TupleCons(d, ()))))
+  def Tuple4[A, B, C, D](a: A, b: B, c: C, d: D): TC[A, TC[B, TC[C, TC[D, Unit]]]] = TC(a, TC(b, TC(c, TC(d, ()))))
 
-  implicit class Tuple5Assessors[A, B, C, D, E](l: TupleCons[A, TupleCons[B, TupleCons[C, TupleCons[D, TupleCons[E, Unit]]]]]) {
-    def _1: A = l match { case TupleCons(x, _) => x }
-    def _2: B = l match { case TupleCons(_, TupleCons(x, _)) => x }
-    def _3: C = l match { case TupleCons(_, TupleCons(_, TupleCons(x, _))) => x }
-    def _4: D = l match { case TupleCons(_, TupleCons(_, TupleCons(_, TupleCons(x, _)))) => x }
-    def _5: E = l match { case TupleCons(_, TupleCons(_, TupleCons(_, TupleCons(_, TupleCons(x, _))))) => x }
+  implicit class Tuple5Assessors[A, B, C, D, E](l: TC[A, TC[B, TC[C, TC[D, TC[E, Unit]]]]]) {
+    def _1 = l match { case TC(x, _) => x }
+    def _2 = l match { case TC(_, TC(x, _)) => x }
+    def _3 = l match { case TC(_, TC(_, TC(x, _))) => x }
+    def _4 = l match { case TC(_, TC(_, TC(_, TC(x, _)))) => x }
+    def _5 = l match { case TC(_, TC(_, TC(_, TC(_, TC(x, _))))) => x }
   }
 
-  type Tuple5[A, B, C, D, E] = TupleCons[A, TupleCons[B, TupleCons[C, TupleCons[D, TupleCons[E, Unit]]]]]
+  type Tuple5[A, B, C, D, E] = TC[A, TC[B, TC[C, TC[D, TC[E, Unit]]]]]
 
-  def Tuple5[A, B, C, D, E](a: A, b: B, c: C, d: D, e: E): TupleCons[A, TupleCons[B, TupleCons[C, TupleCons[D, TupleCons[E, Unit]]]]] = TupleCons(a, TupleCons(b, TupleCons(c, TupleCons(d, TupleCons(e, ())))))
+  def Tuple5[A, B, C, D, E](a: A, b: B, c: C, d: D, e: E): TC[A, TC[B, TC[C, TC[D, TC[E, Unit]]]]] = TC(a, TC(b, TC(c, TC(d, TC(e, ())))))
 
-  implicit class Tuple6Assessors[A, B, C, D, E, F](l: TupleCons[A, TupleCons[B, TupleCons[C, TupleCons[D, TupleCons[E, TupleCons[F, Unit]]]]]]) {
-    def _1: A = l match { case TupleCons(x, _) => x }
-    def _2: B = l match { case TupleCons(_, TupleCons(x, _)) => x }
-    def _3: C = l match { case TupleCons(_, TupleCons(_, TupleCons(x, _))) => x }
-    def _4: D = l match { case TupleCons(_, TupleCons(_, TupleCons(_, TupleCons(x, _)))) => x }
-    def _5: E = l match { case TupleCons(_, TupleCons(_, TupleCons(_, TupleCons(_, TupleCons(x, _))))) => x }
-    def _6: F = l match { case TupleCons(_, TupleCons(_, TupleCons(_, TupleCons(_, TupleCons(_, TupleCons(x, _)))))) => x }
+  implicit class Tuple6Assessors[A, B, C, D, E, F](l: TC[A, TC[B, TC[C, TC[D, TC[E, TC[F, Unit]]]]]]) {
+    def _1 = l match { case TC(x, _) => x }
+    def _2 = l match { case TC(_, TC(x, _)) => x }
+    def _3 = l match { case TC(_, TC(_, TC(x, _))) => x }
+    def _4 = l match { case TC(_, TC(_, TC(_, TC(x, _)))) => x }
+    def _5 = l match { case TC(_, TC(_, TC(_, TC(_, TC(x, _))))) => x }
+    def _6 = l match { case TC(_, TC(_, TC(_, TC(_, TC(_, TC(x, _)))))) => x }
   }
 
-  type Tuple6[A, B, C, D, E, F] = TupleCons[A, TupleCons[B, TupleCons[C, TupleCons[D, TupleCons[E, TupleCons[F, Unit]]]]]]
+  type Tuple6[A, B, C, D, E, F] = TC[A, TC[B, TC[C, TC[D, TC[E, TC[F, Unit]]]]]]
 
-  def Tuple6[A, B, C, D, E, F](a: A, b: B, c: C, d: D, e: E, f: F): TupleCons[A, TupleCons[B, TupleCons[C, TupleCons[D, TupleCons[E, TupleCons[F, Unit]]]]]] = TupleCons(a, TupleCons(b, TupleCons(c, TupleCons(d, TupleCons(e, TupleCons(f, ()))))))
+  def Tuple6[A, B, C, D, E, F](a: A, b: B, c: C, d: D, e: E, f: F): TC[A, TC[B, TC[C, TC[D, TC[E, TC[F, Unit]]]]]] = TC(a, TC(b, TC(c, TC(d, TC(e, TC(f, ()))))))
 
-  // implicit class Tuple7Assessors[A, B, C, D, E, F, G](l: TupleCons[A, TupleCons[B, TupleCons[C, TupleCons[D, TupleCons[E, TupleCons[F, TupleCons[G, Unit]]]]]]]) {
-  //   def _1: A = l.head; def _2: B = l.tail.head; def _3: C = l.tail.tail.head; def _4: D = l.tail.tail.tail.head; def _5: E = l.tail.tail.tail.tail.head; def _6: F = l.tail.tail.tail.tail.tail.head; def _7: G = l.tail.tail.tail.tail.tail.tail.head
-  // }
+  implicit class Tuple7Assessors[A, B, C, D, E, F, G](l: TC[A, TC[B, TC[C, TC[D, TC[E, TC[F, TC[G, Unit]]]]]]]) {
+    def _1 = l match { case TC(x, _) => x }
+    def _2 = l match { case TC(_, TC(x, _)) => x }
+    def _3 = l match { case TC(_, TC(_, TC(x, _))) => x }
+    def _4 = l match { case TC(_, TC(_, TC(_, TC(x, _)))) => x }
+    def _5 = l match { case TC(_, TC(_, TC(_, TC(_, TC(x, _))))) => x }
+    def _6 = l match { case TC(_, TC(_, TC(_, TC(_, TC(_, TC(x, _)))))) => x }
+    def _7 = l match { case TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(x, _))))))) => x }
+  }
 
-  // type Tuple7[A, B, C, D, E, F, G] = TupleCons[A, TupleCons[B, TupleCons[C, TupleCons[D, TupleCons[E, TupleCons[F, TupleCons[G, Unit]]]]]]]
+  type Tuple7[A, B, C, D, E, F, G] = TC[A, TC[B, TC[C, TC[D, TC[E, TC[F, TC[G, Unit]]]]]]]
 
-  // def Tuple7[A, B, C, D, E, F, G](a: A, b: B, c: C, d: D, e: E, f: F, g: G): TupleCons[A, TupleCons[B, TupleCons[C, TupleCons[D, TupleCons[E, TupleCons[F, TupleCons[G, Unit]]]]]]] = TupleCons(a, TupleCons(b, TupleCons(c, TupleCons(d, TupleCons(e, TupleCons(f, TupleCons(g, ())))))))
+  def Tuple7[A, B, C, D, E, F, G](a: A, b: B, c: C, d: D, e: E, f: F, g: G): TC[A, TC[B, TC[C, TC[D, TC[E, TC[F, TC[G, Unit]]]]]]] = TC(a, TC(b, TC(c, TC(d, TC(e, TC(f, TC(g, ())))))))
 
-  // implicit class Tuple8Assessors[A, B, C, D, E, F, G, H](l: TupleCons[A, TupleCons[B, TupleCons[C, TupleCons[D, TupleCons[E, TupleCons[F, TupleCons[G, TupleCons[H, Unit]]]]]]]]) {
-  //   def _1: A = l.head; def _2: B = l.tail.head; def _3: C = l.tail.tail.head; def _4: D = l.tail.tail.tail.head; def _5: E = l.tail.tail.tail.tail.head; def _6: F = l.tail.tail.tail.tail.tail.head; def _7: G = l.tail.tail.tail.tail.tail.tail.head; def _8: H = l.tail.tail.tail.tail.tail.tail.tail.head
-  // }
+  implicit class Tuple8Assessors[A, B, C, D, E, F, G, H](l: TC[A, TC[B, TC[C, TC[D, TC[E, TC[F, TC[G, TC[H, Unit]]]]]]]]) {
+    def _1 = l match { case TC(x, _) => x }
+    def _2 = l match { case TC(_, TC(x, _)) => x }
+    def _3 = l match { case TC(_, TC(_, TC(x, _))) => x }
+    def _4 = l match { case TC(_, TC(_, TC(_, TC(x, _)))) => x }
+    def _5 = l match { case TC(_, TC(_, TC(_, TC(_, TC(x, _))))) => x }
+    def _6 = l match { case TC(_, TC(_, TC(_, TC(_, TC(_, TC(x, _)))))) => x }
+    def _7 = l match { case TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(x, _))))))) => x }
+    def _8 = l match { case TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(x, _)))))))) => x }
+  }
 
-  // type Tuple8[A, B, C, D, E, F, G, H] = TupleCons[A, TupleCons[B, TupleCons[C, TupleCons[D, TupleCons[E, TupleCons[F, TupleCons[G, TupleCons[H, Unit]]]]]]]]
+  type Tuple8[A, B, C, D, E, F, G, H] = TC[A, TC[B, TC[C, TC[D, TC[E, TC[F, TC[G, TC[H, Unit]]]]]]]]
 
-  // def Tuple8[A, B, C, D, E, F, G, H](a: A, b: B, c: C, d: D, e: E, f: F, g: G, h: H): TupleCons[A, TupleCons[B, TupleCons[C, TupleCons[D, TupleCons[E, TupleCons[F, TupleCons[G, TupleCons[H, Unit]]]]]]]] = TupleCons(a, TupleCons(b, TupleCons(c, TupleCons(d, TupleCons(e, TupleCons(f, TupleCons(g, TupleCons(h, ()))))))))
+  def Tuple8[A, B, C, D, E, F, G, H](a: A, b: B, c: C, d: D, e: E, f: F, g: G, h: H): TC[A, TC[B, TC[C, TC[D, TC[E, TC[F, TC[G, TC[H, Unit]]]]]]]] = TC(a, TC(b, TC(c, TC(d, TC(e, TC(f, TC(g, TC(h, ()))))))))
 
-  // implicit class Tuple9Assessors[A, B, C, D, E, F, G, H, I](l: TupleCons[A, TupleCons[B, TupleCons[C, TupleCons[D, TupleCons[E, TupleCons[F, TupleCons[G, TupleCons[H, TupleCons[I, Unit]]]]]]]]]) {
-  //   def _1: A = l.head; def _2: B = l.tail.head; def _3: C = l.tail.tail.head; def _4: D = l.tail.tail.tail.head; def _5: E = l.tail.tail.tail.tail.head; def _6: F = l.tail.tail.tail.tail.tail.head; def _7: G = l.tail.tail.tail.tail.tail.tail.head; def _8: H = l.tail.tail.tail.tail.tail.tail.tail.head; def _9: I = l.tail.tail.tail.tail.tail.tail.tail.tail.head
-  // }
+  implicit class Tuple9Assessors[A, B, C, D, E, F, G, H, I](l: TC[A, TC[B, TC[C, TC[D, TC[E, TC[F, TC[G, TC[H, TC[I, Unit]]]]]]]]]) {
+    def _1 = l match { case TC(x, _) => x }
+    def _2 = l match { case TC(_, TC(x, _)) => x }
+    def _3 = l match { case TC(_, TC(_, TC(x, _))) => x }
+    def _4 = l match { case TC(_, TC(_, TC(_, TC(x, _)))) => x }
+    def _5 = l match { case TC(_, TC(_, TC(_, TC(_, TC(x, _))))) => x }
+    def _6 = l match { case TC(_, TC(_, TC(_, TC(_, TC(_, TC(x, _)))))) => x }
+    def _7 = l match { case TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(x, _))))))) => x }
+    def _8 = l match { case TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(x, _)))))))) => x }
+    def _9 = l match { case TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(x, _))))))))) => x }
+  }
 
-  // type Tuple9[A, B, C, D, E, F, G, H, I] = TupleCons[A, TupleCons[B, TupleCons[C, TupleCons[D, TupleCons[E, TupleCons[F, TupleCons[G, TupleCons[H, TupleCons[I, Unit]]]]]]]]]
+  type Tuple9[A, B, C, D, E, F, G, H, I] = TC[A, TC[B, TC[C, TC[D, TC[E, TC[F, TC[G, TC[H, TC[I, Unit]]]]]]]]]
 
-  // def Tuple9[A, B, C, D, E, F, G, H, I](a: A, b: B, c: C, d: D, e: E, f: F, g: G, h: H, i: I): TupleCons[A, TupleCons[B, TupleCons[C, TupleCons[D, TupleCons[E, TupleCons[F, TupleCons[G, TupleCons[H, TupleCons[I, Unit]]]]]]]]] = TupleCons(a, TupleCons(b, TupleCons(c, TupleCons(d, TupleCons(e, TupleCons(f, TupleCons(g, TupleCons(h, TupleCons(i, ())))))))))
+  def Tuple9[A, B, C, D, E, F, G, H, I](a: A, b: B, c: C, d: D, e: E, f: F, g: G, h: H, i: I): TC[A, TC[B, TC[C, TC[D, TC[E, TC[F, TC[G, TC[H, TC[I, Unit]]]]]]]]] = TC(a, TC(b, TC(c, TC(d, TC(e, TC(f, TC(g, TC(h, TC(i, ())))))))))
 
-  // implicit class Tuple10Assessors[A, B, C, D, E, F, G, H, I, J](l: TupleCons[A, TupleCons[B, TupleCons[C, TupleCons[D, TupleCons[E, TupleCons[F, TupleCons[G, TupleCons[H, TupleCons[I, TupleCons[J, Unit]]]]]]]]]]) {
-  //   def _1: A = l.head; def _2: B = l.tail.head; def _3: C = l.tail.tail.head; def _4: D = l.tail.tail.tail.head; def _5: E = l.tail.tail.tail.tail.head; def _6: F = l.tail.tail.tail.tail.tail.head; def _7: G = l.tail.tail.tail.tail.tail.tail.head; def _8: H = l.tail.tail.tail.tail.tail.tail.tail.head; def _9: I = l.tail.tail.tail.tail.tail.tail.tail.tail.head; def _10: J = l.tail.tail.tail.tail.tail.tail.tail.tail.tail.head
-  // }
+  implicit class Tuple10Assessors[A, B, C, D, E, F, G, H, I, J](l: TC[A, TC[B, TC[C, TC[D, TC[E, TC[F, TC[G, TC[H, TC[I, TC[J, Unit]]]]]]]]]]) {
+    def _1 = l match { case TC(x, _) => x }
+    def _2 = l match { case TC(_, TC(x, _)) => x }
+    def _3 = l match { case TC(_, TC(_, TC(x, _))) => x }
+    def _4 = l match { case TC(_, TC(_, TC(_, TC(x, _)))) => x }
+    def _5 = l match { case TC(_, TC(_, TC(_, TC(_, TC(x, _))))) => x }
+    def _6 = l match { case TC(_, TC(_, TC(_, TC(_, TC(_, TC(x, _)))))) => x }
+    def _7 = l match { case TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(x, _))))))) => x }
+    def _8 = l match { case TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(x, _)))))))) => x }
+    def _9 = l match { case TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(x, _))))))))) => x }
+    def _10 = l match { case TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(x, _)))))))))) => x }
+  }
 
-  // type Tuple10[A, B, C, D, E, F, G, H, I, J] = TupleCons[A, TupleCons[B, TupleCons[C, TupleCons[D, TupleCons[E, TupleCons[F, TupleCons[G, TupleCons[H, TupleCons[I, TupleCons[J, Unit]]]]]]]]]]
+  type Tuple10[A, B, C, D, E, F, G, H, I, J] = TC[A, TC[B, TC[C, TC[D, TC[E, TC[F, TC[G, TC[H, TC[I, TC[J, Unit]]]]]]]]]]
 
-  // def Tuple10[A, B, C, D, E, F, G, H, I, J](a: A, b: B, c: C, d: D, e: E, f: F, g: G, h: H, i: I, j: J): TupleCons[A, TupleCons[B, TupleCons[C, TupleCons[D, TupleCons[E, TupleCons[F, TupleCons[G, TupleCons[H, TupleCons[I, TupleCons[J, Unit]]]]]]]]]] = TupleCons(a, TupleCons(b, TupleCons(c, TupleCons(d, TupleCons(e, TupleCons(f, TupleCons(g, TupleCons(h, TupleCons(i, TupleCons(j, ()))))))))))
+  def Tuple10[A, B, C, D, E, F, G, H, I, J](a: A, b: B, c: C, d: D, e: E, f: F, g: G, h: H, i: I, j: J): TC[A, TC[B, TC[C, TC[D, TC[E, TC[F, TC[G, TC[H, TC[I, TC[J, Unit]]]]]]]]]] = TC(a, TC(b, TC(c, TC(d, TC(e, TC(f, TC(g, TC(h, TC(i, TC(j, ()))))))))))
 
-  // implicit class Tuple11Assessors[A, B, C, D, E, F, G, H, I, J, K](l: TupleCons[A, TupleCons[B, TupleCons[C, TupleCons[D, TupleCons[E, TupleCons[F, TupleCons[G, TupleCons[H, TupleCons[I, TupleCons[J, TupleCons[K, Unit]]]]]]]]]]]) {
-  //   def _1: A = l.head; def _2: B = l.tail.head; def _3: C = l.tail.tail.head; def _4: D = l.tail.tail.tail.head; def _5: E = l.tail.tail.tail.tail.head; def _6: F = l.tail.tail.tail.tail.tail.head; def _7: G = l.tail.tail.tail.tail.tail.tail.head; def _8: H = l.tail.tail.tail.tail.tail.tail.tail.head; def _9: I = l.tail.tail.tail.tail.tail.tail.tail.tail.head; def _10: J = l.tail.tail.tail.tail.tail.tail.tail.tail.tail.head; def _11: K = l.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.head
-  // }
+  implicit class Tuple11Assessors[A, B, C, D, E, F, G, H, I, J, K](l: TC[A, TC[B, TC[C, TC[D, TC[E, TC[F, TC[G, TC[H, TC[I, TC[J, TC[K, Unit]]]]]]]]]]]) {
+    def _1 = l match { case TC(x, _) => x }
+    def _2 = l match { case TC(_, TC(x, _)) => x }
+    def _3 = l match { case TC(_, TC(_, TC(x, _))) => x }
+    def _4 = l match { case TC(_, TC(_, TC(_, TC(x, _)))) => x }
+    def _5 = l match { case TC(_, TC(_, TC(_, TC(_, TC(x, _))))) => x }
+    def _6 = l match { case TC(_, TC(_, TC(_, TC(_, TC(_, TC(x, _)))))) => x }
+    def _7 = l match { case TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(x, _))))))) => x }
+    def _8 = l match { case TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(x, _)))))))) => x }
+    def _9 = l match { case TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(x, _))))))))) => x }
+    def _10 = l match { case TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(x, _)))))))))) => x }
+    def _11 = l match { case TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(x, _))))))))))) => x }
+  }
 
-  // type Tuple11[A, B, C, D, E, F, G, H, I, J, K] = TupleCons[A, TupleCons[B, TupleCons[C, TupleCons[D, TupleCons[E, TupleCons[F, TupleCons[G, TupleCons[H, TupleCons[I, TupleCons[J, TupleCons[K, Unit]]]]]]]]]]]
+  type Tuple11[A, B, C, D, E, F, G, H, I, J, K] = TC[A, TC[B, TC[C, TC[D, TC[E, TC[F, TC[G, TC[H, TC[I, TC[J, TC[K, Unit]]]]]]]]]]]
 
-  // def Tuple11[A, B, C, D, E, F, G, H, I, J, K](a: A, b: B, c: C, d: D, e: E, f: F, g: G, h: H, i: I, j: J, k: K): TupleCons[A, TupleCons[B, TupleCons[C, TupleCons[D, TupleCons[E, TupleCons[F, TupleCons[G, TupleCons[H, TupleCons[I, TupleCons[J, TupleCons[K, Unit]]]]]]]]]]] = TupleCons(a, TupleCons(b, TupleCons(c, TupleCons(d, TupleCons(e, TupleCons(f, TupleCons(g, TupleCons(h, TupleCons(i, TupleCons(j, TupleCons(k, ())))))))))))
+  def Tuple11[A, B, C, D, E, F, G, H, I, J, K](a: A, b: B, c: C, d: D, e: E, f: F, g: G, h: H, i: I, j: J, k: K): TC[A, TC[B, TC[C, TC[D, TC[E, TC[F, TC[G, TC[H, TC[I, TC[J, TC[K, Unit]]]]]]]]]]] = TC(a, TC(b, TC(c, TC(d, TC(e, TC(f, TC(g, TC(h, TC(i, TC(j, TC(k, ())))))))))))
 
-  // implicit class Tuple12Assessors[A, B, C, D, E, F, G, H, I, J, K, L](l: TupleCons[A, TupleCons[B, TupleCons[C, TupleCons[D, TupleCons[E, TupleCons[F, TupleCons[G, TupleCons[H, TupleCons[I, TupleCons[J, TupleCons[K, TupleCons[L, Unit]]]]]]]]]]]]) {
-  //   def _1: A = l.head; def _2: B = l.tail.head; def _3: C = l.tail.tail.head; def _4: D = l.tail.tail.tail.head; def _5: E = l.tail.tail.tail.tail.head; def _6: F = l.tail.tail.tail.tail.tail.head; def _7: G = l.tail.tail.tail.tail.tail.tail.head; def _8: H = l.tail.tail.tail.tail.tail.tail.tail.head; def _9: I = l.tail.tail.tail.tail.tail.tail.tail.tail.head; def _10: J = l.tail.tail.tail.tail.tail.tail.tail.tail.tail.head; def _11: K = l.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.head; def _12: L = l.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.head
-  // }
+  implicit class Tuple12Assessors[A, B, C, D, E, F, G, H, I, J, K, L](l: TC[A, TC[B, TC[C, TC[D, TC[E, TC[F, TC[G, TC[H, TC[I, TC[J, TC[K, TC[L, Unit]]]]]]]]]]]]) {
+    def _1 = l match { case TC(x, _) => x }
+    def _2 = l match { case TC(_, TC(x, _)) => x }
+    def _3 = l match { case TC(_, TC(_, TC(x, _))) => x }
+    def _4 = l match { case TC(_, TC(_, TC(_, TC(x, _)))) => x }
+    def _5 = l match { case TC(_, TC(_, TC(_, TC(_, TC(x, _))))) => x }
+    def _6 = l match { case TC(_, TC(_, TC(_, TC(_, TC(_, TC(x, _)))))) => x }
+    def _7 = l match { case TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(x, _))))))) => x }
+    def _8 = l match { case TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(x, _)))))))) => x }
+    def _9 = l match { case TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(x, _))))))))) => x }
+    def _10 = l match { case TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(x, _)))))))))) => x }
+    def _11 = l match { case TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(x, _))))))))))) => x }
+    def _12 = l match { case TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(x, _)))))))))))) => x }
+  }
 
-  // type Tuple12[A, B, C, D, E, F, G, H, I, J, K, L] = TupleCons[A, TupleCons[B, TupleCons[C, TupleCons[D, TupleCons[E, TupleCons[F, TupleCons[G, TupleCons[H, TupleCons[I, TupleCons[J, TupleCons[K, TupleCons[L, Unit]]]]]]]]]]]]
+  type Tuple12[A, B, C, D, E, F, G, H, I, J, K, L] = TC[A, TC[B, TC[C, TC[D, TC[E, TC[F, TC[G, TC[H, TC[I, TC[J, TC[K, TC[L, Unit]]]]]]]]]]]]
 
-  // def Tuple12[A, B, C, D, E, F, G, H, I, J, K, L](a: A, b: B, c: C, d: D, e: E, f: F, g: G, h: H, i: I, j: J, k: K, l: L): TupleCons[A, TupleCons[B, TupleCons[C, TupleCons[D, TupleCons[E, TupleCons[F, TupleCons[G, TupleCons[H, TupleCons[I, TupleCons[J, TupleCons[K, TupleCons[L, Unit]]]]]]]]]]]] = TupleCons(a, TupleCons(b, TupleCons(c, TupleCons(d, TupleCons(e, TupleCons(f, TupleCons(g, TupleCons(h, TupleCons(i, TupleCons(j, TupleCons(k, TupleCons(l, ()))))))))))))
+  def Tuple12[A, B, C, D, E, F, G, H, I, J, K, L](a: A, b: B, c: C, d: D, e: E, f: F, g: G, h: H, i: I, j: J, k: K, l: L): TC[A, TC[B, TC[C, TC[D, TC[E, TC[F, TC[G, TC[H, TC[I, TC[J, TC[K, TC[L, Unit]]]]]]]]]]]] = TC(a, TC(b, TC(c, TC(d, TC(e, TC(f, TC(g, TC(h, TC(i, TC(j, TC(k, TC(l, ()))))))))))))
 
-  // implicit class Tuple13Assessors[A, B, C, D, E, F, G, H, I, J, K, L, M](l: TupleCons[A, TupleCons[B, TupleCons[C, TupleCons[D, TupleCons[E, TupleCons[F, TupleCons[G, TupleCons[H, TupleCons[I, TupleCons[J, TupleCons[K, TupleCons[L, TupleCons[M, Unit]]]]]]]]]]]]]) {
-  //   def _1: A = l.head; def _2: B = l.tail.head; def _3: C = l.tail.tail.head; def _4: D = l.tail.tail.tail.head; def _5: E = l.tail.tail.tail.tail.head; def _6: F = l.tail.tail.tail.tail.tail.head; def _7: G = l.tail.tail.tail.tail.tail.tail.head; def _8: H = l.tail.tail.tail.tail.tail.tail.tail.head; def _9: I = l.tail.tail.tail.tail.tail.tail.tail.tail.head; def _10: J = l.tail.tail.tail.tail.tail.tail.tail.tail.tail.head; def _11: K = l.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.head; def _12: L = l.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.head; def _13: M = l.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.head
-  // }
+  implicit class Tuple13Assessors[A, B, C, D, E, F, G, H, I, J, K, L, M](l: TC[A, TC[B, TC[C, TC[D, TC[E, TC[F, TC[G, TC[H, TC[I, TC[J, TC[K, TC[L, TC[M, Unit]]]]]]]]]]]]]) {
+    def _1 = l match { case TC(x, _) => x }
+    def _2 = l match { case TC(_, TC(x, _)) => x }
+    def _3 = l match { case TC(_, TC(_, TC(x, _))) => x }
+    def _4 = l match { case TC(_, TC(_, TC(_, TC(x, _)))) => x }
+    def _5 = l match { case TC(_, TC(_, TC(_, TC(_, TC(x, _))))) => x }
+    def _6 = l match { case TC(_, TC(_, TC(_, TC(_, TC(_, TC(x, _)))))) => x }
+    def _7 = l match { case TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(x, _))))))) => x }
+    def _8 = l match { case TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(x, _)))))))) => x }
+    def _9 = l match { case TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(x, _))))))))) => x }
+    def _10 = l match { case TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(x, _)))))))))) => x }
+    def _11 = l match { case TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(x, _))))))))))) => x }
+    def _12 = l match { case TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(x, _)))))))))))) => x }
+    def _13 = l match { case TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(x, _))))))))))))) => x }
+  }
 
-  // type Tuple13[A, B, C, D, E, F, G, H, I, J, K, L, M] = TupleCons[A, TupleCons[B, TupleCons[C, TupleCons[D, TupleCons[E, TupleCons[F, TupleCons[G, TupleCons[H, TupleCons[I, TupleCons[J, TupleCons[K, TupleCons[L, TupleCons[M, Unit]]]]]]]]]]]]]
+  type Tuple13[A, B, C, D, E, F, G, H, I, J, K, L, M] = TC[A, TC[B, TC[C, TC[D, TC[E, TC[F, TC[G, TC[H, TC[I, TC[J, TC[K, TC[L, TC[M, Unit]]]]]]]]]]]]]
 
-  // def Tuple13[A, B, C, D, E, F, G, H, I, J, K, L, M](a: A, b: B, c: C, d: D, e: E, f: F, g: G, h: H, i: I, j: J, k: K, l: L, m: M): TupleCons[A, TupleCons[B, TupleCons[C, TupleCons[D, TupleCons[E, TupleCons[F, TupleCons[G, TupleCons[H, TupleCons[I, TupleCons[J, TupleCons[K, TupleCons[L, TupleCons[M, Unit]]]]]]]]]]]]] = TupleCons(a, TupleCons(b, TupleCons(c, TupleCons(d, TupleCons(e, TupleCons(f, TupleCons(g, TupleCons(h, TupleCons(i, TupleCons(j, TupleCons(k, TupleCons(l, TupleCons(m, ())))))))))))))
+  def Tuple13[A, B, C, D, E, F, G, H, I, J, K, L, M](a: A, b: B, c: C, d: D, e: E, f: F, g: G, h: H, i: I, j: J, k: K, l: L, m: M): TC[A, TC[B, TC[C, TC[D, TC[E, TC[F, TC[G, TC[H, TC[I, TC[J, TC[K, TC[L, TC[M, Unit]]]]]]]]]]]]] = TC(a, TC(b, TC(c, TC(d, TC(e, TC(f, TC(g, TC(h, TC(i, TC(j, TC(k, TC(l, TC(m, ())))))))))))))
 
-  // implicit class Tuple14Assessors[A, B, C, D, E, F, G, H, I, J, K, L, M, N](l: TupleCons[A, TupleCons[B, TupleCons[C, TupleCons[D, TupleCons[E, TupleCons[F, TupleCons[G, TupleCons[H, TupleCons[I, TupleCons[J, TupleCons[K, TupleCons[L, TupleCons[M, TupleCons[N, Unit]]]]]]]]]]]]]]) {
-  //   def _1: A = l.head; def _2: B = l.tail.head; def _3: C = l.tail.tail.head; def _4: D = l.tail.tail.tail.head; def _5: E = l.tail.tail.tail.tail.head; def _6: F = l.tail.tail.tail.tail.tail.head; def _7: G = l.tail.tail.tail.tail.tail.tail.head; def _8: H = l.tail.tail.tail.tail.tail.tail.tail.head; def _9: I = l.tail.tail.tail.tail.tail.tail.tail.tail.head; def _10: J = l.tail.tail.tail.tail.tail.tail.tail.tail.tail.head; def _11: K = l.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.head; def _12: L = l.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.head; def _13: M = l.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.head; def _14: N = l.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.head
-  // }
+  implicit class Tuple14Assessors[A, B, C, D, E, F, G, H, I, J, K, L, M, N](l: TC[A, TC[B, TC[C, TC[D, TC[E, TC[F, TC[G, TC[H, TC[I, TC[J, TC[K, TC[L, TC[M, TC[N, Unit]]]]]]]]]]]]]]) {
+    def _1 = l match { case TC(x, _) => x }
+    def _2 = l match { case TC(_, TC(x, _)) => x }
+    def _3 = l match { case TC(_, TC(_, TC(x, _))) => x }
+    def _4 = l match { case TC(_, TC(_, TC(_, TC(x, _)))) => x }
+    def _5 = l match { case TC(_, TC(_, TC(_, TC(_, TC(x, _))))) => x }
+    def _6 = l match { case TC(_, TC(_, TC(_, TC(_, TC(_, TC(x, _)))))) => x }
+    def _7 = l match { case TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(x, _))))))) => x }
+    def _8 = l match { case TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(x, _)))))))) => x }
+    def _9 = l match { case TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(x, _))))))))) => x }
+    def _10 = l match { case TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(x, _)))))))))) => x }
+    def _11 = l match { case TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(x, _))))))))))) => x }
+    def _12 = l match { case TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(x, _)))))))))))) => x }
+    def _13 = l match { case TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(x, _))))))))))))) => x }
+    def _14 = l match { case TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(x, _)))))))))))))) => x }
+  }
 
-  // type Tuple14[A, B, C, D, E, F, G, H, I, J, K, L, M, N] = TupleCons[A, TupleCons[B, TupleCons[C, TupleCons[D, TupleCons[E, TupleCons[F, TupleCons[G, TupleCons[H, TupleCons[I, TupleCons[J, TupleCons[K, TupleCons[L, TupleCons[M, TupleCons[N, Unit]]]]]]]]]]]]]]
+  type Tuple14[A, B, C, D, E, F, G, H, I, J, K, L, M, N] = TC[A, TC[B, TC[C, TC[D, TC[E, TC[F, TC[G, TC[H, TC[I, TC[J, TC[K, TC[L, TC[M, TC[N, Unit]]]]]]]]]]]]]]
 
-  // def Tuple14[A, B, C, D, E, F, G, H, I, J, K, L, M, N](a: A, b: B, c: C, d: D, e: E, f: F, g: G, h: H, i: I, j: J, k: K, l: L, m: M, n: N): TupleCons[A, TupleCons[B, TupleCons[C, TupleCons[D, TupleCons[E, TupleCons[F, TupleCons[G, TupleCons[H, TupleCons[I, TupleCons[J, TupleCons[K, TupleCons[L, TupleCons[M, TupleCons[N, Unit]]]]]]]]]]]]]] = TupleCons(a, TupleCons(b, TupleCons(c, TupleCons(d, TupleCons(e, TupleCons(f, TupleCons(g, TupleCons(h, TupleCons(i, TupleCons(j, TupleCons(k, TupleCons(l, TupleCons(m, TupleCons(n, ()))))))))))))))
+  def Tuple14[A, B, C, D, E, F, G, H, I, J, K, L, M, N](a: A, b: B, c: C, d: D, e: E, f: F, g: G, h: H, i: I, j: J, k: K, l: L, m: M, n: N): TC[A, TC[B, TC[C, TC[D, TC[E, TC[F, TC[G, TC[H, TC[I, TC[J, TC[K, TC[L, TC[M, TC[N, Unit]]]]]]]]]]]]]] = TC(a, TC(b, TC(c, TC(d, TC(e, TC(f, TC(g, TC(h, TC(i, TC(j, TC(k, TC(l, TC(m, TC(n, ()))))))))))))))
 
-  // implicit class Tuple15Assessors[A, B, C, D, E, F, G, H, I, J, K, L, M, N, O](l: TupleCons[A, TupleCons[B, TupleCons[C, TupleCons[D, TupleCons[E, TupleCons[F, TupleCons[G, TupleCons[H, TupleCons[I, TupleCons[J, TupleCons[K, TupleCons[L, TupleCons[M, TupleCons[N, TupleCons[O, Unit]]]]]]]]]]]]]]]) {
-  //   def _1: A = l.head; def _2: B = l.tail.head; def _3: C = l.tail.tail.head; def _4: D = l.tail.tail.tail.head; def _5: E = l.tail.tail.tail.tail.head; def _6: F = l.tail.tail.tail.tail.tail.head; def _7: G = l.tail.tail.tail.tail.tail.tail.head; def _8: H = l.tail.tail.tail.tail.tail.tail.tail.head; def _9: I = l.tail.tail.tail.tail.tail.tail.tail.tail.head; def _10: J = l.tail.tail.tail.tail.tail.tail.tail.tail.tail.head; def _11: K = l.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.head; def _12: L = l.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.head; def _13: M = l.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.head; def _14: N = l.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.head; def _15: O = l.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.head
-  // }
+  implicit class Tuple15Assessors[A, B, C, D, E, F, G, H, I, J, K, L, M, N, O](l: TC[A, TC[B, TC[C, TC[D, TC[E, TC[F, TC[G, TC[H, TC[I, TC[J, TC[K, TC[L, TC[M, TC[N, TC[O, Unit]]]]]]]]]]]]]]]) {
+    def _1 = l match { case TC(x, _) => x }
+    def _2 = l match { case TC(_, TC(x, _)) => x }
+    def _3 = l match { case TC(_, TC(_, TC(x, _))) => x }
+    def _4 = l match { case TC(_, TC(_, TC(_, TC(x, _)))) => x }
+    def _5 = l match { case TC(_, TC(_, TC(_, TC(_, TC(x, _))))) => x }
+    def _6 = l match { case TC(_, TC(_, TC(_, TC(_, TC(_, TC(x, _)))))) => x }
+    def _7 = l match { case TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(x, _))))))) => x }
+    def _8 = l match { case TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(x, _)))))))) => x }
+    def _9 = l match { case TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(x, _))))))))) => x }
+    def _10 = l match { case TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(x, _)))))))))) => x }
+    def _11 = l match { case TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(x, _))))))))))) => x }
+    def _12 = l match { case TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(x, _)))))))))))) => x }
+    def _13 = l match { case TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(x, _))))))))))))) => x }
+    def _14 = l match { case TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(x, _)))))))))))))) => x }
+    def _15 = l match { case TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(x, _))))))))))))))) => x }
+  }
 
-  // type Tuple15[A, B, C, D, E, F, G, H, I, J, K, L, M, N, O] = TupleCons[A, TupleCons[B, TupleCons[C, TupleCons[D, TupleCons[E, TupleCons[F, TupleCons[G, TupleCons[H, TupleCons[I, TupleCons[J, TupleCons[K, TupleCons[L, TupleCons[M, TupleCons[N, TupleCons[O, Unit]]]]]]]]]]]]]]]
+  type Tuple15[A, B, C, D, E, F, G, H, I, J, K, L, M, N, O] = TC[A, TC[B, TC[C, TC[D, TC[E, TC[F, TC[G, TC[H, TC[I, TC[J, TC[K, TC[L, TC[M, TC[N, TC[O, Unit]]]]]]]]]]]]]]]
 
-  // def Tuple15[A, B, C, D, E, F, G, H, I, J, K, L, M, N, O](a: A, b: B, c: C, d: D, e: E, f: F, g: G, h: H, i: I, j: J, k: K, l: L, m: M, n: N, o: O): TupleCons[A, TupleCons[B, TupleCons[C, TupleCons[D, TupleCons[E, TupleCons[F, TupleCons[G, TupleCons[H, TupleCons[I, TupleCons[J, TupleCons[K, TupleCons[L, TupleCons[M, TupleCons[N, TupleCons[O, Unit]]]]]]]]]]]]]]] = TupleCons(a, TupleCons(b, TupleCons(c, TupleCons(d, TupleCons(e, TupleCons(f, TupleCons(g, TupleCons(h, TupleCons(i, TupleCons(j, TupleCons(k, TupleCons(l, TupleCons(m, TupleCons(n, TupleCons(o, ())))))))))))))))
+  def Tuple15[A, B, C, D, E, F, G, H, I, J, K, L, M, N, O](a: A, b: B, c: C, d: D, e: E, f: F, g: G, h: H, i: I, j: J, k: K, l: L, m: M, n: N, o: O): TC[A, TC[B, TC[C, TC[D, TC[E, TC[F, TC[G, TC[H, TC[I, TC[J, TC[K, TC[L, TC[M, TC[N, TC[O, Unit]]]]]]]]]]]]]]] = TC(a, TC(b, TC(c, TC(d, TC(e, TC(f, TC(g, TC(h, TC(i, TC(j, TC(k, TC(l, TC(m, TC(n, TC(o, ())))))))))))))))
 
-  // implicit class Tuple16Assessors[A, B, C, D, E, F, G, H, I, J, K, L, M, N, O, P](l: TupleCons[A, TupleCons[B, TupleCons[C, TupleCons[D, TupleCons[E, TupleCons[F, TupleCons[G, TupleCons[H, TupleCons[I, TupleCons[J, TupleCons[K, TupleCons[L, TupleCons[M, TupleCons[N, TupleCons[O, TupleCons[P, Unit]]]]]]]]]]]]]]]]) {
-  //   def _1: A = l.head; def _2: B = l.tail.head; def _3: C = l.tail.tail.head; def _4: D = l.tail.tail.tail.head; def _5: E = l.tail.tail.tail.tail.head; def _6: F = l.tail.tail.tail.tail.tail.head; def _7: G = l.tail.tail.tail.tail.tail.tail.head; def _8: H = l.tail.tail.tail.tail.tail.tail.tail.head; def _9: I = l.tail.tail.tail.tail.tail.tail.tail.tail.head; def _10: J = l.tail.tail.tail.tail.tail.tail.tail.tail.tail.head; def _11: K = l.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.head; def _12: L = l.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.head; def _13: M = l.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.head; def _14: N = l.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.head; def _15: O = l.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.head; def _16: P = l.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.head
-  // }
+  implicit class Tuple16Assessors[A, B, C, D, E, F, G, H, I, J, K, L, M, N, O, P](l: TC[A, TC[B, TC[C, TC[D, TC[E, TC[F, TC[G, TC[H, TC[I, TC[J, TC[K, TC[L, TC[M, TC[N, TC[O, TC[P, Unit]]]]]]]]]]]]]]]]) {
+    def _1 = l match { case TC(x, _) => x }
+    def _2 = l match { case TC(_, TC(x, _)) => x }
+    def _3 = l match { case TC(_, TC(_, TC(x, _))) => x }
+    def _4 = l match { case TC(_, TC(_, TC(_, TC(x, _)))) => x }
+    def _5 = l match { case TC(_, TC(_, TC(_, TC(_, TC(x, _))))) => x }
+    def _6 = l match { case TC(_, TC(_, TC(_, TC(_, TC(_, TC(x, _)))))) => x }
+    def _7 = l match { case TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(x, _))))))) => x }
+    def _8 = l match { case TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(x, _)))))))) => x }
+    def _9 = l match { case TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(x, _))))))))) => x }
+    def _10 = l match { case TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(x, _)))))))))) => x }
+    def _11 = l match { case TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(x, _))))))))))) => x }
+    def _12 = l match { case TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(x, _)))))))))))) => x }
+    def _13 = l match { case TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(x, _))))))))))))) => x }
+    def _14 = l match { case TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(x, _)))))))))))))) => x }
+    def _15 = l match { case TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(x, _))))))))))))))) => x }
+    def _16 = l match { case TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(x, _)))))))))))))))) => x }
+  }
 
-  // type Tuple16[A, B, C, D, E, F, G, H, I, J, K, L, M, N, O, P] = TupleCons[A, TupleCons[B, TupleCons[C, TupleCons[D, TupleCons[E, TupleCons[F, TupleCons[G, TupleCons[H, TupleCons[I, TupleCons[J, TupleCons[K, TupleCons[L, TupleCons[M, TupleCons[N, TupleCons[O, TupleCons[P, Unit]]]]]]]]]]]]]]]]
+  type Tuple16[A, B, C, D, E, F, G, H, I, J, K, L, M, N, O, P] = TC[A, TC[B, TC[C, TC[D, TC[E, TC[F, TC[G, TC[H, TC[I, TC[J, TC[K, TC[L, TC[M, TC[N, TC[O, TC[P, Unit]]]]]]]]]]]]]]]]
 
-  // def Tuple16[A, B, C, D, E, F, G, H, I, J, K, L, M, N, O, P](a: A, b: B, c: C, d: D, e: E, f: F, g: G, h: H, i: I, j: J, k: K, l: L, m: M, n: N, o: O, p: P): TupleCons[A, TupleCons[B, TupleCons[C, TupleCons[D, TupleCons[E, TupleCons[F, TupleCons[G, TupleCons[H, TupleCons[I, TupleCons[J, TupleCons[K, TupleCons[L, TupleCons[M, TupleCons[N, TupleCons[O, TupleCons[P, Unit]]]]]]]]]]]]]]]] = TupleCons(a, TupleCons(b, TupleCons(c, TupleCons(d, TupleCons(e, TupleCons(f, TupleCons(g, TupleCons(h, TupleCons(i, TupleCons(j, TupleCons(k, TupleCons(l, TupleCons(m, TupleCons(n, TupleCons(o, TupleCons(p, ()))))))))))))))))
+  def Tuple16[A, B, C, D, E, F, G, H, I, J, K, L, M, N, O, P](a: A, b: B, c: C, d: D, e: E, f: F, g: G, h: H, i: I, j: J, k: K, l: L, m: M, n: N, o: O, p: P): TC[A, TC[B, TC[C, TC[D, TC[E, TC[F, TC[G, TC[H, TC[I, TC[J, TC[K, TC[L, TC[M, TC[N, TC[O, TC[P, Unit]]]]]]]]]]]]]]]] = TC(a, TC(b, TC(c, TC(d, TC(e, TC(f, TC(g, TC(h, TC(i, TC(j, TC(k, TC(l, TC(m, TC(n, TC(o, TC(p, ()))))))))))))))))
 
-  // implicit class Tuple17Assessors[A, B, C, D, E, F, G, H, I, J, K, L, M, N, O, P, Q](l: TupleCons[A, TupleCons[B, TupleCons[C, TupleCons[D, TupleCons[E, TupleCons[F, TupleCons[G, TupleCons[H, TupleCons[I, TupleCons[J, TupleCons[K, TupleCons[L, TupleCons[M, TupleCons[N, TupleCons[O, TupleCons[P, TupleCons[Q, Unit]]]]]]]]]]]]]]]]]) {
-  //   def _1: A = l.head; def _2: B = l.tail.head; def _3: C = l.tail.tail.head; def _4: D = l.tail.tail.tail.head; def _5: E = l.tail.tail.tail.tail.head; def _6: F = l.tail.tail.tail.tail.tail.head; def _7: G = l.tail.tail.tail.tail.tail.tail.head; def _8: H = l.tail.tail.tail.tail.tail.tail.tail.head; def _9: I = l.tail.tail.tail.tail.tail.tail.tail.tail.head; def _10: J = l.tail.tail.tail.tail.tail.tail.tail.tail.tail.head; def _11: K = l.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.head; def _12: L = l.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.head; def _13: M = l.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.head; def _14: N = l.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.head; def _15: O = l.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.head; def _16: P = l.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.head; def _17: Q = l.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.head
-  // }
+  implicit class Tuple17Assessors[A, B, C, D, E, F, G, H, I, J, K, L, M, N, O, P, Q](l: TC[A, TC[B, TC[C, TC[D, TC[E, TC[F, TC[G, TC[H, TC[I, TC[J, TC[K, TC[L, TC[M, TC[N, TC[O, TC[P, TC[Q, Unit]]]]]]]]]]]]]]]]]) {
+    def _1 = l match { case TC(x, _) => x }
+    def _2 = l match { case TC(_, TC(x, _)) => x }
+    def _3 = l match { case TC(_, TC(_, TC(x, _))) => x }
+    def _4 = l match { case TC(_, TC(_, TC(_, TC(x, _)))) => x }
+    def _5 = l match { case TC(_, TC(_, TC(_, TC(_, TC(x, _))))) => x }
+    def _6 = l match { case TC(_, TC(_, TC(_, TC(_, TC(_, TC(x, _)))))) => x }
+    def _7 = l match { case TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(x, _))))))) => x }
+    def _8 = l match { case TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(x, _)))))))) => x }
+    def _9 = l match { case TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(x, _))))))))) => x }
+    def _10 = l match { case TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(x, _)))))))))) => x }
+    def _11 = l match { case TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(x, _))))))))))) => x }
+    def _12 = l match { case TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(x, _)))))))))))) => x }
+    def _13 = l match { case TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(x, _))))))))))))) => x }
+    def _14 = l match { case TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(x, _)))))))))))))) => x }
+    def _15 = l match { case TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(x, _))))))))))))))) => x }
+    def _16 = l match { case TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(x, _)))))))))))))))) => x }
+    def _17 = l match { case TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(x, _))))))))))))))))) => x }
+  }
 
-  // type Tuple17[A, B, C, D, E, F, G, H, I, J, K, L, M, N, O, P, Q] = TupleCons[A, TupleCons[B, TupleCons[C, TupleCons[D, TupleCons[E, TupleCons[F, TupleCons[G, TupleCons[H, TupleCons[I, TupleCons[J, TupleCons[K, TupleCons[L, TupleCons[M, TupleCons[N, TupleCons[O, TupleCons[P, TupleCons[Q, Unit]]]]]]]]]]]]]]]]]
+  type Tuple17[A, B, C, D, E, F, G, H, I, J, K, L, M, N, O, P, Q] = TC[A, TC[B, TC[C, TC[D, TC[E, TC[F, TC[G, TC[H, TC[I, TC[J, TC[K, TC[L, TC[M, TC[N, TC[O, TC[P, TC[Q, Unit]]]]]]]]]]]]]]]]]
 
-  // def Tuple17[A, B, C, D, E, F, G, H, I, J, K, L, M, N, O, P, Q](a: A, b: B, c: C, d: D, e: E, f: F, g: G, h: H, i: I, j: J, k: K, l: L, m: M, n: N, o: O, p: P, q: Q): TupleCons[A, TupleCons[B, TupleCons[C, TupleCons[D, TupleCons[E, TupleCons[F, TupleCons[G, TupleCons[H, TupleCons[I, TupleCons[J, TupleCons[K, TupleCons[L, TupleCons[M, TupleCons[N, TupleCons[O, TupleCons[P, TupleCons[Q, Unit]]]]]]]]]]]]]]]]] = TupleCons(a, TupleCons(b, TupleCons(c, TupleCons(d, TupleCons(e, TupleCons(f, TupleCons(g, TupleCons(h, TupleCons(i, TupleCons(j, TupleCons(k, TupleCons(l, TupleCons(m, TupleCons(n, TupleCons(o, TupleCons(p, TupleCons(q, ())))))))))))))))))
+  def Tuple17[A, B, C, D, E, F, G, H, I, J, K, L, M, N, O, P, Q](a: A, b: B, c: C, d: D, e: E, f: F, g: G, h: H, i: I, j: J, k: K, l: L, m: M, n: N, o: O, p: P, q: Q): TC[A, TC[B, TC[C, TC[D, TC[E, TC[F, TC[G, TC[H, TC[I, TC[J, TC[K, TC[L, TC[M, TC[N, TC[O, TC[P, TC[Q, Unit]]]]]]]]]]]]]]]]] = TC(a, TC(b, TC(c, TC(d, TC(e, TC(f, TC(g, TC(h, TC(i, TC(j, TC(k, TC(l, TC(m, TC(n, TC(o, TC(p, TC(q, ())))))))))))))))))
 
-  // implicit class Tuple18Assessors[A, B, C, D, E, F, G, H, I, J, K, L, M, N, O, P, Q, R](l: TupleCons[A, TupleCons[B, TupleCons[C, TupleCons[D, TupleCons[E, TupleCons[F, TupleCons[G, TupleCons[H, TupleCons[I, TupleCons[J, TupleCons[K, TupleCons[L, TupleCons[M, TupleCons[N, TupleCons[O, TupleCons[P, TupleCons[Q, TupleCons[R, Unit]]]]]]]]]]]]]]]]]]) {
-  //   def _1: A = l.head; def _2: B = l.tail.head; def _3: C = l.tail.tail.head; def _4: D = l.tail.tail.tail.head; def _5: E = l.tail.tail.tail.tail.head; def _6: F = l.tail.tail.tail.tail.tail.head; def _7: G = l.tail.tail.tail.tail.tail.tail.head; def _8: H = l.tail.tail.tail.tail.tail.tail.tail.head; def _9: I = l.tail.tail.tail.tail.tail.tail.tail.tail.head; def _10: J = l.tail.tail.tail.tail.tail.tail.tail.tail.tail.head; def _11: K = l.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.head; def _12: L = l.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.head; def _13: M = l.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.head; def _14: N = l.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.head; def _15: O = l.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.head; def _16: P = l.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.head; def _17: Q = l.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.head; def _18: R = l.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.head
-  // }
+  implicit class Tuple18Assessors[A, B, C, D, E, F, G, H, I, J, K, L, M, N, O, P, Q, R](l: TC[A, TC[B, TC[C, TC[D, TC[E, TC[F, TC[G, TC[H, TC[I, TC[J, TC[K, TC[L, TC[M, TC[N, TC[O, TC[P, TC[Q, TC[R, Unit]]]]]]]]]]]]]]]]]]) {
+    def _1 = l match { case TC(x, _) => x }
+    def _2 = l match { case TC(_, TC(x, _)) => x }
+    def _3 = l match { case TC(_, TC(_, TC(x, _))) => x }
+    def _4 = l match { case TC(_, TC(_, TC(_, TC(x, _)))) => x }
+    def _5 = l match { case TC(_, TC(_, TC(_, TC(_, TC(x, _))))) => x }
+    def _6 = l match { case TC(_, TC(_, TC(_, TC(_, TC(_, TC(x, _)))))) => x }
+    def _7 = l match { case TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(x, _))))))) => x }
+    def _8 = l match { case TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(x, _)))))))) => x }
+    def _9 = l match { case TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(x, _))))))))) => x }
+    def _10 = l match { case TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(x, _)))))))))) => x }
+    def _11 = l match { case TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(x, _))))))))))) => x }
+    def _12 = l match { case TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(x, _)))))))))))) => x }
+    def _13 = l match { case TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(x, _))))))))))))) => x }
+    def _14 = l match { case TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(x, _)))))))))))))) => x }
+    def _15 = l match { case TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(x, _))))))))))))))) => x }
+    def _16 = l match { case TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(x, _)))))))))))))))) => x }
+    def _17 = l match { case TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(x, _))))))))))))))))) => x }
+    def _18 = l match { case TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(x, _)))))))))))))))))) => x }
+  }
 
-  // type Tuple18[A, B, C, D, E, F, G, H, I, J, K, L, M, N, O, P, Q, R] = TupleCons[A, TupleCons[B, TupleCons[C, TupleCons[D, TupleCons[E, TupleCons[F, TupleCons[G, TupleCons[H, TupleCons[I, TupleCons[J, TupleCons[K, TupleCons[L, TupleCons[M, TupleCons[N, TupleCons[O, TupleCons[P, TupleCons[Q, TupleCons[R, Unit]]]]]]]]]]]]]]]]]]
+  type Tuple18[A, B, C, D, E, F, G, H, I, J, K, L, M, N, O, P, Q, R] = TC[A, TC[B, TC[C, TC[D, TC[E, TC[F, TC[G, TC[H, TC[I, TC[J, TC[K, TC[L, TC[M, TC[N, TC[O, TC[P, TC[Q, TC[R, Unit]]]]]]]]]]]]]]]]]]
 
-  // def Tuple18[A, B, C, D, E, F, G, H, I, J, K, L, M, N, O, P, Q, R](a: A, b: B, c: C, d: D, e: E, f: F, g: G, h: H, i: I, j: J, k: K, l: L, m: M, n: N, o: O, p: P, q: Q, r: R): TupleCons[A, TupleCons[B, TupleCons[C, TupleCons[D, TupleCons[E, TupleCons[F, TupleCons[G, TupleCons[H, TupleCons[I, TupleCons[J, TupleCons[K, TupleCons[L, TupleCons[M, TupleCons[N, TupleCons[O, TupleCons[P, TupleCons[Q, TupleCons[R, Unit]]]]]]]]]]]]]]]]]] = TupleCons(a, TupleCons(b, TupleCons(c, TupleCons(d, TupleCons(e, TupleCons(f, TupleCons(g, TupleCons(h, TupleCons(i, TupleCons(j, TupleCons(k, TupleCons(l, TupleCons(m, TupleCons(n, TupleCons(o, TupleCons(p, TupleCons(q, TupleCons(r, ()))))))))))))))))))
+  def Tuple18[A, B, C, D, E, F, G, H, I, J, K, L, M, N, O, P, Q, R](a: A, b: B, c: C, d: D, e: E, f: F, g: G, h: H, i: I, j: J, k: K, l: L, m: M, n: N, o: O, p: P, q: Q, r: R): TC[A, TC[B, TC[C, TC[D, TC[E, TC[F, TC[G, TC[H, TC[I, TC[J, TC[K, TC[L, TC[M, TC[N, TC[O, TC[P, TC[Q, TC[R, Unit]]]]]]]]]]]]]]]]]] = TC(a, TC(b, TC(c, TC(d, TC(e, TC(f, TC(g, TC(h, TC(i, TC(j, TC(k, TC(l, TC(m, TC(n, TC(o, TC(p, TC(q, TC(r, ()))))))))))))))))))
 
-  // implicit class Tuple19Assessors[A, B, C, D, E, F, G, H, I, J, K, L, M, N, O, P, Q, R, S](l: TupleCons[A, TupleCons[B, TupleCons[C, TupleCons[D, TupleCons[E, TupleCons[F, TupleCons[G, TupleCons[H, TupleCons[I, TupleCons[J, TupleCons[K, TupleCons[L, TupleCons[M, TupleCons[N, TupleCons[O, TupleCons[P, TupleCons[Q, TupleCons[R, TupleCons[S, Unit]]]]]]]]]]]]]]]]]]]) {
-  //   def _1: A = l.head; def _2: B = l.tail.head; def _3: C = l.tail.tail.head; def _4: D = l.tail.tail.tail.head; def _5: E = l.tail.tail.tail.tail.head; def _6: F = l.tail.tail.tail.tail.tail.head; def _7: G = l.tail.tail.tail.tail.tail.tail.head; def _8: H = l.tail.tail.tail.tail.tail.tail.tail.head; def _9: I = l.tail.tail.tail.tail.tail.tail.tail.tail.head; def _10: J = l.tail.tail.tail.tail.tail.tail.tail.tail.tail.head; def _11: K = l.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.head; def _12: L = l.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.head; def _13: M = l.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.head; def _14: N = l.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.head; def _15: O = l.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.head; def _16: P = l.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.head; def _17: Q = l.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.head; def _18: R = l.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.head; def _19: S = l.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.head
-  // }
+  implicit class Tuple19Assessors[A, B, C, D, E, F, G, H, I, J, K, L, M, N, O, P, Q, R, S](l: TC[A, TC[B, TC[C, TC[D, TC[E, TC[F, TC[G, TC[H, TC[I, TC[J, TC[K, TC[L, TC[M, TC[N, TC[O, TC[P, TC[Q, TC[R, TC[S, Unit]]]]]]]]]]]]]]]]]]]) {
+    def _1 = l match { case TC(x, _) => x }
+    def _2 = l match { case TC(_, TC(x, _)) => x }
+    def _3 = l match { case TC(_, TC(_, TC(x, _))) => x }
+    def _4 = l match { case TC(_, TC(_, TC(_, TC(x, _)))) => x }
+    def _5 = l match { case TC(_, TC(_, TC(_, TC(_, TC(x, _))))) => x }
+    def _6 = l match { case TC(_, TC(_, TC(_, TC(_, TC(_, TC(x, _)))))) => x }
+    def _7 = l match { case TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(x, _))))))) => x }
+    def _8 = l match { case TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(x, _)))))))) => x }
+    def _9 = l match { case TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(x, _))))))))) => x }
+    def _10 = l match { case TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(x, _)))))))))) => x }
+    def _11 = l match { case TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(x, _))))))))))) => x }
+    def _12 = l match { case TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(x, _)))))))))))) => x }
+    def _13 = l match { case TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(x, _))))))))))))) => x }
+    def _14 = l match { case TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(x, _)))))))))))))) => x }
+    def _15 = l match { case TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(x, _))))))))))))))) => x }
+    def _16 = l match { case TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(x, _)))))))))))))))) => x }
+    def _17 = l match { case TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(x, _))))))))))))))))) => x }
+    def _18 = l match { case TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(x, _)))))))))))))))))) => x }
+    def _19 = l match { case TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(x, _))))))))))))))))))) => x }
+  }
 
-  // type Tuple19[A, B, C, D, E, F, G, H, I, J, K, L, M, N, O, P, Q, R, S] = TupleCons[A, TupleCons[B, TupleCons[C, TupleCons[D, TupleCons[E, TupleCons[F, TupleCons[G, TupleCons[H, TupleCons[I, TupleCons[J, TupleCons[K, TupleCons[L, TupleCons[M, TupleCons[N, TupleCons[O, TupleCons[P, TupleCons[Q, TupleCons[R, TupleCons[S, Unit]]]]]]]]]]]]]]]]]]]
+  type Tuple19[A, B, C, D, E, F, G, H, I, J, K, L, M, N, O, P, Q, R, S] = TC[A, TC[B, TC[C, TC[D, TC[E, TC[F, TC[G, TC[H, TC[I, TC[J, TC[K, TC[L, TC[M, TC[N, TC[O, TC[P, TC[Q, TC[R, TC[S, Unit]]]]]]]]]]]]]]]]]]]
 
-  // def Tuple19[A, B, C, D, E, F, G, H, I, J, K, L, M, N, O, P, Q, R, S](a: A, b: B, c: C, d: D, e: E, f: F, g: G, h: H, i: I, j: J, k: K, l: L, m: M, n: N, o: O, p: P, q: Q, r: R, s: S): TupleCons[A, TupleCons[B, TupleCons[C, TupleCons[D, TupleCons[E, TupleCons[F, TupleCons[G, TupleCons[H, TupleCons[I, TupleCons[J, TupleCons[K, TupleCons[L, TupleCons[M, TupleCons[N, TupleCons[O, TupleCons[P, TupleCons[Q, TupleCons[R, TupleCons[S, Unit]]]]]]]]]]]]]]]]]]] = TupleCons(a, TupleCons(b, TupleCons(c, TupleCons(d, TupleCons(e, TupleCons(f, TupleCons(g, TupleCons(h, TupleCons(i, TupleCons(j, TupleCons(k, TupleCons(l, TupleCons(m, TupleCons(n, TupleCons(o, TupleCons(p, TupleCons(q, TupleCons(r, TupleCons(s, ())))))))))))))))))))
+  def Tuple19[A, B, C, D, E, F, G, H, I, J, K, L, M, N, O, P, Q, R, S](a: A, b: B, c: C, d: D, e: E, f: F, g: G, h: H, i: I, j: J, k: K, l: L, m: M, n: N, o: O, p: P, q: Q, r: R, s: S): TC[A, TC[B, TC[C, TC[D, TC[E, TC[F, TC[G, TC[H, TC[I, TC[J, TC[K, TC[L, TC[M, TC[N, TC[O, TC[P, TC[Q, TC[R, TC[S, Unit]]]]]]]]]]]]]]]]]]] = TC(a, TC(b, TC(c, TC(d, TC(e, TC(f, TC(g, TC(h, TC(i, TC(j, TC(k, TC(l, TC(m, TC(n, TC(o, TC(p, TC(q, TC(r, TC(s, ())))))))))))))))))))
 
-  // implicit class Tuple20Assessors[A, B, C, D, E, F, G, H, I, J, K, L, M, N, O, P, Q, R, S, T](l: TupleCons[A, TupleCons[B, TupleCons[C, TupleCons[D, TupleCons[E, TupleCons[F, TupleCons[G, TupleCons[H, TupleCons[I, TupleCons[J, TupleCons[K, TupleCons[L, TupleCons[M, TupleCons[N, TupleCons[O, TupleCons[P, TupleCons[Q, TupleCons[R, TupleCons[S, TupleCons[T, Unit]]]]]]]]]]]]]]]]]]]]) {
-  //   def _1: A = l.head; def _2: B = l.tail.head; def _3: C = l.tail.tail.head; def _4: D = l.tail.tail.tail.head; def _5: E = l.tail.tail.tail.tail.head; def _6: F = l.tail.tail.tail.tail.tail.head; def _7: G = l.tail.tail.tail.tail.tail.tail.head; def _8: H = l.tail.tail.tail.tail.tail.tail.tail.head; def _9: I = l.tail.tail.tail.tail.tail.tail.tail.tail.head; def _10: J = l.tail.tail.tail.tail.tail.tail.tail.tail.tail.head; def _11: K = l.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.head; def _12: L = l.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.head; def _13: M = l.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.head; def _14: N = l.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.head; def _15: O = l.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.head; def _16: P = l.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.head; def _17: Q = l.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.head; def _18: R = l.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.head; def _19: S = l.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.head; def _20: T = l.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.head
-  // }
+  implicit class Tuple20Assessors[A, B, C, D, E, F, G, H, I, J, K, L, M, N, O, P, Q, R, S, T](l: TC[A, TC[B, TC[C, TC[D, TC[E, TC[F, TC[G, TC[H, TC[I, TC[J, TC[K, TC[L, TC[M, TC[N, TC[O, TC[P, TC[Q, TC[R, TC[S, TC[T, Unit]]]]]]]]]]]]]]]]]]]]) {
+    def _1 = l match { case TC(x, _) => x }
+    def _2 = l match { case TC(_, TC(x, _)) => x }
+    def _3 = l match { case TC(_, TC(_, TC(x, _))) => x }
+    def _4 = l match { case TC(_, TC(_, TC(_, TC(x, _)))) => x }
+    def _5 = l match { case TC(_, TC(_, TC(_, TC(_, TC(x, _))))) => x }
+    def _6 = l match { case TC(_, TC(_, TC(_, TC(_, TC(_, TC(x, _)))))) => x }
+    def _7 = l match { case TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(x, _))))))) => x }
+    def _8 = l match { case TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(x, _)))))))) => x }
+    def _9 = l match { case TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(x, _))))))))) => x }
+    def _10 = l match { case TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(x, _)))))))))) => x }
+    def _11 = l match { case TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(x, _))))))))))) => x }
+    def _12 = l match { case TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(x, _)))))))))))) => x }
+    def _13 = l match { case TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(x, _))))))))))))) => x }
+    def _14 = l match { case TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(x, _)))))))))))))) => x }
+    def _15 = l match { case TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(x, _))))))))))))))) => x }
+    def _16 = l match { case TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(x, _)))))))))))))))) => x }
+    def _17 = l match { case TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(x, _))))))))))))))))) => x }
+    def _18 = l match { case TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(x, _)))))))))))))))))) => x }
+    def _19 = l match { case TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(x, _))))))))))))))))))) => x }
+    def _20 = l match { case TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(x, _)))))))))))))))))))) => x }
+  }
 
-  type Tuple20[A, B, C, D, E, F, G, H, I, J, K, L, M, N, O, P, Q, R, S, T] = TupleCons[A, TupleCons[B, TupleCons[C, TupleCons[D, TupleCons[E, TupleCons[F, TupleCons[G, TupleCons[H, TupleCons[I, TupleCons[J, TupleCons[K, TupleCons[L, TupleCons[M, TupleCons[N, TupleCons[O, TupleCons[P, TupleCons[Q, TupleCons[R, TupleCons[S, TupleCons[T, Unit]]]]]]]]]]]]]]]]]]]]
+  type Tuple20[A, B, C, D, E, F, G, H, I, J, K, L, M, N, O, P, Q, R, S, T] = TC[A, TC[B, TC[C, TC[D, TC[E, TC[F, TC[G, TC[H, TC[I, TC[J, TC[K, TC[L, TC[M, TC[N, TC[O, TC[P, TC[Q, TC[R, TC[S, TC[T, Unit]]]]]]]]]]]]]]]]]]]]
 
-  // def Tuple20[A, B, C, D, E, F, G, H, I, J, K, L, M, N, O, P, Q, R, S, T](a: A, b: B, c: C, d: D, e: E, f: F, g: G, h: H, i: I, j: J, k: K, l: L, m: M, n: N, o: O, p: P, q: Q, r: R, s: S, t: T): TupleCons[A, TupleCons[B, TupleCons[C, TupleCons[D, TupleCons[E, TupleCons[F, TupleCons[G, TupleCons[H, TupleCons[I, TupleCons[J, TupleCons[K, TupleCons[L, TupleCons[M, TupleCons[N, TupleCons[O, TupleCons[P, TupleCons[Q, TupleCons[R, TupleCons[S, TupleCons[T, Unit]]]]]]]]]]]]]]]]]]]] = TupleCons(a, TupleCons(b, TupleCons(c, TupleCons(d, TupleCons(e, TupleCons(f, TupleCons(g, TupleCons(h, TupleCons(i, TupleCons(j, TupleCons(k, TupleCons(l, TupleCons(m, TupleCons(n, TupleCons(o, TupleCons(p, TupleCons(q, TupleCons(r, TupleCons(s, TupleCons(t, ()))))))))))))))))))))
+  def Tuple20[A, B, C, D, E, F, G, H, I, J, K, L, M, N, O, P, Q, R, S, T](a: A, b: B, c: C, d: D, e: E, f: F, g: G, h: H, i: I, j: J, k: K, l: L, m: M, n: N, o: O, p: P, q: Q, r: R, s: S, t: T): TC[A, TC[B, TC[C, TC[D, TC[E, TC[F, TC[G, TC[H, TC[I, TC[J, TC[K, TC[L, TC[M, TC[N, TC[O, TC[P, TC[Q, TC[R, TC[S, TC[T, Unit]]]]]]]]]]]]]]]]]]]] = TC(a, TC(b, TC(c, TC(d, TC(e, TC(f, TC(g, TC(h, TC(i, TC(j, TC(k, TC(l, TC(m, TC(n, TC(o, TC(p, TC(q, TC(r, TC(s, TC(t, ()))))))))))))))))))))
 
-  // implicit class Tuple21Assessors[A, B, C, D, E, F, G, H, I, J, K, L, M, N, O, P, Q, R, S, T, U](l: TupleCons[A, TupleCons[B, TupleCons[C, TupleCons[D, TupleCons[E, TupleCons[F, TupleCons[G, TupleCons[H, TupleCons[I, TupleCons[J, TupleCons[K, TupleCons[L, TupleCons[M, TupleCons[N, TupleCons[O, TupleCons[P, TupleCons[Q, TupleCons[R, TupleCons[S, TupleCons[T, TupleCons[U, Unit]]]]]]]]]]]]]]]]]]]]]) {
-  //   def _1: A = l.head; def _2: B = l.tail.head; def _3: C = l.tail.tail.head; def _4: D = l.tail.tail.tail.head; def _5: E = l.tail.tail.tail.tail.head; def _6: F = l.tail.tail.tail.tail.tail.head; def _7: G = l.tail.tail.tail.tail.tail.tail.head; def _8: H = l.tail.tail.tail.tail.tail.tail.tail.head; def _9: I = l.tail.tail.tail.tail.tail.tail.tail.tail.head; def _10: J = l.tail.tail.tail.tail.tail.tail.tail.tail.tail.head; def _11: K = l.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.head; def _12: L = l.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.head; def _13: M = l.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.head; def _14: N = l.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.head; def _15: O = l.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.head; def _16: P = l.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.head; def _17: Q = l.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.head; def _18: R = l.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.head; def _19: S = l.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.head; def _20: T = l.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.head; def _21: U = l.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.head
-  // }
+  implicit class Tuple21Assessors[A, B, C, D, E, F, G, H, I, J, K, L, M, N, O, P, Q, R, S, T, U](l: TC[A, TC[B, TC[C, TC[D, TC[E, TC[F, TC[G, TC[H, TC[I, TC[J, TC[K, TC[L, TC[M, TC[N, TC[O, TC[P, TC[Q, TC[R, TC[S, TC[T, TC[U, Unit]]]]]]]]]]]]]]]]]]]]]) {
+    def _1 = l match { case TC(x, _) => x }
+    def _2 = l match { case TC(_, TC(x, _)) => x }
+    def _3 = l match { case TC(_, TC(_, TC(x, _))) => x }
+    def _4 = l match { case TC(_, TC(_, TC(_, TC(x, _)))) => x }
+    def _5 = l match { case TC(_, TC(_, TC(_, TC(_, TC(x, _))))) => x }
+    def _6 = l match { case TC(_, TC(_, TC(_, TC(_, TC(_, TC(x, _)))))) => x }
+    def _7 = l match { case TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(x, _))))))) => x }
+    def _8 = l match { case TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(x, _)))))))) => x }
+    def _9 = l match { case TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(x, _))))))))) => x }
+    def _10 = l match { case TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(x, _)))))))))) => x }
+    def _11 = l match { case TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(x, _))))))))))) => x }
+    def _12 = l match { case TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(x, _)))))))))))) => x }
+    def _13 = l match { case TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(x, _))))))))))))) => x }
+    def _14 = l match { case TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(x, _)))))))))))))) => x }
+    def _15 = l match { case TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(x, _))))))))))))))) => x }
+    def _16 = l match { case TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(x, _)))))))))))))))) => x }
+    def _17 = l match { case TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(x, _))))))))))))))))) => x }
+    def _18 = l match { case TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(x, _)))))))))))))))))) => x }
+    def _19 = l match { case TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(x, _))))))))))))))))))) => x }
+    def _20 = l match { case TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(x, _)))))))))))))))))))) => x }
+    def _21 = l match { case TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(x, _))))))))))))))))))))) => x }
+  }
 
-  type Tuple21[A, B, C, D, E, F, G, H, I, J, K, L, M, N, O, P, Q, R, S, T, U] = TupleCons[A, TupleCons[B, TupleCons[C, TupleCons[D, TupleCons[E, TupleCons[F, TupleCons[G, TupleCons[H, TupleCons[I, TupleCons[J, TupleCons[K, TupleCons[L, TupleCons[M, TupleCons[N, TupleCons[O, TupleCons[P, TupleCons[Q, TupleCons[R, TupleCons[S, TupleCons[T, TupleCons[U, Unit]]]]]]]]]]]]]]]]]]]]]
+  type Tuple21[A, B, C, D, E, F, G, H, I, J, K, L, M, N, O, P, Q, R, S, T, U] = TC[A, TC[B, TC[C, TC[D, TC[E, TC[F, TC[G, TC[H, TC[I, TC[J, TC[K, TC[L, TC[M, TC[N, TC[O, TC[P, TC[Q, TC[R, TC[S, TC[T, TC[U, Unit]]]]]]]]]]]]]]]]]]]]]
 
-  // def Tuple21[A, B, C, D, E, F, G, H, I, J, K, L, M, N, O, P, Q, R, S, T, U](a: A, b: B, c: C, d: D, e: E, f: F, g: G, h: H, i: I, j: J, k: K, l: L, m: M, n: N, o: O, p: P, q: Q, r: R, s: S, t: T, u: U): TupleCons[A, TupleCons[B, TupleCons[C, TupleCons[D, TupleCons[E, TupleCons[F, TupleCons[G, TupleCons[H, TupleCons[I, TupleCons[J, TupleCons[K, TupleCons[L, TupleCons[M, TupleCons[N, TupleCons[O, TupleCons[P, TupleCons[Q, TupleCons[R, TupleCons[S, TupleCons[T, TupleCons[U, Unit]]]]]]]]]]]]]]]]]]]]] = TupleCons(a, TupleCons(b, TupleCons(c, TupleCons(d, TupleCons(e, TupleCons(f, TupleCons(g, TupleCons(h, TupleCons(i, TupleCons(j, TupleCons(k, TupleCons(l, TupleCons(m, TupleCons(n, TupleCons(o, TupleCons(p, TupleCons(q, TupleCons(r, TupleCons(s, TupleCons(t, TupleCons(u, ())))))))))))))))))))))
+  def Tuple21[A, B, C, D, E, F, G, H, I, J, K, L, M, N, O, P, Q, R, S, T, U](a: A, b: B, c: C, d: D, e: E, f: F, g: G, h: H, i: I, j: J, k: K, l: L, m: M, n: N, o: O, p: P, q: Q, r: R, s: S, t: T, u: U): TC[A, TC[B, TC[C, TC[D, TC[E, TC[F, TC[G, TC[H, TC[I, TC[J, TC[K, TC[L, TC[M, TC[N, TC[O, TC[P, TC[Q, TC[R, TC[S, TC[T, TC[U, Unit]]]]]]]]]]]]]]]]]]]]] = TC(a, TC(b, TC(c, TC(d, TC(e, TC(f, TC(g, TC(h, TC(i, TC(j, TC(k, TC(l, TC(m, TC(n, TC(o, TC(p, TC(q, TC(r, TC(s, TC(t, TC(u, ())))))))))))))))))))))
 
-  // implicit class Tuple22Assessors[A, B, C, D, E, F, G, H, I, J, K, L, M, N, O, P, Q, R, S, T, U, V](l: TupleCons[A, TupleCons[B, TupleCons[C, TupleCons[D, TupleCons[E, TupleCons[F, TupleCons[G, TupleCons[H, TupleCons[I, TupleCons[J, TupleCons[K, TupleCons[L, TupleCons[M, TupleCons[N, TupleCons[O, TupleCons[P, TupleCons[Q, TupleCons[R, TupleCons[S, TupleCons[T, TupleCons[U, TupleCons[V, Unit]]]]]]]]]]]]]]]]]]]]]]) {
-  //   def _1: A = l.head; def _2: B = l.tail.head; def _3: C = l.tail.tail.head; def _4: D = l.tail.tail.tail.head; def _5: E = l.tail.tail.tail.tail.head; def _6: F = l.tail.tail.tail.tail.tail.head; def _7: G = l.tail.tail.tail.tail.tail.tail.head; def _8: H = l.tail.tail.tail.tail.tail.tail.tail.head; def _9: I = l.tail.tail.tail.tail.tail.tail.tail.tail.head; def _10: J = l.tail.tail.tail.tail.tail.tail.tail.tail.tail.head; def _11: K = l.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.head; def _12: L = l.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.head; def _13: M = l.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.head; def _14: N = l.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.head; def _15: O = l.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.head; def _16: P = l.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.head; def _17: Q = l.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.head; def _18: R = l.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.head; def _19: S = l.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.head; def _20: T = l.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.head; def _21: U = l.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.head; def _22: V = l.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.head
-  // }
+  implicit class Tuple22Assessors[A, B, C, D, E, F, G, H, I, J, K, L, M, N, O, P, Q, R, S, T, U, V](l: TC[A, TC[B, TC[C, TC[D, TC[E, TC[F, TC[G, TC[H, TC[I, TC[J, TC[K, TC[L, TC[M, TC[N, TC[O, TC[P, TC[Q, TC[R, TC[S, TC[T, TC[U, TC[V, Unit]]]]]]]]]]]]]]]]]]]]]]) {
+    def _1 = l match { case TC(x, _) => x }
+    def _2 = l match { case TC(_, TC(x, _)) => x }
+    def _3 = l match { case TC(_, TC(_, TC(x, _))) => x }
+    def _4 = l match { case TC(_, TC(_, TC(_, TC(x, _)))) => x }
+    def _5 = l match { case TC(_, TC(_, TC(_, TC(_, TC(x, _))))) => x }
+    def _6 = l match { case TC(_, TC(_, TC(_, TC(_, TC(_, TC(x, _)))))) => x }
+    def _7 = l match { case TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(x, _))))))) => x }
+    def _8 = l match { case TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(x, _)))))))) => x }
+    def _9 = l match { case TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(x, _))))))))) => x }
+    def _10 = l match { case TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(x, _)))))))))) => x }
+    def _11 = l match { case TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(x, _))))))))))) => x }
+    def _12 = l match { case TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(x, _)))))))))))) => x }
+    def _13 = l match { case TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(x, _))))))))))))) => x }
+    def _14 = l match { case TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(x, _)))))))))))))) => x }
+    def _15 = l match { case TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(x, _))))))))))))))) => x }
+    def _16 = l match { case TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(x, _)))))))))))))))) => x }
+    def _17 = l match { case TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(x, _))))))))))))))))) => x }
+    def _18 = l match { case TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(x, _)))))))))))))))))) => x }
+    def _19 = l match { case TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(x, _))))))))))))))))))) => x }
+    def _20 = l match { case TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(x, _)))))))))))))))))))) => x }
+    def _21 = l match { case TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(x, _))))))))))))))))))))) => x }
+    def _22 = l match { case TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(_, TC(x, _)))))))))))))))))))))) => x }
+  }
 
-  // type Tuple22[A, B, C, D, E, F, G, H, I, J, K, L, M, N, O, P, Q, R, S, T, U, V] = TupleCons[A, TupleCons[B, TupleCons[C, TupleCons[D, TupleCons[E, TupleCons[F, TupleCons[G, TupleCons[H, TupleCons[I, TupleCons[J, TupleCons[K, TupleCons[L, TupleCons[M, TupleCons[N, TupleCons[O, TupleCons[P, TupleCons[Q, TupleCons[R, TupleCons[S, TupleCons[T, TupleCons[U, TupleCons[V, Unit]]]]]]]]]]]]]]]]]]]]]]
+  type Tuple22[A, B, C, D, E, F, G, H, I, J, K, L, M, N, O, P, Q, R, S, T, U, V] = TC[A, TC[B, TC[C, TC[D, TC[E, TC[F, TC[G, TC[H, TC[I, TC[J, TC[K, TC[L, TC[M, TC[N, TC[O, TC[P, TC[Q, TC[R, TC[S, TC[T, TC[U, TC[V, Unit]]]]]]]]]]]]]]]]]]]]]]
 
-  // def Tuple22[A, B, C, D, E, F, G, H, I, J, K, L, M, N, O, P, Q, R, S, T, U, V](a: A, b: B, c: C, d: D, e: E, f: F, g: G, h: H, i: I, j: J, k: K, l: L, m: M, n: N, o: O, p: P, q: Q, r: R, s: S, t: T, u: U, v: V): TupleCons[A, TupleCons[B, TupleCons[C, TupleCons[D, TupleCons[E, TupleCons[F, TupleCons[G, TupleCons[H, TupleCons[I, TupleCons[J, TupleCons[K, TupleCons[L, TupleCons[M, TupleCons[N, TupleCons[O, TupleCons[P, TupleCons[Q, TupleCons[R, TupleCons[S, TupleCons[T, TupleCons[U, TupleCons[V, Unit]]]]]]]]]]]]]]]]]]]]]] = TupleCons(a, TupleCons(b, TupleCons(c, TupleCons(d, TupleCons(e, TupleCons(f, TupleCons(g, TupleCons(h, TupleCons(i, TupleCons(j, TupleCons(k, TupleCons(l, TupleCons(m, TupleCons(n, TupleCons(o, TupleCons(p, TupleCons(q, TupleCons(r, TupleCons(s, TupleCons(t, TupleCons(u, TupleCons(v, ()))))))))))))))))))))))
+  def Tuple22[A, B, C, D, E, F, G, H, I, J, K, L, M, N, O, P, Q, R, S, T, U, V](a: A, b: B, c: C, d: D, e: E, f: F, g: G, h: H, i: I, j: J, k: K, l: L, m: M, n: N, o: O, p: P, q: Q, r: R, s: S, t: T, u: U, v: V): TC[A, TC[B, TC[C, TC[D, TC[E, TC[F, TC[G, TC[H, TC[I, TC[J, TC[K, TC[L, TC[M, TC[N, TC[O, TC[P, TC[Q, TC[R, TC[S, TC[T, TC[U, TC[V, Unit]]]]]]]]]]]]]]]]]]]]]] = TC(a, TC(b, TC(c, TC(d, TC(e, TC(f, TC(g, TC(h, TC(i, TC(j, TC(k, TC(l, TC(m, TC(n, TC(o, TC(p, TC(q, TC(r, TC(s, TC(t, TC(u, TC(v, ()))))))))))))))))))))))
 }
