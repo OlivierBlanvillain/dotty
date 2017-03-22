@@ -99,8 +99,9 @@ object Scala2Unpickler {
     val clsString = cls.toString
     val splitted = clsString.split("class Tuple")
     val pp =
-      if (clsString == "class TupleCons") parents :+ defn.ProductType // TODO Remove product?
-      else if (clsString == "class Unit") parents :+ defn.TupleType
+      // if (clsString == "class TupleCons") parents :+ defn.ProductType // TODO Remove product?
+      // else
+      if (clsString == "class Unit") parents :+ defn.TupleType
       else if (splitted.size == 2 && splitted(1).forall(_.isDigit)) {
         val i = splitted(1).toInt
         val productTps = parents.collect { case t: RefinedType => t.baseArgTypes(defn.ProductNType(i).classSymbol) }.head
