@@ -608,6 +608,95 @@ object DottyInjectedPlugin extends AutoPlugin {
     ).
     settings(publishing)
 
+  /** A sandbox to play with the Scala.js back-end of dotty.
+   *
+   *  This sandbox is compiled with dotty with support for Scala.js. It can be
+   *  used like any regular Scala.js project. In particular, `fastOptJS` will
+   *  produce a .js file, and `run` will run the JavaScript code with a JS VM.
+   *
+   *  Simply running `dotty/run -scalajs` without this sandbox is not very
+   *  useful, as that would not provide the linker and JS runners.
+   */
+  lazy val sjsSandbox = project.in(file("sandbox/scalajs")).
+    enablePlugins(ScalaJSPlugin).
+    settings(sourceStructure).
+    settings(
+      overrideScalaVersionSetting,
+
+      /* Remove the Scala.js compiler plugin for scalac, and enable the
+       * Scala.js back-end of dotty instead.
+       */
+      libraryDependencies ~= { deps =>
+        deps.filterNot(_.name.startsWith("scalajs-compiler"))
+      },
+      scalacOptions += "-scalajs",
+
+      // The main class cannot be found automatically due to the empty inc.Analysis
+      mainClass in Compile := Some("hello.world"),
+
+      // While developing the Scala.js back-end, it is very useful to see the trees dotc gives us
+      scalacOptions += "-Xprint:labelDef",
+
+      /* Debug-friendly Scala.js optimizer options.
+       * In particular, typecheck the Scala.js IR found on the classpath.
+       */
+      scalaJSOptimizerOptions ~= {
+        _.withCheckScalaJSIR(true).withParallel(false)
+      }
+    ).
+    settings(compileWithDottySettings).
+    settings(inConfig(Compile)(Seq(
+      /* Make sure jsDependencyManifest runs after compile, otherwise compile
+       * might remove the entire directory afterwards.
+       */
+      jsDependencyManifest := jsDependencyManifest.dependsOn(compile).value
+    )))
+
+  lazy val `dotty-bench` = project.in(file("bench")).
+    dependsOn(`dotty-compiler` % "compile->test").
+    settings(sourceStructure).
+    settings(
+      overrideScalaVersionSetting,
+
+      baseDirectory in (Test,run) := (baseDirectory in `dotty-compiler`).value,
+
+      libraryDependencies ++= Seq(
+        scalaCompiler % Test,
+        "com.storm-enroute" %% "scalameter" % "0.6" % Test
+      ),
+
+      fork in Test := true,
+      parallelExecution in Test := false,
+
+      // http://grokbase.com/t/gg/simple-build-tool/135ke5y90p/sbt-setting-jvm-boot-paramaters-for-scala
+      javaOptions ++= {
+        val attList = (dependencyClasspath in Runtime).value
+        val bin = (packageBin in Compile).value
+
+        // put the Scala {library, reflect, compiler} in the classpath
+        val path = for {
+          file <- attList.map(_.data)
+          path = file.getAbsolutePath
+          prefix = if (path.endsWith(".jar")) "p" else "a"
+        } yield "-Xbootclasspath/" + prefix + ":" + path
+        // dotty itself needs to be in the bootclasspath
+        val fullpath = ("-Xbootclasspath/a:" + bin) :: path.toList
+        // System.err.println("BOOTPATH: " + fullpath)
+
+        val ci_build = // propagate if this is a ci build
+          if (sys.props.isDefinedAt(JENKINS_BUILD))
+            List(s"-D$JENKINS_BUILD=${sys.props(JENKINS_BUILD)}")
+          else if (sys.props.isDefinedAt(DRONE_MEM))
+            List("-Xmx" + sys.props(DRONE_MEM))
+          else
+            List()
+        val res = agentOptions ::: ci_build ::: fullpath
+        println("Running with javaOptions: " + res)
+        res
+      }
+    )
+
+
   // Dummy scala-library artefact. This is useful because sbt projects
   // automatically depend on scalaOrganization.value % "scala-library" % scalaVersion.value
   lazy val `scala-library` = project.
@@ -718,5 +807,100 @@ object DottyInjectedPlugin extends AutoPlugin {
         else file.jfile.getAbsolutePath
       })
     case None => throw new RuntimeException("ERROR: sbt getJarPaths: ivyHome not defined")
+  }
+
+  // Compile with dotty
+  lazy val compileWithDottySettings = {
+    inConfig(Compile)(inTask(compile)(Defaults.runnerTask) ++ Seq(
+      // Compile with dotty
+      fork in compile := true,
+
+      compile := {
+        val inputs = (compileInputs in compile).value
+        import inputs.config._
+
+        val s = streams.value
+        val logger = s.log
+        val cacheDir = s.cacheDirectory
+
+        // Discover classpaths
+
+        def cpToString(cp: Seq[File]) =
+          cp.map(_.getAbsolutePath).mkString(java.io.File.pathSeparator)
+
+        val compilerCp = Attributed.data((fullClasspath in (`dotty-compiler`, Compile)).value)
+        val cpStr = cpToString(classpath ++ compilerCp)
+
+        // List all my dependencies (recompile if any of these changes)
+
+        val allMyDependencies = classpath filterNot (_ == classesDirectory) flatMap { cpFile =>
+          if (cpFile.isDirectory) (cpFile ** "*.class").get
+          else Seq(cpFile)
+        }
+
+        // Compile
+
+        val cachedCompile = FileFunction.cached(cacheDir / "compile",
+            FilesInfo.lastModified, FilesInfo.exists) { dependencies =>
+
+          logger.info(
+              "Compiling %d Scala sources to %s..." format (
+              sources.size, classesDirectory))
+
+          if (classesDirectory.exists)
+            IO.delete(classesDirectory)
+          IO.createDirectory(classesDirectory)
+
+          val sourcesArgs = sources.map(_.getAbsolutePath()).toList
+
+          /* run.run() below in doCompile() will emit a call to its
+           * logger.info("Running dotty.tools.dotc.Main [...]")
+           * which we do not want to see. We use this patched logger to
+           * filter out that particular message.
+           */
+          val patchedLogger = new Logger {
+            def log(level: Level.Value, message: => String) = {
+              val msg = message
+              if (level != Level.Info ||
+                  !msg.startsWith("Running dotty.tools.dotc.Main"))
+                logger.log(level, msg)
+            }
+            def success(message: => String) = logger.success(message)
+            def trace(t: => Throwable) = logger.trace(t)
+          }
+
+          def doCompile(sourcesArgs: List[String]): Unit = {
+            val run = (runner in compile).value
+            run.run("dotty.tools.dotc.Main", compilerCp,
+                "-classpath" :: cpStr ::
+                "-d" :: classesDirectory.getAbsolutePath() ::
+                options ++:
+                sourcesArgs,
+                patchedLogger) foreach sys.error
+          }
+
+          // Work around the Windows limitation on command line length.
+          val isWindows =
+            System.getProperty("os.name").toLowerCase().indexOf("win") >= 0
+          if ((fork in compile).value && isWindows &&
+              (sourcesArgs.map(_.length).sum > 1536)) {
+            IO.withTemporaryFile("sourcesargs", ".txt") { sourceListFile =>
+              IO.writeLines(sourceListFile, sourcesArgs)
+              doCompile(List("@"+sourceListFile.getAbsolutePath()))
+            }
+          } else {
+            doCompile(sourcesArgs)
+          }
+
+          // Output is all files in classesDirectory
+          (classesDirectory ** AllPassFilter).get.toSet
+        }
+
+        cachedCompile((sources ++ allMyDependencies).toSet)
+
+        // We do not have dependency analysis when compiling externally
+        sbt.inc.Analysis.Empty
+      }
+    ))
   }
 }
