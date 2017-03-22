@@ -86,5 +86,209 @@ object Test {
         assert(e6 == "e")
         assert(f6 == 6)
     }
+
+    val x21 = ("a", 2, "c", 4, "e", 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, "21")
+
+    x21 match {
+      case (a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11, a12, a13, a14, a15, a16, a17, a18, a19, a20, a21) =>
+        a1: String
+        a2: Int
+        a3: String
+        a4: Int
+        a5: String
+        a6: Int
+        a7: Int
+        a8: Int
+        a9: Int
+        a10: Int
+        a11: Int
+        a12: Int
+        a13: Int
+        a14: Int
+        a15: Int
+        a16: Int
+        a17: Int
+        a18: Int
+        a19: Int
+        a20: Int
+        a21: String
+        assert(a1 == "a")
+        assert(a2 == 2)
+        assert(a3 == "c")
+        assert(a4 == 4)
+        assert(a5 == "e")
+        assert(a6 == 6)
+        assert(a7 == 7)
+        assert(a8 == 8)
+        assert(a9 == 9)
+        assert(a10 == 10)
+        assert(a11 == 11)
+        assert(a12 == 12)
+        assert(a13 == 13)
+        assert(a14 == 14)
+        assert(a15 == 15)
+        assert(a16 == 16)
+        assert(a17 == 17)
+        assert(a18 == 18)
+        assert(a19 == 19)
+        assert(a20 == 20)
+        assert(a21 == "21")
+    }
+
+    val x22 = ("a", 2, "c", 4, "e", 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, "21", 22)
+
+    x22 match {
+      case (a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11, a12, a13, a14, a15, a16, a17, a18, a19, a20, a21, a22) =>
+        a1: String
+        a2: Int
+        a3: String
+        a4: Int
+        a5: String
+        a6: Int
+        a7: Int
+        a8: Int
+        a9: Int
+        a10: Int
+        a11: Int
+        a12: Int
+        a13: Int
+        a14: Int
+        a15: Int
+        a16: Int
+        a17: Int
+        a18: Int
+        a19: Int
+        a20: Int
+        a21: String
+        a22: Int
+        assert(a1 == "a")
+        assert(a2 == 2)
+        assert(a3 == "c")
+        assert(a4 == 4)
+        assert(a5 == "e")
+        assert(a6 == 6)
+        assert(a7 == 7)
+        assert(a8 == 8)
+        assert(a9 == 9)
+        assert(a10 == 10)
+        assert(a11 == 11)
+        assert(a12 == 12)
+        assert(a13 == 13)
+        assert(a14 == 14)
+        assert(a15 == 15)
+        assert(a16 == 16)
+        assert(a17 == 17)
+        assert(a18 == 18)
+        assert(a19 == 19)
+        assert(a20 == 20)
+        assert(a21 == "21")
+        assert(a22 == 22)
+    }
+
+    val x23 = ("a", 2, "c", 4, "e", 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, "21", 22, "23")
+
+    x23 match {
+      case (a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11, a12, a13, a14, a15, a16, a17, a18, a19, a20, a21, a22, a23) =>
+        a1: String
+        a2: Int
+        a3: String
+        a4: Int
+        a5: String
+        a6: Int
+        a7: Int
+        a8: Int
+        a9: Int
+        a10: Int
+        a11: Int
+        a12: Int
+        a13: Int
+        a14: Int
+        a15: Int
+        a16: Int
+        a17: Int
+        a18: Int
+        a19: Int
+        a20: Int
+        a21: String
+        a22: Int
+        a23: String
+        assert(a1 == "a")
+        assert(a2 == 2)
+        assert(a3 == "c")
+        assert(a4 == 4)
+        assert(a5 == "e")
+        assert(a6 == 6)
+        assert(a7 == 7)
+        assert(a8 == 8)
+        assert(a9 == 9)
+        assert(a10 == 10)
+        assert(a11 == 11)
+        assert(a12 == 12)
+        assert(a13 == 13)
+        assert(a14 == 14)
+        assert(a15 == 15)
+        assert(a16 == 16)
+        assert(a17 == 17)
+        assert(a18 == 18)
+        assert(a19 == 19)
+        assert(a20 == 20)
+        assert(a21 == "21")
+        assert(a22 == 22)
+        assert(a23 == "23")
+    }
+
+    val x24 = ("a", 2, "c", 4, "e", 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, "21", 22, "23", 24)
+
+    x24 match {
+      case (a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11, a12, a13, a14, a15, a16, a17, a18, a19, a20, a21, a22, a23, a24) =>
+        a1: String
+        a2: Int
+        a3: String
+        a4: Int
+        a5: String
+        a6: Int
+        a7: Int
+        a8: Int
+        a9: Int
+        a10: Int
+        a11: Int
+        a12: Int
+        a13: Int
+        a14: Int
+        a15: Int
+        a16: Int
+        a17: Int
+        a18: Int
+        a19: Int
+        a20: Int
+        a21: String
+        a22: Int
+        a23: String
+        a24: Int
+        assert(a1 == "a")
+        assert(a2 == 2)
+        assert(a3 == "c")
+        assert(a4 == 4)
+        assert(a5 == "e")
+        assert(a6 == 6)
+        assert(a7 == 7)
+        assert(a8 == 8)
+        assert(a9 == 9)
+        assert(a10 == 10)
+        assert(a11 == 11)
+        assert(a12 == 12)
+        assert(a13 == 13)
+        assert(a14 == 14)
+        assert(a15 == 15)
+        assert(a16 == 16)
+        assert(a17 == 17)
+        assert(a18 == 18)
+        assert(a19 == 19)
+        assert(a20 == 20)
+        assert(a21 == "21")
+        assert(a22 == 22)
+        assert(a23 == "23")
+        assert(a24 == 24)
+    }
   }
 }
