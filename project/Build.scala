@@ -516,11 +516,13 @@ object DottyBuild extends Build {
   )
 
   lazy val `dotty-library` = project.in(file("library")).
+    settings(unmanagedSourceDirectories in Compile += baseDirectory.value / "src_nbs").
     settings(sourceStructure).
     settings(dottyLibrarySettings).
     settings(publishing)
 
   lazy val `dotty-library-bootstrapped` = project.in(file("library")).
+    settings(unmanagedSourceDirectories in Compile += baseDirectory.value / "src_bs").
     settings(sourceStructure).
     settings(commonBootstrappedSettings).
     settings(dottyLibrarySettings)
