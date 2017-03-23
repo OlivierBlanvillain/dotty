@@ -129,10 +129,10 @@ object DottyBuild extends Build {
   //   this is only necessary for compatibility with sbt which currently hardcodes the "dotty" artifact name
   lazy val dotty = project.in(file(".")).
     // FIXME: we do not aggregate `bin` because its tests delete jars, thus breaking other tests
-    aggregate(`dotty-interfaces`, /*`dotty-library`,*/ `dotty-compiler`, dottySbtBridgeRef,
+    aggregate(`dotty-interfaces`, `dotty-library`, `dotty-compiler`, dottySbtBridgeRef,
       `scala-library`, `scala-compiler`, `scala-reflect`, `scalap`).
     dependsOn(`dotty-compiler`).
-    // dependsOn(`dotty-library`).
+    dependsOn(`dotty-library`).
     settings(
       triggeredMessage in ThisBuild := Watched.clearWhenTriggered,
 
@@ -443,7 +443,7 @@ object DottyBuild extends Build {
 
   lazy val `dotty-compiler` = project.in(file("compiler")).
     dependsOn(`dotty-interfaces`).
-    // dependsOn(`dotty-library`).
+    dependsOn(`dotty-library`).
     settings(sourceStructure).
     settings(dottyCompilerSettings).
     settings(
@@ -515,10 +515,10 @@ object DottyBuild extends Build {
       )
   )
 
-  // lazy val `dotty-library` = project.in(file("library")).
-  //   settings(sourceStructure).
-  //   settings(dottyLibrarySettings).
-  //   settings(publishing)
+  lazy val `dotty-library` = project.in(file("library")).
+    settings(sourceStructure).
+    settings(dottyLibrarySettings).
+    settings(publishing)
 
   lazy val `dotty-library-bootstrapped` = project.in(file("library")).
     settings(sourceStructure).
@@ -576,7 +576,7 @@ object DottyBuild extends Build {
       ScriptedPlugin.scripted := {
         val x1 = (publishLocal in `dotty-interfaces`).value
         val x2 = (publishLocal in `dotty-compiler`).value
-        // val x3 = (publishLocal in `dotty-library`).value
+        val x3 = (publishLocal in `dotty-library`).value
         val x4 = (publishLocal in dotty).value // Needed because sbt currently hardcodes the dotty artifact
         ScriptedPlugin.scriptedTask.evaluated
       }
@@ -700,7 +700,7 @@ object DottyInjectedPlugin extends AutoPlugin {
   // Dummy scala-library artefact. This is useful because sbt projects
   // automatically depend on scalaOrganization.value % "scala-library" % scalaVersion.value
   lazy val `scala-library` = project.
-    // dependsOn(`dotty-library`).
+    dependsOn(`dotty-library`).
     settings(
       crossPaths := false
     ).
