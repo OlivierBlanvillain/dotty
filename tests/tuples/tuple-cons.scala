@@ -35,6 +35,7 @@ object Test {
     val C = TupleCons
     type C[A, B <: Tuple] = TupleCons[A, B]
     type I = Int
+
     //       1   2   3   4   5   6   7   8   9   10  11  12  13  14  15  16  17  18  19  20
     val t20: C[I,C[I,C[I,C[I,C[I,C[I,C[I,C[I,C[I,C[I,C[I,C[I,C[I,C[I,C[I,C[I,C[I,C[I,C[I,C[I,Unit]]]]]]]]]]]]]]]]]]]] = C(1,C(2,C(3,C(4,C(5,C(6,C(7,C(8,C(9,C(10,C(11,C(12,C(13,C(14,C(15,C(16,C(17,C(18,C(19,C(20,()))))))))))))))))))))
 
