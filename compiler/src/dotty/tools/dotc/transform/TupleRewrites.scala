@@ -19,7 +19,6 @@ class TupleRewrites extends MiniPhaseTransform {
 
   def phaseName: String = "tupleRewrites"
 
-  /** TODOC OLIVIER */
   override def checkPostCondition(tree: Tree)(implicit ctx: Context): Unit =
     tree match {
       case Select(ident, _) if ident.symbol == defn.TupleConsSymbol && start != end =>

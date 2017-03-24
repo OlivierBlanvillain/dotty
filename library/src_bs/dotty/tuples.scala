@@ -28,30 +28,30 @@ object TupleCons {
       //   echo ")"
       // done | sed -e "s/, )/)/g" -e "s/, ]/]/g"
 
-      case ()                                                                              => new scala.Tuple1(h)
-      case t: scala.Tuple1[_]                                                              => new scala.Tuple2(h, t._1)
-      case t: scala.Tuple2[_, _]                                                           => new scala.Tuple3(h, t._1, t._2)
-      case t: scala.Tuple3[_, _, _]                                                        => new scala.Tuple4(h, t._1, t._2, t._3)
-      case t: scala.Tuple4[_, _, _, _]                                                     => new scala.Tuple5(h, t._1, t._2, t._3, t._4)
-      case t: scala.Tuple5[_, _, _, _, _]                                                  => new scala.Tuple6(h, t._1, t._2, t._3, t._4, t._5)
-      case t: scala.Tuple6[_, _, _, _, _, _]                                               => new scala.Tuple7(h, t._1, t._2, t._3, t._4, t._5, t._6)
-      case t: scala.Tuple7[_, _, _, _, _, _, _]                                            => new scala.Tuple8(h, t._1, t._2, t._3, t._4, t._5, t._6, t._7)
-      case t: scala.Tuple8[_, _, _, _, _, _, _, _]                                         => new scala.Tuple9(h, t._1, t._2, t._3, t._4, t._5, t._6, t._7, t._8)
-      case t: scala.Tuple9[_, _, _, _, _, _, _, _, _]                                      => new scala.Tuple10(h, t._1, t._2, t._3, t._4, t._5, t._6, t._7, t._8, t._9)
-      case t: scala.Tuple10[_, _, _, _, _, _, _, _, _, _]                                  => new scala.Tuple11(h, t._1, t._2, t._3, t._4, t._5, t._6, t._7, t._8, t._9, t._10)
-      case t: scala.Tuple11[_, _, _, _, _, _, _, _, _, _, _]                               => new scala.Tuple12(h, t._1, t._2, t._3, t._4, t._5, t._6, t._7, t._8, t._9, t._10, t._11)
-      case t: scala.Tuple12[_, _, _, _, _, _, _, _, _, _, _, _]                            => new scala.Tuple13(h, t._1, t._2, t._3, t._4, t._5, t._6, t._7, t._8, t._9, t._10, t._11, t._12)
-      case t: scala.Tuple13[_, _, _, _, _, _, _, _, _, _, _, _, _]                         => new scala.Tuple14(h, t._1, t._2, t._3, t._4, t._5, t._6, t._7, t._8, t._9, t._10, t._11, t._12, t._13)
-      case t: scala.Tuple14[_, _, _, _, _, _, _, _, _, _, _, _, _, _]                      => new scala.Tuple15(h, t._1, t._2, t._3, t._4, t._5, t._6, t._7, t._8, t._9, t._10, t._11, t._12, t._13, t._14)
-      case t: scala.Tuple15[_, _, _, _, _, _, _, _, _, _, _, _, _, _, _]                   => new scala.Tuple16(h, t._1, t._2, t._3, t._4, t._5, t._6, t._7, t._8, t._9, t._10, t._11, t._12, t._13, t._14, t._15)
-      case t: scala.Tuple16[_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _]                => new scala.Tuple17(h, t._1, t._2, t._3, t._4, t._5, t._6, t._7, t._8, t._9, t._10, t._11, t._12, t._13, t._14, t._15, t._16)
-      case t: scala.Tuple17[_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _]             => new scala.Tuple18(h, t._1, t._2, t._3, t._4, t._5, t._6, t._7, t._8, t._9, t._10, t._11, t._12, t._13, t._14, t._15, t._16, t._17)
-      case t: scala.Tuple18[_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _]          => new scala.Tuple19(h, t._1, t._2, t._3, t._4, t._5, t._6, t._7, t._8, t._9, t._10, t._11, t._12, t._13, t._14, t._15, t._16, t._17, t._18)
-      case t: scala.Tuple19[_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _]       => new scala.Tuple20(h, t._1, t._2, t._3, t._4, t._5, t._6, t._7, t._8, t._9, t._10, t._11, t._12, t._13, t._14, t._15, t._16, t._17, t._18, t._19)
-      case t: scala.Tuple20[_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _]    => new scala.Tuple21(h, t._1, t._2, t._3, t._4, t._5, t._6, t._7, t._8, t._9, t._10, t._11, t._12, t._13, t._14, t._15, t._16, t._17, t._18, t._19, t._20)
-      case t: scala.Tuple21[_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _] => new scala.Tuple22(h, t._1, t._2, t._3, t._4, t._5, t._6, t._7, t._8, t._9, t._10, t._11, t._12, t._13, t._14, t._15, t._16, t._17, t._18, t._19, t._20, t._21)
+      case ()                                                                              => new scala.Tuple1(h): Any
+      case t: scala.Tuple1[_]                                                              => new scala.Tuple2(h, t._1): Any
+      case t: scala.Tuple2[_, _]                                                           => new scala.Tuple3(h, t._1, t._2): Any
+      case t: scala.Tuple3[_, _, _]                                                        => new scala.Tuple4(h, t._1, t._2, t._3): Any
+      case t: scala.Tuple4[_, _, _, _]                                                     => new scala.Tuple5(h, t._1, t._2, t._3, t._4): Any
+      case t: scala.Tuple5[_, _, _, _, _]                                                  => new scala.Tuple6(h, t._1, t._2, t._3, t._4, t._5): Any
+      case t: scala.Tuple6[_, _, _, _, _, _]                                               => new scala.Tuple7(h, t._1, t._2, t._3, t._4, t._5, t._6): Any
+      case t: scala.Tuple7[_, _, _, _, _, _, _]                                            => new scala.Tuple8(h, t._1, t._2, t._3, t._4, t._5, t._6, t._7): Any
+      case t: scala.Tuple8[_, _, _, _, _, _, _, _]                                         => new scala.Tuple9(h, t._1, t._2, t._3, t._4, t._5, t._6, t._7, t._8): Any
+      case t: scala.Tuple9[_, _, _, _, _, _, _, _, _]                                      => new scala.Tuple10(h, t._1, t._2, t._3, t._4, t._5, t._6, t._7, t._8, t._9): Any
+      case t: scala.Tuple10[_, _, _, _, _, _, _, _, _, _]                                  => new scala.Tuple11(h, t._1, t._2, t._3, t._4, t._5, t._6, t._7, t._8, t._9, t._10): Any
+      case t: scala.Tuple11[_, _, _, _, _, _, _, _, _, _, _]                               => new scala.Tuple12(h, t._1, t._2, t._3, t._4, t._5, t._6, t._7, t._8, t._9, t._10, t._11): Any
+      case t: scala.Tuple12[_, _, _, _, _, _, _, _, _, _, _, _]                            => new scala.Tuple13(h, t._1, t._2, t._3, t._4, t._5, t._6, t._7, t._8, t._9, t._10, t._11, t._12): Any
+      case t: scala.Tuple13[_, _, _, _, _, _, _, _, _, _, _, _, _]                         => new scala.Tuple14(h, t._1, t._2, t._3, t._4, t._5, t._6, t._7, t._8, t._9, t._10, t._11, t._12, t._13): Any
+      case t: scala.Tuple14[_, _, _, _, _, _, _, _, _, _, _, _, _, _]                      => new scala.Tuple15(h, t._1, t._2, t._3, t._4, t._5, t._6, t._7, t._8, t._9, t._10, t._11, t._12, t._13, t._14): Any
+      case t: scala.Tuple15[_, _, _, _, _, _, _, _, _, _, _, _, _, _, _]                   => new scala.Tuple16(h, t._1, t._2, t._3, t._4, t._5, t._6, t._7, t._8, t._9, t._10, t._11, t._12, t._13, t._14, t._15): Any
+      case t: scala.Tuple16[_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _]                => new scala.Tuple17(h, t._1, t._2, t._3, t._4, t._5, t._6, t._7, t._8, t._9, t._10, t._11, t._12, t._13, t._14, t._15, t._16): Any
+      case t: scala.Tuple17[_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _]             => new scala.Tuple18(h, t._1, t._2, t._3, t._4, t._5, t._6, t._7, t._8, t._9, t._10, t._11, t._12, t._13, t._14, t._15, t._16, t._17): Any
+      case t: scala.Tuple18[_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _]          => new scala.Tuple19(h, t._1, t._2, t._3, t._4, t._5, t._6, t._7, t._8, t._9, t._10, t._11, t._12, t._13, t._14, t._15, t._16, t._17, t._18): Any
+      case t: scala.Tuple19[_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _]       => new scala.Tuple20(h, t._1, t._2, t._3, t._4, t._5, t._6, t._7, t._8, t._9, t._10, t._11, t._12, t._13, t._14, t._15, t._16, t._17, t._18, t._19): Any
+      case t: scala.Tuple20[_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _]    => new scala.Tuple21(h, t._1, t._2, t._3, t._4, t._5, t._6, t._7, t._8, t._9, t._10, t._11, t._12, t._13, t._14, t._15, t._16, t._17, t._18, t._19, t._20): Any
+      case t: scala.Tuple21[_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _] => new scala.Tuple22(h, t._1, t._2, t._3, t._4, t._5, t._6, t._7, t._8, t._9, t._10, t._11, t._12, t._13, t._14, t._15, t._16, t._17, t._18, t._19, t._20, t._21): Any
       case t: scala.Tuple22[_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _] =>
-        val a = new Array[Any](22)
+        val a = new Array[Any](23)
         //  seq 21 | xargs -i -n1 echo "a({}) = t._{}"
         a(0) = h
         a(1) = t._1
@@ -75,7 +75,8 @@ object TupleCons {
         a(19) = t._19
         a(20) = t._20
         a(21) = t._21
-        new LargeTuple(a)
+        a(22) = t._22
+        new LargeTuple(a): Any
     }).asInstanceOf[TupleCons[H, T]]
 
   def unapply[H, T <: Tuple](t: TupleCons[H, T]): Pair[H, T] =
@@ -107,28 +108,28 @@ object TupleCons {
       //   echo "))"
       // done | sed -e "s/, )/)/g" -e "s/, ]/]/g"
 
-      case t: scala.Tuple1[_]                                                                 => new Pair(t._1, ())
-      case t: scala.Tuple2[_, _]                                                              => new Pair(t._1, new scala.Tuple1(t._2))
-      case t: scala.Tuple3[_, _, _]                                                           => new Pair(t._1, new scala.Tuple2(t._2, t._3))
-      case t: scala.Tuple4[_, _, _, _]                                                        => new Pair(t._1, new scala.Tuple3(t._2, t._3, t._4))
-      case t: scala.Tuple5[_, _, _, _, _]                                                     => new Pair(t._1, new scala.Tuple4(t._2, t._3, t._4, t._5))
-      case t: scala.Tuple6[_, _, _, _, _, _]                                                  => new Pair(t._1, new scala.Tuple5(t._2, t._3, t._4, t._5, t._6))
-      case t: scala.Tuple7[_, _, _, _, _, _, _]                                               => new Pair(t._1, new scala.Tuple6(t._2, t._3, t._4, t._5, t._6, t._7))
-      case t: scala.Tuple8[_, _, _, _, _, _, _, _]                                            => new Pair(t._1, new scala.Tuple7(t._2, t._3, t._4, t._5, t._6, t._7, t._8))
-      case t: scala.Tuple9[_, _, _, _, _, _, _, _, _]                                         => new Pair(t._1, new scala.Tuple8(t._2, t._3, t._4, t._5, t._6, t._7, t._8, t._9))
-      case t: scala.Tuple10[_, _, _, _, _, _, _, _, _, _]                                     => new Pair(t._1, new scala.Tuple9(t._2, t._3, t._4, t._5, t._6, t._7, t._8, t._9, t._10))
-      case t: scala.Tuple11[_, _, _, _, _, _, _, _, _, _, _]                                  => new Pair(t._1, new scala.Tuple10(t._2, t._3, t._4, t._5, t._6, t._7, t._8, t._9, t._10, t._11))
-      case t: scala.Tuple12[_, _, _, _, _, _, _, _, _, _, _, _]                               => new Pair(t._1, new scala.Tuple11(t._2, t._3, t._4, t._5, t._6, t._7, t._8, t._9, t._10, t._11, t._12))
-      case t: scala.Tuple13[_, _, _, _, _, _, _, _, _, _, _, _, _]                            => new Pair(t._1, new scala.Tuple12(t._2, t._3, t._4, t._5, t._6, t._7, t._8, t._9, t._10, t._11, t._12, t._13))
-      case t: scala.Tuple14[_, _, _, _, _, _, _, _, _, _, _, _, _, _]                         => new Pair(t._1, new scala.Tuple13(t._2, t._3, t._4, t._5, t._6, t._7, t._8, t._9, t._10, t._11, t._12, t._13, t._14))
-      case t: scala.Tuple15[_, _, _, _, _, _, _, _, _, _, _, _, _, _, _]                      => new Pair(t._1, new scala.Tuple14(t._2, t._3, t._4, t._5, t._6, t._7, t._8, t._9, t._10, t._11, t._12, t._13, t._14, t._15))
-      case t: scala.Tuple16[_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _]                   => new Pair(t._1, new scala.Tuple15(t._2, t._3, t._4, t._5, t._6, t._7, t._8, t._9, t._10, t._11, t._12, t._13, t._14, t._15, t._16))
-      case t: scala.Tuple17[_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _]                => new Pair(t._1, new scala.Tuple16(t._2, t._3, t._4, t._5, t._6, t._7, t._8, t._9, t._10, t._11, t._12, t._13, t._14, t._15, t._16, t._17))
-      case t: scala.Tuple18[_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _]             => new Pair(t._1, new scala.Tuple17(t._2, t._3, t._4, t._5, t._6, t._7, t._8, t._9, t._10, t._11, t._12, t._13, t._14, t._15, t._16, t._17, t._18))
-      case t: scala.Tuple19[_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _]          => new Pair(t._1, new scala.Tuple18(t._2, t._3, t._4, t._5, t._6, t._7, t._8, t._9, t._10, t._11, t._12, t._13, t._14, t._15, t._16, t._17, t._18, t._19))
-      case t: scala.Tuple20[_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _]       => new Pair(t._1, new scala.Tuple19(t._2, t._3, t._4, t._5, t._6, t._7, t._8, t._9, t._10, t._11, t._12, t._13, t._14, t._15, t._16, t._17, t._18, t._19, t._20))
-      case t: scala.Tuple21[_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _]    => new Pair(t._1, new scala.Tuple20(t._2, t._3, t._4, t._5, t._6, t._7, t._8, t._9, t._10, t._11, t._12, t._13, t._14, t._15, t._16, t._17, t._18, t._19, t._20, t._21))
-      case t: scala.Tuple22[_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _] => new Pair(t._1, new scala.Tuple21(t._2, t._3, t._4, t._5, t._6, t._7, t._8, t._9, t._10, t._11, t._12, t._13, t._14, t._15, t._16, t._17, t._18, t._19, t._20, t._21, t._22))
+      case t: scala.Tuple1[_]                                                                 => new Pair(t._1, ()): Any
+      case t: scala.Tuple2[_, _]                                                              => new Pair(t._1, new scala.Tuple1(t._2)): Any
+      case t: scala.Tuple3[_, _, _]                                                           => new Pair(t._1, new scala.Tuple2(t._2, t._3)): Any
+      case t: scala.Tuple4[_, _, _, _]                                                        => new Pair(t._1, new scala.Tuple3(t._2, t._3, t._4)): Any
+      case t: scala.Tuple5[_, _, _, _, _]                                                     => new Pair(t._1, new scala.Tuple4(t._2, t._3, t._4, t._5)): Any
+      case t: scala.Tuple6[_, _, _, _, _, _]                                                  => new Pair(t._1, new scala.Tuple5(t._2, t._3, t._4, t._5, t._6)): Any
+      case t: scala.Tuple7[_, _, _, _, _, _, _]                                               => new Pair(t._1, new scala.Tuple6(t._2, t._3, t._4, t._5, t._6, t._7)): Any
+      case t: scala.Tuple8[_, _, _, _, _, _, _, _]                                            => new Pair(t._1, new scala.Tuple7(t._2, t._3, t._4, t._5, t._6, t._7, t._8)): Any
+      case t: scala.Tuple9[_, _, _, _, _, _, _, _, _]                                         => new Pair(t._1, new scala.Tuple8(t._2, t._3, t._4, t._5, t._6, t._7, t._8, t._9)): Any
+      case t: scala.Tuple10[_, _, _, _, _, _, _, _, _, _]                                     => new Pair(t._1, new scala.Tuple9(t._2, t._3, t._4, t._5, t._6, t._7, t._8, t._9, t._10)): Any
+      case t: scala.Tuple11[_, _, _, _, _, _, _, _, _, _, _]                                  => new Pair(t._1, new scala.Tuple10(t._2, t._3, t._4, t._5, t._6, t._7, t._8, t._9, t._10, t._11)): Any
+      case t: scala.Tuple12[_, _, _, _, _, _, _, _, _, _, _, _]                               => new Pair(t._1, new scala.Tuple11(t._2, t._3, t._4, t._5, t._6, t._7, t._8, t._9, t._10, t._11, t._12)): Any
+      case t: scala.Tuple13[_, _, _, _, _, _, _, _, _, _, _, _, _]                            => new Pair(t._1, new scala.Tuple12(t._2, t._3, t._4, t._5, t._6, t._7, t._8, t._9, t._10, t._11, t._12, t._13)): Any
+      case t: scala.Tuple14[_, _, _, _, _, _, _, _, _, _, _, _, _, _]                         => new Pair(t._1, new scala.Tuple13(t._2, t._3, t._4, t._5, t._6, t._7, t._8, t._9, t._10, t._11, t._12, t._13, t._14)): Any
+      case t: scala.Tuple15[_, _, _, _, _, _, _, _, _, _, _, _, _, _, _]                      => new Pair(t._1, new scala.Tuple14(t._2, t._3, t._4, t._5, t._6, t._7, t._8, t._9, t._10, t._11, t._12, t._13, t._14, t._15)): Any
+      case t: scala.Tuple16[_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _]                   => new Pair(t._1, new scala.Tuple15(t._2, t._3, t._4, t._5, t._6, t._7, t._8, t._9, t._10, t._11, t._12, t._13, t._14, t._15, t._16)): Any
+      case t: scala.Tuple17[_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _]                => new Pair(t._1, new scala.Tuple16(t._2, t._3, t._4, t._5, t._6, t._7, t._8, t._9, t._10, t._11, t._12, t._13, t._14, t._15, t._16, t._17)): Any
+      case t: scala.Tuple18[_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _]             => new Pair(t._1, new scala.Tuple17(t._2, t._3, t._4, t._5, t._6, t._7, t._8, t._9, t._10, t._11, t._12, t._13, t._14, t._15, t._16, t._17, t._18)): Any
+      case t: scala.Tuple19[_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _]          => new Pair(t._1, new scala.Tuple18(t._2, t._3, t._4, t._5, t._6, t._7, t._8, t._9, t._10, t._11, t._12, t._13, t._14, t._15, t._16, t._17, t._18, t._19)): Any
+      case t: scala.Tuple20[_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _]       => new Pair(t._1, new scala.Tuple19(t._2, t._3, t._4, t._5, t._6, t._7, t._8, t._9, t._10, t._11, t._12, t._13, t._14, t._15, t._16, t._17, t._18, t._19, t._20)): Any
+      case t: scala.Tuple21[_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _]    => new Pair(t._1, new scala.Tuple20(t._2, t._3, t._4, t._5, t._6, t._7, t._8, t._9, t._10, t._11, t._12, t._13, t._14, t._15, t._16, t._17, t._18, t._19, t._20, t._21)): Any
+      case t: scala.Tuple22[_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _] => new Pair(t._1, new scala.Tuple21(t._2, t._3, t._4, t._5, t._6, t._7, t._8, t._9, t._10, t._11, t._12, t._13, t._14, t._15, t._16, t._17, t._18, t._19, t._20, t._21, t._22)): Any
     }).asInstanceOf[Pair[H, T]]
 }
 
