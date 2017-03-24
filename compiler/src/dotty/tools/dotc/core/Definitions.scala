@@ -20,7 +20,7 @@ object Definitions {
    *  The limit 22 is chosen for Scala2x interop. It could be something
    *  else without affecting the set of programs that can be compiled.
    */
-  val MaxImplementedTupleArity = 4
+  val MaxImplementedTupleArity = 22
 
   /** The maximum arity N of a function type that's implemented
    *  as a trait `scala.FunctionN`. Functions of higher arity are possible,
@@ -701,11 +701,11 @@ class Definitions {
   lazy val TupleUnapplySeqType = ctx.requiredClassRef("dotty.LargeTupleUnapplySeq$")
   lazy val LargeTupleType      = ctx.requiredClassRef("dotty.LargeTuple")
 
-  lazy val DottyTupleNType      = mkArityArray("dotty.DottyTuple", 4, 1)
+  lazy val DottyTupleNType      = mkArityArray("dotty.DottyTuple", MaxImplementedTupleArity, 1)
   lazy val DottyTupleNCompanion = DottyTupleNType.map(t => if (t == null) t else t.classSymbol.companionModule.symbol)
   lazy val DottyTupleNModuleSet = DottyTupleNCompanion.toSet
 
-  lazy val ProductNType = mkArityArray("scala.Product", 22, 0)
+  lazy val ProductNType = mkArityArray("scala.Product", MaxImplementedTupleArity, 0)
 
   def FunctionClass(n: Int, isImplicit: Boolean = false)(implicit ctx: Context) =
     if (isImplicit) ctx.requiredClass("scala.ImplicitFunction" + n.toString)
@@ -778,7 +778,7 @@ class Definitions {
    */
   def erasedFunctionClass(cls: Symbol): Symbol = {
     val arity = scalaClassName(cls).functionArity
-    if (arity > 22) defn.FunctionXXLClass
+    if (arity > MaxImplementedFunctionArity) defn.FunctionXXLClass
     else if (arity >= 0) defn.FunctionClass(arity)
     else NoSymbol
   }
@@ -792,7 +792,7 @@ class Definitions {
    */
   def erasedFunctionType(cls: Symbol): Type = {
     val arity = scalaClassName(cls).functionArity
-    if (arity > 22) defn.FunctionXXLType
+    if (arity > MaxImplementedFunctionArity) defn.FunctionXXLType
     else if (arity >= 0) defn.FunctionType(arity)
     else NoType
   }
