@@ -90,26 +90,26 @@ object LargeTupleUnapplySeq {
     }
 }
 
-// trait  DottyTuple1
-// object DottyTuple1 {
-//   def apply[T1](_1: T1): TupleCons[T1, Unit] = ???
-//   def unapply[T1](t: TupleCons[T1, Unit]): Option[T1] = ???
-// }
+trait  DottyTuple1
+object DottyTuple1 {
+  def apply[T1](_1: T1): TupleCons[T1, Tuple with Unit] = ???
+  def unapply[T1](t: TupleCons[T1, Tuple with Unit]): Option[T1] = ???
+}
 
-// trait  DottyTuple2
-// object DottyTuple2 {
-//   def apply[T1, T2](_1: T1, _2: T2): TupleCons[T1, TupleCons[T2, Unit]] = ???
-//   def unapply[T1, T2](t: TupleCons[T1, TupleCons[T2, Unit]]): Option[scala.Product2[T1, T2]] = ???
-// }
+trait  DottyTuple2
+object DottyTuple2 {
+  def apply[T1, T2](_1: T1, _2: T2): (T1, T2) = ???
+  def unapply[T1, T2](t: (T1, T2)): Option[scala.Product2[T1, T2]] = ???
+}
 
-// trait  DottyTuple3
-// object DottyTuple3 {
-//   def apply[T1, T2, T3](_1: T1, _2: T2, _3: T3): TupleCons[T1, TupleCons[T2, TupleCons[T3, Unit]]] = ???
-//   def unapply[T1, T2, T3](t: TupleCons[T1, TupleCons[T2, TupleCons[T3, Unit]]]): Option[scala.Product3[T1, T2, T3]] = ???
-// }
+trait  DottyTuple3
+object DottyTuple3 {
+  def apply[T1, T2, T3](_1: T1, _2: T2, _3: T3): (T1, T2, T3) = ???
+  def unapply[T1, T2, T3](t: (T1, T2, T3)): Option[scala.Product3[T1, T2, T3]] = ???
+}
 
-// trait  DottyTuple4
-// object DottyTuple4 {
-//   def apply[T1, T2, T3, T4](_1: T1, _2: T2, _3: T3, _4: T4): TupleCons[T1, TupleCons[T2, TupleCons[T3, TupleCons[T4, Unit]]]] = ???
-//   def unapply[T1, T2, T3, T4](t: TupleCons[T1, TupleCons[T2, TupleCons[T3, TupleCons[T4, Unit]]]]): Option[scala.Product4[T1, T2, T3, T4]] = ???
-// }
+trait  DottyTuple4
+object DottyTuple4 {
+  def apply[T1, T2, T3, T4](_1: T1, _2: T2, _3: T3, _4: T4): (T1, T2, T3, T4) = ???
+  def unapply[T1, T2, T3, T4](t: (T1, T2, T3, T4)): Option[scala.Product4[T1, T2, T3, T4]] = ???
+}
