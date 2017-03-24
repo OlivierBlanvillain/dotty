@@ -7,6 +7,8 @@ import scala.collection.Seq
 
 /** unimplemented implicit for TypeTag */
 object DottyPredef extends ScalaTupleCompat {
+  private type StringOrInt = String | Int // Just to make really sure that this is not complied by scalac.
+
   implicit def typeTag[T]: TypeTag[T] = ???
 
   /** A fall-back implicit to compare values of any types.
