@@ -734,16 +734,52 @@ class Scala2Unpickler(bytes: Array[Byte], classRoot: ClassDenotation, moduleClas
           }
           else TypeRef(pre, sym.name.asTypeName)
         val args = until(end, readTypeRef)
-        if ( // TODO OLIVIER CLEAN; BUMP to 22!
+        if ( // TODO OLIVIER CLEAN
           !(source.name     == "Tuple1.class" ||
             source.name     == "Tuple2.class" ||
             source.name     == "Tuple3.class" ||
-            source.name     == "Tuple4.class"
+            source.name     == "Tuple4.class" ||
+            source.name     == "Tuple5.class" ||
+            source.name     == "Tuple6.class" ||
+            source.name     == "Tuple7.class" ||
+            source.name     == "Tuple8.class" ||
+            source.name     == "Tuple9.class" ||
+            source.name     == "Tuple10.class" ||
+            source.name     == "Tuple11.class" ||
+            source.name     == "Tuple12.class" ||
+            source.name     == "Tuple13.class" ||
+            source.name     == "Tuple14.class" ||
+            source.name     == "Tuple15.class" ||
+            source.name     == "Tuple16.class" ||
+            source.name     == "Tuple17.class" ||
+            source.name     == "Tuple18.class" ||
+            source.name     == "Tuple19.class" ||
+            source.name     == "Tuple20.class" ||
+            source.name     == "Tuple21.class" ||
+            source.name     == "Tuple22.class"
           ) && (
-           sym.showFullName == "scala.Tuple1" ||
-           sym.showFullName == "scala.Tuple2" ||
-           sym.showFullName == "scala.Tuple3" ||
-           sym.showFullName == "scala.Tuple4"
+            sym.showFullName == "scala.Tuple1" ||
+            sym.showFullName == "scala.Tuple2" ||
+            sym.showFullName == "scala.Tuple3" ||
+            sym.showFullName == "scala.Tuple4" ||
+            sym.showFullName == "scala.Tuple5" ||
+            sym.showFullName == "scala.Tuple6" ||
+            sym.showFullName == "scala.Tuple7" ||
+            sym.showFullName == "scala.Tuple8" ||
+            sym.showFullName == "scala.Tuple9" ||
+            sym.showFullName == "scala.Tuple10" ||
+            sym.showFullName == "scala.Tuple11" ||
+            sym.showFullName == "scala.Tuple12" ||
+            sym.showFullName == "scala.Tuple13" ||
+            sym.showFullName == "scala.Tuple14" ||
+            sym.showFullName == "scala.Tuple15" ||
+            sym.showFullName == "scala.Tuple16" ||
+            sym.showFullName == "scala.Tuple17" ||
+            sym.showFullName == "scala.Tuple18" ||
+            sym.showFullName == "scala.Tuple19" ||
+            sym.showFullName == "scala.Tuple20" ||
+            sym.showFullName == "scala.Tuple21" ||
+            sym.showFullName == "scala.Tuple22"
           )
         ) {
           args.reverse.foldLeft[Type](defn.UnitType: Type) {
