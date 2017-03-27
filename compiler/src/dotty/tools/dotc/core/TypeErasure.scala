@@ -356,34 +356,26 @@ class TypeErasure(isJava: Boolean, semiEraseVCs: Boolean, isConstructor: Boolean
    */
   private def apply(tp: Type)(implicit ctx: Context): Type = tp match {
     case _ if tp.isRef(defn.TupleConsType.symbol) =>
-      val unitTref = defn.UnitType.classSymbol.thisType.asInstanceOf[ThisType].tref
       // Compute the arity of a tuple type, -1 if it's not statically known.
       def tupleArity(t: Type, acc: Int = 0): Int = t match {
         case RefinedType(RefinedType(_, _, TypeAlias(headType)), _, TypeAlias(tailType)) =>
           tupleArity(tailType, acc + 1)
-        case `unitTref` =>
+        case _ if t.isRef(defn.UnitType.symbol) =>
           acc
-        case _ if t.toString == "ClassInfo(ThisType(TypeRef(NoPrefix,scala)), class Unit)" =>
-          acc // TODO OLIVIER NOTOK!
-        case AnnotatedType(tpe, _) =>
-          tupleArity(tpe, acc)
         case tp: TypeProxy =>
           tupleArity(tp.underlying, acc)
+        case AnnotatedType(tpe, _) =>
+          tupleArity(tpe, acc)
         case _ =>
           -1
       }
-
       val arity = tupleArity(tp)
       if (arity > 0 && arity <= Definitions.MaxImplementedTupleArity)
         defn.TupleNType(arity)
       else
         defn.ProductType
-
-    case _ if tp.isRef(defn.TupleType.symbol)
-      || tp.toString.endsWith("dotty)),Tuple)") // TODO OLIVIER NOTOK!
-        =>
+    case _ if tp.isRef(defn.TupleType.symbol) =>
       defn.ObjectType
-
     case _: ErasedValueType =>
       tp
     case tp: TypeRef =>

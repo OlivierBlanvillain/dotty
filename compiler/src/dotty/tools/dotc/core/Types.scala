@@ -39,6 +39,8 @@ object Types {
 
   @sharable private var nextId = 0
 
+  implicit def eqType: Eq[Type, Type] = Eq
+
   /** Main class representing types.
    *
    *  The principal subclasses and sub-objects are as follows:
