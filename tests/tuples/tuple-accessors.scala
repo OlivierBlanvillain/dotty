@@ -119,9 +119,9 @@ object Test {
     v21: Int
     v22: Int
 
-    // We can't go above that, since patDef is implemented with direct _i
-    // calls. If could update the desugaring to use var + pattern matching,
-    // which would lift the (last?) 22 limitation.
+    // We can't go above that since patDef is implemented with direct _i calls.
+    // It's should be possible to update the desugaring to use var + pattern
+    // matching instead, which would lift this (the last?) 22 limitation.
 
     // val x23 = X23(1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23)
     // val X23(y1, y2, y3, y4, y5, y6, y7, y8, y9, y10, y11, y12, y13, y14, y15, y16, y17, y18, y19, y20, y21, y22, y23) = x23

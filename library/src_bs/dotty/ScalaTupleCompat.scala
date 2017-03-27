@@ -30,22 +30,22 @@ trait ScalaTupleCompat {
     def _3 = l match { case TC(_, TC(_, TC(x, _))) => x }
   }
 
-  type Tuple3[A, B, C] = TC[A, TC[B, TC[C, Unit]]]
+  type Tuple3[A, B, C] = (A, B, C)
 
-  def Tuple3[A, B, C](a: A, b: B, c: C): TC[A, TC[B, TC[C, Unit]]] = TC(a, TC(b, TC(c, ())))
+  def Tuple3[A, B, C](a: A, b: B, c: C): (A, B, C) = TC(a, TC(b, TC(c, ())))
 
-  implicit class Tuple4Assessors[A, B, C, D](l: TC[A, TC[B, TC[C, TC[D, Unit]]]]) {
+  implicit class Tuple4Assessors[A, B, C, D](l: (A, B, C, D)) {
     def _1 = l match { case TC(x, _) => x }
     def _2 = l match { case TC(_, TC(x, _)) => x }
     def _3 = l match { case TC(_, TC(_, TC(x, _))) => x }
     def _4 = l match { case TC(_, TC(_, TC(_, TC(x, _)))) => x }
   }
 
-  type Tuple4[A, B, C, D] = TC[A, TC[B, TC[C, TC[D, Unit]]]]
+  type Tuple4[A, B, C, D] = (A, B, C, D)
 
-  def Tuple4[A, B, C, D](a: A, b: B, c: C, d: D): TC[A, TC[B, TC[C, TC[D, Unit]]]] = TC(a, TC(b, TC(c, TC(d, ()))))
+  def Tuple4[A, B, C, D](a: A, b: B, c: C, d: D): (A, B, C, D) = TC(a, TC(b, TC(c, TC(d, ()))))
 
-  implicit class Tuple5Assessors[A, B, C, D, E](l: TC[A, TC[B, TC[C, TC[D, TC[E, Unit]]]]]) {
+  implicit class Tuple5Assessors[A, B, C, D, E](l: (A, B, C, D, E)) {
     def _1 = l match { case TC(x, _) => x }
     def _2 = l match { case TC(_, TC(x, _)) => x }
     def _3 = l match { case TC(_, TC(_, TC(x, _))) => x }
