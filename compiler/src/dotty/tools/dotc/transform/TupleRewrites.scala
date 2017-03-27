@@ -12,7 +12,8 @@ import dotty.tools.dotc.core.Definitions.MaxImplementedTupleArity
 import dotty.tools.dotc.core.Constants.Constant
 import annotation.tailrec
 
-/** TODOC OLIVIER
+/** Local rewrites for tuple expressions. Nested apply and unapply trees comming
+ *  from desugaring into single apply/unapply nodes on DottyTupleN/LargeTuple.
  */
 class TupleRewrites extends MiniPhaseTransform {
   import dotty.tools.dotc.ast.tpd._
@@ -178,6 +179,11 @@ class TupleRewrites extends MiniPhaseTransform {
     }
   }
 
+  /** Helper to go back and forth between representations of tuple types.
+   *  `.folded` is `head :: tail :: Nil` where tail is a big hlist type
+   *  `.unfolded` is a flat list of every type in the tuple.
+   */
+  Types of tuples are two
   private sealed trait TupleType {
     def folded(implicit ctx: Context): FoldedTupleType
     def unfolded(implicit ctx: Context): UnfoldedTupleType
