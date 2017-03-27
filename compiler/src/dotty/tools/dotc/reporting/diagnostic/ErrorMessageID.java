@@ -32,7 +32,6 @@ public enum ErrorMessageID {
     ByNameParameterNotSupportedID,
     WrongNumberOfTypeArgsID,
     IllegalVariableInPatternAlternativeID,
-    TypeParamsTypeExpectedID,
     IdentifierExpectedID,
     AuxConstructorNeedsNonImplicitParameterID,
     IncorrectRepeatedParameterSyntaxID,
@@ -52,6 +51,11 @@ public enum ErrorMessageID {
     MixedLeftAndRightAssociativeOpsID,
     CantInstantiateAbstractClassOrTraitID,
     AnnotatedPrimaryConstructorRequiresModifierOrThisID,
+    OverloadedOrRecursiveMethodNeedsResultTypeID,
+    RecursiveValueNeedsResultTypeID,
+    CyclicReferenceInvolvingID,
+    CyclicReferenceInvolvingImplicitID,
+    SuperQualMustBeParentID,
     ;
 
     public int errorNumber() {

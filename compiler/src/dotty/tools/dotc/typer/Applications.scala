@@ -184,6 +184,8 @@ trait Applications extends Compatibility { self: Typer with Dynamic =>
      */
     protected def normalizedFun: Tree
 
+    protected def typeOfArg(arg: Arg): Type
+
     /** If constructing trees, pull out all parts of the function
      *  which are not idempotent into separate prefix definitions
      */
@@ -386,8 +388,16 @@ trait Applications extends Compatibility { self: Typer with Dynamic =>
       if (success) formals match {
         case formal :: formals1 =>
 
-          def addTyped(arg: Arg, formal: Type) =
+          /** Add result of typing argument `arg` against parameter type `formal`.
+           *  @return  A type transformation to apply to all arguments following this one.
+           */
+          def addTyped(arg: Arg, formal: Type): Type => Type = {
             addArg(typedArg(arg, formal), formal)
+            if (methodType.isParamDependent)
+              _.substParam(MethodParam(methodType, n), typeOfArg(arg))
+            else
+              identity
+          }
 
           def missingArg(n: Int): Unit = {
             val pname = methodType.paramNames(n)
@@ -401,8 +411,10 @@ trait Applications extends Compatibility { self: Typer with Dynamic =>
             val getter = findDefaultGetter(n + numArgs(normalizedFun))
             if (getter.isEmpty) missingArg(n)
             else {
-              addTyped(treeToArg(spliceMeth(getter withPos normalizedFun.pos, normalizedFun)), formal)
-              matchArgs(args1, formals1, n + 1)
+              val substParam = addTyped(
+                  treeToArg(spliceMeth(getter withPos normalizedFun.pos, normalizedFun)),
+                  formal)
+              matchArgs(args1, formals1.mapconserve(substParam), n + 1)
             }
           }
 
@@ -426,8 +438,8 @@ trait Applications extends Compatibility { self: Typer with Dynamic =>
             case EmptyTree :: args1 =>
               tryDefault(n, args1)
             case arg :: args1 =>
-              addTyped(arg, formal)
-              matchArgs(args1, formals1, n + 1)
+              val substParam = addTyped(arg, formal)
+              matchArgs(args1, formals1.mapconserve(substParam), n + 1)
             case nil =>
               tryDefault(n, args)
           }
@@ -483,6 +495,7 @@ trait Applications extends Compatibility { self: Typer with Dynamic =>
     def argType(arg: Tree, formal: Type): Type = normalize(arg.tpe, formal)
     def treeToArg(arg: Tree): Tree = arg
     def isVarArg(arg: Tree): Boolean = tpd.isWildcardStarArg(arg)
+    def typeOfArg(arg: Tree): Type = arg.tpe
     def harmonizeArgs(args: List[Tree]) = harmonize(args)
   }
 
@@ -500,6 +513,7 @@ trait Applications extends Compatibility { self: Typer with Dynamic =>
     def argType(arg: Type, formal: Type): Type = arg
     def treeToArg(arg: Tree): Type = arg.tpe
     def isVarArg(arg: Type): Boolean = arg.isRepeatedParam
+    def typeOfArg(arg: Type): Type = arg
     def harmonizeArgs(args: List[Type]) = harmonizeTypes(args)
   }
 
@@ -598,6 +612,7 @@ trait Applications extends Compatibility { self: Typer with Dynamic =>
   extends TypedApply(app, fun, methRef, proto.args, resultType) {
     def typedArg(arg: untpd.Tree, formal: Type): TypedArg = proto.typedArg(arg, formal.widenExpr)
     def treeToArg(arg: Tree): untpd.Tree = untpd.TypedSplice(arg)
+    def typeOfArg(arg: untpd.Tree) = proto.typeOfArg(arg)
   }
 
   /** Subclass of Application for type checking an Apply node with typed arguments. */
@@ -609,6 +624,7 @@ trait Applications extends Compatibility { self: Typer with Dynamic =>
       // not match the abstract method in Application and an abstract class error results.
     def typedArg(arg: tpd.Tree, formal: Type): TypedArg = arg
     def treeToArg(arg: Tree): Tree = arg
+    def typeOfArg(arg: Tree) = arg.tpe
   }
 
   /** If `app` is a `this(...)` constructor call, the this-call argument context,
@@ -1269,7 +1285,8 @@ trait Applications extends Compatibility { self: Typer with Dynamic =>
 
         def sizeFits(alt: TermRef, tp: Type): Boolean = tp match {
           case tp: PolyType => sizeFits(alt, tp.resultType)
-          case MethodType(_, ptypes) =>
+          case tp: MethodType =>
+            val ptypes = tp.paramTypes
             val numParams = ptypes.length
             def isVarArgs = ptypes.nonEmpty && ptypes.last.isRepeatedParam
             def hasDefault = alt.symbol.hasDefaultParams
@@ -1387,7 +1404,7 @@ trait Applications extends Compatibility { self: Typer with Dynamic =>
                 else WildcardType)
               val commonFormal = defn.FunctionOf(commonParamTypes, WildcardType)
               overload.println(i"pretype arg $arg with expected type $commonFormal")
-              pt.typedArg(arg, commonFormal)
+              pt.typedArg(arg, commonFormal)(ctx.addMode(Mode.ImplicitsEnabled))
             }
           }
         }

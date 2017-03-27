@@ -10,7 +10,6 @@ import scala.collection.{ mutable, immutable }
 import PartialFunction._
 import collection.mutable
 import util.common.alwaysZero
-import scala.reflect.api.{ Universe => ApiUniverse }
 
 object Definitions {
   /** The maximum arity N of Tuple implemented as `scala.TupleN` case classes.
@@ -301,6 +300,8 @@ class Definitions {
   lazy val ScalaPredefModuleRef = ctx.requiredModuleRef("scala.Predef")
   def ScalaPredefModule(implicit ctx: Context) = ScalaPredefModuleRef.symbol
 
+    lazy val Predef_ConformsR = ScalaPredefModule.requiredClass("$less$colon$less").typeRef
+    def Predef_Conforms(implicit ctx: Context) = Predef_ConformsR.symbol
     lazy val Predef_conformsR = ScalaPredefModule.requiredMethodRef("$conforms")
     def Predef_conforms(implicit ctx: Context) = Predef_conformsR.symbol
     lazy val Predef_classOfR = ScalaPredefModule.requiredMethodRef("classOf")
@@ -338,6 +339,8 @@ class Definitions {
   def DottyPredefModule(implicit ctx: Context) = DottyPredefModuleRef.symbol
 
     def Predef_eqAny(implicit ctx: Context) = DottyPredefModule.requiredMethod(nme.eqAny)
+    lazy val Predef_ImplicitConverterR = DottyPredefModule.requiredClass("ImplicitConverter").typeRef
+    def Predef_ImplicitConverter(implicit ctx: Context) = Predef_ImplicitConverterR.symbol
 
   lazy val DottyArraysModuleRef = ctx.requiredModuleRef("dotty.runtime.Arrays")
   def DottyArraysModule(implicit ctx: Context) = DottyArraysModuleRef.symbol

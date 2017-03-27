@@ -12,7 +12,7 @@ import core._
 import Flags._
 import Contexts._
 import Names._
-import ast.Positioned
+import ast.{Positioned, Trees, untpd}
 import ast.Trees._
 import Decorators._
 import StdNames._
@@ -20,6 +20,7 @@ import util.Positions._
 import Constants._
 import ScriptParsers._
 import Comments._
+
 import scala.annotation.{tailrec, switch}
 import util.DotClass
 import rewrite.Rewrites.patch
@@ -805,7 +806,7 @@ object Parsers {
     private def simpleTypeRest(t: Tree): Tree = in.token match {
       case HASH => simpleTypeRest(typeProjection(t))
       case LBRACKET => simpleTypeRest(atPos(startOffset(t)) {
-        AppliedTypeTree(t, typeArgs(namedOK = true, wildOK = true)) })
+        AppliedTypeTree(t, typeArgs(namedOK = false, wildOK = true)) })
       case _ => t
     }
 
@@ -1664,7 +1665,7 @@ object Parsers {
  /* -------- PARAMETERS ------------------------------------------- */
 
     /** ClsTypeParamClause::=  `[' ClsTypeParam {`,' ClsTypeParam} `]'
-     *  ClsTypeParam      ::=  {Annotation} [{Modifier} type] [`+' | `-']
+     *  ClsTypeParam      ::=  {Annotation} [`+' | `-']
      *                         id [HkTypeParamClause] TypeParamBounds
      *
      *  DefTypeParamClause::=  `[' DefTypeParam {`,' DefTypeParam} `]'
@@ -1680,25 +1681,17 @@ object Parsers {
       def typeParam(): TypeDef = {
         val isConcreteOwner = ownerKind == ParamOwner.Class || ownerKind == ParamOwner.Def
         val start = in.offset
-        var mods = annotsAsMods()
-        if (ownerKind == ParamOwner.Class) {
-          mods = modifiers(start = mods)
-          mods =
-            atPos(start, in.offset) {
-              if (in.token == TYPE) {
-                val mod = atPos(in.skipToken()) { Mod.Type() }
-                (mods | Param | ParamAccessor).withAddedMod(mod)
-              } else {
-                if (mods.hasFlags) syntaxError(TypeParamsTypeExpected(mods, ident()))
-                mods | Param | PrivateLocal
-              }
-            }
-        }
-        else mods = atPos(start) (mods | Param)
-        if (ownerKind != ParamOwner.Def) {
-          if (isIdent(nme.raw.PLUS)) mods |= Covariant
-          else if (isIdent(nme.raw.MINUS)) mods |= Contravariant
-          if (mods is VarianceFlags) in.nextToken()
+        val mods = atPos(start) {
+          annotsAsMods() | {
+            if (ownerKind == ParamOwner.Class) Param | PrivateLocal
+            else Param
+          } | {
+            if (ownerKind != ParamOwner.Def)
+              if (isIdent(nme.raw.PLUS)) { in.nextToken(); Covariant }
+              else if (isIdent(nme.raw.MINUS)) { in.nextToken(); Contravariant }
+              else EmptyFlags
+            else EmptyFlags
+          }
         }
         atPos(start, nameStart) {
           val name =
@@ -1807,6 +1800,10 @@ object Parsers {
           case EOF        => incompleteInputError(AuxConstructorNeedsNonImplicitParameter())
           case _          => syntaxError(AuxConstructorNeedsNonImplicitParameter(), start)
         }
+      }
+      val listOfErrors = checkVarArgsRules(result)
+      listOfErrors.foreach { vparam =>
+        syntaxError(VarArgsParamMustComeLast(), vparam.tpt.pos)
       }
       result
     }
@@ -1926,6 +1923,21 @@ object Parsers {
           ValDef(name, tpt, rhs).withMods(mods).setComment(docstring)
         } case _ =>
           PatDef(mods, lhs, tpt, rhs)
+      }
+    }
+
+
+
+    private def checkVarArgsRules(vparamss: List[List[untpd.ValDef]]): List[untpd.ValDef] = {
+      def isVarArgs(tpt: Trees.Tree[Untyped]): Boolean = tpt match {
+        case PostfixOp(_, op) if op.name == nme.raw.STAR => true
+        case _ => false
+      }
+
+      vparamss.flatMap { params =>
+        if (params.nonEmpty) {
+          params.init.filter(valDef => isVarArgs(valDef.tpt))
+        } else List()
       }
     }
 
