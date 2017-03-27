@@ -1,0 +1,3 @@
+package dotty
+
+trait ScalaTupleCompat

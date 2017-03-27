@@ -3,6 +3,8 @@ package dotty
 import dotty.{TupleCons => TC}
 
 trait ScalaTupleCompat {
+  private type One = 1 // This file shoudn't be compiled with scalac.
+
   implicit class ArrowAssoc[A](a: A) {
     def -> [B](b: B): TC[A, TC[B, Unit]] = TC(a, TC(b, ()))
   }
@@ -30,9 +32,9 @@ trait ScalaTupleCompat {
     def _3 = l match { case TC(_, TC(_, TC(x, _))) => x }
   }
 
-  type Tuple3[A, B, C] = (A, B, C)
+  type Tuple3[A, B, C] = TC[A, TC[B, TC[C, Unit]]]
 
-  def Tuple3[A, B, C](a: A, b: B, c: C): (A, B, C) = TC(a, TC(b, TC(c, ())))
+  def Tuple3[A, B, C](a: A, b: B, c: C): TC[A, TC[B, TC[C, Unit]]] = TC(a, TC(b, TC(c, ())))
 
   implicit class Tuple4Assessors[A, B, C, D](l: (A, B, C, D)) {
     def _1 = l match { case TC(x, _) => x }
@@ -41,11 +43,11 @@ trait ScalaTupleCompat {
     def _4 = l match { case TC(_, TC(_, TC(_, TC(x, _)))) => x }
   }
 
-  type Tuple4[A, B, C, D] = (A, B, C, D)
+  type Tuple4[A, B, C, D] = TC[A, TC[B, TC[C, TC[D, Unit]]]]
 
-  def Tuple4[A, B, C, D](a: A, b: B, c: C, d: D): (A, B, C, D) = TC(a, TC(b, TC(c, TC(d, ()))))
+  def Tuple4[A, B, C, D](a: A, b: B, c: C, d: D): TC[A, TC[B, TC[C, TC[D, Unit]]]] = TC(a, TC(b, TC(c, TC(d, ()))))
 
-  implicit class Tuple5Assessors[A, B, C, D, E](l: (A, B, C, D, E)) {
+  implicit class Tuple5Assessors[A, B, C, D, E](l: TC[A, TC[B, TC[C, TC[D, TC[E, Unit]]]]]) {
     def _1 = l match { case TC(x, _) => x }
     def _2 = l match { case TC(_, TC(x, _)) => x }
     def _3 = l match { case TC(_, TC(_, TC(x, _))) => x }
