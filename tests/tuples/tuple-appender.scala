@@ -1,7 +1,7 @@
 import dotty.{Tuple, TupleCons, LargeTuple}
 import dotty.{TupleCons => ::}
 
-trait Appender[L1 <: Tuple, L2 <: Tuple, type Out <: Tuple] {
+trait Appender[L1 <: Tuple, L2 <: Tuple, Out <: Tuple] {
   def apply(l1: L1, l2: L2): Out
 }
 
