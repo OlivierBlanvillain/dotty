@@ -759,10 +759,10 @@ class Typer extends Namer with TypeAssigner with Applications with Implicits wit
         val cons = defn.TupleConsType.symbol
 
         // Flatten types nested in TupleCons as a List[Type].
-        def tupleType(t: Type): List[Type] =
+        def tupleType(t: Type, acc: List[Type] = Nil): List[Type] =
           t.baseArgTypes(cons) match {
-            case x :: y :: Nil => x :: tupleType(y) // TupleCons[H, T <: Tuple]
-            case _ => Nil                           // TNil
+            case x :: y :: Nil => tupleType(y, x :: acc) // TupleCons[H, T <: Tuple]
+            case _ => acc                                // TNil
           }
         isFullyDefined(formal, ForceDegree.noBottom) &&
         formal.derivesFrom(cons) &&

@@ -183,7 +183,6 @@ class TupleRewrites extends MiniPhaseTransform {
    *  `.folded` is `head :: tail :: Nil` where tail is a big hlist type
    *  `.unfolded` is a flat list of every type in the tuple.
    */
-  Types of tuples are two
   private sealed trait TupleType {
     def folded(implicit ctx: Context): FoldedTupleType
     def unfolded(implicit ctx: Context): UnfoldedTupleType
