@@ -14,9 +14,7 @@ import scala.reflect.api.{ Universe => ApiUniverse }
 
 object Definitions {
   /** The maximum arity N of Tuple implemented as `scala.TupleN` case classes.
-   *  Tuple of higher arity switch to an array representation
-   *  but are mapped in erasure to functions taking a single parameter of type
-   *  Object[].
+   *  Tuple of higher arity us an array based representation (`dotty.LargeTuple`).
    *  The limit 22 is chosen for Scala2x interop. It could be something
    *  else without affecting the set of programs that can be compiled.
    */
@@ -702,8 +700,8 @@ class Definitions {
   lazy val LargeTupleType      = ctx.requiredClassRef("dotty.LargeTuple")
 
   lazy val DottyTupleNType      = mkArityArray("dotty.DottyTuple", MaxImplementedTupleArity, 1)
-  lazy val DottyTupleNCompanion = DottyTupleNType.map(t => if (t == null) t else t.classSymbol.companionModule.symbol)
-  lazy val DottyTupleNModuleSet = DottyTupleNCompanion.toSet
+  lazy val DottyTupleNModule    = DottyTupleNType.map(t => if (t == null) t else t.classSymbol.companionModule.symbol)
+  lazy val DottyTupleNModuleSet = DottyTupleNModule.toSet
 
   lazy val ProductNType = mkArityArray("scala.Product", MaxImplementedTupleArity, 0)
 

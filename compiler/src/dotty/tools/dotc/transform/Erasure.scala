@@ -404,7 +404,7 @@ object Erasure extends TypeTestsCasts {
       }
 
       if (defn.DottyTupleNModuleSet contains tree.qualifier.symbol) {
-        val arity = defn.DottyTupleNCompanion.indexOf(tree.qualifier.symbol)
+        val arity = defn.DottyTupleNModule.indexOf(tree.qualifier.symbol)
         val tupleCompanion = defn.TupleNType(arity).classSymbol.companionModule.symbol
         ref(tupleCompanion).select(tree.name).withPos(tree.pos)
       } else {
