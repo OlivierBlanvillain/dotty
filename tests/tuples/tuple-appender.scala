@@ -1,19 +1,19 @@
 import dotty.{Tuple, TupleCons, LargeTuple}
 import dotty.{TupleCons => ::}
 
-trait SlowAppender[L1 <: Tuple, L2 <: Tuple, type Out <: Tuple] {
+trait Appender[L1 <: Tuple, L2 <: Tuple, type Out <: Tuple] {
   def apply(l1: L1, l2: L2): Out
 }
 
-object SlowAppender {
-  implicit def caseUnit[L <: Tuple]: SlowAppender[Unit, L, L] =
-    new SlowAppender[Unit, L, L] {
+object Appender {
+  implicit def caseUnit[L <: Tuple]: Appender[Unit, L, L] =
+    new Appender[Unit, L, L] {
       def apply(l1: Unit, l2: L): L = l2
     }
 
   implicit def caseTupleCons[H, T <: Tuple, L <: Tuple, O <: Tuple]
-    (implicit a: SlowAppender[T, L, O]): SlowAppender[H :: T, L, H :: O] =
-      new SlowAppender[H :: T, L, H :: O] {
+    (implicit a: Appender[T, L, O]): Appender[H :: T, L, H :: O] =
+      new Appender[H :: T, L, H :: O] {
         def apply(l1: H :: T, l2: L): H :: O = {
           l1 match {
             case TupleCons(head, tail) =>
@@ -22,29 +22,6 @@ object SlowAppender {
         }
       }
 }
-
-// Low level (Array based) Tuples Appender --------------------------------------------------------
-
-trait Appender[L1 <: Tuple, L2 <: Tuple, type Out <: Tuple] {
-  def apply(l1: L1, l2: L2): Out
-}
-
-object Appender {
-  implicit def lowLevelAppender[L1 <: Tuple, L2 <: Tuple, Out <: Tuple]
-    (implicit p: PhantomAppender[L1, L2, Out]): Appender[L1, L2, Out] =
-      new Appender[L1, L2, Out] {
-        def apply(l1: L1, l2: L2): Out = {
-          def toArr[T <: Tuple](t: T): Array[Any] = t match {
-            case t: LargeTuple[_, _] => t.underlying
-            case p: Product => p.productIterator.toArray
-            case () => Array()
-          }
-          new LargeTuple(Array.concat(toArr(l1) ++ toArr(l2)).toArray).asInstanceOf[Out]
-        }
-      }
-}
-
-// Type level "only" computation of type Out ------------------------------------------------------
 
 trait PhantomAppender[L1 <: Tuple, L2 <: Tuple, Out <: Tuple]
 object PhantomAppender {
@@ -58,10 +35,6 @@ object PhantomAppender {
 object syntax {
   object append {
     implicit class TupleAppender[L1 <: Tuple](l1: L1) {
-      def slow_++[L2 <: Tuple, Out <: Tuple](l2: L2)(implicit a: SlowAppender[L1, L2, Out]): Out = a(l1, l2)
-    }
-
-    implicit class FastTupleAppender[L1 <: Tuple](l1: L1) {
       def ++[L2 <: Tuple, Out <: Tuple](l2: L2)(implicit a: Appender[L1, L2, Out]): Out = a(l1, l2)
     }
   }
@@ -78,11 +51,8 @@ object Test {
       (1d, 2d, 3d)
 
     val l3: (String, Boolean, Double, Double, Double) =
-      l1 slow_++ l2
-
-    val l4: (String, Boolean, Double, Double, Double) =
       l1 ++ l2
 
-    assert(l3 == l4)
+    assert(l3 == ("s", true, 1d, 2d, 3d))
   }
 }
