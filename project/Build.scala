@@ -310,7 +310,7 @@ object DottyBuild extends Build {
         val args: Seq[String] = spaceDelimited("<arg>").parsed
 
         val fullArgs = args.span(_ != "-classpath") match {
-          case (beforeCp, Nil) => beforeCp ++ ("-classpath" :: dottyLib :: Nil) // ø
+          case (beforeCp, Nil) => beforeCp ++ ("-classpath" :: dottyLib :: Nil)
           case (beforeCp, rest) => beforeCp ++ rest
         }
 
@@ -468,8 +468,8 @@ object DottyBuild extends Build {
       packageAll := {
         Map(
           "dotty-interfaces" -> (packageBin in (`dotty-interfaces`, Compile)).value,
-          "dotty-library" -> (packageBin in (`dotty-library-bootstrapped`, Compile)).value,
           "dotty-compiler" -> (packageBin in Compile).value,
+          "dotty-library" -> (packageBin in (`dotty-library-bootstrapped`, Compile)).value,
           "dotty-compiler-test" -> (packageBin in Test).value
         ) map { case (k, v) => (k, v.getAbsolutePath) }
       }

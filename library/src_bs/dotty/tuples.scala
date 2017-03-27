@@ -108,6 +108,7 @@ object TupleCons {
       //   echo "))"
       // done | sed -e "s/, )/)/g" -e "s/, ]/]/g"
 
+      // The `: Any` are temporary workaround for #2140
       case t: scala.Tuple1[_]                                                                 => new Pair(t._1, ()): Any
       case t: scala.Tuple2[_, _]                                                              => new Pair(t._1, new scala.Tuple1(t._2)): Any
       case t: scala.Tuple3[_, _, _]                                                           => new Pair(t._1, new scala.Tuple2(t._2, t._3)): Any
