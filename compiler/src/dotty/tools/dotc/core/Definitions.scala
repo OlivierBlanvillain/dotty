@@ -695,7 +695,9 @@ class Definitions {
   private lazy val ImplementedFunctionType = mkArityArray("scala.Function", MaxImplementedFunctionArity, 0)
   def FunctionClassPerRun = new PerRun[Array[Symbol]](implicit ctx => ImplementedFunctionType.map(_.symbol.asClass))
 
-  lazy val TupleNType = mkArityArray("scala.Tuple", MaxImplementedTupleArity, 1)
+  lazy val TupleNType      = mkArityArray("scala.Tuple", MaxImplementedTupleArity, 1)
+  lazy val TupleNSymbol    = TupleNType.map(t => if (t == null) t else t.classSymbol)
+  lazy val TupleNSymbolSet = TupleNSymbol.toSet
 
   lazy val TupleType           = ctx.requiredClassRef("dotty.Tuple")
   lazy val TupleConsType       = ctx.requiredClassRef("dotty.TupleCons")

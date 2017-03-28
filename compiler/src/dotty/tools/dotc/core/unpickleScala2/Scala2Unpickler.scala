@@ -98,9 +98,10 @@ object Scala2Unpickler {
 
     val clsString = cls.toString
     val splitted = clsString.split("class Tuple")
-    val pp =
-      if (clsString == "class Unit") parents :+ defn.TupleType
-      else if (splitted.size == 2 && splitted(1).forall(_.isDigit)) {
+    val tupledParents =
+      if (cls == defn.UnitType.classSymbol) parents :+ defn.TupleType
+      else
+      if (splitted.size == 2 && splitted(1).forall(_.isDigit)) {
         val i = splitted(1).toInt
         val productTps = parents.collect { case t: RefinedType => t.baseArgTypes(defn.ProductNType(i).classSymbol) }.head
         val newType = productTps.foldRight(defn.UnitType: Type) { case (current, previous) =>
@@ -109,7 +110,7 @@ object Scala2Unpickler {
         parents :+ defn.TupleType :+ newType
       } else parents
 
-    var parentRefs = ctx.normalizeToClassRefs(pp, cls, decls)
+    var parentRefs = ctx.normalizeToClassRefs(tupledParents, cls, decls)
 
     if (parentRefs.isEmpty) parentRefs = defn.ObjectType :: Nil
     for (tparam <- tparams) {
