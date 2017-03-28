@@ -695,20 +695,19 @@ class Definitions {
   private lazy val ImplementedFunctionType = mkArityArray("scala.Function", MaxImplementedFunctionArity, 0)
   def FunctionClassPerRun = new PerRun[Array[Symbol]](implicit ctx => ImplementedFunctionType.map(_.symbol.asClass))
 
-  lazy val TupleNType      = mkArityArray("scala.Tuple", MaxImplementedTupleArity, 1)
-  lazy val TupleNSymbol    = TupleNType.map(t => if (t == null) t else t.classSymbol)
-  lazy val TupleNSymbolSet = TupleNSymbol.toSet
+  lazy val TupleNType        = mkArityArray("scala.Tuple", MaxImplementedTupleArity, 1)
+  lazy val TupleNSymbol      = TupleNType.map(t => if (t == null) t else t.classSymbol)
+  lazy val DottyTupleNType   = mkArityArray("dotty.DottyTuple", MaxImplementedTupleArity, 1)
+  lazy val DottyTupleNModule = DottyTupleNType.map(t => if (t == null) t else t.classSymbol.companionModule.symbol)
+  lazy val ProductNType      = mkArityArray("scala.Product", MaxImplementedTupleArity, 0)
 
-  lazy val TupleType           = ctx.requiredClassRef("dotty.Tuple")
-  lazy val TupleConsType       = ctx.requiredClassRef("dotty.TupleCons")
-  lazy val TupleUnapplySeqType = ctx.requiredClassRef("dotty.LargeTupleUnapplySeq$")
-  lazy val LargeTupleType      = ctx.requiredClassRef("dotty.LargeTuple")
-
-  lazy val DottyTupleNType      = mkArityArray("dotty.DottyTuple", MaxImplementedTupleArity, 1)
-  lazy val DottyTupleNModule    = DottyTupleNType.map(t => if (t == null) t else t.classSymbol.companionModule.symbol)
-  lazy val DottyTupleNModuleSet = DottyTupleNModule.toSet
-
-  lazy val ProductNType = mkArityArray("scala.Product", MaxImplementedTupleArity, 0)
+  lazy val TupleType             = ctx.requiredClassRef("dotty.Tuple")
+  lazy val TupleConsType         = ctx.requiredClassRef("dotty.TupleCons")
+  lazy val TupleConsModule       = TupleConsType.classSymbol.companionModule.symbol
+  lazy val TupleUnapplySeqType   = ctx.requiredClassRef("dotty.LargeTupleUnapplySeq$")
+  lazy val TupleUnapplySeqModule = TupleUnapplySeqType.classSymbol.companionModule.symbol
+  lazy val LargeTupleType        = ctx.requiredClassRef("dotty.LargeTuple")
+  lazy val LargeTupleModule      = LargeTupleType.classSymbol.companionModule.symbol
 
   def FunctionClass(n: Int, isImplicit: Boolean = false)(implicit ctx: Context) =
     if (isImplicit) ctx.requiredClass("scala.ImplicitFunction" + n.toString)
@@ -722,9 +721,6 @@ class Definitions {
     if (n <= MaxImplementedFunctionArity && (!isImplicit || ctx.erasedTypes)) ImplementedFunctionType(n)
     else FunctionClass(n, isImplicit).typeRef
 
-  lazy val TupleConsSymbol = TupleConsType.classSymbol.companionModule.symbol
-  lazy val LargeTupleSymbol = LargeTupleType.classSymbol.companionModule.symbol
-  lazy val TupleUnapplySeqSymbol = TupleUnapplySeqType.classSymbol.companionModule.symbol
 
   /** If `cls` is a class in the scala package, its name, otherwise EmptyTypeName */
   def scalaClassName(cls: Symbol)(implicit ctx: Context): TypeName =

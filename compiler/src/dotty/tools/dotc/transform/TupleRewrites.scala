@@ -22,7 +22,7 @@ class TupleRewrites extends MiniPhaseTransform {
 
   override def checkPostCondition(tree: Tree)(implicit ctx: Context): Unit =
     tree match {
-      case Select(ident, _) if ident.symbol == defn.TupleConsSymbol && start != end =>
+      case Select(ident, _) if ident.symbol == defn.TupleConsModule && start != end =>
         assert(false, s"Reference to TupleCons comming from desugaring survived tupleRewrites.")
       case _ => ()
     }
@@ -43,17 +43,17 @@ class TupleRewrites extends MiniPhaseTransform {
       def unapply(tree: Apply)(implicit ctx: Context): Option[(List[Tree], TupleType)] =
         tree match {
           case Apply(TypeApply(Select(ident, nme.apply), fstTpe :: _), head :: tail :: Nil)
-            if ident.symbol == defn.TupleConsSymbol =>
+            if ident.symbol == defn.TupleConsModule =>
               tail match {
                 case Literal(Constant(())) =>
                     Some((head :: Nil, UnfoldedTupleType(fstTpe.tpe :: Nil)))
 
                 case Typed(Apply(TypeApply(Select(tailIdent, nme.apply), tailTpes), args), _)
-                  if defn.DottyTupleNModuleSet contains tailIdent.symbol =>
+                  if defn.DottyTupleNModule contains tailIdent.symbol =>
                     Some((head :: args, UnfoldedTupleType(fstTpe.tpe :: tailTpes.map(_.tpe))))
 
                 case Typed(Apply(TypeApply(Select(tailIdent, nme.wrap), tailTpes), SeqLiteral(args, _) :: Nil), _)
-                  if tailIdent.symbol == defn.LargeTupleSymbol =>
+                  if tailIdent.symbol == defn.LargeTupleModule =>
                     val foldedTailType = defn.TupleConsType.safeAppliedTo(tailTpes.map(_.tpe))
                     Some((head :: args, FoldedTupleType(fstTpe.tpe, foldedTailType)))
 
@@ -98,26 +98,26 @@ class TupleRewrites extends MiniPhaseTransform {
     def unapply(tree: UnApply)(implicit ctx: Context): Option[(List[Tree], TupleType)] =
       tree match {
         case UnApply(TypeApply(Select(selectIndent, nme.unapply), fstTpe :: _), Nil, fstPat :: sndPat :: Nil)
-          if selectIndent.symbol == defn.TupleConsSymbol =>
+          if selectIndent.symbol == defn.TupleConsModule =>
             sndPat match {
               case Literal(Constant(())) =>
                   Some((List(fstPat), UnfoldedTupleType(fstTpe.tpe :: Nil)))
 
               case UnApply(TypeApply(Select(ident, nme.unapply), tailTpes), Nil, tailPats)
-                if defn.DottyTupleNModuleSet contains ident.symbol =>
+                if defn.DottyTupleNModule contains ident.symbol =>
                   Some((fstPat :: tailPats, UnfoldedTupleType(fstTpe.tpe :: tailTpes.map(_.tpe))))
 
               case UnApply(TypeApply(Select(ident, nme.unapplySeq), tailTpes), Nil, tailPat)
-                if ident.symbol == defn.TupleUnapplySeqSymbol  =>
+                if ident.symbol == defn.TupleUnapplySeqModule  =>
                   val foldedTailType = defn.TupleConsType.safeAppliedTo(tailTpes.map(_.tpe))
                   Some((fstPat :: tailPat, FoldedTupleType(fstTpe.tpe, foldedTailType)))
 
               case Typed(UnApply(TypeApply(Select(ident, nme.unapply), tailTpes), Nil, tailPats), _)
-                if defn.DottyTupleNModuleSet contains ident.symbol =>
+                if defn.DottyTupleNModule contains ident.symbol =>
                   Some((fstPat :: tailPats, UnfoldedTupleType(fstTpe.tpe :: tailTpes.map(_.tpe))))
 
               case Typed(UnApply(TypeApply(Select(ident, nme.unapplySeq), tailTpes), Nil, tailPats), _)
-                if ident.symbol == defn.TupleUnapplySeqSymbol  =>
+                if ident.symbol == defn.TupleUnapplySeqModule  =>
                   val foldedTailType = defn.TupleConsType.safeAppliedTo(tailTpes.map(_.tpe))
                   Some((fstPat :: tailPats, FoldedTupleType(fstTpe.tpe, foldedTailType)))
 

@@ -403,7 +403,7 @@ object Erasure extends TypeTestsCasts {
         }
       }
 
-      if (defn.DottyTupleNModuleSet contains tree.qualifier.symbol) {
+      if (defn.DottyTupleNModule contains tree.qualifier.symbol) {
         val arity = defn.DottyTupleNModule.indexOf(tree.qualifier.symbol)
         val tupleCompanion = defn.TupleNType(arity).classSymbol.companionModule.symbol
         ref(tupleCompanion).select(tree.name).withPos(tree.pos)
@@ -700,7 +700,7 @@ object Erasure extends TypeTestsCasts {
             fun.tpe.widen match {
               case mt: MethodType =>
                 Apply(fun, (vparams, mt.paramTypes).zipped.map(adapt(_, _, untpd.EmptyTree)))
-              case a => 
+              case a =>
                 error(s"can not resolve apply type $a")
             })
           adapt(rhs, resultType)
