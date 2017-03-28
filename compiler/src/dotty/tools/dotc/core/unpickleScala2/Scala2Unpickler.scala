@@ -26,6 +26,7 @@ import classfile.ClassfileParser
 import scala.collection.{ mutable, immutable }
 import scala.collection.mutable.ListBuffer
 import scala.annotation.switch
+import transform.TupleRewrites.UnfoldedTupleType
 
 object Scala2Unpickler {
 
@@ -102,9 +103,7 @@ object Scala2Unpickler {
       else if (tupleArity != -1) {
         val productClass = defn.ProductNType(tupleArity).classSymbol
         val productTypes = parents.collect { case t: RefinedType => t.baseArgTypes(productClass) }.head
-        val tupleType = productTypes.foldRight(defn.UnitType: Type) {
-          case (acc, el) => defn.TupleConsType.safeAppliedTo(List(acc, el))
-        }
+        val tupleType = UnfoldedTupleType(productTypes).folded.asTupleConsType
         parents :+ tupleType
       } else parents
 
@@ -733,12 +732,8 @@ class Scala2Unpickler(bytes: Array[Byte], classRoot: ClassDenotation, moduleClas
           }
           else TypeRef(pre, sym.name.asTypeName)
         val args = until(end, readTypeRef)
-        if (defn.TupleNSymbol.contains(sym))
-          args.reverse.foldLeft[Type](defn.UnitType: Type) {
-            case (acc, el) => defn.TupleConsType.safeAppliedTo(List(el, acc))
-          }
-        else
-        if (sym == defn.ByNameParamClass2x) ExprType(args.head)
+        if (defn.TupleNSymbol.contains(sym)) UnfoldedTupleType(args).folded.asTupleConsType
+        else if (sym == defn.ByNameParamClass2x) ExprType(args.head)
         else if (args.nonEmpty) tycon.safeAppliedTo(EtaExpandIfHK(sym.typeParams, args))
         else if (sym.typeParams.nonEmpty) tycon.EtaExpand(sym.typeParams)
         else tycon

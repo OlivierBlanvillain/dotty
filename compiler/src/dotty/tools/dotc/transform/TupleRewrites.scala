@@ -1,22 +1,21 @@
 package dotty.tools.dotc
 package transform
 
-import core.Symbols._
-import core.StdNames._
 import ast.Trees._
+import core.Constants.Constant
+import core.Contexts.Context
+import core.Definitions.MaxImplementedTupleArity
+import core.StdNames._
+import core.Symbols._
 import core.Types._
-import dotty.tools.dotc.core.Contexts.Context
-import dotty.tools.dotc.transform.TreeTransforms.{MiniPhaseTransform, TransformerInfo}
-
-import dotty.tools.dotc.core.Definitions.MaxImplementedTupleArity
-import dotty.tools.dotc.core.Constants.Constant
-import annotation.tailrec
+import transform.TreeTransforms.{MiniPhaseTransform, TransformerInfo}
 
 /** Local rewrites for tuple expressions. Nested apply and unapply trees coming
  *  from desugaring into single apply/unapply nodes on DottyTupleN/LargeTuple.
  */
 class TupleRewrites extends MiniPhaseTransform {
-  import dotty.tools.dotc.ast.tpd._
+  import ast.tpd._
+  import TupleRewrites._
 
   def phaseName: String = "tupleRewrites"
 
@@ -75,7 +74,7 @@ class TupleRewrites extends MiniPhaseTransform {
           else
             ref(defn.LargeTupleType.classSymbol.companionModule) // LargeTuple.wrap(args)
               .select(nme.wrap)
-              .appliedToTypes(types.folded.types)
+              .appliedToTypes(types.folded.asArgumentList)
               .appliedTo(SeqLiteral(args, ref(defn.AnyType)))
         Typed(newSelect, TypeTree(tree.tpe))
       case _ => tree
@@ -165,23 +164,30 @@ class TupleRewrites extends MiniPhaseTransform {
       val newCall = // TupleUnapplySeq.unapplySeq(patterns)
         ref(defn.TupleUnapplySeqType.classSymbol.companionModule)
           .select(nme.unapplySeq)
-          .appliedToTypes(types.folded.types)
+          .appliedToTypes(types.folded.asArgumentList)
       UnApply(fun = newCall, implicits = Nil, patterns = patterns, proto = tree.tpe)
     }
   }
 
+}
+
+object TupleRewrites {
   /** Helper to go back and forth between representations of tuple types.
    *  `.folded` is `head :: tail :: Nil` where tail is a big hlist type
    *  `.unfolded` is a flat list of every type in the tuple.
    */
-  private sealed trait TupleType {
+  sealed trait TupleType {
     def folded(implicit ctx: Context): FoldedTupleType
     def unfolded(implicit ctx: Context): UnfoldedTupleType
   }
 
-  private case class FoldedTupleType(head: Type, tail: Type) extends TupleType {
-    def types: List[Type] = head :: tail :: Nil
+  case class FoldedTupleType(head: Type, tail: Type) extends TupleType {
+    def asArgumentList: List[Type] = head :: tail :: Nil
+
+    def asTupleConsType(implicit ctx: Context): Type = defn.TupleConsType.safeAppliedTo(head :: tail :: Nil)
+
     def folded(implicit ctx: Context): FoldedTupleType = this
+
     def unfolded(implicit ctx: Context): UnfoldedTupleType = {
       def unfold(acc: List[Type], next: Type): List[Type] = next match {
         case RefinedType(RefinedType(_, _, TypeAlias(headType)), _, TypeAlias(tailType)) =>
@@ -192,13 +198,14 @@ class TupleRewrites extends MiniPhaseTransform {
     }
   }
 
-  private case class UnfoldedTupleType(types: List[Type]) extends TupleType {
+  case class UnfoldedTupleType(types: List[Type]) extends TupleType {
     def unfolded(implicit ctx: Context): UnfoldedTupleType = this
+
     def folded(implicit ctx: Context): FoldedTupleType =
       FoldedTupleType(
         types.head,
         types.tail
-          .map(t => TypeAlias(t, 0))
+          .map(t => TypeAlias(t))
           .reverse
           .foldLeft[Type](defn.UnitType) {
             case (acc, el) => defn.TupleConsType.safeAppliedTo(el :: acc :: Nil)
