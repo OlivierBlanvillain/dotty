@@ -205,7 +205,7 @@ class tests extends CompilerTest {
 
   @TEST def run_all = runFiles(runDir)
 
-  @Test def run_tuples = runFiles(testsDir + "tuples/")
+  @TEST def run_tuples = runFiles(testsDir + "tuples/")
 
   private val stdlibFiles: List[String] = StdLibSources.whitelisted
 
@@ -221,7 +221,7 @@ class tests extends CompilerTest {
     assertTrue(msg2, filesNotInStdLib.isEmpty)
   }
 
-  @TEST def compileStdLib = compileList("compileStdLib", stdlibFiles, "-migration" :: "-Yno-inline" :: scala2mode)
+  @Test def compileStdLib = compileList("compileStdLib", stdlibFiles, "-migration" :: "-Yno-inline" :: scala2mode)
   @TEST def compileMixed = compileLine(
       """../tests/pos/B.scala
         |../scala-scala/src/library/scala/collection/immutable/Seq.scala
