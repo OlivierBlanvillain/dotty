@@ -460,7 +460,6 @@ object Build {
 
   lazy val `dotty-compiler` = project.in(file("compiler")).
     dependsOn(`dotty-interfaces`).
-    dependsOn(`dotty-library`).
     settings(sourceStructure).
     settings(dottyCompilerSettings).
     settings(
