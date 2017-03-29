@@ -483,7 +483,6 @@ object Build {
     settings(publishing)
 
   lazy val `dotty-compiler-bootstrapped` = project.in(file("compiler")).
-    dependsOn(`dotty-library-bootstrapped`).
     settings(sourceStructure).
     settings(commonBootstrappedSettings).
     settings(dottyCompilerSettings).
