@@ -22,13 +22,12 @@ class TestREPL(script: String) extends REPL {
     override val output = new NewLinePrintWriter(out)
 
     override def context(ctx: Context) = {
-      println("-----------------------")
-      println(Jars.dottyReplDeps.mkString(":"))
-      println("-----------------------")
       val fresh = ctx.fresh
+      println("---------------------")
+      println(Jars.dottyReplDeps.mkString(":"))
       fresh.setSetting(ctx.settings.color, "never")
       fresh.setSetting(ctx.settings.classpath, Jars.dottyReplDeps.mkString(":"))
-      // fresh.initialize()(fresh)
+      fresh.initialize()(fresh)
       fresh
     }
 

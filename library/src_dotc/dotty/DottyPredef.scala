@@ -70,6 +70,8 @@ object DottyPredef {
 
   def Tuple1[A](a: A): TC[A, Unit] = TC(a, ())
 
+  def myMethod(l: TC[Int, TC[Int, Unit]]) = 1
+
   implicit class Tuple2Assessors[A, B](l: TC[A, TC[B, Unit]]) {
     def _1 = l match { case TC(x, _) => x }
     def _2 = l match { case TC(_, TC(x, _)) => x }
