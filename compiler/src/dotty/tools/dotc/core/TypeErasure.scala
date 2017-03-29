@@ -372,8 +372,6 @@ class TypeErasure(isJava: Boolean, semiEraseVCs: Boolean, isConstructor: Boolean
         case AnnotatedType(tpe, _) =>
           tupleArity(tpe, acc)
         case t =>
-          println("------------------")
-          println(t)
           -1
       }
       val arity = tupleArity(tp)
