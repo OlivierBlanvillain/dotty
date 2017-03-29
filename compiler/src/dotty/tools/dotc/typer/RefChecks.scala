@@ -239,7 +239,12 @@ object RefChecks {
         }
         else
           isDefaultGetter(member.name) || // default getters are not checked for compatibility
-          memberTp.overrides(otherTp)
+          {
+            val b = memberTp.overrides(otherTp)
+            if (!b)
+              println(TypeComparer.explained(implicit ctx => memberTp.overrides(otherTp)))
+            b
+          }
 
       //Console.println(infoString(member) + " overrides " + infoString(other) + " in " + clazz);//DEBUG
 

@@ -206,7 +206,7 @@ object TupleRewrites {
       FoldedTupleType(
         types.head,
         types.tail
-          .map(t => TypeAlias(t))
+          .map(t => TypeAlias(t, variance = 1))
           .reverse
           .foldLeft[Type](defn.UnitType) {
             case (acc, el) => defn.TupleConsType.safeAppliedTo(el :: acc :: Nil)
