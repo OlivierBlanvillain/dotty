@@ -47,8 +47,9 @@ class TupleRewrites extends MiniPhaseTransform {
                 case Literal(Constant(())) =>
                     Some((head :: Nil, UnfoldedTupleType(fstTpe.tpe :: Nil)))
 
-                case Typed(Apply(TypeApply(Select(tailIdent, nme.apply), tailTpes), args), _)
+                case Typed(Apply(TypeApply(Select(tailIdent, nme.apply), tailTpes), args), tt)
                   if defn.DottyTupleNModule contains tailIdent.symbol =>
+                    println(s"TRASHING $tt")
                     Some((head :: args, UnfoldedTupleType(fstTpe.tpe :: tailTpes.map(_.tpe))))
 
                 case Typed(Apply(TypeApply(Select(tailIdent, nme.wrap), tailTpes), SeqLiteral(args, _) :: Nil), _)

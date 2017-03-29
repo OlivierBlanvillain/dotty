@@ -175,7 +175,7 @@ class tests extends CompilerTest {
   @TEST def pos_utf16 = compileFile(posSpecialDir, "utf16encoded", explicitUTF16)
 
   @TEST def new_all = compileFiles(newDir, twice)
-  @Test def repl_all = replFiles(replDir)
+  @TEST def repl_all = replFiles(replDir)
 
   @TEST def neg_all = compileFiles(negDir, verbose = true, compileSubDirs = false)
   @TEST def neg_typedIdents() = compileDir(negDir, "typedIdents")
@@ -265,11 +265,11 @@ class tests extends CompilerTest {
 
   @TEST def dotc_util = compileDir(dotcDir, "util") // twice omitted to make tests run faster
 
-  @Test def tools_io = compileDir(toolsDir, "io") // inner class has symbol <none>
+  @TEST def tools_io = compileDir(toolsDir, "io") // inner class has symbol <none>
 
   @TEST def helloWorld = compileFile(posDir, "HelloWorld")
   @TEST def labels = compileFile(posDir, "Labels", twice)
-  //@TEST def tools = compileDir(dottyDir, "tools", "-deep" :: Nil)(allowDeepSubtypes)
+  @Test def tools = compileDir(dottyDir, "tools", "-deep" :: Nil)(allowDeepSubtypes)
 
   @TEST def testNonCyclic = compileList("testNonCyclic", List(
       dotcDir + "CompilationUnit.scala",
@@ -296,7 +296,7 @@ class tests extends CompilerTest {
   @TEST def tasty_runtime = compileDir(s"${libDir}dotty/", "runtime", testPickling)
   @TEST def tasty_runtime_vc = compileDir(s"${libDir}dotty/runtime/", "vc", testPickling)
 
-  @Test def tasty_tools = compileDir(dottyDir, "tools", testPickling)
+  @TEST def tasty_tools = compileDir(dottyDir, "tools", testPickling)
 
   //TODO: issue with ./src/dotty/tools/backend/jvm/DottyBackendInterface.scala
   @TEST def tasty_backend_jvm = compileList("tasty_backend_jvm", List(
@@ -366,7 +366,7 @@ class tests extends CompilerTest {
   ) map (typerDir + _), testPickling)
 
   @TEST def tasty_dotc_util = compileDir(dotcDir, "util", testPickling)
-  @Test def tasty_tools_io = compileDir(toolsDir, "io", testPickling)
+  @TEST def tasty_tools_io = compileDir(toolsDir, "io", testPickling)
 
   @TEST def tasty_bootstrap = {
     val logging = if (false) List("-Ylog-classpath", "-verbose") else Nil

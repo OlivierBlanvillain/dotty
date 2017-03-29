@@ -516,11 +516,10 @@ class DottyBackendInterface(outputDirectory: AbstractFile, val superCallsMap: Ma
     def exists(pred: (Tree) => Boolean): Boolean = a.find(pred).isDefined
   }
 
-
   implicit def annotHelper(a: Annotation): AnnotationHelper = new AnnotationHelper {
     def atp: Type = a.tree.tpe
 
-    def assocs: List[(Name, Tree)] = assocsFromApply(a.tree)
+    def assocs: List[(Name, Object)] = assocsFromApply(a.tree)
 
     def symbol: Symbol = a.tree.symbol
 
