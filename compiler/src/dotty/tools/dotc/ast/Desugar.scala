@@ -414,33 +414,19 @@ object desugar {
         }
       }
 
-      // Above MaxTupleArity we extend Product instead of ProductN, in this
-      // case we need to synthesise productElement & productArity.
-      def largeProductMeths =
-        if (arity > Definitions.MaxTupleArity) productElement :: productArity :: Nil
-        else Nil
-
       if (isCaseClass)
-        largeProductMeths ::: copyMeths ::: enumTagMeths ::: productElemMeths.toList
+        productElement :: productArity ::: copyMeths ::: enumTagMeths ::: productElemMeths.toList
       else Nil
     }
 
     def anyRef = ref(defn.AnyRefAlias.typeRef)
-    def productConstr(n: Int) = {
-      val tycon = scalaDot((str.Product + n).toTypeName)
-      val targs = constrVparamss.head map (_.tpt)
-      if (targs.isEmpty) tycon else AppliedTypeTree(tycon, targs)
-    }
-    def product =
-      if (arity > Definitions.MaxTupleArity) scalaDot(str.Product.toTypeName)
-      else productConstr(arity)
 
     // Case classes and case objects get Product/ProductN parents
     var parents1 = parents
     if (isEnumCase && parents.isEmpty)
       parents1 = enumClassTypeRef :: Nil
     if (mods.is(Case))
-      parents1 = parents1 :+ product // TODO: This also adds Product0 to case objects. Do we want that?
+      parents1 = parents1 :+ scalaDot(str.Product.toTypeName)
     if (isEnum)
       parents1 = parents1 :+ ref(defn.EnumType)
 
