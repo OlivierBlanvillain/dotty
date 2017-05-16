@@ -1,3 +1,4 @@
+
 package dotty.tools
 package dotc
 package ast
@@ -486,8 +487,10 @@ object tpd extends Trees.Instance[Type] with TypedTreeInfo {
       // same but its widened type might change.
 
     override def TypeApply(tree: Tree)(fun: Tree, args: List[Tree])(implicit ctx: Context): TypeApply = {
+      println
+      println(tree.tpe.show)
       val untyped = untpd.cpy.TypeApply(tree)(fun, args)
-      if (untyped.ne(tree))
+      if (untyped.ne(tree)) // Set this to true and the test passes
         ta.assignType(untyped, fun, args)
       else
         tree.asInstanceOf[TypeApply]
@@ -968,4 +971,3 @@ object tpd extends Trees.Instance[Type] with TypedTreeInfo {
     if (file != null && file.exists) new SourceFile(file, Codec(encoding)) else NoSource
   }
 }
-
