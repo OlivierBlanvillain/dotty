@@ -220,8 +220,7 @@ class Simplify extends MiniPhaseTransform with IdentityDenotTransformer {
                        a.symbol.owner.is(Flags.Module)                   &&
                        (a.symbol.name == nme.apply)                      &&
                        a.symbol.owner.companionClass.is(Flags.CaseClass) &&
-                       !a.tpe.derivesFrom(defn.EnumClass)                &&
-                       isPureExpr(a.tree) =>
+                       !a.tpe.derivesFrom(defn.EnumClass) =>
         def unrollArgs(t: Tree, l: List[List[Tree]]): List[List[Tree]] = t match {
           case Apply(t, args) => unrollArgs(t, args :: l)
           case _ => l
@@ -238,8 +237,7 @@ class Simplify extends MiniPhaseTransform with IdentityDenotTransformer {
                        a.symbol.owner.is(Flags.Module)                   &&
                        (a.symbol.name == nme.unapply)                    &&
                        a.symbol.owner.companionClass.is(Flags.CaseClass) &&
-                       !a.tpe.derivesFrom(defn.EnumClass)                &&
-                       isPureExpr(a.tree) =>
+                       !a.tpe.derivesFrom(defn.EnumClass) =>
         if (!a.symbol.owner.is(Flags.Scala2x)) {
           if (a.tpe.derivesFrom(defn.BooleanClass)) Literal(Constant(true))
           else a.args.head
@@ -427,7 +425,7 @@ class Simplify extends MiniPhaseTransform with IdentityDenotTransformer {
           // case (_, Literal(Constant(0L)))  if sym == defn.Long_/ =>
           //   Block(List(lhs),
           //     ref(defn.throwMethod).appliedTo(New(defn.ArithmeticExceptionClass.typeRef, defn.ArithmeticExceptionClass_stringConstructor, Literal(Constant("/ by zero")) :: Nil)))
-          case _ => t
+          case _ => t // TODO: fallback to typer.ConstFold?
         }
       case t: Match if (t.selector.tpe.isInstanceOf[ConstantType] && t.cases.forall(x => x.pat.tpe.isInstanceOf[ConstantType] || (isWildcardArg(x.pat) && x.guard.isEmpty))) =>
         val selectorValue = t.selector.tpe.asInstanceOf[ConstantType].value
@@ -441,6 +439,7 @@ class Simplify extends MiniPhaseTransform with IdentityDenotTransformer {
       case t if !isPureExpr(t) =>
         t
       case t =>
+        // TODO: did not manage to trigger this in tests
         val s = ConstFold.apply(t)
         if ((s ne null) && s.tpe.isInstanceOf[ConstantType]) {
           val constant = s.tpe.asInstanceOf[ConstantType].value
