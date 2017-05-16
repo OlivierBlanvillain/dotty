@@ -374,9 +374,9 @@ class Simplify extends MiniPhaseTransform with IdentityDenotTransformer {
       // case ift @ If(cond, thenp, elsep :Literal) if ift.tpe.derivesFrom(defn.BooleanClass) && !elsep.const.booleanValue =>
       //   cond.select(defn.Boolean_&&).appliedTo(elsep)
       //   // the other case ins't handled intentionally. See previous case for explanation
-      case If(t@ Select(recv, _), thenp, elsep) if t.symbol eq defn.Boolean_! =>
+      case If(t @ Select(recv, _), thenp, elsep) if t.symbol eq defn.Boolean_! =>
         If(recv, elsep, thenp)
-      case If(t@ Apply(Select(recv, _), Nil), thenp, elsep) if t.symbol eq defn.Boolean_! =>
+      case If(t @ Apply(Select(recv, _), Nil), thenp, elsep) if t.symbol eq defn.Boolean_! =>
         If(recv, elsep, thenp)
       // TODO: similar trick for comparisons.
       // TODO: handle comparison with min\max values
@@ -384,7 +384,7 @@ class Simplify extends MiniPhaseTransform with IdentityDenotTransformer {
         rec
       case meth1 @ Select(meth2 @ Select(rec, _), _) if meth1.symbol == defn.Boolean_! && meth2.symbol == defn.Boolean_! && !ctx.erasedTypes =>
         rec
-      case t@Apply(Select(lhs, _), List(rhs)) =>
+      case t @ Apply(Select(lhs, _), List(rhs)) =>
         val sym = t.symbol
         (lhs, rhs) match {
           case (lhs, Literal(_)) if !lhs.isInstanceOf[Literal] && symmetricOperations.contains(sym) =>
@@ -890,7 +890,7 @@ class Simplify extends MiniPhaseTransform with IdentityDenotTransformer {
       case a: Block  =>
         val newStats0 = a.stats.mapConserve(keepOnlySideEffects)
         val newStats1 = if (newStats0 eq a.stats) newStats0 else newStats0.flatMap{
-          case x: Block=> x.stats ::: List(x.expr)
+          case x: Block => x.stats ::: List(x.expr)
           case EmptyTree => Nil
           case t => t :: Nil
         }
