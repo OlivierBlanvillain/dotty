@@ -173,27 +173,27 @@ class CompilationTests extends ParallelTesting {
   // lower level of concurrency as to not kill their running VMs
 
   @Test def testPickling: Unit = {
-    compileDir("../compiler/src/dotty/tools", picklingOptions) +
-    compileDir("../compiler/src/dotty/tools/dotc", picklingOptions) +
-    compileFilesInDir("../tests/new", picklingOptions) +
-    compileFilesInDir("../tests/pickling", picklingOptions) +
-    compileDir("../library/src/dotty/runtime", picklingOptions) +
-    compileDir("../compiler/src/dotty/tools/backend/jvm", picklingOptions) +
-    compileDir("../compiler/src/dotty/tools/dotc/ast", picklingOptions) +
-    compileDir("../compiler/src/dotty/tools/dotc/core", picklingOptions) +
-    compileDir("../compiler/src/dotty/tools/dotc/config", picklingOptions) +
-    compileDir("../compiler/src/dotty/tools/dotc/parsing", picklingOptions) +
-    compileDir("../compiler/src/dotty/tools/dotc/printing", picklingOptions) +
-    compileDir("../compiler/src/dotty/tools/dotc/repl", picklingOptions) +
-    compileDir("../compiler/src/dotty/tools/dotc/rewrite", picklingOptions) +
-    compileDir("../compiler/src/dotty/tools/dotc/transform", picklingOptions) +
-    compileDir("../compiler/src/dotty/tools/dotc/typer", picklingOptions) +
-    compileDir("../compiler/src/dotty/tools/dotc/util", picklingOptions) +
-    compileDir("../compiler/src/dotty/tools/io", picklingOptions) +
-    compileFile("../tests/pos/pickleinf.scala", picklingOptions) +
-    compileDir("../compiler/src/dotty/tools/dotc/core/classfile", picklingOptions) +
-    compileDir("../compiler/src/dotty/tools/dotc/core/tasty", picklingOptions) +
-    compileDir("../compiler/src/dotty/tools/dotc/core/unpickleScala2", picklingOptions)
+    // compileDir("../compiler/src/dotty/tools", picklingOptions) +
+    // compileDir("../compiler/src/dotty/tools/dotc", picklingOptions) +
+    // compileFilesInDir("../tests/new", picklingOptions) +
+    // compileFilesInDir("../tests/pickling", picklingOptions) +
+    // compileDir("../library/src/dotty/runtime", picklingOptions) +
+    // compileDir("../compiler/src/dotty/tools/backend/jvm", picklingOptions) +
+    // compileDir("../compiler/src/dotty/tools/dotc/ast", picklingOptions) +
+    // compileDir("../compiler/src/dotty/tools/dotc/core", picklingOptions) +
+    // compileDir("../compiler/src/dotty/tools/dotc/config", picklingOptions) +
+    // compileDir("../compiler/src/dotty/tools/dotc/parsing", picklingOptions) +
+    // compileDir("../compiler/src/dotty/tools/dotc/printing", picklingOptions) +
+    // compileDir("../compiler/src/dotty/tools/dotc/repl", picklingOptions) +
+    // compileDir("../compiler/src/dotty/tools/dotc/rewrite", picklingOptions) +
+    compileDir("../compiler/src/dotty/tools/dotc/transform", picklingOptions) // +
+    // compileDir("../compiler/src/dotty/tools/dotc/typer", picklingOptions) +
+    // compileDir("../compiler/src/dotty/tools/dotc/util", picklingOptions) +
+    // compileDir("../compiler/src/dotty/tools/io", picklingOptions) +
+    // compileFile("../tests/pos/pickleinf.scala", picklingOptions) +
+    // compileDir("../compiler/src/dotty/tools/dotc/core/classfile", picklingOptions) +
+    // compileDir("../compiler/src/dotty/tools/dotc/core/tasty", picklingOptions) +
+    // compileDir("../compiler/src/dotty/tools/dotc/core/unpickleScala2", picklingOptions)
   }.limitThreads(4).checkCompile()
 
   /** The purpose of this test is two-fold, being able to compile dotty

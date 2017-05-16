@@ -22,16 +22,19 @@ object TermState {
   // instead, `unapply(ti: TermAction)` thus becomes a infinite tail
   // recursion. See #2335.
   def unapplyWorkaround(ti: TermState): Option[(LazyList[Int], Vector[Char], Int, Ansi.Str)] =
-    Some((ti.inputs, ti.buffer, ti.cursor, ti.msg))
+    ???
+    // Some((ti.inputs, ti.buffer, ti.cursor, ti.msg))
 
   def unapply(ti: TermInfo): Option[(LazyList[Int], Vector[Char], Int, Ansi.Str)] =
-    TermState.unapplyWorkaround(ti.ts)
+    ???
+    // TermState.unapplyWorkaround(ti.ts)
 
   def unapply(ti: TermAction): Option[(LazyList[Int], Vector[Char], Int, Ansi.Str)] =
-    ti match {
-      case ts: TermState => TermState.unapplyWorkaround(ts)
-      case _ => None
-    }
+    ???
+    // ti match {
+    //   case ts: TermState => TermState.unapplyWorkaround(ts)
+    //   case _ => None
+    // }
 }
 
 case class ClearScreen(ts: TermState) extends TermAction

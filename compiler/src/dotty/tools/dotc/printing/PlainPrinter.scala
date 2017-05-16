@@ -53,9 +53,10 @@ class PlainPrinter(_ctx: Context) extends Printer {
         case AndType(tp1, tp2) =>
           homogenize(tp1) & homogenize(tp2)
         case OrType(tp1, tp2) =>
-          if (tp1.classSymbol.id > tp2.classSymbol.id)
+          // if (tp1.classSymbol.fullName.toString > tp2.classSymbol.fullName.toString)
             homogenize(tp1) | homogenize(tp2)
-          else homogenize(tp2) | homogenize(tp1)
+          // else
+            // homogenize(tp2) | homogenize(tp1)
         case tp: SkolemType =>
           homogenize(tp.info)
         case tp: LazyRef =>

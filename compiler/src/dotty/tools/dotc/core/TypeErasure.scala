@@ -245,9 +245,9 @@ object TypeErasure {
         case JavaArrayType(_) => defn.ObjectType
         case _ =>
           val cls2 = tp2.classSymbol
-          // The above algorithm is approximated by finding the first
-          // superclass or trait S of tp1 such that tp1 derivesFrom it.
           tp1.baseClasses
+            // .dropWhile(x => !cls2.derivesFrom(x))
+            // .takeWhile(_.is(Trait))
             .find(x => cls2.derivesFrom(x) && x != defn.AnyClass && x != defn.AnyValClass)
             .getOrElse(defn.ObjectClass)
             .typeRef
