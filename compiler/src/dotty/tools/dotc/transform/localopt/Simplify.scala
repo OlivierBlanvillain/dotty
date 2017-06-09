@@ -21,19 +21,19 @@ class Simplify extends MiniPhaseTransform with IdentityDenotTransformer {
   override val cpy = tpd.cpy
 
   private def beforeErasure(implicit ctx: Context): List[Optimisation] =
-    new InlineCaseIntrinsics        ::
-    new RemoveUnnecessaryNullChecks ::
-    new InlineOptions               ::
-    new InlineLabelsCalledOnce      ::
-    new Valify(this)                ::
-    new Devalify                    ::
-    new Jumpjump                    ::
-    new DropGoodCasts               ::
-    new DropNoEffects(this)         ::
+    new InlineCaseIntrinsics        :: // fails starting from -Yopt-fuel 5883
+    new RemoveUnnecessaryNullChecks :: // Bootstraps!
+    new InlineOptions               :: // Bootstraps!
+    new InlineLabelsCalledOnce      :: // Bootstraps!
+    new Valify(this)                :: // Bootstraps!
+    new Devalify                    :: // Bootstraps!
+    new Jumpjump                    :: // Bootstraps!
+    new DropGoodCasts               :: // Bootstraps!
+    new DropNoEffects(this)         :: // Bootstraps!
     // new InlineLocalObjects          :: // followCases needs to be fixed, see ./tests/pos/rbtree.scala
     // new Varify                      :: // varify could stop other transformations from being applied. postponed.
     // new BubbleUpNothing             ::
-    new ConstantFold                ::
+    new ConstantFold                :: // Bootstraps!
     Nil
 
   private def afterErasure(implicit ctx: Context): List[Optimisation] =
