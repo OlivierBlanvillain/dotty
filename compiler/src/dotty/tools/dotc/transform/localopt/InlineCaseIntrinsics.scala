@@ -44,7 +44,7 @@ class InlineCaseIntrinsics(implicit val ctx: Context) extends Optimisation {
         case _ => fun
       }
       val constructor = a.symbol.owner.companionClass.primaryConstructor.asTerm
-      evalreceiver(a, rollInArgs(argss.tail, New(a.tpe.widenDealias, constructor, argss.head)))
+      evalreceiver(a, rollInArgs(argss.tail, New(a.tpe.widenDealias.simplified, constructor, argss.head)))
 
     // For synthetic dotty unapplies on case classes:
     // - CC.unapply(arg): CC → arg
