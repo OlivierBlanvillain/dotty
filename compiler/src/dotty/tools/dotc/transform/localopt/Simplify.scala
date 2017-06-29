@@ -57,8 +57,8 @@ class Simplify extends MiniPhaseTransform with IdentityDenotTransformer {
   /** See comment on beforeErasure */
   private def afterErasure: List[Optimisation] =
     // new Valify(this)                ::
-    new Devalify                    ::
-    // new Jumpjump                    ::
+    // new Devalify                    ::
+    new Jumpjump                    ::
     // new DropGoodCasts               ::
     // new ConstantFold(this)          ::
     Nil
