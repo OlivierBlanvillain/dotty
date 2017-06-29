@@ -39,7 +39,7 @@ class Simplify extends MiniPhaseTransform with IdentityDenotTransformer {
    *  Reordering them may require quadratically more rounds to finish.
    */
   private def beforeErasure: List[Optimisation] =
-    // new InlineCaseIntrinsics(this)  ::
+    new InlineCaseIntrinsics(this)  ::
     // new RemoveUnnecessaryNullChecks ::
     // new InlineOptions               ::
     // new InlineLabelsCalledOnce      ::
@@ -56,11 +56,11 @@ class Simplify extends MiniPhaseTransform with IdentityDenotTransformer {
 
   /** See comment on beforeErasure */
   private def afterErasure: List[Optimisation] =
-    new Valify(this)                ::
-    new Devalify                    ::
-    new Jumpjump                    ::
-    new DropGoodCasts               ::
-    new ConstantFold(this)          ::
+    // new Valify(this)                ::
+    // new Devalify                    ::
+    // new Jumpjump                    ::
+    // new DropGoodCasts               ::
+    // new ConstantFold(this)          ::
     Nil
 
   var optimisations: List[Optimisation] = Nil
