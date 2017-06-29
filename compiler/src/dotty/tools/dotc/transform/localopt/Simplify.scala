@@ -51,12 +51,12 @@ class Simplify extends MiniPhaseTransform with IdentityDenotTransformer {
     // new InlineLocalObjects(this)    ::
     // // new Varify                      :: // varify could stop other transformations from being applied. postponed.
     // // new BubbleUpNothing             ::
-    new ConstantFold(this)          ::
+    // new ConstantFold(this)          ::
     Nil
 
   /** See comment on beforeErasure */
   private def afterErasure: List[Optimisation] =
-    // new Valify(this)                ::
+    new Valify(this)                ::
     // new Devalify                    ::
     // new Jumpjump                    ::
     // new DropGoodCasts               ::
