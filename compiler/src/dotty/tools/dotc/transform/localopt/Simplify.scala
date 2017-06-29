@@ -59,8 +59,8 @@ class Simplify extends MiniPhaseTransform with IdentityDenotTransformer {
     // new Valify(this)                ::
     // new Devalify                    ::
     // new Jumpjump                    ::
-    new DropGoodCasts               ::
-    // new ConstantFold(this)          ::
+    // new DropGoodCasts               ::
+    new ConstantFold(this)          ::
     Nil
 
   var optimisations: List[Optimisation] = Nil
