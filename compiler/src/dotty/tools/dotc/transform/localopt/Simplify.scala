@@ -44,8 +44,8 @@ class Simplify extends MiniPhaseTransform with IdentityDenotTransformer {
     // new InlineOptions               ::
     // new InlineLabelsCalledOnce      ::
     // new Valify(this)                ::
-    new Devalify                    ::
-    // new Jumpjump                    ::
+    // new Devalify                    ::
+    new Jumpjump                    ::
     // new DropGoodCasts               ::
     // new DropNoEffects(this)         ::
     // new InlineLocalObjects(this)    ::
