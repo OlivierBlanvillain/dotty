@@ -48,10 +48,10 @@ class Simplify extends MiniPhaseTransform with IdentityDenotTransformer {
     // new Jumpjump                    ::
     // new DropGoodCasts               ::
     // new DropNoEffects(this)         ::
-    new InlineLocalObjects(this)    ::
+    // new InlineLocalObjects(this)    ::
     // // new Varify                      :: // varify could stop other transformations from being applied. postponed.
     // // new BubbleUpNothing             ::
-    // new ConstantFold(this)          ::
+    new ConstantFold(this)          ::
     Nil
 
   /** See comment on beforeErasure */
