@@ -11,7 +11,7 @@ for commit in 18b6cd7 aaecf81 20e5112 622d519 1e0c4a9 2ad686c 7f7cad1 aeb1d0f 9b
 
   (
     cd /home/olivier/workspace/compiler-benchmark
-    sbt ";++0.2.0-bin-20170629-$commit-NIGHTLY cold -psource=vector -o cold-vector-$msg.log"
+    sbt ";++0.2.0-bin-20170629-$commit-NIGHTLY hot -psource=vector -o hot-vector-$msg.log"
   )
 
 done
