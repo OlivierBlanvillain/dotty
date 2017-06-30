@@ -7,11 +7,15 @@ for commit in 18b6cd7 aaecf81 20e5112 622d519 1e0c4a9 2ad686c 7f7cad1 aeb1d0f 9b
   git checkout "$commit"
   msg=$(git log --format=%B -n 1)
 
-  NIGHTLYBUILD=yes sbt ";clean ;set bootstrapOptimised in ThisBuild := true; dotty-bootstrapped/publishLocal"
+  version="0.2.0-bin-20170629-$commit-NIGHTLY"
+  needsPublish=$(find ~/.ivy2/ -name "$version" | wc -l)
+  if [ needsPublish -eq 0 ]; then
+    NIGHTLYBUILD=yes sbt ";clean ;set bootstrapOptimised in ThisBuild := true; dotty-bootstrapped/publishLocal"
+  fi
 
   (
     cd /home/olivier/workspace/compiler-benchmark
-    sbt ";++0.2.0-bin-20170629-$commit-NIGHTLY hot -psource=vector -o hot-vector-$msg.log"
+    sbt ";++$version hot -psource=vector -o hot-vector-$msg.log"
   )
 
 done
