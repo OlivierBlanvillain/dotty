@@ -8,7 +8,8 @@ import java.util.Calendar
 
 import scala.reflect.io.Path
 import sbtassembly.AssemblyKeys.assembly
-import xerial.sbt.Pack._
+import xerial.sbt.pack.PackPlugin._
+import autoImport._
 
 import sbt.Package.ManifestAttributes
 
@@ -1132,20 +1133,21 @@ object Build {
     state
   }
 
+  lazy val commonDistSettings = packSettings ++ Seq(
+    publishArtifact := false,
+    packGenerateMakefile := false,
+    packExpandedClasspath := true,
+    packResourceDir += (baseDirectory.value / "bin" -> "bin"),
+    packArchiveName := "dotty-" + dottyVersion
+  )
+
   lazy val dist = project.
     dependsOn(`dotty-interfaces`).
     dependsOn(`dotty-compiler`).
     dependsOn(`dotty-library`).
     dependsOn(`dotty-doc`).
     settings(commonNonBootstrappedSettings).
-    settings(packSettings).
-    settings(
-      publishArtifact := false,
-      // packMain := Map("dummy" -> "dotty.tools.dotc.Main"),
-      packExpandedClasspath := true,
-      packResourceDir += (baseDirectory.value / "bin" -> "bin"),
-      packArchiveName := "dotty-" + dottyVersion
-    )
+    settings(commonDistSettings)
 
    // Same as `dist` but using bootstrapped projects.
   lazy val `dist-bootstrapped` = project.
@@ -1154,14 +1156,8 @@ object Build {
     dependsOn(`dotty-compiler-bootstrapped`).
     dependsOn(`dotty-doc-bootstrapped`).
     settings(commonBootstrappedSettings).
-    settings(packSettings).
+    settings(commonDistSettings).
     settings(
-      target := baseDirectory.value / "target",                    // override setting in commonBootstrappedSettings
-      publishArtifact := false,
-      // packMain := Map("dummy" -> "dotty.tools.dotc.Main"),
-      packExpandedClasspath := true,
-      // packExcludeJars := Seq("scala-library-.*\\.jar"),
-      packResourceDir += (baseDirectory.value / "bin" -> "bin"),
-      packArchiveName := "dotty-" + dottyVersion
+      target := baseDirectory.value / "target" // override setting in commonBootstrappedSettings
     )
 }
