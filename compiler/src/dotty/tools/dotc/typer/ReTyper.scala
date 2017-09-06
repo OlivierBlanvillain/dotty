@@ -5,6 +5,7 @@ import core._
 import Contexts._
 import Types._
 import Symbols._
+import StdNames._
 import Decorators._
 import typer.ProtoTypes._
 import ast.{tpd, untpd}
@@ -24,9 +25,12 @@ import config.Printers.typr
 class ReTyper extends Typer {
   import tpd._
 
+  private def assertTyped(tree: untpd.Tree)(implicit ctx: Context): Unit =
+    assert(tree.hasType, i"$tree ${tree.getClass} ${tree.uniqueId}")
+
   /** Checks that the given tree has been typed */
   protected def promote(tree: untpd.Tree)(implicit ctx: Context): tree.ThisTree[Type] = {
-    assert(tree.hasType, i"$tree ${tree.getClass} ${tree.uniqueId}")
+    assertTyped(tree)
     tree.withType(tree.typeOpt)
   }
 
@@ -34,7 +38,7 @@ class ReTyper extends Typer {
     promote(tree)
 
   override def typedSelect(tree: untpd.Select, pt: Type)(implicit ctx: Context): Tree = {
-    assert(tree.hasType, tree)
+    assertTyped(tree)
     val qual1 = typed(tree.qualifier, AnySelectionProto)
     untpd.cpy.Select(tree)(qual1, tree.name).withType(tree.typeOpt)
   }
@@ -48,11 +52,34 @@ class ReTyper extends Typer {
   override def typedSuper(tree: untpd.Super, pt: Type)(implicit ctx: Context): Tree =
     promote(tree)
 
+  // Hijacked version of typedTyped that doesn't handle repeatedParamTypes
+  override def typedTyped(tree: untpd.Typed, pt: Type)(implicit ctx: Context): Tree = {
+    assertTyped(tree)
+
+    def type1 = checkSimpleKinded(typedType(tree.tpt))
+
+    tree.expr match {
+     case id: untpd.Ident if (ctx.mode is Mode.Pattern) && untpd.isVarPattern(id) =>
+       if (id.name == nme.WILDCARD || id.name == nme.WILDCARD_STAR) {
+         // special case for an abstract type that comes with a class tag
+         if (!ctx.isAfterTyper) type1.tpe.<:<(pt)(ctx.addMode(Mode.GADTflexible))
+         val ascription =
+           untpd.cpy.Typed(tree)(tree.expr.withType(type1.tpe), type1).withType(tree.typeOpt)
+         tryWithClassTag(ascription, pt)
+       } else {
+         import untpd._
+         typed(Bind(id.name, Typed(Ident(nme.WILDCARD), tree.tpt)).withPos(tree.pos), pt)
+       }
+     case _ =>
+        untpd.cpy.Typed(tree)(typed(tree.expr), type1).withType(tree.typeOpt)
+    }
+  }
+
   override def typedTypeTree(tree: untpd.TypeTree, pt: Type)(implicit ctx: Context): TypeTree =
     promote(tree)
 
   override def typedBind(tree: untpd.Bind, pt: Type)(implicit ctx: Context): Bind = {
-    assert(tree.hasType)
+    assertTyped(tree)
     val body1 = typed(tree.body, pt)
     untpd.cpy.Bind(tree)(tree.name, body1).withType(tree.typeOpt)
   }
@@ -62,6 +89,10 @@ class ReTyper extends Typer {
     val implicits1 = tree.implicits.map(typedExpr(_))
     val patterns1 = tree.patterns.mapconserve(pat => typed(pat, pat.tpe))
     untpd.cpy.UnApply(tree)(fun1, implicits1, patterns1).withType(tree.tpe)
+  }
+
+  override def typedUnApply(tree: untpd.Apply, selType: Type)(implicit ctx: Context): Tree = {
+    typedApply(tree, selType)
   }
 
   override def localDummy(cls: ClassSymbol, impl: untpd.Template)(implicit ctx: Context) = impl.symbol
