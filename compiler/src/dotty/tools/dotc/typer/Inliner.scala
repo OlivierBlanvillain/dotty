@@ -457,7 +457,7 @@ class Inliner(call: tpd.Tree, rhs: tpd.Tree)(implicit ctx: Context) {
         paramProxy.get(tree.tpe) match {
           case Some(t: SingletonType) if tree.isTerm => singleton(t).withPos(tree.pos)
           case Some(t) if tree.isType => TypeTree(t).withPos(tree.pos)
-          case None => tree
+          case _ => tree
         }
       case _ => tree
     }}
