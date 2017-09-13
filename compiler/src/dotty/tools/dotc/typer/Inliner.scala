@@ -473,6 +473,8 @@ class Inliner(call: tpd.Tree, rhs: tpd.Tree)(implicit ctx: Context) {
 
       // The final expansion runs a typing pass over the inlined tree. See InlineTyper for details.
       val expansion1 = InlineTyper.typed(expansion, pt)(inlineCtx)
+      // println(expansion1.tpe)
+      // ???
 
       /** Does given definition bind a closure that will be inlined? */
       def bindsDeadClosure(defn: ValOrDefDef) = Ident(defn.symbol.termRef) match {

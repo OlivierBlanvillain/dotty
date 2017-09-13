@@ -345,7 +345,7 @@ class TreeChecker extends Phase with SymTransformer {
     override def typedThis(tree: untpd.This)(implicit ctx: Context) = {
       val res = super.typedThis(tree)
       val cls = res.symbol
-      assert(cls.isStaticOwner || ctx.owner.isContainedIn(cls), i"error while typing $tree, ${ctx.owner} is not contained in $cls")
+      assert(cls.isStaticOwner || ctx.owner.isContainedIn(cls), i"error while typing $tree (${tree.uniqueId}), ${ctx.owner} is not contained in $cls")
       res
     }
 

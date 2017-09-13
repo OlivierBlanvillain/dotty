@@ -417,8 +417,8 @@ trait TypeAssigner {
   def assignType(tree: untpd.Block, stats: List[Tree], expr: Tree)(implicit ctx: Context) =
     tree.withType(avoidingType(expr, stats))
 
-  def assignType(tree: untpd.Inlined, bindings: List[Tree], expansion: Tree)(implicit ctx: Context) =
-    tree.withType(avoidingType(expansion, bindings))
+  def assignType(tree: untpd.Inlined, call: Tree, bindings: List[Tree], expansion: Tree)(implicit ctx: Context) =
+    tree.withType(call.tpe)
 
   def assignType(tree: untpd.If, thenp: Tree, elsep: Tree)(implicit ctx: Context) =
     tree.withType(lubInSameUniverse(thenp :: elsep :: Nil, "branches of an if/else"))
