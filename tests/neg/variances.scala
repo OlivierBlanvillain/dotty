@@ -1,59 +1,92 @@
-// Tests variance checking on default methods
-import reflect.ClassTag
+package test
 
-class Foo[+A: ClassTag](x: A) {
-
-  private[this] val elems: Array[A] = Array(x)
-
-  def f[B](x: Array[B] = elems): Array[B] = x // error (1) should give a variance error here or ...
-
+trait Vector[+A] {
+  def append(x: Vector[A]): Vector[A]
+  private[this] def append3(x: Vector[A]): Vector[A] = append(x)
 }
 
-object Test extends App {
+class C[T]
 
-  val foo: Foo[Object] = new Foo[String]("A")
+object Covariant {
+  class Foo[+A] {
+    private[this] var a : A = _
+    def getA : A = a
+    // allowed
+    private[this] def setA1(a : A) = this.a = a
+    protected[this] def setA2(a : A) = this.a = a
+    // forbidden
+    private def setA3(a : A) = this.a = a
+    protected def setA4(a : A) = this.a = a
 
-  val arr = foo.f[Object]()
+    object Baz extends C[A]
+    trait Convert[B] {
+      def b2a(b : B) : A
+      def doit1(b : B) = setA1(b2a(b))
+      def doit2(b : B) = setA2(b2a(b))
+      def doit3(b : B) = setA3(b2a(b))
+      def doit4(b : B) = setA4(b2a(b))
+    }
+  }
+  class Foo2[+A] {
+    private[this] var a : A = _
+    def getA : A = a
+    private[this] def setA(a : A) = this.a = a
 
-  arr(0) = new Integer(1) // (1) ... will give an ArrayStoreException here
+    {
+      trait Convert[B] {
+        def b2a(b : B) : A
+        def doit(b : B) = setA(b2a(b))
+      }
+      println("")
+    }
+  }
+  class Foo3[+A] {
+    private[this] var a : A = _
+    def getA : A = a
+    private[this] def setA(a : A) = this.a = a
 
-}
-
-class Outer[+A](x: A) {
-
-  private[this] var elem: A = x
-
-  def getElem: A = elem
-
-  class Inner(constrParam: A) {  // error (2) should give a variance error here or ...
-    elem = constrParam
+    private[this] trait Convert[B] {
+      def b2a(b : B) : A
+      def doit(b : B) = setA(b2a(b))
+    }
+  }
+  abstract class AbstractTest {
+    val a : Foo[AnyRef]
+    val c = new a.Convert[Int] {
+      def b2a(b : Int) : AnyRef = "hello"
+    }
+    val b : Int = 42
+  }
+  class Test extends AbstractTest {
+    val a : Foo[java.lang.Character] = new Foo[java.lang.Character]
+  }
+  def main(args : Array[String]): Unit = {
+    val test = new Test
+    test.c.doit1(test.b)
+    test.c.doit2(test.b)
+    test.c.doit3(test.b)
+    test.c.doit4(test.b)
+    val x : java.lang.Character = test.a.getA
+    Console.println("XXX " + x)
   }
 
+  abstract class T[+A] {
+    val x: T[A] {
+      val m: A => A
+    }
+  }
+  object ST extends T[String] {
+    val x: T[String] { val m: String => String } = ST
+    val m: String => String = (_.substring(1))
+  }
+  val t: T[Any] = ST
+  t.x.m(new Object)
 }
 
-object Test2 extends App {
-  val o1: Outer[String] = new Outer[String]("A")
-  val o2: Outer[Object] = o1
-  new o2.Inner(new Integer(1))
-
-  val x: String = o1.getElem  // (2) ... will give a classcast exeption here
-
+object TestAlias {
+  class B[-T]
+  trait C[+T] {
+    type A = T
+    def foo: B[A]
+  }
 }
-
-
-trait HasY { type Y }
-
-// These are neg-tests corresponding to the pos-test Variances.scala
-// where all the variance annotations have been inverted.
-trait Foo1[+X] { def bar[Y <: X](y: Y) = y } // error
-trait Foo2[+X] { def bar(x: HasY { type Y <: X })(y: x.Y) = y } // error
-trait Foo3[-X] { def bar[Y >: X](y: Y) = y } // error
-trait Foo4[-X] { def bar(x: HasY { type Y >: X })(y: x.Y) = y } // error
-
-// These are neg-tests corresponding to the pos-test Variances.scala
-// where all the bounds have been flipped.
-trait Foo5[-X] { def bar[Y >: X](y: Y) = y } // error
-trait Foo6[-X] { def bar(x: HasY { type Y >: X })(y: x.Y) = y } // error
-trait Foo7[+X] { def bar[Y <: X](y: Y) = y } // error
-trait Foo8[+X] { def bar(x: HasY { type Y <: X })(y: x.Y) = y } // error
-

@@ -13,10 +13,11 @@ object Test {
       Console.println(new baz);
     }
   }
-  object bb extends B;
+  object b extends B;
   def main(args : Array[String]) : Unit = {
-    bb.initialize;
+    b.initialize;
   }
+  class XYZ
 }
 
 
