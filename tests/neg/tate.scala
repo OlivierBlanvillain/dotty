@@ -1,11 +1,11 @@
-    object unsound {
-      trait Bound[A, B <: A]
-      trait Bind[A] {
-        def bad[B <: A](bound: Bound[A, B], b: B) = b
-      }
-      def coerce[T, U](t: T): U = {
-        lazy val bound: Bound[U, _ >: T] = ??? // error: >: T does not conform to upper bound
-        def bind = new Bind[U] {}
-        bind.bad(bound, t)
-      }
-    }
+trait Out[+T]
+
+object Test {
+
+  def foo[T <% AnyRef](x: T) = ???
+
+  var x: Out[_ >: String] = ???
+  var y: Out[String] = ???
+  x = y // should give error, but currently masked by covariant alias representation
+ // y = x
+}

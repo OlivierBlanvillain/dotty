@@ -1,25 +1,15 @@
+import scala._;
+
 object test {
 
-  def foo(x: Int) = {
-
-    def bar(y: Int) = x + y
-    def baz(z: Int) = bar(z)
-
-    baz(1)
-
-  }
-
-  def foo2(x: Int) = {
-
-    class C {
-      def bam(y: Int): String => Int = {
-        def baz = x + y
-        z => baz * z.length
-      }
+  def f(x: Int) = {
+    def g() = h();
+    def h() = x;
+    g();
+    class inner() {
+      def g() = h();
+      def h() = x;
     }
-
-    val fun = new C().bam(1)
-    fun("abc")
-
+    g() + new inner().g();
   }
 }
