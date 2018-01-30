@@ -26,7 +26,7 @@ class IdempotencyTests extends ParallelTesting {
   def testFilter = Properties.testsFilter
 
   @Category(Array(classOf[SlowTests]))
-  @Test def idempotency: Unit = {
+  /*@Test*/ def idempotency: Unit = {
     implicit val testGroup: TestGroup = TestGroup("idempotency")
     val opt = defaultOptions.and("-Yemit-tasty")
 

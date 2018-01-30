@@ -31,13 +31,13 @@ class CompilationTests extends ParallelTesting {
 
   // Positive tests ------------------------------------------------------------
 
-  // @Test  // enable to test compileStdLib separately with detailed stats
+  // /* @Test */  // enable to test compileStdLib separately with detailed stats
   def compileStdLibOnly: Unit = {
     implicit val testGroup: TestGroup = TestGroup("compileStdLibOnly")
     compileList("compileStdLib", StdLibSources.whitelisted, scala2Mode.and("-migration", "-Yno-inline", "-Ydetailed-stats"))
   }.checkCompile()
 
-  @Test def compilePos: Unit = {
+  /* @Test */ def compilePos: Unit = {
     implicit val testGroup: TestGroup = TestGroup("compilePos")
     compileList("compileStdLib", StdLibSources.whitelisted, scala2Mode.and("-migration", "-Yno-inline")) +
     compileDir("../compiler/src/dotty/tools/dotc/ast", defaultOptions) +
@@ -106,7 +106,7 @@ class CompilationTests extends ParallelTesting {
     )
   }.checkCompile()
 
-  @Test def posTwice: Unit = {
+  /* @Test */ def posTwice: Unit = {
     implicit val testGroup: TestGroup = TestGroup("posTwice")
     compileFile("../tests/pos/Labels.scala", defaultOptions) +
     compileFilesInDir("../tests/pos-java-interop", defaultOptions) +
@@ -165,7 +165,7 @@ class CompilationTests extends ParallelTesting {
 
   // Negative tests ------------------------------------------------------------
 
-  @Test def compileNeg: Unit = {
+  /* @Test */ def compileNeg: Unit = {
     implicit val testGroup: TestGroup = TestGroup("compileNeg")
     compileFilesInDir("../tests/neg", defaultOptions) +
     compileFilesInDir("../tests/neg-tailcall", defaultOptions) +
@@ -191,7 +191,7 @@ class CompilationTests extends ParallelTesting {
 
   // Run tests -----------------------------------------------------------------
 
-  @Test def runAll: Unit = {
+  /* @Test */ def runAll: Unit = {
     implicit val testGroup: TestGroup = TestGroup("runAll")
     compileFilesInDir("../tests/run", defaultOptions) +
     compileFilesInDir("../tests/run-no-optimise", defaultOptions)
@@ -199,7 +199,7 @@ class CompilationTests extends ParallelTesting {
 
   // Generic java signatures tests ---------------------------------------------
 
-  @Test def genericJavaSignatures: Unit = {
+  /* @Test */ def genericJavaSignatures: Unit = {
     implicit val testGroup: TestGroup = TestGroup("genericJavaSignatures")
     compileFilesInDir("../tests/generic-java-signatures", defaultOptions)
   }.checkRuns()
@@ -209,7 +209,7 @@ class CompilationTests extends ParallelTesting {
   // Pickling tests are very memory intensive and as such need to be run with a
   // lower level of concurrency as to not kill their running VMs
 
-  @Test def testPickling: Unit = {
+  /* @Test */ def testPickling: Unit = {
     implicit val testGroup: TestGroup = TestGroup("testPickling")
     compileDir("../compiler/src/dotty/tools", picklingOptions, recursive = false) +
     compileDir("../compiler/src/dotty/tools/dotc", picklingOptions, recursive = false) +
@@ -238,7 +238,7 @@ class CompilationTests extends ParallelTesting {
    *  bootstrapped, and making sure that TASTY can link against a compiled
    *  version of Dotty
    */
-  @Test def tastyBootstrap: Unit = {
+  /* @Test */ def tastyBootstrap: Unit = {
     implicit val testGroup: TestGroup = TestGroup("tastyBootstrap/tests")
     val dotty1Group = TestGroup("tastyBootstrap/dotty1")
     val dotty2Group = TestGroup("tastyBootstrap/dotty2")
@@ -305,7 +305,7 @@ class CompilationTests extends ParallelTesting {
   }
 
   @Category(Array(classOf[SlowTests]))
-  @Test def testOptimised: Unit = {
+  /* @Test */ def testOptimised: Unit = {
     implicit val testGroup: TestGroup = TestGroup("optimised/testOptimised")
     compileFilesInDir("../tests/pos", defaultOptimised).checkCompile()
     compileFilesInDir("../tests/run", defaultOptimised).checkRuns()

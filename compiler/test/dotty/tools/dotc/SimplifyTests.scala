@@ -52,7 +52,7 @@ abstract class SimplifyTests(val optimise: Boolean) extends DottyBytecodeTest {
     }
   }
 
-  @Test def inlineVals =
+  /* @Test */ def inlineVals =
     check("println(1)",
        """
           |val one = 1
@@ -60,16 +60,16 @@ abstract class SimplifyTests(val optimise: Boolean) extends DottyBytecodeTest {
           |println(anotherone)
        """)
 
-  @Test def inlineCaseIntrinsicsDottyApply =
+  /* @Test */ def inlineCaseIntrinsicsDottyApply =
     check(
       source   = "CC.apply(1, 2)",
       expected = "new CC(1, 2)",
       shared   = "case class CC(i: Int, j: Int)")
 
-  @Test def inlineCaseIntrinsicsScalacApply =
+  /* @Test */ def inlineCaseIntrinsicsScalacApply =
     check("::.apply(1, Nil)", "new ::(1, Nil)")
 
-  @Test def inlineCaseIntrinsicsScalacUnapply =
+  /* @Test */ def inlineCaseIntrinsicsScalacUnapply =
     check(
       """
          |val t = Tuple2(1, "s")
@@ -79,7 +79,7 @@ abstract class SimplifyTests(val optimise: Boolean) extends DottyBytecodeTest {
          |print(new Some(new Tuple2(1, "s")))
       """)
 
-  @Test def dropNoEffects =
+  /* @Test */ def dropNoEffects =
     check(
       """
          |val a = "wow"
@@ -89,10 +89,10 @@ abstract class SimplifyTests(val optimise: Boolean) extends DottyBytecodeTest {
          |print(1)
       """)
 
-  @Test def dropNoEffectsTuple =
+  /* @Test */ def dropNoEffectsTuple =
     check("new Tuple2(1, 3)", "")
 
-  @Test def inlineLocalObjects =
+  /* @Test */ def inlineLocalObjects =
     check(
       """
          |val t = new Tuple2(1, 3)
@@ -103,7 +103,7 @@ abstract class SimplifyTests(val optimise: Boolean) extends DottyBytecodeTest {
          |print(1 + i) // Prevents typer from constant folding 1 + 3 to 4
       """)
 
-  @Test def inlineOptions =
+  /* @Test */ def inlineOptions =
     check(
       """
          |val sum = Some("s")
@@ -118,7 +118,7 @@ abstract class SimplifyTests(val optimise: Boolean) extends DottyBytecodeTest {
    * Constant folding tests
    */
 
-  @Test def basicConstantFold =
+  /* @Test */ def basicConstantFold =
     check(
       """
         |val i = 3
@@ -129,7 +129,7 @@ abstract class SimplifyTests(val optimise: Boolean) extends DottyBytecodeTest {
         |print(7)
       """)
 
-  @Test def branchConstantFold =
+  /* @Test */ def branchConstantFold =
     check(
       """
          |val t = true // val needed, or typer takes care of this
@@ -140,19 +140,19 @@ abstract class SimplifyTests(val optimise: Boolean) extends DottyBytecodeTest {
          |print(1)
       """)
 
-  @Test def arithmeticConstantFold =
+  /* @Test */ def arithmeticConstantFold =
     check(
       """
         |val i = 3
         |val j = i + 4
-        |if(j - i >= (i + 1) / 2) 
+        |if(j - i >= (i + 1) / 2)
         |  print(i + 1)
       """,
       """
         |print(4)
       """)
 
-  @Test def twoValConstantFold =
+  /* @Test */ def twoValConstantFold =
     check(
       """
         |val i = 3
@@ -164,7 +164,7 @@ abstract class SimplifyTests(val optimise: Boolean) extends DottyBytecodeTest {
         |print(8)
       """)
 
-  // @Test def listPatmapExample =
+  // /* @Test */ def listPatmapExample =
   //   check(
   //     """
   //        |val l = 1 :: 2 :: Nil
@@ -176,7 +176,7 @@ abstract class SimplifyTests(val optimise: Boolean) extends DottyBytecodeTest {
   //     """TODO
   //     """)
 
-  // @Test def fooCCExample =
+  // /* @Test */ def fooCCExample =
   //   check(
   //     source   =
   //     """
@@ -193,7 +193,7 @@ abstract class SimplifyTests(val optimise: Boolean) extends DottyBytecodeTest {
   //     """,
   //     shared   = "case class CC(a: Int, b: Object)")
 
-  // @Test def booleansFunctionExample =
+  // /* @Test */ def booleansFunctionExample =
   //   check(
   //     """
   //     |val a: Any = new Object {}
