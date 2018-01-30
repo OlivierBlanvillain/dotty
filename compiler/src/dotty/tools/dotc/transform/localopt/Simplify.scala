@@ -42,29 +42,29 @@ class Simplify extends MiniPhase with IdentityDenotTransformer {
    *  Reordering them may require quadratically more rounds to finish.
    */
   private def beforeErasure: List[Optimisation] =
-    new InlineCaseIntrinsics(this)  ::
-    new RemoveUnnecessaryNullChecks ::
-    new InlineOptions               ::
-    //new InlineLabelsCalledOnce    :: // not needed: new pattern matcher does this already
-    new Valify(this)                ::
-    new Devalify                    ::
-    new Jumpjump                    ::
-    new DropGoodCasts               ::
-    new DropNoEffects(this)         ::
-    new InlineLocalObjects(this)    ::
-    // new Varify                      :: // varify could stop other transformations from being applied. postponed.
-    // new BubbleUpNothing             ::
-    new ConstantFold(this)          ::
+    // new InlineCaseIntrinsics(this)  ::
+    // new RemoveUnnecessaryNullChecks ::
+    // new InlineOptions               ::
+    // //new InlineLabelsCalledOnce    :: // not needed: new pattern matcher does this already
+    // new Valify(this)                ::
+    // new Devalify                    ::
+    // new Jumpjump                    ::
+    // new DropGoodCasts               ::
+    // new DropNoEffects(this)         ::
+    // new InlineLocalObjects(this)    ::
+    // // new Varify                      :: // varify could stop other transformations from being applied. postponed.
+    // // new BubbleUpNothing             ::
+    // new ConstantFold(this)          ::
     Nil
 
   /** See comment on beforeErasure */
   private def afterErasure: List[Optimisation] =
-    new Valify(this)                ::
-    new Devalify                    ::
-    new Jumpjump                    ::
-    new DropGoodCasts               ::
-    new DropNoEffects(this)         ::
-    new ConstantFold(this)          ::
+    // new Valify(this)                ::
+    // new Devalify                    ::
+    // new Jumpjump                    ::
+    // new DropGoodCasts               ::
+    // new DropNoEffects(this)         ::
+    // new ConstantFold(this)          ::
     Nil
 
   var optimisations: List[Optimisation] = Nil
