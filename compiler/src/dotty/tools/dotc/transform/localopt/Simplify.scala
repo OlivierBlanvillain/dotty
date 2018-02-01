@@ -47,8 +47,8 @@ class Simplify extends MiniPhase with IdentityDenotTransformer {
     // new InlineOptions               ::
     // //new InlineLabelsCalledOnce    :: // not needed: new pattern matcher does this already
     // new Valify(this)                ::
-    new Devalify                    ::
-    // new Jumpjump                    ::
+    // new Devalify                    ::
+    new Jumpjump                    ::
     // new DropGoodCasts               ::
     // new DropNoEffects(this)         ::
     // new InlineLocalObjects(this)    ::
@@ -60,8 +60,8 @@ class Simplify extends MiniPhase with IdentityDenotTransformer {
   /** See comment on beforeErasure */
   private def afterErasure: List[Optimisation] =
     // new Valify(this)                ::
-    new Devalify                    ::
-    // new Jumpjump                    ::
+    // new Devalify                    ::
+    new Jumpjump                    ::
     // new DropGoodCasts               ::
     // new DropNoEffects(this)         ::
     // new ConstantFold(this)          ::
