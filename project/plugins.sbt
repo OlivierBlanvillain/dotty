@@ -17,3 +17,4 @@ addSbtPlugin("org.xerial.sbt" % "sbt-pack" % "0.10.1")
 
 addSbtPlugin("pl.project13.scala" % "sbt-jmh" % "0.2.24")
 
+addSbtPlugin("org.scoverage" % "sbt-scoverage" % "1.5.1")
