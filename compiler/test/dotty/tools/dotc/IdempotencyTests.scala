@@ -75,7 +75,9 @@ class IdempotencyTests extends ParallelTesting {
     }
 
     val tests = allTests.keepOutput.checkCompile()
-    allChecks.checkRuns()
+
+    allChecks.checkCompile()
+
     tests.delete()
   }
 

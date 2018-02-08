@@ -196,14 +196,14 @@ class CompilationTests extends ParallelTesting {
     compileFilesInDir("tests/run", defaultOptions) +
     compileFilesInDir("tests/run-no-optimise", defaultOptions) +
     compileFilesInDir("tests/run-with-compiler", defaultRunWithCompilerOptions)
-  }.checkRuns()
+  }.checkCompile()
 
   // Generic java signatures tests ---------------------------------------------
 
   @Test def genericJavaSignatures: Unit = {
     implicit val testGroup: TestGroup = TestGroup("genericJavaSignatures")
     compileFilesInDir("tests/generic-java-signatures", defaultOptions)
-  }.checkRuns()
+  }.checkCompile()
 
   // Pickling Tests ------------------------------------------------------------
   //
@@ -300,7 +300,7 @@ class CompilationTests extends ParallelTesting {
     assert(new java.io.File(s"../out/$dotty1Group/dotty/").exists)
     assert(new java.io.File(s"../out/$dotty2Group/dotty/").exists)
     assert(new java.io.File(s"../out/$libGroup/src/").exists)
-    compileList("idempotency", List("tests/idempotency/BootstrapChecker.scala", "tests/idempotency/IdempotencyCheck.scala"), defaultOptions).checkRuns()
+    compileList("idempotency", List("tests/idempotency/BootstrapChecker.scala", "tests/idempotency/IdempotencyCheck.scala"), defaultOptions).checkCompile()
 
     tests.foreach(_.delete())
   }
@@ -309,7 +309,7 @@ class CompilationTests extends ParallelTesting {
   @Test def testOptimised: Unit = {
     implicit val testGroup: TestGroup = TestGroup("optimised/testOptimised")
     compileFilesInDir("tests/pos", defaultOptimised).checkCompile()
-    compileFilesInDir("tests/run", defaultOptimised).checkRuns()
+    compileFilesInDir("tests/run", defaultOptimised).checkCompile()
     compileFilesInDir("tests/neg", defaultOptimised).checkExpectedErrors()
   }
 

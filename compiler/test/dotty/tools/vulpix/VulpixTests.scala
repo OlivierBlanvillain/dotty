@@ -47,34 +47,34 @@ class VulpixTests extends ParallelTesting {
     compileFile("tests/partest-test/negNoPositionAnnots.scala", defaultOptions).expectFailure.checkExpectedErrors()
 
   @Test def runCompileFail: Unit =
-    compileFile("tests/partest-test/posFail1Error.scala", defaultOptions).expectFailure.checkRuns()
+    compileFile("tests/partest-test/posFail1Error.scala", defaultOptions).expectFailure.checkCompile()
 
   @Test def runWrongOutput1: Unit =
-    compileFile("tests/partest-test/runWrongOutput1.scala", defaultOptions).expectFailure.checkRuns()
+    compileFile("tests/partest-test/runWrongOutput1.scala", defaultOptions).expectFailure.checkCompile()
 
   @Test def runWrongOutput2: Unit =
-    compileFile("tests/partest-test/runWrongOutput2.scala", defaultOptions).expectFailure.checkRuns()
+    compileFile("tests/partest-test/runWrongOutput2.scala", defaultOptions).expectFailure.checkCompile()
 
   @Test def runDiffOutput1: Unit =
-    compileFile("tests/partest-test/runDiffOutput1.scala", defaultOptions).expectFailure.checkRuns()
+    compileFile("tests/partest-test/runDiffOutput1.scala", defaultOptions).expectFailure.checkCompile()
 
   @Test def runStackOverflow: Unit =
-    compileFile("tests/partest-test/stackOverflow.scala", defaultOptions).expectFailure.checkRuns()
+    compileFile("tests/partest-test/stackOverflow.scala", defaultOptions).expectFailure.checkCompile()
 
   @Test def runOutRedirects: Unit =
-    compileFile("tests/partest-test/i2147.scala", defaultOptions).expectFailure.checkRuns()
+    compileFile("tests/partest-test/i2147.scala", defaultOptions).expectFailure.checkCompile()
 
   @Test def infiteNonRec: Unit =
-    compileFile("tests/partest-test/infinite.scala", defaultOptions).expectFailure.checkRuns()
+    compileFile("tests/partest-test/infinite.scala", defaultOptions).expectFailure.checkCompile()
 
   @Test def infiteTailRec: Unit =
-    compileFile("tests/partest-test/infiniteTail.scala", defaultOptions).expectFailure.checkRuns()
+    compileFile("tests/partest-test/infiniteTail.scala", defaultOptions).expectFailure.checkCompile()
 
   @Test def infiniteAlloc: Unit =
-    compileFile("tests/partest-test/infiniteAlloc.scala", defaultOptions).expectFailure.checkRuns()
+    compileFile("tests/partest-test/infiniteAlloc.scala", defaultOptions).expectFailure.checkCompile()
 
   @Test def deadlock: Unit =
-    compileFile("tests/partest-test/deadlock.scala", defaultOptions).expectFailure.checkRuns()
+    compileFile("tests/partest-test/deadlock.scala", defaultOptions).expectFailure.checkCompile()
 
   @Test def badJava: Unit =
     try compileFile("tests/partest-test/BadJava.java", defaultOptions).suppressAllOutput.checkCompile()
