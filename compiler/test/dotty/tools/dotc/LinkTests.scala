@@ -75,7 +75,7 @@ class LinkTests extends ParallelTesting {
     val tests = {
       linkStrawmanTest +
       linkCustomLibTest
-    }.keepOutput.checkRuns()
+    }.keepOutput.checkCompile()
 
     try {
       classFileChecks(linkStramanDir, strawmanLibTestGroup.name)
