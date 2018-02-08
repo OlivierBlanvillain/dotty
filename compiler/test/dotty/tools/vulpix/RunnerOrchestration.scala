@@ -132,7 +132,7 @@ trait RunnerOrchestration {
         // Await result for `maxDuration` and then timout and destroy the
         // process:
         val status =
-          try Await.result(readOutput, maxDuration)
+          try Await.result(readOutput, maxDuration * 20)
           catch { case _: TimeoutException =>  Timeout }
 
         // Handle failure of the VM:

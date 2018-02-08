@@ -468,7 +468,7 @@ trait ParallelTesting extends RunnerOrchestration { self =>
         }
 
         pool.shutdown()
-        if (!pool.awaitTermination(20, TimeUnit.MINUTES)) {
+        if (!pool.awaitTermination(20 * 20, TimeUnit.MINUTES)) {
           pool.shutdownNow()
           System.setOut(realStdout)
           System.setErr(realStderr)
