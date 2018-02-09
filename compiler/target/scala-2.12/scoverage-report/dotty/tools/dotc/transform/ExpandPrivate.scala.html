@@ -1,0 +1,2229 @@
+<html>
+      <head>
+        <meta http-equiv="Content-Type" content="text/html; charset=utf-8"/>
+        <title id="title">
+          dotty/tools/dotc/transform/ExpandPrivate.scala.html
+        </title>
+        <script src="https://ajax.googleapis.com/ajax/libs/jquery/1.10.2/jquery.min.js"></script><link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/jquery.tablesorter/2.20.1/css/theme.default.min.css" type="text/css"/><script src="https://cdnjs.cloudflare.com/ajax/libs/jquery.tablesorter/2.20.1/js/jquery.tablesorter.min.js"></script><link rel="stylesheet" href="https://netdna.bootstrapcdn.com/bootstrap/3.0.3/css/bootstrap.min.css" type="text/css"/><script src="https://netdna.bootstrapcdn.com/bootstrap/3.0.3/js/bootstrap.min.js"></script><script type="text/javascript">
+        $(document).ready(function() {$(".tablesorter").tablesorter();});
+      </script>
+        <style>
+          table.codegrid { font-family: monospace; font-size: 12px; width: auto!important; }table.statementlist { width: auto!important; font-size: 13px; } table.codegrid td { padding: 0!important; border: 0!important } table td.linenumber { width: 40px!important; } 
+        </style>
+      </head>
+      <body style="font-family: monospace;">
+        <ul class="nav nav-tabs">
+          <li>
+            <a href="#codegrid" data-toggle="tab">Codegrid</a>
+          </li>
+          <li>
+            <a href="#statementlist" data-toggle="tab">Statement List</a>
+          </li>
+        </ul>
+        <div class="tab-content">
+          <div class="tab-pane active" id="codegrid">
+            <pre style='font-size: 12pt; font-family: courier;'>1 <span style=''>package dotty.tools.dotc
+</span>2 <span style=''>package transform
+</span>3 <span style=''>
+</span>4 <span style=''>import core._
+</span>5 <span style=''>import dotty.tools.dotc.ast.tpd
+</span>6 <span style=''>import dotty.tools.dotc.core.DenotTransformers.{IdentityDenotTransformer, SymTransformer}
+</span>7 <span style=''>import Contexts.Context
+</span>8 <span style=''>import Symbols._
+</span>9 <span style=''>import Scopes._
+</span>10 <span style=''>import Flags._
+</span>11 <span style=''>import StdNames._
+</span>12 <span style=''>import SymDenotations._
+</span>13 <span style=''>import Types._
+</span>14 <span style=''>
+</span>15 <span style=''>import collection.mutable
+</span>16 <span style=''>import Decorators._
+</span>17 <span style=''>import ast.Trees._
+</span>18 <span style=''>import MegaPhase._
+</span>19 <span style=''>import java.io.File.separatorChar
+</span>20 <span style=''>
+</span>21 <span style=''>import ValueClasses._
+</span>22 <span style=''>import dotty.tools.dotc.core.Phases.Phase
+</span>23 <span style=''>
+</span>24 <span style=''>/** Make private term members that are accessed from another class
+</span>25 <span style=''> *  non-private by resetting the Private flag and expanding their name.
+</span>26 <span style=''> *
+</span>27 <span style=''> *  Make private accessor in value class not-private. This is necessary to unbox
+</span>28 <span style=''> *  the value class when accessing it from separate compilation units
+</span>29 <span style=''> *
+</span>30 <span style=''> *  Also, make non-private any private parameter forwarders that forward to an inherited
+</span>31 <span style=''> *  public or protected parameter accessor with the same name as the forwarder.
+</span>32 <span style=''> *  This is necessary since private methods are not allowed to have the same name
+</span>33 <span style=''> *  as inherited public ones.
+</span>34 <span style=''> *
+</span>35 <span style=''> *  See discussion in https://github.com/lampepfl/dotty/pull/784
+</span>36 <span style=''> *  and https://github.com/lampepfl/dotty/issues/783
+</span>37 <span style=''> */
+</span>38 <span style=''>class ExpandPrivate extends MiniPhase with IdentityDenotTransformer { thisPhase =&gt;
+</span>39 <span style=''>  import ast.tpd._
+</span>40 <span style=''>
+</span>41 <span style=''>  override def phaseName: String = </span><span style='background: #AEF1AE'>&quot;expandPrivate&quot;</span><span style=''>
+</span>42 <span style=''>
+</span>43 <span style=''>  // This phase moves methods around (in infotransform) so it may need to make other methods public
+</span>44 <span style=''>  override def runsAfter: Set[Class[_ &lt;: Phase]] = </span><span style='background: #AEF1AE'>Set(classOf[MoveStatics])</span><span style=''>
+</span>45 <span style=''>
+</span>46 <span style=''>  override def changesMembers = </span><span style='background: #AEF1AE'>true</span><span style=''> // the phase introduces new members with mangled names
+</span>47 <span style=''>
+</span>48 <span style=''>  override def checkPostCondition(tree: Tree)(implicit ctx: Context): Unit = {
+</span>49 <span style=''>    tree match {
+</span>50 <span style=''>      case t: DefDef =&gt;
+</span>51 <span style=''>        val sym = </span><span style='background: #AEF1AE'>t.symbol</span><span style=''>
+</span>52 <span style=''>        def hasWeakerAccess(other: Symbol) = {
+</span>53 <span style=''>          // public &gt; protected &gt; /* default */ &gt; private
+</span>54 <span style=''>          if (</span><span style='background: #AEF1AE'>sym.is(Private)</span><span style=''>) </span><span style='background: #F0ADAD'>other.is(Private)</span><span style=''>
+</span>55 <span style=''>          else </span><span style='background: #AEF1AE'>if (sym.is(Protected)) other.is(Protected | Private)
+</span>56 <span style=''></span><span style='background: #AEF1AE'>          else true</span><span style=''> // sym is public
+</span>57 <span style=''>        }
+</span>58 <span style=''>        val fail = </span><span style='background: #AEF1AE'>sym.allOverriddenSymbols.findSymbol(x =&gt; !hasWeakerAccess(x))</span><span style=''>
+</span>59 <span style=''>        if (</span><span style='background: #AEF1AE'>fail.exists</span><span style=''>) {
+</span>60 <span style=''>          </span><span style='background: #F0ADAD'>assert(false, i&quot;${sym.showFullName}: ${sym.info} has weaker access than superclass method ${fail.showFullName}: ${fail.info}&quot;)</span><span style=''>
+</span>61 <span style=''>        }
+</span>62 <span style=''>      case _ </span><span style='background: #AEF1AE'>=&gt;</span><span style=''>
+</span>63 <span style=''>    }
+</span>64 <span style=''>  }
+</span>65 <span style=''>
+</span>66 <span style=''>  private def isVCPrivateParamAccessor(d: SymDenotation)(implicit ctx: Context) =
+</span>67 <span style=''>    </span><span style='background: #AEF1AE'>d.isTerm &amp;&amp; d.is(PrivateParamAccessor) &amp;&amp; isDerivedValueClass(d.owner)</span><span style=''>
+</span>68 <span style=''>
+</span>69 <span style=''>  /** Make private terms accessed from different classes non-private.
+</span>70 <span style=''>   *  Note: this happens also for accesses between class and linked module class.
+</span>71 <span style=''>   *  If we change the scheme at one point to make static module class computations
+</span>72 <span style=''>   *  static members of the companion class, we should tighten the condition below.
+</span>73 <span style=''>   */
+</span>74 <span style=''>  private def ensurePrivateAccessible(d: SymDenotation)(implicit ctx: Context) =
+</span>75 <span style=''>    if (</span><span style='background: #AEF1AE'>isVCPrivateParamAccessor(d)</span><span style=''>)
+</span>76 <span style=''>      </span><span style='background: #AEF1AE'>d.ensureNotPrivate.installAfter(thisPhase)</span><span style=''>
+</span>77 <span style=''>    else </span><span style='background: #AEF1AE'>if (d.is(PrivateTerm) &amp;&amp; !d.owner.is(Package) &amp;&amp; d.owner != ctx.owner.lexicallyEnclosingClass) {
+</span>78 <span style=''></span><span style='background: #AEF1AE'>      // Paths `p1` and `p2` are similar if they have a common suffix that follows
+</span>79 <span style=''></span><span style='background: #AEF1AE'>      // possibly different directory paths. That is, their common suffix extends
+</span>80 <span style=''></span><span style='background: #AEF1AE'>      // in both cases either to the start of the path or to a file separator character.
+</span>81 <span style=''></span><span style='background: #AEF1AE'>      def isSimilar(p1: String, p2: String): Boolean = {
+</span>82 <span style=''></span><span style='background: #AEF1AE'>        var i = p1.length - 1
+</span>83 <span style=''></span><span style='background: #AEF1AE'>        var j = p2.length - 1
+</span>84 <span style=''></span><span style='background: #AEF1AE'>        while (i &gt;= 0 &amp;&amp; j &gt;= 0 &amp;&amp; p1(i) == p2(j) &amp;&amp; p1(i) != separatorChar) {
+</span>85 <span style=''></span><span style='background: #AEF1AE'>          i -= 1
+</span>86 <span style=''></span><span style='background: #AEF1AE'>          j -= 1
+</span>87 <span style=''></span><span style='background: #AEF1AE'>        }
+</span>88 <span style=''></span><span style='background: #AEF1AE'>        (i &lt; 0 || p1(i) == separatorChar) &amp;&amp;
+</span>89 <span style=''></span><span style='background: #AEF1AE'>        (j &lt; 0 || p1(j) == separatorChar)
+</span>90 <span style=''></span><span style='background: #AEF1AE'>      }
+</span>91 <span style=''></span><span style='background: #AEF1AE'>
+</span>92 <span style=''></span><span style='background: #AEF1AE'>      assert(d.symbol.sourceFile != null &amp;&amp;
+</span>93 <span style=''></span><span style='background: #AEF1AE'>             isSimilar(d.symbol.sourceFile.path, ctx.owner.sourceFile.path),
+</span>94 <span style=''></span><span style='background: #AEF1AE'>          </span><span style='background: #F0ADAD'>s&quot;private ${d.symbol.showLocated} in ${d.symbol.sourceFile} accessed from ${ctx.owner.showLocated} in ${ctx.owner.sourceFile}&quot;</span><span style='background: #AEF1AE'>)
+</span>95 <span style=''></span><span style='background: #AEF1AE'>      d.ensureNotPrivate.installAfter(thisPhase)
+</span>96 <span style=''></span><span style='background: #AEF1AE'>    }</span><span style=''>
+</span>97 <span style=''>
+</span>98 <span style=''>  override def transformIdent(tree: Ident)(implicit ctx: Context) = {
+</span>99 <span style=''>    </span><span style='background: #AEF1AE'>ensurePrivateAccessible(tree.symbol)</span><span style=''>
+</span>100 <span style=''>    tree
+</span>101 <span style=''>  }
+</span>102 <span style=''>
+</span>103 <span style=''>  override def transformSelect(tree: Select)(implicit ctx: Context) = {
+</span>104 <span style=''>    </span><span style='background: #AEF1AE'>ensurePrivateAccessible(tree.symbol)</span><span style=''>
+</span>105 <span style=''>    tree
+</span>106 <span style=''>  }
+</span>107 <span style=''>
+</span>108 <span style=''>  override def transformDefDef(tree: DefDef)(implicit ctx: Context) = {
+</span>109 <span style=''>    val sym = </span><span style='background: #AEF1AE'>tree.symbol</span><span style=''>
+</span>110 <span style=''>    </span><span style='background: #AEF1AE'>tree.rhs</span><span style=''> match {
+</span>111 <span style=''>      case Apply(sel @ Select(_: Super, _), _)
+</span>112 <span style=''>      if </span><span style='background: #AEF1AE'>sym.is(PrivateParamAccessor) &amp;&amp; sel.symbol.is(ParamAccessor) &amp;&amp; sym.name == sel.symbol.name</span><span style=''> =&gt;
+</span>113 <span style=''>        </span><span style='background: #AEF1AE'>sym.ensureNotPrivate.installAfter(thisPhase)</span><span style=''>
+</span>114 <span style=''>      case _ =&gt;
+</span>115 <span style=''>        if (</span><span style='background: #AEF1AE'>isVCPrivateParamAccessor(sym)</span><span style=''>)
+</span>116 <span style=''>          </span><span style='background: #AEF1AE'>sym.ensureNotPrivate.installAfter(thisPhase)</span><span style=''>
+</span>117 <span style=''>    }
+</span>118 <span style=''>    tree
+</span>119 <span style=''>  }
+</span>120 <span style=''>}
+</span></pre>
+          </div>
+          <div class="tab-pane" id="statementlist">
+            <table cellspacing="0" cellpadding="0" class="table statementlist">
+      <tr>
+        <th>Line</th>
+        <th>Stmt Id</th>
+        <th>Pos</th>
+        <th>Tree</th>
+        <th>Symbol</th>
+        <th>Code</th>
+      </tr><tr>
+        <td>
+          41
+        </td>
+        <td>
+          54123
+        </td>
+        <td>
+          1334
+          -
+          1349
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          &quot;expandPrivate&quot;
+        </td>
+      </tr><tr>
+        <td>
+          44
+        </td>
+        <td>
+          54124
+        </td>
+        <td>
+          1502
+          -
+          1527
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.generic.GenericCompanion.apply
+        </td>
+        <td style="background: #AEF1AE">
+          scala.Predef.Set.apply[Class[_ &lt;: dotty.tools.dotc.core.Phases.Phase]](classOf[dotty.tools.dotc.transform.MoveStatics])
+        </td>
+      </tr><tr>
+        <td>
+          46
+        </td>
+        <td>
+          54125
+        </td>
+        <td>
+          1561
+          -
+          1565
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          true
+        </td>
+      </tr><tr>
+        <td>
+          51
+        </td>
+        <td>
+          54126
+        </td>
+        <td>
+          1760
+          -
+          1768
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Trees.Tree.symbol
+        </td>
+        <td style="background: #AEF1AE">
+          t.symbol(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          54
+        </td>
+        <td>
+          54129
+        </td>
+        <td>
+          1905
+          -
+          1922
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          dotty.tools.dotc.core.SymDenotations.SymDenotation.is
+        </td>
+        <td style="background: #F0ADAD">
+          core.Symbols.toDenot(other)(ctx).is(core.Flags.Private)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          54
+        </td>
+        <td>
+          54128
+        </td>
+        <td>
+          1905
+          -
+          1922
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.SymDenotations.SymDenotation.is
+        </td>
+        <td style="background: #F0ADAD">
+          core.Symbols.toDenot(other)(ctx).is(core.Flags.Private)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          54
+        </td>
+        <td>
+          54127
+        </td>
+        <td>
+          1888
+          -
+          1903
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.SymDenotations.SymDenotation.is
+        </td>
+        <td style="background: #AEF1AE">
+          core.Symbols.toDenot(sym)(ctx).is(core.Flags.Private)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          55
+        </td>
+        <td>
+          54135
+        </td>
+        <td>
+          1938
+          -
+          2010
+        </td>
+        <td>
+          If
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          if (core.Symbols.toDenot(sym)(ctx).is(core.Flags.Protected)(ctx))
+  core.Symbols.toDenot(other)(ctx).is(core.Flags.Protected.|(core.Flags.Private))(ctx)
+else
+  true
+        </td>
+      </tr><tr>
+        <td>
+          55
+        </td>
+        <td>
+          54132
+        </td>
+        <td>
+          1961
+          -
+          1990
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          dotty.tools.dotc.core.SymDenotations.SymDenotation.is
+        </td>
+        <td style="background: #AEF1AE">
+          core.Symbols.toDenot(other)(ctx).is(core.Flags.Protected.|(core.Flags.Private))(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          55
+        </td>
+        <td>
+          54131
+        </td>
+        <td>
+          1961
+          -
+          1990
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.SymDenotations.SymDenotation.is
+        </td>
+        <td style="background: #AEF1AE">
+          core.Symbols.toDenot(other)(ctx).is(core.Flags.Protected.|(core.Flags.Private))(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          55
+        </td>
+        <td>
+          54130
+        </td>
+        <td>
+          1942
+          -
+          1959
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.SymDenotations.SymDenotation.is
+        </td>
+        <td style="background: #AEF1AE">
+          core.Symbols.toDenot(sym)(ctx).is(core.Flags.Protected)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          56
+        </td>
+        <td>
+          54134
+        </td>
+        <td>
+          2006
+          -
+          2010
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          true
+        </td>
+      </tr><tr>
+        <td>
+          56
+        </td>
+        <td>
+          54133
+        </td>
+        <td>
+          2006
+          -
+          2010
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          true
+        </td>
+      </tr><tr>
+        <td>
+          58
+        </td>
+        <td>
+          54138
+        </td>
+        <td>
+          2057
+          -
+          2118
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.core.Decorators.SymbolIteratorDecorator.findSymbol
+        </td>
+        <td style="background: #AEF1AE">
+          core.Decorators.SymbolIteratorDecorator(core.Symbols.toDenot(sym)(ctx).allOverriddenSymbols(ctx)).findSymbol(((x: dotty.tools.dotc.core.Symbols.Symbol) =&gt; hasWeakerAccess(x).unary_!))
+        </td>
+      </tr><tr>
+        <td>
+          58
+        </td>
+        <td>
+          54137
+        </td>
+        <td>
+          2098
+          -
+          2117
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.Boolean.unary_!
+        </td>
+        <td style="background: #AEF1AE">
+          hasWeakerAccess(x).unary_!
+        </td>
+      </tr><tr>
+        <td>
+          58
+        </td>
+        <td>
+          54136
+        </td>
+        <td>
+          2057
+          -
+          2081
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.SymDenotations.SymDenotation.allOverriddenSymbols
+        </td>
+        <td style="background: #AEF1AE">
+          core.Symbols.toDenot(sym)(ctx).allOverriddenSymbols(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          59
+        </td>
+        <td>
+          54144
+        </td>
+        <td>
+          2127
+          -
+          2127
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          ()
+        </td>
+      </tr><tr>
+        <td>
+          59
+        </td>
+        <td>
+          54139
+        </td>
+        <td>
+          2131
+          -
+          2142
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Denotations.Denotation.exists
+        </td>
+        <td style="background: #AEF1AE">
+          core.Symbols.toDenot(fail)(ctx).exists
+        </td>
+      </tr><tr>
+        <td>
+          59
+        </td>
+        <td>
+          54145
+        </td>
+        <td>
+          2127
+          -
+          2127
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          ()
+        </td>
+      </tr><tr>
+        <td>
+          60
+        </td>
+        <td>
+          54141
+        </td>
+        <td>
+          2170
+          -
+          2281
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.Decorators.StringInterpolators.i
+        </td>
+        <td style="background: #F0ADAD">
+          core.Decorators.StringInterpolators(scala.StringContext.apply(&quot;&quot;, &quot;: &quot;, &quot; has weaker access than superclass method &quot;, &quot;: &quot;, &quot;&quot;)).i(sym.showFullName(ctx), core.Symbols.toDenot(sym)(ctx).info(ctx), fail.showFullName(ctx), core.Symbols.toDenot(fail)(ctx).info(ctx))(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          60
+        </td>
+        <td>
+          54140
+        </td>
+        <td>
+          2163
+          -
+          2168
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          false
+        </td>
+      </tr><tr>
+        <td>
+          60
+        </td>
+        <td>
+          54143
+        </td>
+        <td>
+          2156
+          -
+          2282
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          scala.Predef.assert
+        </td>
+        <td style="background: #F0ADAD">
+          scala.Predef.assert(false, core.Decorators.StringInterpolators(scala.StringContext.apply(&quot;&quot;, &quot;: &quot;, &quot; has weaker access than superclass method &quot;, &quot;: &quot;, &quot;&quot;)).i(sym.showFullName(ctx), core.Symbols.toDenot(sym)(ctx).info(ctx), fail.showFullName(ctx), core.Symbols.toDenot(fail)(ctx).info(ctx))(ctx))
+        </td>
+      </tr><tr>
+        <td>
+          60
+        </td>
+        <td>
+          54142
+        </td>
+        <td>
+          2156
+          -
+          2282
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Predef.assert
+        </td>
+        <td style="background: #F0ADAD">
+          scala.Predef.assert(false, core.Decorators.StringInterpolators(scala.StringContext.apply(&quot;&quot;, &quot;: &quot;, &quot; has weaker access than superclass method &quot;, &quot;: &quot;, &quot;&quot;)).i(sym.showFullName(ctx), core.Symbols.toDenot(sym)(ctx).info(ctx), fail.showFullName(ctx), core.Symbols.toDenot(fail)(ctx).info(ctx))(ctx))
+        </td>
+      </tr><tr>
+        <td>
+          62
+        </td>
+        <td>
+          54146
+        </td>
+        <td>
+          2306
+          -
+          2308
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          ()
+        </td>
+      </tr><tr>
+        <td>
+          67
+        </td>
+        <td>
+          54147
+        </td>
+        <td>
+          2418
+          -
+          2444
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.SymDenotations.SymDenotation.is
+        </td>
+        <td style="background: #AEF1AE">
+          d.is(core.Flags.PrivateParamAccessor)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          67
+        </td>
+        <td>
+          54149
+        </td>
+        <td>
+          2406
+          -
+          2476
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Boolean.&amp;&amp;
+        </td>
+        <td style="background: #AEF1AE">
+          d.isTerm.&amp;&amp;(d.is(core.Flags.PrivateParamAccessor)(ctx)).&amp;&amp;(ValueClasses.isDerivedValueClass(core.Symbols.toDenot(d.owner)(ctx))(ctx))
+        </td>
+      </tr><tr>
+        <td>
+          67
+        </td>
+        <td>
+          54148
+        </td>
+        <td>
+          2448
+          -
+          2476
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.transform.ValueClasses.isDerivedValueClass
+        </td>
+        <td style="background: #AEF1AE">
+          ValueClasses.isDerivedValueClass(core.Symbols.toDenot(d.owner)(ctx))(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          75
+        </td>
+        <td>
+          54150
+        </td>
+        <td>
+          2893
+          -
+          2920
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.transform.ExpandPrivate.isVCPrivateParamAccessor
+        </td>
+        <td style="background: #AEF1AE">
+          ExpandPrivate.this.isVCPrivateParamAccessor(d)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          76
+        </td>
+        <td>
+          54152
+        </td>
+        <td>
+          2928
+          -
+          2970
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          dotty.tools.dotc.core.SymDenotations.SymDenotation.installAfter
+        </td>
+        <td style="background: #AEF1AE">
+          d.ensureNotPrivate(ctx).installAfter(ExpandPrivate.this)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          76
+        </td>
+        <td>
+          54151
+        </td>
+        <td>
+          2928
+          -
+          2970
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.SymDenotations.SymDenotation.installAfter
+        </td>
+        <td style="background: #AEF1AE">
+          d.ensureNotPrivate(ctx).installAfter(ExpandPrivate.this)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          77
+        </td>
+        <td>
+          54153
+        </td>
+        <td>
+          2989
+          -
+          3000
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Flags.PrivateTerm
+        </td>
+        <td style="background: #AEF1AE">
+          core.Flags.PrivateTerm
+        </td>
+      </tr><tr>
+        <td>
+          77
+        </td>
+        <td>
+          54201
+        </td>
+        <td>
+          2980
+          -
+          2980
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          ()
+        </td>
+      </tr><tr>
+        <td>
+          77
+        </td>
+        <td>
+          54156
+        </td>
+        <td>
+          3005
+          -
+          3025
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.Boolean.unary_!
+        </td>
+        <td style="background: #AEF1AE">
+          core.Symbols.toDenot(d.owner)(ctx).is(core.Flags.Package)(ctx).unary_!
+        </td>
+      </tr><tr>
+        <td>
+          77
+        </td>
+        <td>
+          54159
+        </td>
+        <td>
+          2984
+          -
+          3073
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Boolean.&amp;&amp;
+        </td>
+        <td style="background: #AEF1AE">
+          d.is(core.Flags.PrivateTerm)(ctx).&amp;&amp;(core.Symbols.toDenot(d.owner)(ctx).is(core.Flags.Package)(ctx).unary_!).&amp;&amp;(d.owner.!=(core.Symbols.toDenot(ctx.owner)(ctx).lexicallyEnclosingClass(ctx)))
+        </td>
+      </tr><tr>
+        <td>
+          77
+        </td>
+        <td>
+          54200
+        </td>
+        <td>
+          3075
+          -
+          3980
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          {
+  def isSimilar(p1: String, p2: String): Boolean = {
+    var i: Int = p1.length().-(1);
+    var j: Int = p2.length().-(1);
+    while$1(){
+      if (i.&gt;=(0).&amp;&amp;(j.&gt;=(0)).&amp;&amp;(scala.Predef.augmentString(p1).apply(i).==(scala.Predef.augmentString(p2).apply(j))).&amp;&amp;(scala.Predef.augmentString(p1).apply(i).!=(java.io.File.separatorChar)))
+        {
+          {
+            i = i.-(1);
+            j = j.-(1)
+          };
+          while$1()
+        }
+      else
+        ()
+    };
+    i.&lt;(0).||(scala.Predef.augmentString(p1).apply(i).==(java.io.File.separatorChar)).&amp;&amp;(j.&lt;(0).||(scala.Predef.augmentString(p1).apply(j).==(java.io.File.separatorChar)))
+  };
+  scala.Predef.assert(d.symbol.sourceFile(ctx).!=(null).&amp;&amp;(isSimilar(d.symbol.sourceFile(ctx).path, ctx.owner.sourceFile(ctx).path)), scala.StringContext.apply(&quot;private &quot;, &quot; in &quot;, &quot; accessed from &quot;, &quot; in &quot;, &quot;&quot;).s(d.symbol.showLocated(ctx), d.symbol.sourceFile(ctx), ctx.owner.showLocated(ctx), ctx.owner.sourceFile(ctx)));
+  d.ensureNotPrivate(ctx).installAfter(ExpandPrivate.this)(ctx)
+}
+        </td>
+      </tr><tr>
+        <td>
+          77
+        </td>
+        <td>
+          54203
+        </td>
+        <td>
+          2980
+          -
+          3980
+        </td>
+        <td>
+          If
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          if (d.is(core.Flags.PrivateTerm)(ctx).&amp;&amp;(core.Symbols.toDenot(d.owner)(ctx).is(core.Flags.Package)(ctx).unary_!).&amp;&amp;(d.owner.!=(core.Symbols.toDenot(ctx.owner)(ctx).lexicallyEnclosingClass(ctx))))
+  {
+    def isSimilar(p1: String, p2: String): Boolean = {
+      var i: Int = p1.length().-(1);
+      var j: Int = p2.length().-(1);
+      while$1(){
+        if (i.&gt;=(0).&amp;&amp;(j.&gt;=(0)).&amp;&amp;(scala.Predef.augmentString(p1).apply(i).==(scala.Predef.augmentString(p2).apply(j))).&amp;&amp;(scala.Predef.augmentString(p1).apply(i).!=(java.io.File.separatorChar)))
+          {
+            {
+              i = i.-(1);
+              j = j.-(1)
+            };
+            while$1()
+          }
+        else
+          ()
+      };
+      i.&lt;(0).||(scala.Predef.augmentString(p1).apply(i).==(java.io.File.separatorChar)).&amp;&amp;(j.&lt;(0).||(scala.Predef.augmentString(p1).apply(j).==(java.io.File.separatorChar)))
+    };
+    scala.Predef.assert(d.symbol.sourceFile(ctx).!=(null).&amp;&amp;(isSimilar(d.symbol.sourceFile(ctx).path, ctx.owner.sourceFile(ctx).path)), scala.StringContext.apply(&quot;private &quot;, &quot; in &quot;, &quot; accessed from &quot;, &quot; in &quot;, &quot;&quot;).s(d.symbol.showLocated(ctx), d.symbol.sourceFile(ctx), ctx.owner.showLocated(ctx), ctx.owner.sourceFile(ctx)));
+    d.ensureNotPrivate(ctx).installAfter(ExpandPrivate.this)(ctx)
+  }
+else
+  ()
+        </td>
+      </tr><tr>
+        <td>
+          77
+        </td>
+        <td>
+          54158
+        </td>
+        <td>
+          3029
+          -
+          3073
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.Object.!=
+        </td>
+        <td style="background: #AEF1AE">
+          d.owner.!=(core.Symbols.toDenot(ctx.owner)(ctx).lexicallyEnclosingClass(ctx))
+        </td>
+      </tr><tr>
+        <td>
+          77
+        </td>
+        <td>
+          54155
+        </td>
+        <td>
+          3017
+          -
+          3024
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Flags.Package
+        </td>
+        <td style="background: #AEF1AE">
+          core.Flags.Package
+        </td>
+      </tr><tr>
+        <td>
+          77
+        </td>
+        <td>
+          54154
+        </td>
+        <td>
+          3006
+          -
+          3013
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.SymDenotations.SymDenotation.owner
+        </td>
+        <td style="background: #AEF1AE">
+          d.owner
+        </td>
+      </tr><tr>
+        <td>
+          77
+        </td>
+        <td>
+          54202
+        </td>
+        <td>
+          2980
+          -
+          2980
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          ()
+        </td>
+      </tr><tr>
+        <td>
+          77
+        </td>
+        <td>
+          54157
+        </td>
+        <td>
+          3040
+          -
+          3073
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.SymDenotations.SymDenotation.lexicallyEnclosingClass
+        </td>
+        <td style="background: #AEF1AE">
+          core.Symbols.toDenot(ctx.owner)(ctx).lexicallyEnclosingClass(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          82
+        </td>
+        <td>
+          54160
+        </td>
+        <td>
+          3404
+          -
+          3417
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Int.-
+        </td>
+        <td style="background: #AEF1AE">
+          p1.length().-(1)
+        </td>
+      </tr><tr>
+        <td>
+          83
+        </td>
+        <td>
+          54161
+        </td>
+        <td>
+          3434
+          -
+          3447
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Int.-
+        </td>
+        <td style="background: #AEF1AE">
+          p2.length().-(1)
+        </td>
+      </tr><tr>
+        <td>
+          84
+        </td>
+        <td>
+          54171
+        </td>
+        <td>
+          3525
+          -
+          3525
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.transform.ExpandPrivate.while$1
+        </td>
+        <td style="background: #AEF1AE">
+          while$1()
+        </td>
+      </tr><tr>
+        <td>
+          84
+        </td>
+        <td>
+          54162
+        </td>
+        <td>
+          3468
+          -
+          3469
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          0
+        </td>
+      </tr><tr>
+        <td>
+          84
+        </td>
+        <td>
+          54165
+        </td>
+        <td>
+          3483
+          -
+          3497
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Char.==
+        </td>
+        <td style="background: #AEF1AE">
+          scala.Predef.augmentString(p1).apply(i).==(scala.Predef.augmentString(p2).apply(j))
+        </td>
+      </tr><tr>
+        <td>
+          84
+        </td>
+        <td>
+          54174
+        </td>
+        <td>
+          3456
+          -
+          3456
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          ()
+        </td>
+      </tr><tr>
+        <td>
+          84
+        </td>
+        <td>
+          54168
+        </td>
+        <td>
+          3463
+          -
+          3523
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Boolean.&amp;&amp;
+        </td>
+        <td style="background: #AEF1AE">
+          i.&gt;=(0).&amp;&amp;(j.&gt;=(0)).&amp;&amp;(scala.Predef.augmentString(p1).apply(i).==(scala.Predef.augmentString(p2).apply(j))).&amp;&amp;(scala.Predef.augmentString(p1).apply(i).!=(java.io.File.separatorChar))
+        </td>
+      </tr><tr>
+        <td>
+          84
+        </td>
+        <td>
+          54167
+        </td>
+        <td>
+          3501
+          -
+          3523
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Char.!=
+        </td>
+        <td style="background: #AEF1AE">
+          scala.Predef.augmentString(p1).apply(i).!=(java.io.File.separatorChar)
+        </td>
+      </tr><tr>
+        <td>
+          84
+        </td>
+        <td>
+          54173
+        </td>
+        <td>
+          3456
+          -
+          3456
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          ()
+        </td>
+      </tr><tr>
+        <td>
+          84
+        </td>
+        <td>
+          54164
+        </td>
+        <td>
+          3492
+          -
+          3497
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.immutable.StringOps.apply
+        </td>
+        <td style="background: #AEF1AE">
+          scala.Predef.augmentString(p2).apply(j)
+        </td>
+      </tr><tr>
+        <td>
+          84
+        </td>
+        <td>
+          54163
+        </td>
+        <td>
+          3473
+          -
+          3479
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Int.&gt;=
+        </td>
+        <td style="background: #AEF1AE">
+          j.&gt;=(0)
+        </td>
+      </tr><tr>
+        <td>
+          84
+        </td>
+        <td>
+          54172
+        </td>
+        <td>
+          3525
+          -
+          3570
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          {
+  {
+    i = i.-(1);
+    j = j.-(1)
+  };
+  while$1()
+}
+        </td>
+      </tr><tr>
+        <td>
+          84
+        </td>
+        <td>
+          54166
+        </td>
+        <td>
+          3510
+          -
+          3523
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          java.io.File.separatorChar
+        </td>
+        <td style="background: #AEF1AE">
+          java.io.File.separatorChar
+        </td>
+      </tr><tr>
+        <td>
+          85
+        </td>
+        <td>
+          54169
+        </td>
+        <td>
+          3537
+          -
+          3543
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Int.-
+        </td>
+        <td style="background: #AEF1AE">
+          i.-(1)
+        </td>
+      </tr><tr>
+        <td>
+          86
+        </td>
+        <td>
+          54170
+        </td>
+        <td>
+          3554
+          -
+          3560
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Int.-
+        </td>
+        <td style="background: #AEF1AE">
+          j.-(1)
+        </td>
+      </tr><tr>
+        <td>
+          88
+        </td>
+        <td>
+          54177
+        </td>
+        <td>
+          3589
+          -
+          3611
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Char.==
+        </td>
+        <td style="background: #AEF1AE">
+          scala.Predef.augmentString(p1).apply(i).==(java.io.File.separatorChar)
+        </td>
+      </tr><tr>
+        <td>
+          88
+        </td>
+        <td>
+          54176
+        </td>
+        <td>
+          3598
+          -
+          3611
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          java.io.File.separatorChar
+        </td>
+        <td style="background: #AEF1AE">
+          java.io.File.separatorChar
+        </td>
+      </tr><tr>
+        <td>
+          88
+        </td>
+        <td>
+          54182
+        </td>
+        <td>
+          3579
+          -
+          3657
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Boolean.&amp;&amp;
+        </td>
+        <td style="background: #AEF1AE">
+          i.&lt;(0).||(scala.Predef.augmentString(p1).apply(i).==(java.io.File.separatorChar)).&amp;&amp;(j.&lt;(0).||(scala.Predef.augmentString(p1).apply(j).==(java.io.File.separatorChar)))
+        </td>
+      </tr><tr>
+        <td>
+          88
+        </td>
+        <td>
+          54175
+        </td>
+        <td>
+          3584
+          -
+          3585
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          0
+        </td>
+      </tr><tr>
+        <td>
+          89
+        </td>
+        <td>
+          54180
+        </td>
+        <td>
+          3634
+          -
+          3656
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Char.==
+        </td>
+        <td style="background: #AEF1AE">
+          scala.Predef.augmentString(p1).apply(j).==(java.io.File.separatorChar)
+        </td>
+      </tr><tr>
+        <td>
+          89
+        </td>
+        <td>
+          54179
+        </td>
+        <td>
+          3643
+          -
+          3656
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          java.io.File.separatorChar
+        </td>
+        <td style="background: #AEF1AE">
+          java.io.File.separatorChar
+        </td>
+      </tr><tr>
+        <td>
+          89
+        </td>
+        <td>
+          54181
+        </td>
+        <td>
+          3625
+          -
+          3656
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Boolean.||
+        </td>
+        <td style="background: #AEF1AE">
+          j.&lt;(0).||(scala.Predef.augmentString(p1).apply(j).==(java.io.File.separatorChar))
+        </td>
+      </tr><tr>
+        <td>
+          89
+        </td>
+        <td>
+          54178
+        </td>
+        <td>
+          3629
+          -
+          3630
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          0
+        </td>
+      </tr><tr>
+        <td>
+          92
+        </td>
+        <td>
+          54198
+        </td>
+        <td>
+          3673
+          -
+          3925
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Predef.assert
+        </td>
+        <td style="background: #AEF1AE">
+          scala.Predef.assert(d.symbol.sourceFile(ctx).!=(null).&amp;&amp;(isSimilar(d.symbol.sourceFile(ctx).path, ctx.owner.sourceFile(ctx).path)), scala.StringContext.apply(&quot;private &quot;, &quot; in &quot;, &quot; accessed from &quot;, &quot; in &quot;, &quot;&quot;).s(d.symbol.showLocated(ctx), d.symbol.sourceFile(ctx), ctx.owner.showLocated(ctx), ctx.owner.sourceFile(ctx)))
+        </td>
+      </tr><tr>
+        <td>
+          92
+        </td>
+        <td>
+          54183
+        </td>
+        <td>
+          3703
+          -
+          3707
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          null
+        </td>
+      </tr><tr>
+        <td>
+          92
+        </td>
+        <td>
+          54187
+        </td>
+        <td>
+          3680
+          -
+          3786
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Boolean.&amp;&amp;
+        </td>
+        <td style="background: #AEF1AE">
+          d.symbol.sourceFile(ctx).!=(null).&amp;&amp;(isSimilar(d.symbol.sourceFile(ctx).path, ctx.owner.sourceFile(ctx).path))
+        </td>
+      </tr><tr>
+        <td>
+          93
+        </td>
+        <td>
+          54186
+        </td>
+        <td>
+          3724
+          -
+          3786
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.transform.ExpandPrivate.isSimilar
+        </td>
+        <td style="background: #AEF1AE">
+          isSimilar(d.symbol.sourceFile(ctx).path, ctx.owner.sourceFile(ctx).path)
+        </td>
+      </tr><tr>
+        <td>
+          93
+        </td>
+        <td>
+          54185
+        </td>
+        <td>
+          3760
+          -
+          3785
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.io.AbstractFile.path
+        </td>
+        <td style="background: #AEF1AE">
+          ctx.owner.sourceFile(ctx).path
+        </td>
+      </tr><tr>
+        <td>
+          93
+        </td>
+        <td>
+          54184
+        </td>
+        <td>
+          3734
+          -
+          3758
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.io.AbstractFile.path
+        </td>
+        <td style="background: #AEF1AE">
+          d.symbol.sourceFile(ctx).path
+        </td>
+      </tr><tr>
+        <td>
+          94
+        </td>
+        <td>
+          54195
+        </td>
+        <td>
+          3874
+          -
+          3895
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.Symbols.Symbol.showLocated
+        </td>
+        <td style="background: #F0ADAD">
+          ctx.owner.showLocated(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          94
+        </td>
+        <td>
+          54189
+        </td>
+        <td>
+          3831
+          -
+          3836
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          &quot; in &quot;
+        </td>
+      </tr><tr>
+        <td>
+          94
+        </td>
+        <td>
+          54192
+        </td>
+        <td>
+          3923
+          -
+          3924
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          &quot;&quot;
+        </td>
+      </tr><tr>
+        <td>
+          94
+        </td>
+        <td>
+          54194
+        </td>
+        <td>
+          3837
+          -
+          3856
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.Symbols.Symbol.sourceFile
+        </td>
+        <td style="background: #F0ADAD">
+          d.symbol.sourceFile(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          94
+        </td>
+        <td>
+          54188
+        </td>
+        <td>
+          3800
+          -
+          3809
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          &quot;private &quot;
+        </td>
+      </tr><tr>
+        <td>
+          94
+        </td>
+        <td>
+          54197
+        </td>
+        <td>
+          3798
+          -
+          3924
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.StringContext.s
+        </td>
+        <td style="background: #F0ADAD">
+          scala.StringContext.apply(&quot;private &quot;, &quot; in &quot;, &quot; accessed from &quot;, &quot; in &quot;, &quot;&quot;).s(d.symbol.showLocated(ctx), d.symbol.sourceFile(ctx), ctx.owner.showLocated(ctx), ctx.owner.sourceFile(ctx))
+        </td>
+      </tr><tr>
+        <td>
+          94
+        </td>
+        <td>
+          54191
+        </td>
+        <td>
+          3896
+          -
+          3901
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          &quot; in &quot;
+        </td>
+      </tr><tr>
+        <td>
+          94
+        </td>
+        <td>
+          54190
+        </td>
+        <td>
+          3857
+          -
+          3873
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          &quot; accessed from &quot;
+        </td>
+      </tr><tr>
+        <td>
+          94
+        </td>
+        <td>
+          54193
+        </td>
+        <td>
+          3810
+          -
+          3830
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.Symbols.Symbol.showLocated
+        </td>
+        <td style="background: #F0ADAD">
+          d.symbol.showLocated(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          94
+        </td>
+        <td>
+          54196
+        </td>
+        <td>
+          3902
+          -
+          3922
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.Symbols.Symbol.sourceFile
+        </td>
+        <td style="background: #F0ADAD">
+          ctx.owner.sourceFile(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          95
+        </td>
+        <td>
+          54199
+        </td>
+        <td>
+          3932
+          -
+          3974
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.SymDenotations.SymDenotation.installAfter
+        </td>
+        <td style="background: #AEF1AE">
+          d.ensureNotPrivate(ctx).installAfter(ExpandPrivate.this)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          99
+        </td>
+        <td>
+          54204
+        </td>
+        <td>
+          4056
+          -
+          4092
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.transform.ExpandPrivate.ensurePrivateAccessible
+        </td>
+        <td style="background: #AEF1AE">
+          ExpandPrivate.this.ensurePrivateAccessible(core.Symbols.toDenot(tree.symbol(ctx))(ctx))(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          104
+        </td>
+        <td>
+          54205
+        </td>
+        <td>
+          4183
+          -
+          4219
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.transform.ExpandPrivate.ensurePrivateAccessible
+        </td>
+        <td style="background: #AEF1AE">
+          ExpandPrivate.this.ensurePrivateAccessible(core.Symbols.toDenot(tree.symbol(ctx))(ctx))(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          109
+        </td>
+        <td>
+          54206
+        </td>
+        <td>
+          4320
+          -
+          4331
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Trees.Tree.symbol
+        </td>
+        <td style="background: #AEF1AE">
+          tree.symbol(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          110
+        </td>
+        <td>
+          54207
+        </td>
+        <td>
+          4336
+          -
+          4344
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Trees.ValOrDefDef.rhs
+        </td>
+        <td style="background: #AEF1AE">
+          tree.rhs(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          112
+        </td>
+        <td>
+          54210
+        </td>
+        <td>
+          4485
+          -
+          4500
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.Symbols.Symbol.name
+        </td>
+        <td style="background: #AEF1AE">
+          sel.symbol(ctx).name(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          112
+        </td>
+        <td>
+          54209
+        </td>
+        <td>
+          4441
+          -
+          4469
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.SymDenotations.SymDenotation.is
+        </td>
+        <td style="background: #AEF1AE">
+          core.Symbols.toDenot(sel.symbol(ctx))(ctx).is(core.Flags.ParamAccessor)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          112
+        </td>
+        <td>
+          54212
+        </td>
+        <td>
+          4409
+          -
+          4500
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Boolean.&amp;&amp;
+        </td>
+        <td style="background: #AEF1AE">
+          core.Symbols.toDenot(sym)(ctx).is(core.Flags.PrivateParamAccessor)(ctx).&amp;&amp;(core.Symbols.toDenot(sel.symbol(ctx))(ctx).is(core.Flags.ParamAccessor)(ctx)).&amp;&amp;(sym.name(ctx).==(sel.symbol(ctx).name(ctx)))
+        </td>
+      </tr><tr>
+        <td>
+          112
+        </td>
+        <td>
+          54208
+        </td>
+        <td>
+          4416
+          -
+          4436
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Flags.PrivateParamAccessor
+        </td>
+        <td style="background: #AEF1AE">
+          core.Flags.PrivateParamAccessor
+        </td>
+      </tr><tr>
+        <td>
+          112
+        </td>
+        <td>
+          54211
+        </td>
+        <td>
+          4473
+          -
+          4500
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.Object.==
+        </td>
+        <td style="background: #AEF1AE">
+          sym.name(ctx).==(sel.symbol(ctx).name(ctx))
+        </td>
+      </tr><tr>
+        <td>
+          113
+        </td>
+        <td>
+          54213
+        </td>
+        <td>
+          4512
+          -
+          4556
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.SymDenotations.SymDenotation.installAfter
+        </td>
+        <td style="background: #AEF1AE">
+          core.Symbols.toDenot(sym)(ctx).ensureNotPrivate(ctx).installAfter(ExpandPrivate.this)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          115
+        </td>
+        <td>
+          54218
+        </td>
+        <td>
+          4581
+          -
+          4581
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          ()
+        </td>
+      </tr><tr>
+        <td>
+          115
+        </td>
+        <td>
+          54214
+        </td>
+        <td>
+          4585
+          -
+          4614
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.transform.ExpandPrivate.isVCPrivateParamAccessor
+        </td>
+        <td style="background: #AEF1AE">
+          ExpandPrivate.this.isVCPrivateParamAccessor(core.Symbols.toDenot(sym)(ctx))(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          115
+        </td>
+        <td>
+          54217
+        </td>
+        <td>
+          4581
+          -
+          4581
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          ()
+        </td>
+      </tr><tr>
+        <td>
+          116
+        </td>
+        <td>
+          54216
+        </td>
+        <td>
+          4626
+          -
+          4670
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          dotty.tools.dotc.core.SymDenotations.SymDenotation.installAfter
+        </td>
+        <td style="background: #AEF1AE">
+          core.Symbols.toDenot(sym)(ctx).ensureNotPrivate(ctx).installAfter(ExpandPrivate.this)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          116
+        </td>
+        <td>
+          54215
+        </td>
+        <td>
+          4626
+          -
+          4670
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.SymDenotations.SymDenotation.installAfter
+        </td>
+        <td style="background: #AEF1AE">
+          core.Symbols.toDenot(sym)(ctx).ensureNotPrivate(ctx).installAfter(ExpandPrivate.this)(ctx)
+        </td>
+      </tr>
+    </table>
+          </div>
+        </div>
+      </body>
+    </html>

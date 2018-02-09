@@ -1,0 +1,1226 @@
+<html>
+      <head>
+        <meta http-equiv="Content-Type" content="text/html; charset=utf-8"/>
+        <title id="title">
+          dotty/tools/dotc/quoted/ExprCompiler.scala.html
+        </title>
+        <script src="https://ajax.googleapis.com/ajax/libs/jquery/1.10.2/jquery.min.js"></script><link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/jquery.tablesorter/2.20.1/css/theme.default.min.css" type="text/css"/><script src="https://cdnjs.cloudflare.com/ajax/libs/jquery.tablesorter/2.20.1/js/jquery.tablesorter.min.js"></script><link rel="stylesheet" href="https://netdna.bootstrapcdn.com/bootstrap/3.0.3/css/bootstrap.min.css" type="text/css"/><script src="https://netdna.bootstrapcdn.com/bootstrap/3.0.3/js/bootstrap.min.js"></script><script type="text/javascript">
+        $(document).ready(function() {$(".tablesorter").tablesorter();});
+      </script>
+        <style>
+          table.codegrid { font-family: monospace; font-size: 12px; width: auto!important; }table.statementlist { width: auto!important; font-size: 13px; } table.codegrid td { padding: 0!important; border: 0!important } table td.linenumber { width: 40px!important; } 
+        </style>
+      </head>
+      <body style="font-family: monospace;">
+        <ul class="nav nav-tabs">
+          <li>
+            <a href="#codegrid" data-toggle="tab">Codegrid</a>
+          </li>
+          <li>
+            <a href="#statementlist" data-toggle="tab">Statement List</a>
+          </li>
+        </ul>
+        <div class="tab-content">
+          <div class="tab-pane active" id="codegrid">
+            <pre style='font-size: 12pt; font-family: courier;'>1 <span style=''>package dotty.tools.dotc
+</span>2 <span style=''>package quoted
+</span>3 <span style=''>
+</span>4 <span style=''>import dotty.tools.backend.jvm.GenBCode
+</span>5 <span style=''>import dotty.tools.dotc.ast.tpd
+</span>6 <span style=''>import dotty.tools.dotc.core.Contexts.Context
+</span>7 <span style=''>import dotty.tools.dotc.core.Decorators._
+</span>8 <span style=''>import dotty.tools.dotc.core.Flags._
+</span>9 <span style=''>import dotty.tools.dotc.core.Mode
+</span>10 <span style=''>import dotty.tools.dotc.core.Names.TypeName
+</span>11 <span style=''>import dotty.tools.dotc.core.Phases.Phase
+</span>12 <span style=''>import dotty.tools.dotc.core.Scopes.{EmptyScope, newScope}
+</span>13 <span style=''>import dotty.tools.dotc.core.StdNames.nme
+</span>14 <span style=''>import dotty.tools.dotc.core.Symbols.defn
+</span>15 <span style=''>import dotty.tools.dotc.core.Types.ExprType
+</span>16 <span style=''>import dotty.tools.dotc.core.quoted.PickledQuotes
+</span>17 <span style=''>import dotty.tools.dotc.transform.ReifyQuotes
+</span>18 <span style=''>import dotty.tools.dotc.typer.FrontEnd
+</span>19 <span style=''>import dotty.tools.dotc.util.Positions.Position
+</span>20 <span style=''>import dotty.tools.dotc.util.SourceFile
+</span>21 <span style=''>import dotty.tools.io.{AbstractFile, Path, PlainFile}
+</span>22 <span style=''>
+</span>23 <span style=''>import scala.quoted.Expr
+</span>24 <span style=''>
+</span>25 <span style=''>/** Compiler that takes the contents of a quoted expression `expr` and produces
+</span>26 <span style=''> *  a class file with `class ' { def apply: Object = expr }`.
+</span>27 <span style=''> */
+</span>28 <span style=''>class ExprCompiler(directory: AbstractFile) extends Compiler {
+</span>29 <span style=''>  import tpd._
+</span>30 <span style=''>
+</span>31 <span style=''>  /** A GenBCode phase that outputs to a virtual directory */
+</span>32 <span style=''>  private class ExprGenBCode extends GenBCode {
+</span>33 <span style=''>    override def phaseName = </span><span style='background: #F0ADAD'>&quot;genBCode&quot;</span><span style=''>
+</span>34 <span style=''>    override def outputDir(implicit ctx: Context) = </span><span style='background: #F0ADAD'>directory</span><span style=''>
+</span>35 <span style=''>  }
+</span>36 <span style=''>
+</span>37 <span style=''>  override protected def frontendPhases: List[List[Phase]] =
+</span>38 <span style=''>    </span><span style='background: #F0ADAD'>List(List(new ExprFrontend(putInClass = true)))</span><span style=''>
+</span>39 <span style=''>
+</span>40 <span style=''>  override protected def picklerPhases: List[List[Phase]] =
+</span>41 <span style=''>    </span><span style='background: #F0ADAD'>List(List(new ReifyQuotes))</span><span style=''>
+</span>42 <span style=''>
+</span>43 <span style=''>  override protected def backendPhases: List[List[Phase]] =
+</span>44 <span style=''>    </span><span style='background: #F0ADAD'>List(List(new ExprGenBCode))</span><span style=''>
+</span>45 <span style=''>
+</span>46 <span style=''>  override def newRun(implicit ctx: Context): ExprRun = {
+</span>47 <span style=''>    </span><span style='background: #F0ADAD'>reset()</span><span style=''>
+</span>48 <span style=''>    </span><span style='background: #F0ADAD'>new ExprRun(this, ctx.addMode(Mode.ReadPositions))</span><span style=''>
+</span>49 <span style=''>  }
+</span>50 <span style=''>
+</span>51 <span style=''>  def outputClassName: TypeName = </span><span style='background: #F0ADAD'>&quot;Quoted&quot;.toTypeName</span><span style=''>
+</span>52 <span style=''>
+</span>53 <span style=''>  /** Frontend that receives scala.quoted.Expr as input */
+</span>54 <span style=''>  class ExprFrontend(putInClass: Boolean) extends FrontEnd {
+</span>55 <span style=''>    import tpd._
+</span>56 <span style=''>
+</span>57 <span style=''>    override def isTyper = </span><span style='background: #F0ADAD'>false</span><span style=''>
+</span>58 <span style=''>
+</span>59 <span style=''>    override def runOn(units: List[CompilationUnit])(implicit ctx: Context): List[CompilationUnit] = {
+</span>60 <span style=''>      </span><span style='background: #F0ADAD'>units.map {
+</span>61 <span style=''></span><span style='background: #F0ADAD'>        case exprUnit: ExprCompilationUnit =&gt;
+</span>62 <span style=''></span><span style='background: #F0ADAD'>          val tree =
+</span>63 <span style=''></span><span style='background: #F0ADAD'>            if (putInClass) inClass(exprUnit.expr)
+</span>64 <span style=''></span><span style='background: #F0ADAD'>            else PickledQuotes.quotedToTree(exprUnit.expr)
+</span>65 <span style=''></span><span style='background: #F0ADAD'>          val source = new SourceFile(&quot;&quot;, Seq())
+</span>66 <span style=''></span><span style='background: #F0ADAD'>          CompilationUnit.mkCompilationUnit(source, tree, forceTrees = true)
+</span>67 <span style=''></span><span style='background: #F0ADAD'>      }</span><span style=''>
+</span>68 <span style=''>    }
+</span>69 <span style=''>
+</span>70 <span style=''>    /** Places the contents of expr in a compilable tree for a class
+</span>71 <span style=''>      *  with the following format.
+</span>72 <span style=''>      *  `package __root__ { class ' { def apply: Any = &lt;expr&gt; } }`
+</span>73 <span style=''>      */
+</span>74 <span style=''>    private def inClass(expr: Expr[_])(implicit ctx: Context): Tree = {
+</span>75 <span style=''>      val pos = </span><span style='background: #F0ADAD'>Position(0)</span><span style=''>
+</span>76 <span style=''>      val assocFile = </span><span style='background: #F0ADAD'>new PlainFile(Path(&quot;&lt;quote&gt;&quot;))</span><span style=''>
+</span>77 <span style=''>
+</span>78 <span style=''>      val cls = </span><span style='background: #F0ADAD'>ctx.newCompleteClassSymbol(defn.RootClass, outputClassName, EmptyFlags,
+</span>79 <span style=''></span><span style='background: #F0ADAD'>        defn.ObjectType :: Nil, newScope, coord = pos, assocFile = assocFile).entered.asClass</span><span style=''>
+</span>80 <span style=''>      </span><span style='background: #F0ADAD'>cls.enter(ctx.newDefaultConstructor(cls), EmptyScope)</span><span style=''>
+</span>81 <span style=''>      val meth = </span><span style='background: #F0ADAD'>ctx.newSymbol(cls, nme.apply, Method, ExprType(defn.AnyType), coord = pos).entered</span><span style=''>
+</span>82 <span style=''>
+</span>83 <span style=''>      val quoted = </span><span style='background: #F0ADAD'>PickledQuotes.quotedToTree(expr)(ctx.withOwner(meth))</span><span style=''>
+</span>84 <span style=''>
+</span>85 <span style=''>      val run = </span><span style='background: #F0ADAD'>DefDef(meth, quoted)</span><span style=''>
+</span>86 <span style=''>      val classTree = </span><span style='background: #F0ADAD'>ClassDef(cls, DefDef(cls.primaryConstructor.asTerm), run :: Nil)</span><span style=''>
+</span>87 <span style=''>      </span><span style='background: #F0ADAD'>PackageDef(ref(defn.RootPackage).asInstanceOf[Ident], classTree :: Nil).withPos(pos)</span><span style=''>
+</span>88 <span style=''>    }
+</span>89 <span style=''>  }
+</span>90 <span style=''>
+</span>91 <span style=''>  class ExprRun(comp: Compiler, ictx: Context) extends Run(comp, ictx) {
+</span>92 <span style=''>    def compileExpr(expr: Expr[_]): Unit = {
+</span>93 <span style=''>      val units = new ExprCompilationUnit(expr) </span><span style='background: #F0ADAD'>:: Nil</span><span style=''>
+</span>94 <span style=''>      </span><span style='background: #F0ADAD'>compileUnits(units)</span><span style=''>
+</span>95 <span style=''>    }
+</span>96 <span style=''>  }
+</span>97 <span style=''>
+</span>98 <span style=''>}
+</span></pre>
+          </div>
+          <div class="tab-pane" id="statementlist">
+            <table cellspacing="0" cellpadding="0" class="table statementlist">
+      <tr>
+        <th>Line</th>
+        <th>Stmt Id</th>
+        <th>Pos</th>
+        <th>Tree</th>
+        <th>Symbol</th>
+        <th>Code</th>
+      </tr><tr>
+        <td>
+          33
+        </td>
+        <td>
+          48918
+        </td>
+        <td>
+          1213
+          -
+          1223
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          &quot;genBCode&quot;
+        </td>
+      </tr><tr>
+        <td>
+          34
+        </td>
+        <td>
+          48919
+        </td>
+        <td>
+          1276
+          -
+          1285
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.quoted.ExprCompiler.directory
+        </td>
+        <td style="background: #F0ADAD">
+          ExprCompiler.this.directory
+        </td>
+      </tr><tr>
+        <td>
+          38
+        </td>
+        <td>
+          48920
+        </td>
+        <td>
+          1366
+          -
+          1401
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.quoted.ExprCompiler.ExprFrontend.&lt;init&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          new ExprCompiler.this.ExprFrontend(true)
+        </td>
+      </tr><tr>
+        <td>
+          38
+        </td>
+        <td>
+          48922
+        </td>
+        <td>
+          1356
+          -
+          1403
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.immutable.List.apply
+        </td>
+        <td style="background: #F0ADAD">
+          scala.collection.immutable.List.apply[List[ExprCompiler.this.ExprFrontend]](scala.collection.immutable.List.apply[ExprCompiler.this.ExprFrontend](new ExprCompiler.this.ExprFrontend(true)))
+        </td>
+      </tr><tr>
+        <td>
+          38
+        </td>
+        <td>
+          48921
+        </td>
+        <td>
+          1361
+          -
+          1402
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.immutable.List.apply
+        </td>
+        <td style="background: #F0ADAD">
+          scala.collection.immutable.List.apply[ExprCompiler.this.ExprFrontend](new ExprCompiler.this.ExprFrontend(true))
+        </td>
+      </tr><tr>
+        <td>
+          41
+        </td>
+        <td>
+          48925
+        </td>
+        <td>
+          1469
+          -
+          1496
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.immutable.List.apply
+        </td>
+        <td style="background: #F0ADAD">
+          scala.collection.immutable.List.apply[List[dotty.tools.dotc.transform.ReifyQuotes]](scala.collection.immutable.List.apply[dotty.tools.dotc.transform.ReifyQuotes](new dotty.tools.dotc.transform.ReifyQuotes()))
+        </td>
+      </tr><tr>
+        <td>
+          41
+        </td>
+        <td>
+          48924
+        </td>
+        <td>
+          1474
+          -
+          1495
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.immutable.List.apply
+        </td>
+        <td style="background: #F0ADAD">
+          scala.collection.immutable.List.apply[dotty.tools.dotc.transform.ReifyQuotes](new dotty.tools.dotc.transform.ReifyQuotes())
+        </td>
+      </tr><tr>
+        <td>
+          41
+        </td>
+        <td>
+          48923
+        </td>
+        <td>
+          1479
+          -
+          1494
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.transform.ReifyQuotes.&lt;init&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          new dotty.tools.dotc.transform.ReifyQuotes()
+        </td>
+      </tr><tr>
+        <td>
+          44
+        </td>
+        <td>
+          48926
+        </td>
+        <td>
+          1572
+          -
+          1588
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.quoted.ExprCompiler.ExprGenBCode.&lt;init&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          new ExprCompiler.this.ExprGenBCode()
+        </td>
+      </tr><tr>
+        <td>
+          44
+        </td>
+        <td>
+          48928
+        </td>
+        <td>
+          1562
+          -
+          1590
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.immutable.List.apply
+        </td>
+        <td style="background: #F0ADAD">
+          scala.collection.immutable.List.apply[List[ExprCompiler.this.ExprGenBCode]](scala.collection.immutable.List.apply[ExprCompiler.this.ExprGenBCode](new ExprCompiler.this.ExprGenBCode()))
+        </td>
+      </tr><tr>
+        <td>
+          44
+        </td>
+        <td>
+          48927
+        </td>
+        <td>
+          1567
+          -
+          1589
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.immutable.List.apply
+        </td>
+        <td style="background: #F0ADAD">
+          scala.collection.immutable.List.apply[ExprCompiler.this.ExprGenBCode](new ExprCompiler.this.ExprGenBCode())
+        </td>
+      </tr><tr>
+        <td>
+          47
+        </td>
+        <td>
+          48929
+        </td>
+        <td>
+          1654
+          -
+          1661
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.Compiler.reset
+        </td>
+        <td style="background: #F0ADAD">
+          ExprCompiler.this.reset()(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          48
+        </td>
+        <td>
+          48931
+        </td>
+        <td>
+          1684
+          -
+          1715
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.core.Contexts.ModeChanges.addMode
+        </td>
+        <td style="background: #F0ADAD">
+          core.this.Contexts.ModeChanges(ctx).addMode(dotty.tools.dotc.core.Mode.ReadPositions)
+        </td>
+      </tr><tr>
+        <td>
+          48
+        </td>
+        <td>
+          48930
+        </td>
+        <td>
+          1696
+          -
+          1714
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Mode.ReadPositions
+        </td>
+        <td style="background: #F0ADAD">
+          dotty.tools.dotc.core.Mode.ReadPositions
+        </td>
+      </tr><tr>
+        <td>
+          48
+        </td>
+        <td>
+          48932
+        </td>
+        <td>
+          1666
+          -
+          1716
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.quoted.ExprCompiler.ExprRun.&lt;init&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          new ExprCompiler.this.ExprRun(this, core.this.Contexts.ModeChanges(ctx).addMode(dotty.tools.dotc.core.Mode.ReadPositions))
+        </td>
+      </tr><tr>
+        <td>
+          51
+        </td>
+        <td>
+          48934
+        </td>
+        <td>
+          1756
+          -
+          1775
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Decorators.PreNamedString.toTypeName
+        </td>
+        <td style="background: #F0ADAD">
+          dotty.tools.dotc.core.Decorators.PreNamedString(&quot;Quoted&quot;).toTypeName
+        </td>
+      </tr><tr>
+        <td>
+          51
+        </td>
+        <td>
+          48933
+        </td>
+        <td>
+          1756
+          -
+          1764
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          &quot;Quoted&quot;
+        </td>
+      </tr><tr>
+        <td>
+          57
+        </td>
+        <td>
+          48935
+        </td>
+        <td>
+          1942
+          -
+          1947
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          false
+        </td>
+      </tr><tr>
+        <td>
+          60
+        </td>
+        <td>
+          48946
+        </td>
+        <td>
+          2058
+          -
+          2380
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          scala.collection.immutable.List.map
+        </td>
+        <td style="background: #F0ADAD">
+          units.map[dotty.tools.dotc.CompilationUnit, List[dotty.tools.dotc.CompilationUnit]](((x0$1: dotty.tools.dotc.CompilationUnit) =&gt; x0$1 match {
+  case (exprUnit @ (_: dotty.tools.dotc.quoted.ExprCompilationUnit)) =&gt; {
+    val tree: dotty.tools.dotc.ast.tpd.Tree = if (ExprFrontend.this.putInClass)
+      ExprFrontend.this.inClass(exprUnit.expr)(ctx)
+    else
+      dotty.tools.dotc.core.quoted.PickledQuotes.quotedToTree(exprUnit.expr)(ctx);
+    val source: dotty.tools.dotc.util.SourceFile = new dotty.tools.dotc.util.SourceFile(&quot;&quot;, scala.collection.Seq.apply[Nothing]());
+    CompilationUnit.mkCompilationUnit(source, tree, true)(ctx)
+  }
+}))(immutable.this.List.canBuildFrom[dotty.tools.dotc.CompilationUnit])
+        </td>
+      </tr><tr>
+        <td>
+          60
+        </td>
+        <td>
+          48945
+        </td>
+        <td>
+          2068
+          -
+          2068
+        </td>
+        <td>
+          TypeApply
+        </td>
+        <td>
+          scala.collection.immutable.List.canBuildFrom
+        </td>
+        <td style="background: #F0ADAD">
+          immutable.this.List.canBuildFrom[dotty.tools.dotc.CompilationUnit]
+        </td>
+      </tr><tr>
+        <td>
+          63
+        </td>
+        <td>
+          48937
+        </td>
+        <td>
+          2165
+          -
+          2187
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.quoted.ExprCompiler.ExprFrontend.inClass
+        </td>
+        <td style="background: #F0ADAD">
+          ExprFrontend.this.inClass(exprUnit.expr)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          63
+        </td>
+        <td>
+          48936
+        </td>
+        <td>
+          2153
+          -
+          2163
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.quoted.ExprCompiler.ExprFrontend.putInClass
+        </td>
+        <td style="background: #F0ADAD">
+          ExprFrontend.this.putInClass
+        </td>
+      </tr><tr>
+        <td>
+          63
+        </td>
+        <td>
+          48938
+        </td>
+        <td>
+          2165
+          -
+          2187
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          dotty.tools.dotc.quoted.ExprCompiler.ExprFrontend.inClass
+        </td>
+        <td style="background: #F0ADAD">
+          ExprFrontend.this.inClass(exprUnit.expr)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          64
+        </td>
+        <td>
+          48940
+        </td>
+        <td>
+          2205
+          -
+          2246
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          dotty.tools.dotc.core.quoted.PickledQuotes.quotedToTree
+        </td>
+        <td style="background: #F0ADAD">
+          dotty.tools.dotc.core.quoted.PickledQuotes.quotedToTree(exprUnit.expr)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          64
+        </td>
+        <td>
+          48939
+        </td>
+        <td>
+          2205
+          -
+          2246
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.quoted.PickledQuotes.quotedToTree
+        </td>
+        <td style="background: #F0ADAD">
+          dotty.tools.dotc.core.quoted.PickledQuotes.quotedToTree(exprUnit.expr)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          65
+        </td>
+        <td>
+          48943
+        </td>
+        <td>
+          2270
+          -
+          2295
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.util.SourceFile.&lt;init&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          new dotty.tools.dotc.util.SourceFile(&quot;&quot;, scala.collection.Seq.apply[Nothing]())
+        </td>
+      </tr><tr>
+        <td>
+          65
+        </td>
+        <td>
+          48942
+        </td>
+        <td>
+          2289
+          -
+          2294
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.generic.GenericCompanion.apply
+        </td>
+        <td style="background: #F0ADAD">
+          scala.collection.Seq.apply[Nothing]()
+        </td>
+      </tr><tr>
+        <td>
+          65
+        </td>
+        <td>
+          48941
+        </td>
+        <td>
+          2285
+          -
+          2287
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          &quot;&quot;
+        </td>
+      </tr><tr>
+        <td>
+          66
+        </td>
+        <td>
+          48944
+        </td>
+        <td>
+          2306
+          -
+          2372
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.CompilationUnit.mkCompilationUnit
+        </td>
+        <td style="background: #F0ADAD">
+          CompilationUnit.mkCompilationUnit(source, tree, true)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          75
+        </td>
+        <td>
+          48947
+        </td>
+        <td>
+          2658
+          -
+          2669
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.util.Positions.Position
+        </td>
+        <td style="background: #F0ADAD">
+          dotty.tools.dotc.util.Positions.Position(0)
+        </td>
+      </tr><tr>
+        <td>
+          76
+        </td>
+        <td>
+          48949
+        </td>
+        <td>
+          2692
+          -
+          2722
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.io.PlainFile.&lt;init&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          new dotty.tools.io.PlainFile(dotty.tools.io.Path.apply(&quot;&lt;quote&gt;&quot;))
+        </td>
+      </tr><tr>
+        <td>
+          76
+        </td>
+        <td>
+          48948
+        </td>
+        <td>
+          2706
+          -
+          2721
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.io.Path.apply
+        </td>
+        <td style="background: #F0ADAD">
+          dotty.tools.io.Path.apply(&quot;&lt;quote&gt;&quot;)
+        </td>
+      </tr><tr>
+        <td>
+          78
+        </td>
+        <td>
+          48955
+        </td>
+        <td>
+          2744
+          -
+          2744
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Symbols.newCompleteClassSymbol$default$6
+        </td>
+        <td style="background: #F0ADAD">
+          ctx.newCompleteClassSymbol$default$6
+        </td>
+      </tr><tr>
+        <td>
+          78
+        </td>
+        <td>
+          48951
+        </td>
+        <td>
+          2800
+          -
+          2810
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Flags.EmptyFlags
+        </td>
+        <td style="background: #F0ADAD">
+          dotty.tools.dotc.core.Flags.EmptyFlags
+        </td>
+      </tr><tr>
+        <td>
+          78
+        </td>
+        <td>
+          48957
+        </td>
+        <td>
+          2740
+          -
+          2889
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.core.Symbols.newCompleteClassSymbol
+        </td>
+        <td style="background: #F0ADAD">
+          ctx.newCompleteClassSymbol(x$5, x$6, x$7, x$8, x$9, x$12, x$13, x$10, x$11)
+        </td>
+      </tr><tr>
+        <td>
+          78
+        </td>
+        <td>
+          48956
+        </td>
+        <td>
+          2744
+          -
+          2744
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Symbols.newCompleteClassSymbol$default$7
+        </td>
+        <td style="background: #F0ADAD">
+          ctx.newCompleteClassSymbol$default$7
+        </td>
+      </tr><tr>
+        <td>
+          78
+        </td>
+        <td>
+          48950
+        </td>
+        <td>
+          2783
+          -
+          2798
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.quoted.ExprCompiler.outputClassName
+        </td>
+        <td style="background: #F0ADAD">
+          ExprCompiler.this.outputClassName
+        </td>
+      </tr><tr>
+        <td>
+          79
+        </td>
+        <td>
+          48953
+        </td>
+        <td>
+          2844
+          -
+          2852
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Scopes.newScope
+        </td>
+        <td style="background: #F0ADAD">
+          dotty.tools.dotc.core.Scopes.newScope
+        </td>
+      </tr><tr>
+        <td>
+          79
+        </td>
+        <td>
+          48958
+        </td>
+        <td>
+          2740
+          -
+          2905
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Symbols.Symbol.asClass
+        </td>
+        <td style="background: #F0ADAD">
+          {
+  &lt;artifact&gt; val x$5: dotty.tools.dotc.core.Symbols.ClassSymbol = dotty.tools.dotc.core.Symbols.defn(ctx).RootClass;
+  &lt;artifact&gt; val x$6: dotty.tools.dotc.core.Names.TypeName = ExprCompiler.this.outputClassName;
+  &lt;artifact&gt; val x$7: dotty.tools.dotc.core.Flags.FlagSet = dotty.tools.dotc.core.Flags.EmptyFlags;
+  &lt;artifact&gt; val x$8: List[dotty.tools.dotc.core.Types.TypeRef] = {
+    &lt;synthetic&gt; &lt;artifact&gt; val x$1: dotty.tools.dotc.core.Types.TypeRef = dotty.tools.dotc.core.Symbols.defn(ctx).ObjectType;
+    scala.collection.immutable.Nil.::[dotty.tools.dotc.core.Types.TypeRef](x$1)
+  };
+  &lt;artifact&gt; val x$9: dotty.tools.dotc.core.Scopes.MutableScope = dotty.tools.dotc.core.Scopes.newScope;
+  &lt;artifact&gt; val x$10: dotty.tools.dotc.util.Positions.Coord = util.this.Positions.positionCoord(pos);
+  &lt;artifact&gt; val x$11: dotty.tools.io.PlainFile = assocFile;
+  &lt;artifact&gt; val x$12: dotty.tools.dotc.core.Types.Type = ctx.newCompleteClassSymbol$default$6;
+  &lt;artifact&gt; val x$13: dotty.tools.dotc.core.Symbols.Symbol = ctx.newCompleteClassSymbol$default$7;
+  ctx.newCompleteClassSymbol(x$5, x$6, x$7, x$8, x$9, x$12, x$13, x$10, x$11)
+}.entered(ctx).asClass
+        </td>
+      </tr><tr>
+        <td>
+          79
+        </td>
+        <td>
+          48952
+        </td>
+        <td>
+          2836
+          -
+          2842
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.immutable.List.::
+        </td>
+        <td style="background: #F0ADAD">
+          scala.collection.immutable.Nil.::[dotty.tools.dotc.core.Types.TypeRef](x$1)
+        </td>
+      </tr><tr>
+        <td>
+          79
+        </td>
+        <td>
+          48954
+        </td>
+        <td>
+          2862
+          -
+          2865
+        </td>
+        <td>
+          ApplyImplicitView
+        </td>
+        <td>
+          dotty.tools.dotc.util.Positions.positionCoord
+        </td>
+        <td style="background: #F0ADAD">
+          util.this.Positions.positionCoord(pos)
+        </td>
+      </tr><tr>
+        <td>
+          80
+        </td>
+        <td>
+          48959
+        </td>
+        <td>
+          2912
+          -
+          2965
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.SymDenotations.ClassDenotation.enter
+        </td>
+        <td style="background: #F0ADAD">
+          core.this.Symbols.toClassDenot(cls)(ctx).enter(ctx.newDefaultConstructor(cls), dotty.tools.dotc.core.Scopes.EmptyScope)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          81
+        </td>
+        <td>
+          48960
+        </td>
+        <td>
+          2983
+          -
+          3065
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.Symbols.Symbol.entered
+        </td>
+        <td style="background: #F0ADAD">
+          {
+  &lt;artifact&gt; val x$14: dotty.tools.dotc.core.Symbols.ClassSymbol = cls;
+  &lt;artifact&gt; val x$15: dotty.tools.dotc.core.Names.TermName = dotty.tools.dotc.core.StdNames.nme.apply;
+  &lt;artifact&gt; val x$16: dotty.tools.dotc.core.Flags.FlagSet = dotty.tools.dotc.core.Flags.Method;
+  &lt;artifact&gt; val x$17: dotty.tools.dotc.core.Types.CachedExprType = dotty.tools.dotc.core.Types.ExprType.apply(dotty.tools.dotc.core.Symbols.defn(ctx).AnyType)(ctx);
+  &lt;artifact&gt; val x$18: dotty.tools.dotc.util.Positions.Coord = util.this.Positions.positionCoord(pos);
+  &lt;artifact&gt; val x$19: dotty.tools.dotc.core.Symbols.Symbol = ctx.newSymbol$default$5[Nothing];
+  ctx.newSymbol[dotty.tools.dotc.core.Names.TermName](x$14, x$15, x$16, x$17, x$19, x$18)
+}.entered(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          83
+        </td>
+        <td>
+          48962
+        </td>
+        <td>
+          3086
+          -
+          3139
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.core.quoted.PickledQuotes.quotedToTree
+        </td>
+        <td style="background: #F0ADAD">
+          dotty.tools.dotc.core.quoted.PickledQuotes.quotedToTree(expr)(ctx.withOwner(meth))
+        </td>
+      </tr><tr>
+        <td>
+          83
+        </td>
+        <td>
+          48961
+        </td>
+        <td>
+          3119
+          -
+          3138
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.core.Contexts.Context.withOwner
+        </td>
+        <td style="background: #F0ADAD">
+          ctx.withOwner(meth)
+        </td>
+      </tr><tr>
+        <td>
+          85
+        </td>
+        <td>
+          48963
+        </td>
+        <td>
+          3157
+          -
+          3177
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.tpd.DefDef
+        </td>
+        <td style="background: #F0ADAD">
+          dotty.tools.dotc.ast.tpd.DefDef(meth, quoted)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          86
+        </td>
+        <td>
+          48964
+        </td>
+        <td>
+          3200
+          -
+          3264
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.tpd.ClassDef
+        </td>
+        <td style="background: #F0ADAD">
+          dotty.tools.dotc.ast.tpd.ClassDef(cls, dotty.tools.dotc.ast.tpd.DefDef(core.this.Symbols.toClassDenot(cls)(ctx).primaryConstructor(ctx).asTerm(ctx), dotty.tools.dotc.ast.tpd.DefDef$default$2)(ctx), {
+  &lt;synthetic&gt; &lt;artifact&gt; val x$2: dotty.tools.dotc.ast.tpd.DefDef = run;
+  scala.collection.immutable.Nil.::[dotty.tools.dotc.ast.tpd.DefDef](x$2)
+}, dotty.tools.dotc.ast.tpd.ClassDef$default$4)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          87
+        </td>
+        <td>
+          48965
+        </td>
+        <td>
+          3271
+          -
+          3355
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Positioned.withPos
+        </td>
+        <td style="background: #F0ADAD">
+          dotty.tools.dotc.ast.tpd.PackageDef(dotty.tools.dotc.ast.tpd.ref(dotty.tools.dotc.core.Symbols.defn(ctx).RootPackage)(ctx).asInstanceOf[dotty.tools.dotc.ast.tpd.Ident], {
+  &lt;synthetic&gt; &lt;artifact&gt; val x$3: dotty.tools.dotc.ast.tpd.TypeDef = classTree;
+  scala.collection.immutable.Nil.::[dotty.tools.dotc.ast.tpd.TypeDef](x$3)
+})(ctx).withPos(pos)
+        </td>
+      </tr><tr>
+        <td>
+          93
+        </td>
+        <td>
+          48966
+        </td>
+        <td>
+          3533
+          -
+          3539
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.immutable.List.::
+        </td>
+        <td style="background: #F0ADAD">
+          scala.collection.immutable.Nil.::[dotty.tools.dotc.quoted.ExprCompilationUnit](x$4)
+        </td>
+      </tr><tr>
+        <td>
+          94
+        </td>
+        <td>
+          48967
+        </td>
+        <td>
+          3546
+          -
+          3565
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.Run.compileUnits
+        </td>
+        <td style="background: #F0ADAD">
+          ExprRun.this.compileUnits(units)
+        </td>
+      </tr>
+    </table>
+          </div>
+        </div>
+      </body>
+    </html>

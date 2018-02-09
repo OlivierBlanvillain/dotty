@@ -1,0 +1,3801 @@
+<html>
+      <head>
+        <meta http-equiv="Content-Type" content="text/html; charset=utf-8"/>
+        <title id="title">
+          dotty/tools/dotc/ast/TreeTypeMap.scala.html
+        </title>
+        <script src="https://ajax.googleapis.com/ajax/libs/jquery/1.10.2/jquery.min.js"></script><link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/jquery.tablesorter/2.20.1/css/theme.default.min.css" type="text/css"/><script src="https://cdnjs.cloudflare.com/ajax/libs/jquery.tablesorter/2.20.1/js/jquery.tablesorter.min.js"></script><link rel="stylesheet" href="https://netdna.bootstrapcdn.com/bootstrap/3.0.3/css/bootstrap.min.css" type="text/css"/><script src="https://netdna.bootstrapcdn.com/bootstrap/3.0.3/js/bootstrap.min.js"></script><script type="text/javascript">
+        $(document).ready(function() {$(".tablesorter").tablesorter();});
+      </script>
+        <style>
+          table.codegrid { font-family: monospace; font-size: 12px; width: auto!important; }table.statementlist { width: auto!important; font-size: 13px; } table.codegrid td { padding: 0!important; border: 0!important } table td.linenumber { width: 40px!important; } 
+        </style>
+      </head>
+      <body style="font-family: monospace;">
+        <ul class="nav nav-tabs">
+          <li>
+            <a href="#codegrid" data-toggle="tab">Codegrid</a>
+          </li>
+          <li>
+            <a href="#statementlist" data-toggle="tab">Statement List</a>
+          </li>
+        </ul>
+        <div class="tab-content">
+          <div class="tab-pane active" id="codegrid">
+            <pre style='font-size: 12pt; font-family: courier;'>1 <span style=''>package dotty.tools
+</span>2 <span style=''>package dotc
+</span>3 <span style=''>package ast
+</span>4 <span style=''>
+</span>5 <span style=''>import core._
+</span>6 <span style=''>import Types._, Contexts._, Constants._, Names._, Flags._
+</span>7 <span style=''>import SymDenotations._, Symbols._, Annotations._, Trees._, Symbols._
+</span>8 <span style=''>import Denotations._, Decorators._
+</span>9 <span style=''>import dotty.tools.dotc.transform.SymUtils._
+</span>10 <span style=''>import core.tasty.TreePickler.Hole
+</span>11 <span style=''>
+</span>12 <span style=''>/** A map that applies three functions and a substitution together to a tree and
+</span>13 <span style=''> *  makes sure they are coordinated so that the result is well-typed. The functions are
+</span>14 <span style=''> *  @param  typeMap  A function from Type to Type that gets applied to the
+</span>15 <span style=''> *                   type of every tree node and to all locally defined symbols,
+</span>16 <span style=''> *                   followed by the substitution [substFrom := substTo].
+</span>17 <span style=''> *  @param treeMap   A transformer that translates all encountered subtrees in
+</span>18 <span style=''> *                   prefix traversal orders
+</span>19 <span style=''> *  @param oldOwners Previous owners. If a top-level local symbol in the mapped tree
+</span>20 <span style=''> *                   has one of these as an owner, the owner is replaced by the corresponding
+</span>21 <span style=''> *                   symbol in `newOwners`.
+</span>22 <span style=''> *  @param newOwners New owners, replacing previous owners.
+</span>23 <span style=''> *  @param substFrom The symbols that need to be substituted.
+</span>24 <span style=''> *  @param substTo   The substitution targets.
+</span>25 <span style=''> *
+</span>26 <span style=''> *  The reason the substitution is broken out from the rest of the type map is
+</span>27 <span style=''> *  that all symbols have to be substituted at the same time. If we do not do this,
+</span>28 <span style=''> *  we risk data races on named types. Example: Say we have `outer#1.inner#2` and we
+</span>29 <span style=''> *  have two substitutions S1 = [outer#1 := outer#3], S2 = [inner#2 := inner#4] where
+</span>30 <span style=''> *  hashtags precede symbol ids. If we do S1 first, we get outer#2.inner#3. If we then
+</span>31 <span style=''> *  do S2 we get outer#2.inner#4. But that means that the named type outer#2.inner
+</span>32 <span style=''> *  gets two different denotations in the same period. Hence, if -Yno-double-bindings is
+</span>33 <span style=''> *  set, we would get a data race assertion error.
+</span>34 <span style=''> */
+</span>35 <span style=''>class TreeTypeMap(
+</span>36 <span style=''>  val typeMap: Type =&gt; Type = IdentityTypeMap,
+</span>37 <span style=''>  val treeMap: tpd.Tree =&gt; tpd.Tree = identity _,
+</span>38 <span style=''>  val oldOwners: List[Symbol] = Nil,
+</span>39 <span style=''>  val newOwners: List[Symbol] = Nil,
+</span>40 <span style=''>  val substFrom: List[Symbol] = Nil,
+</span>41 <span style=''>  val substTo: List[Symbol] = Nil)(implicit ctx: Context) extends tpd.TreeMap {
+</span>42 <span style=''>  import tpd._
+</span>43 <span style=''>
+</span>44 <span style=''>  /** If `sym` is one of `oldOwners`, replace by corresponding symbol in `newOwners` */
+</span>45 <span style=''>  def mapOwner(sym: Symbol) = </span><span style='background: #AEF1AE'>sym.subst(oldOwners, newOwners)</span><span style=''>
+</span>46 <span style=''>
+</span>47 <span style=''>  /** Replace occurrences of `This(oldOwner)` in some prefix of a type
+</span>48 <span style=''>   *  by the corresponding `This(newOwner)`.
+</span>49 <span style=''>   */
+</span>50 <span style=''>  private val mapOwnerThis = </span><span style='background: #AEF1AE'>new</span><span style=''> TypeMap {
+</span>51 <span style=''>    private def mapPrefix(from: List[Symbol], to: List[Symbol], tp: Type): Type = from match {
+</span>52 <span style=''>      case Nil =&gt; tp
+</span>53 <span style=''>      case (cls: ClassSymbol) :: from1 =&gt; </span><span style='background: #AEF1AE'>mapPrefix(from1, to.tail, tp.substThis(cls, to.head.thisType))</span><span style=''>
+</span>54 <span style=''>      case _ :: from1 =&gt; </span><span style='background: #AEF1AE'>mapPrefix(from1, to.tail, tp)</span><span style=''>
+</span>55 <span style=''>    }
+</span>56 <span style=''>    def apply(tp: Type): Type = tp match {
+</span>57 <span style=''>      case tp: NamedType =&gt; </span><span style='background: #AEF1AE'>tp.derivedSelect(mapPrefix(oldOwners, newOwners, tp.prefix))</span><span style=''>
+</span>58 <span style=''>      case _ =&gt; </span><span style='background: #AEF1AE'>mapOver(tp)</span><span style=''>
+</span>59 <span style=''>    }
+</span>60 <span style=''>  }
+</span>61 <span style=''>
+</span>62 <span style=''>  def mapType(tp: Type) =
+</span>63 <span style=''>    </span><span style='background: #AEF1AE'>mapOwnerThis(typeMap(tp).substSym(substFrom, substTo))</span><span style=''>
+</span>64 <span style=''>
+</span>65 <span style=''>  private def updateDecls(prevStats: List[Tree], newStats: List[Tree]): Unit =
+</span>66 <span style=''>    if (</span><span style='background: #F0ADAD'>prevStats.isEmpty</span><span style=''>) </span><span style='background: #F0ADAD'>assert(newStats.isEmpty)</span><span style=''>
+</span>67 <span style=''>    else </span><span style='background: #F0ADAD'>{
+</span>68 <span style=''></span><span style='background: #F0ADAD'>      prevStats.head match {
+</span>69 <span style=''></span><span style='background: #F0ADAD'>        case pdef: MemberDef =&gt;
+</span>70 <span style=''></span><span style='background: #F0ADAD'>          val prevSym = pdef.symbol
+</span>71 <span style=''></span><span style='background: #F0ADAD'>          val newSym = newStats.head.symbol
+</span>72 <span style=''></span><span style='background: #F0ADAD'>          val newCls = newSym.owner.asClass
+</span>73 <span style=''></span><span style='background: #F0ADAD'>          if (prevSym != newSym) newCls.replace(prevSym, newSym)
+</span>74 <span style=''></span><span style='background: #F0ADAD'>        case _ =&gt;
+</span>75 <span style=''></span><span style='background: #F0ADAD'>      }
+</span>76 <span style=''></span><span style='background: #F0ADAD'>      updateDecls(prevStats.tail, newStats.tail)
+</span>77 <span style=''></span><span style='background: #F0ADAD'>    }</span><span style=''>
+</span>78 <span style=''>
+</span>79 <span style=''>  override def transform(tree: tpd.Tree)(implicit ctx: Context): tpd.Tree = </span><span style='background: #AEF1AE'>treeMap(tree)</span><span style=''> match {
+</span>80 <span style=''>    case impl @ Template(constr, parents, self, _) =&gt;
+</span>81 <span style=''>      val tmap = </span><span style='background: #AEF1AE'>withMappedSyms(localSyms(impl :: self :: Nil))</span><span style=''>
+</span>82 <span style=''>      </span><span style='background: #AEF1AE'>cpy.Template(impl)(
+</span>83 <span style=''></span><span style='background: #AEF1AE'>          constr = tmap.transformSub(constr),
+</span>84 <span style=''></span><span style='background: #AEF1AE'>          parents = parents.mapconserve(transform),
+</span>85 <span style=''></span><span style='background: #AEF1AE'>          self = tmap.transformSub(self),
+</span>86 <span style=''></span><span style='background: #AEF1AE'>          body = impl.body mapconserve
+</span>87 <span style=''></span><span style='background: #AEF1AE'>            (tmap.transform(_)(ctx.withOwner(mapOwner(impl.symbol.owner))))
+</span>88 <span style=''></span><span style='background: #AEF1AE'>        ).withType(tmap.mapType(impl.tpe))</span><span style=''>
+</span>89 <span style=''>    case tree1 =&gt;
+</span>90 <span style=''>      </span><span style='background: #AEF1AE'>tree1.withType(mapType(tree1.tpe))</span><span style=''> match {
+</span>91 <span style=''>        case id: Ident if </span><span style='background: #AEF1AE'>tpd.needsSelect(id.tpe)</span><span style=''> =&gt;
+</span>92 <span style=''>          </span><span style='background: #AEF1AE'>ref(id.tpe.asInstanceOf[TermRef]).withPos(id.pos)</span><span style=''>
+</span>93 <span style=''>        case ddef @ DefDef(name, tparams, vparamss, tpt, _) =&gt;
+</span>94 <span style=''>          val (tmap1, tparams1) = transformDefs(ddef.tparams)
+</span>95 <span style=''>          val (tmap2, vparamss1) = tmap1.transformVParamss(vparamss)
+</span>96 <span style=''>          val res = </span><span style='background: #AEF1AE'>cpy.DefDef(ddef)(name, tparams1, vparamss1, tmap2.transform(tpt), tmap2.transform(ddef.rhs))</span><span style=''>
+</span>97 <span style=''>          </span><span style='background: #AEF1AE'>res.symbol.transformAnnotations {
+</span>98 <span style=''></span><span style='background: #AEF1AE'>            case ann: BodyAnnotation =&gt; ann.derivedAnnotation(res.rhs)
+</span>99 <span style=''></span><span style='background: #AEF1AE'>            case ann =&gt; ann
+</span>100 <span style=''></span><span style='background: #AEF1AE'>          }</span><span style=''>
+</span>101 <span style=''>          res
+</span>102 <span style=''>        case tdef @ LambdaTypeTree(tparams, body) =&gt;
+</span>103 <span style=''>          val (tmap1, tparams1) = transformDefs(tparams)
+</span>104 <span style=''>          </span><span style='background: #AEF1AE'>cpy.LambdaTypeTree(tdef)(tparams1, tmap1.transform(body))</span><span style=''>
+</span>105 <span style=''>        case blk @ Block(stats, expr) =&gt;
+</span>106 <span style=''>          val (tmap1, stats1) = transformDefs(stats)
+</span>107 <span style=''>          val expr1 = </span><span style='background: #AEF1AE'>tmap1.transform(expr)</span><span style=''>
+</span>108 <span style=''>          </span><span style='background: #AEF1AE'>cpy.Block(blk)(stats1, expr1)</span><span style=''>
+</span>109 <span style=''>        case inlined @ Inlined(call, bindings, expanded) =&gt;
+</span>110 <span style=''>          val (tmap1, bindings1) = transformDefs(bindings)
+</span>111 <span style=''>          val expanded1 = </span><span style='background: #AEF1AE'>tmap1.transform(expanded)</span><span style=''>
+</span>112 <span style=''>          </span><span style='background: #AEF1AE'>cpy.Inlined(inlined)(call, bindings1, expanded1)</span><span style=''>
+</span>113 <span style=''>        case cdef @ CaseDef(pat, guard, rhs) =&gt;
+</span>114 <span style=''>          val tmap = </span><span style='background: #AEF1AE'>withMappedSyms(patVars(pat))</span><span style=''>
+</span>115 <span style=''>          val pat1 = </span><span style='background: #AEF1AE'>tmap.transform(pat)</span><span style=''>
+</span>116 <span style=''>          val guard1 = </span><span style='background: #AEF1AE'>tmap.transform(guard)</span><span style=''>
+</span>117 <span style=''>          val rhs1 = </span><span style='background: #AEF1AE'>tmap.transform(rhs)</span><span style=''>
+</span>118 <span style=''>          </span><span style='background: #AEF1AE'>cpy.CaseDef(cdef)(pat1, guard1, rhs1)</span><span style=''>
+</span>119 <span style=''>        case Hole(n, args) =&gt;
+</span>120 <span style=''>          </span><span style='background: #AEF1AE'>Hole(n, args.mapConserve(transform)).withPos(tree.pos).withType(mapType(tree.tpe))</span><span style=''>
+</span>121 <span style=''>        case tree1 =&gt;
+</span>122 <span style=''>          </span><span style='background: #AEF1AE'>super.transform(tree1)</span><span style=''>
+</span>123 <span style=''>      }
+</span>124 <span style=''>  }
+</span>125 <span style=''>
+</span>126 <span style=''>  override def transformStats(trees: List[tpd.Tree])(implicit ctx: Context) =
+</span>127 <span style=''>    </span><span style='background: #F0ADAD'>transformDefs(trees)._2</span><span style=''>
+</span>128 <span style=''>
+</span>129 <span style=''>  private def transformDefs[TT &lt;: tpd.Tree](trees: List[TT])(implicit ctx: Context): (TreeTypeMap, List[TT]) = {
+</span>130 <span style=''>    val tmap = </span><span style='background: #AEF1AE'>withMappedSyms(tpd.localSyms(trees))</span><span style=''>
+</span>131 <span style=''>    </span><span style='background: #AEF1AE'>(tmap, tmap.transformSub(trees))</span><span style=''>
+</span>132 <span style=''>  }
+</span>133 <span style=''>
+</span>134 <span style=''>  private def transformVParamss(vparamss: List[List[ValDef]]): (TreeTypeMap, List[List[ValDef]]) = vparamss match {
+</span>135 <span style=''>    case vparams :: rest =&gt;
+</span>136 <span style=''>      val (tmap1, vparams1) = transformDefs(vparams)
+</span>137 <span style=''>      val (tmap2, vparamss2) = tmap1.transformVParamss(rest)
+</span>138 <span style=''>      </span><span style='background: #AEF1AE'>(tmap2, vparams1 :: vparamss2)</span><span style=''>
+</span>139 <span style=''>    case nil =&gt;
+</span>140 <span style=''>      </span><span style='background: #AEF1AE'>(this, vparamss)</span><span style=''>
+</span>141 <span style=''>  }
+</span>142 <span style=''>
+</span>143 <span style=''>  def apply[ThisTree &lt;: tpd.Tree](tree: ThisTree): ThisTree = </span><span style='background: #AEF1AE'>transform(tree).asInstanceOf[ThisTree]</span><span style=''>
+</span>144 <span style=''>
+</span>145 <span style=''>  def apply(annot: Annotation): Annotation = </span><span style='background: #AEF1AE'>annot.derivedAnnotation(apply(annot.tree))</span><span style=''>
+</span>146 <span style=''>
+</span>147 <span style=''>  /** The current tree map composed with a substitution [from -&gt; to] */
+</span>148 <span style=''>  def withSubstitution(from: List[Symbol], to: List[Symbol]): TreeTypeMap =
+</span>149 <span style=''>    if (</span><span style='background: #AEF1AE'>from eq to</span><span style=''>) </span><span style='background: #AEF1AE'>this</span><span style=''>
+</span>150 <span style=''>    else </span><span style='background: #AEF1AE'>{
+</span>151 <span style=''></span><span style='background: #AEF1AE'>      // assert that substitution stays idempotent, assuming its parts are
+</span>152 <span style=''></span><span style='background: #AEF1AE'>      // TODO: It might be better to cater for the asserted-away conditions, by
+</span>153 <span style=''></span><span style='background: #AEF1AE'>      // setting up a proper substitution abstraction with a compose operator that
+</span>154 <span style=''></span><span style='background: #AEF1AE'>      // guarantees idempotence. But this might be too inefficient in some cases.
+</span>155 <span style=''></span><span style='background: #AEF1AE'>      // We'll cross that bridge when we need to.
+</span>156 <span style=''></span><span style='background: #AEF1AE'>      assert(!from.exists(substTo contains _))
+</span>157 <span style=''></span><span style='background: #AEF1AE'>      assert(!to.exists(substFrom contains _))
+</span>158 <span style=''></span><span style='background: #AEF1AE'>      assert(!from.exists(newOwners contains _))
+</span>159 <span style=''></span><span style='background: #AEF1AE'>      assert(!to.exists(oldOwners contains _))
+</span>160 <span style=''></span><span style='background: #AEF1AE'>      new TreeTypeMap(
+</span>161 <span style=''></span><span style='background: #AEF1AE'>        typeMap,
+</span>162 <span style=''></span><span style='background: #AEF1AE'>        treeMap,
+</span>163 <span style=''></span><span style='background: #AEF1AE'>        from ++ oldOwners,
+</span>164 <span style=''></span><span style='background: #AEF1AE'>        to ++ newOwners,
+</span>165 <span style=''></span><span style='background: #AEF1AE'>        from ++ substFrom,
+</span>166 <span style=''></span><span style='background: #AEF1AE'>        to ++ substTo)
+</span>167 <span style=''></span><span style='background: #AEF1AE'>    }</span><span style=''>
+</span>168 <span style=''>
+</span>169 <span style=''>  /** Apply `typeMap` and `ownerMap` to given symbols `syms`
+</span>170 <span style=''>   *  and return a treemap that contains the substitution
+</span>171 <span style=''>   *  between original and mapped symbols.
+</span>172 <span style=''>   */
+</span>173 <span style=''>  def withMappedSyms(syms: List[Symbol], mapAlways: Boolean = false): TreeTypeMap =
+</span>174 <span style=''>    </span><span style='background: #AEF1AE'>withMappedSyms(syms, ctx.mapSymbols(syms, this, mapAlways))</span><span style=''>
+</span>175 <span style=''>
+</span>176 <span style=''>  /** The tree map with the substitution between originals `syms`
+</span>177 <span style=''>   *  and mapped symbols `mapped`. Also goes into mapped classes
+</span>178 <span style=''>   *  and substitutes their declarations.
+</span>179 <span style=''>   */
+</span>180 <span style=''>  def withMappedSyms(syms: List[Symbol], mapped: List[Symbol]): TreeTypeMap = {
+</span>181 <span style=''>    val symsChanged = </span><span style='background: #AEF1AE'>syms ne mapped</span><span style=''>
+</span>182 <span style=''>    val substMap = </span><span style='background: #AEF1AE'>withSubstitution(syms, mapped)</span><span style=''>
+</span>183 <span style=''>    val fullMap = </span><span style='background: #AEF1AE'>(substMap /: mapped.filter(_.isClass)) { (tmap, cls) =&gt;
+</span>184 <span style=''></span><span style='background: #AEF1AE'>      val origDcls = cls.info.decls.toList
+</span>185 <span style=''></span><span style='background: #AEF1AE'>      val mappedDcls = ctx.mapSymbols(origDcls, tmap)
+</span>186 <span style=''></span><span style='background: #AEF1AE'>      val tmap1 = tmap.withMappedSyms(origDcls, mappedDcls)
+</span>187 <span style=''></span><span style='background: #AEF1AE'>      if (symsChanged) (origDcls, mappedDcls).zipped.foreach(cls.asClass.replace)
+</span>188 <span style=''></span><span style='background: #AEF1AE'>      tmap1
+</span>189 <span style=''></span><span style='background: #AEF1AE'>    }</span><span style=''>
+</span>190 <span style=''>    if (</span><span style='background: #AEF1AE'>symsChanged || (fullMap eq substMap)</span><span style=''>) </span><span style='background: #AEF1AE'>fullMap</span><span style=''>
+</span>191 <span style=''>    else </span><span style='background: #F0ADAD'>withMappedSyms(syms, mapAlways = true)</span><span style=''>
+</span>192 <span style=''>  }
+</span>193 <span style=''>}
+</span></pre>
+          </div>
+          <div class="tab-pane" id="statementlist">
+            <table cellspacing="0" cellpadding="0" class="table statementlist">
+      <tr>
+        <th>Line</th>
+        <th>Stmt Id</th>
+        <th>Pos</th>
+        <th>Tree</th>
+        <th>Symbol</th>
+        <th>Code</th>
+      </tr><tr>
+        <td>
+          45
+        </td>
+        <td>
+          8481
+        </td>
+        <td>
+          2311
+          -
+          2342
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.transform.SymUtils.subst
+        </td>
+        <td style="background: #AEF1AE">
+          dotty.tools.dotc.transform.SymUtils.decorateSymbol(sym).subst(TreeTypeMap.this.oldOwners, TreeTypeMap.this.newOwners)
+        </td>
+      </tr><tr>
+        <td>
+          45
+        </td>
+        <td>
+          8480
+        </td>
+        <td>
+          2332
+          -
+          2341
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.ast.TreeTypeMap.newOwners
+        </td>
+        <td style="background: #AEF1AE">
+          TreeTypeMap.this.newOwners
+        </td>
+      </tr><tr>
+        <td>
+          45
+        </td>
+        <td>
+          8479
+        </td>
+        <td>
+          2321
+          -
+          2330
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.ast.TreeTypeMap.oldOwners
+        </td>
+        <td style="background: #AEF1AE">
+          TreeTypeMap.this.oldOwners
+        </td>
+      </tr><tr>
+        <td>
+          50
+        </td>
+        <td>
+          8499
+        </td>
+        <td>
+          2495
+          -
+          2498
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.ast.TreeTypeMap.$anon.&lt;init&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          new $anon()
+        </td>
+      </tr><tr>
+        <td>
+          53
+        </td>
+        <td>
+          8483
+        </td>
+        <td>
+          2711
+          -
+          2718
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.collection.IterableLike.head
+        </td>
+        <td style="background: #AEF1AE">
+          to.head
+        </td>
+      </tr><tr>
+        <td>
+          53
+        </td>
+        <td>
+          8486
+        </td>
+        <td>
+          2711
+          -
+          2727
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.SymDenotations.SymDenotation.thisType
+        </td>
+        <td style="background: #AEF1AE">
+          core.Symbols.toDenot(to.head)($anon.this.ctx).thisType($anon.this.ctx)
+        </td>
+      </tr><tr>
+        <td>
+          53
+        </td>
+        <td>
+          8489
+        </td>
+        <td>
+          2667
+          -
+          2729
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.ast.TreeTypeMap.$anon.mapPrefix
+        </td>
+        <td style="background: #AEF1AE">
+          $anon.this.mapPrefix(from1, to.tail, tp.substThis(cls, core.Symbols.toDenot(to.head)($anon.this.ctx).thisType($anon.this.ctx))($anon.this.ctx))
+        </td>
+      </tr><tr>
+        <td>
+          53
+        </td>
+        <td>
+          8488
+        </td>
+        <td>
+          2693
+          -
+          2728
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.Types.Type.substThis
+        </td>
+        <td style="background: #AEF1AE">
+          tp.substThis(cls, core.Symbols.toDenot(to.head)($anon.this.ctx).thisType($anon.this.ctx))($anon.this.ctx)
+        </td>
+      </tr><tr>
+        <td>
+          53
+        </td>
+        <td>
+          8482
+        </td>
+        <td>
+          2684
+          -
+          2691
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.collection.TraversableLike.tail
+        </td>
+        <td style="background: #AEF1AE">
+          to.tail
+        </td>
+      </tr><tr>
+        <td>
+          53
+        </td>
+        <td>
+          8485
+        </td>
+        <td>
+          2719
+          -
+          2719
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Types.TypeMap.ctx
+        </td>
+        <td style="background: #AEF1AE">
+          $anon.this.ctx
+        </td>
+      </tr><tr>
+        <td>
+          53
+        </td>
+        <td>
+          8484
+        </td>
+        <td>
+          2714
+          -
+          2714
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Types.TypeMap.ctx
+        </td>
+        <td style="background: #AEF1AE">
+          $anon.this.ctx
+        </td>
+      </tr><tr>
+        <td>
+          53
+        </td>
+        <td>
+          8487
+        </td>
+        <td>
+          2705
+          -
+          2705
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Types.TypeMap.ctx
+        </td>
+        <td style="background: #AEF1AE">
+          $anon.this.ctx
+        </td>
+      </tr><tr>
+        <td>
+          54
+        </td>
+        <td>
+          8490
+        </td>
+        <td>
+          2772
+          -
+          2779
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.collection.TraversableLike.tail
+        </td>
+        <td style="background: #AEF1AE">
+          to.tail
+        </td>
+      </tr><tr>
+        <td>
+          54
+        </td>
+        <td>
+          8491
+        </td>
+        <td>
+          2755
+          -
+          2784
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.ast.TreeTypeMap.$anon.mapPrefix
+        </td>
+        <td style="background: #AEF1AE">
+          $anon.this.mapPrefix(from1, to.tail, tp)
+        </td>
+      </tr><tr>
+        <td>
+          57
+        </td>
+        <td>
+          8492
+        </td>
+        <td>
+          2889
+          -
+          2898
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.ast.TreeTypeMap.oldOwners
+        </td>
+        <td style="background: #AEF1AE">
+          TreeTypeMap.this.oldOwners
+        </td>
+      </tr><tr>
+        <td>
+          57
+        </td>
+        <td>
+          8495
+        </td>
+        <td>
+          2879
+          -
+          2921
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.ast.TreeTypeMap.$anon.mapPrefix
+        </td>
+        <td style="background: #AEF1AE">
+          $anon.this.mapPrefix(TreeTypeMap.this.oldOwners, TreeTypeMap.this.newOwners, tp.prefix)
+        </td>
+      </tr><tr>
+        <td>
+          57
+        </td>
+        <td>
+          8497
+        </td>
+        <td>
+          2862
+          -
+          2922
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.Types.NamedType.derivedSelect
+        </td>
+        <td style="background: #AEF1AE">
+          tp.derivedSelect($anon.this.mapPrefix(TreeTypeMap.this.oldOwners, TreeTypeMap.this.newOwners, tp.prefix))($anon.this.ctx)
+        </td>
+      </tr><tr>
+        <td>
+          57
+        </td>
+        <td>
+          8494
+        </td>
+        <td>
+          2911
+          -
+          2920
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Types.NamedType.prefix
+        </td>
+        <td style="background: #AEF1AE">
+          tp.prefix
+        </td>
+      </tr><tr>
+        <td>
+          57
+        </td>
+        <td>
+          8493
+        </td>
+        <td>
+          2900
+          -
+          2909
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.ast.TreeTypeMap.newOwners
+        </td>
+        <td style="background: #AEF1AE">
+          TreeTypeMap.this.newOwners
+        </td>
+      </tr><tr>
+        <td>
+          57
+        </td>
+        <td>
+          8496
+        </td>
+        <td>
+          2878
+          -
+          2878
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Types.TypeMap.ctx
+        </td>
+        <td style="background: #AEF1AE">
+          $anon.this.ctx
+        </td>
+      </tr><tr>
+        <td>
+          58
+        </td>
+        <td>
+          8498
+        </td>
+        <td>
+          2939
+          -
+          2950
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.core.Types.TypeMap.mapOver
+        </td>
+        <td style="background: #AEF1AE">
+          $anon.this.mapOver(tp)
+        </td>
+      </tr><tr>
+        <td>
+          63
+        </td>
+        <td>
+          8501
+        </td>
+        <td>
+          3037
+          -
+          3044
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.ast.TreeTypeMap.substTo
+        </td>
+        <td style="background: #AEF1AE">
+          TreeTypeMap.this.substTo
+        </td>
+      </tr><tr>
+        <td>
+          63
+        </td>
+        <td>
+          8504
+        </td>
+        <td>
+          2992
+          -
+          3046
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.core.Types.TypeMap.apply
+        </td>
+        <td style="background: #AEF1AE">
+          TreeTypeMap.this.mapOwnerThis.apply(TreeTypeMap.this.typeMap.apply(tp).substSym(TreeTypeMap.this.substFrom, TreeTypeMap.this.substTo)(TreeTypeMap.this.ctx))
+        </td>
+      </tr><tr>
+        <td>
+          63
+        </td>
+        <td>
+          8500
+        </td>
+        <td>
+          3026
+          -
+          3035
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.ast.TreeTypeMap.substFrom
+        </td>
+        <td style="background: #AEF1AE">
+          TreeTypeMap.this.substFrom
+        </td>
+      </tr><tr>
+        <td>
+          63
+        </td>
+        <td>
+          8503
+        </td>
+        <td>
+          3005
+          -
+          3045
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.Types.Type.substSym
+        </td>
+        <td style="background: #AEF1AE">
+          TreeTypeMap.this.typeMap.apply(tp).substSym(TreeTypeMap.this.substFrom, TreeTypeMap.this.substTo)(TreeTypeMap.this.ctx)
+        </td>
+      </tr><tr>
+        <td>
+          63
+        </td>
+        <td>
+          8502
+        </td>
+        <td>
+          3025
+          -
+          3025
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.ast.TreeTypeMap.ctx
+        </td>
+        <td style="background: #AEF1AE">
+          TreeTypeMap.this.ctx
+        </td>
+      </tr><tr>
+        <td>
+          66
+        </td>
+        <td>
+          8508
+        </td>
+        <td>
+          3154
+          -
+          3178
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          scala.Predef.assert
+        </td>
+        <td style="background: #F0ADAD">
+          scala.Predef.assert(newStats.isEmpty)
+        </td>
+      </tr><tr>
+        <td>
+          66
+        </td>
+        <td>
+          8507
+        </td>
+        <td>
+          3154
+          -
+          3178
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Predef.assert
+        </td>
+        <td style="background: #F0ADAD">
+          scala.Predef.assert(newStats.isEmpty)
+        </td>
+      </tr><tr>
+        <td>
+          66
+        </td>
+        <td>
+          8506
+        </td>
+        <td>
+          3161
+          -
+          3177
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.collection.SeqLike.isEmpty
+        </td>
+        <td style="background: #F0ADAD">
+          newStats.isEmpty
+        </td>
+      </tr><tr>
+        <td>
+          66
+        </td>
+        <td>
+          8505
+        </td>
+        <td>
+          3135
+          -
+          3152
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.collection.SeqLike.isEmpty
+        </td>
+        <td style="background: #F0ADAD">
+          prevStats.isEmpty
+        </td>
+      </tr><tr>
+        <td>
+          67
+        </td>
+        <td>
+          8527
+        </td>
+        <td>
+          3188
+          -
+          3520
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          {
+  prevStats.head match {
+    case (pdef @ (_: dotty.tools.dotc.ast.tpd.MemberDef)) =&gt; {
+      val prevSym: dotty.tools.dotc.core.Symbols.Symbol = pdef.symbol(TreeTypeMap.this.ctx);
+      val newSym: dotty.tools.dotc.core.Symbols.Symbol = newStats.head.symbol(TreeTypeMap.this.ctx);
+      val newCls: dotty.tools.dotc.core.Symbols.ClassSymbol = core.Symbols.toDenot(newSym)(TreeTypeMap.this.ctx).owner.asClass;
+      if (prevSym.!=(newSym))
+        core.Symbols.toClassDenot(newCls)(TreeTypeMap.this.ctx).replace(prevSym, newSym)(TreeTypeMap.this.ctx)
+      else
+        ()
+    }
+    case _ =&gt; ()
+  };
+  TreeTypeMap.this.updateDecls(prevStats.tail, newStats.tail)
+}
+        </td>
+      </tr><tr>
+        <td>
+          68
+        </td>
+        <td>
+          8509
+        </td>
+        <td>
+          3196
+          -
+          3210
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.collection.IterableLike.head
+        </td>
+        <td style="background: #F0ADAD">
+          prevStats.head
+        </td>
+      </tr><tr>
+        <td>
+          70
+        </td>
+        <td>
+          8510
+        </td>
+        <td>
+          3280
+          -
+          3280
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.ast.TreeTypeMap.ctx
+        </td>
+        <td style="background: #F0ADAD">
+          TreeTypeMap.this.ctx
+        </td>
+      </tr><tr>
+        <td>
+          70
+        </td>
+        <td>
+          8511
+        </td>
+        <td>
+          3275
+          -
+          3286
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Trees.Tree.symbol
+        </td>
+        <td style="background: #F0ADAD">
+          pdef.symbol(TreeTypeMap.this.ctx)
+        </td>
+      </tr><tr>
+        <td>
+          71
+        </td>
+        <td>
+          8513
+        </td>
+        <td>
+          3310
+          -
+          3330
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Trees.Tree.symbol
+        </td>
+        <td style="background: #F0ADAD">
+          newStats.head.symbol(TreeTypeMap.this.ctx)
+        </td>
+      </tr><tr>
+        <td>
+          71
+        </td>
+        <td>
+          8512
+        </td>
+        <td>
+          3324
+          -
+          3324
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.ast.TreeTypeMap.ctx
+        </td>
+        <td style="background: #F0ADAD">
+          TreeTypeMap.this.ctx
+        </td>
+      </tr><tr>
+        <td>
+          72
+        </td>
+        <td>
+          8515
+        </td>
+        <td>
+          3354
+          -
+          3374
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Symbols.Symbol.asClass
+        </td>
+        <td style="background: #F0ADAD">
+          core.Symbols.toDenot(newSym)(TreeTypeMap.this.ctx).owner.asClass
+        </td>
+      </tr><tr>
+        <td>
+          72
+        </td>
+        <td>
+          8514
+        </td>
+        <td>
+          3354
+          -
+          3354
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.ast.TreeTypeMap.ctx
+        </td>
+        <td style="background: #F0ADAD">
+          TreeTypeMap.this.ctx
+        </td>
+      </tr><tr>
+        <td>
+          73
+        </td>
+        <td>
+          8517
+        </td>
+        <td>
+          3408
+          -
+          3408
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.ast.TreeTypeMap.ctx
+        </td>
+        <td style="background: #F0ADAD">
+          TreeTypeMap.this.ctx
+        </td>
+      </tr><tr>
+        <td>
+          73
+        </td>
+        <td>
+          8516
+        </td>
+        <td>
+          3389
+          -
+          3406
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.Object.!=
+        </td>
+        <td style="background: #F0ADAD">
+          prevSym.!=(newSym)
+        </td>
+      </tr><tr>
+        <td>
+          73
+        </td>
+        <td>
+          8519
+        </td>
+        <td>
+          3408
+          -
+          3439
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.SymDenotations.ClassDenotation.replace
+        </td>
+        <td style="background: #F0ADAD">
+          core.Symbols.toClassDenot(newCls)(TreeTypeMap.this.ctx).replace(prevSym, newSym)(TreeTypeMap.this.ctx)
+        </td>
+      </tr><tr>
+        <td>
+          73
+        </td>
+        <td>
+          8522
+        </td>
+        <td>
+          3385
+          -
+          3385
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          ()
+        </td>
+      </tr><tr>
+        <td>
+          73
+        </td>
+        <td>
+          8518
+        </td>
+        <td>
+          3422
+          -
+          3422
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.ast.TreeTypeMap.ctx
+        </td>
+        <td style="background: #F0ADAD">
+          TreeTypeMap.this.ctx
+        </td>
+      </tr><tr>
+        <td>
+          73
+        </td>
+        <td>
+          8521
+        </td>
+        <td>
+          3385
+          -
+          3385
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          ()
+        </td>
+      </tr><tr>
+        <td>
+          73
+        </td>
+        <td>
+          8520
+        </td>
+        <td>
+          3408
+          -
+          3439
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          dotty.tools.dotc.core.SymDenotations.ClassDenotation.replace
+        </td>
+        <td style="background: #F0ADAD">
+          core.Symbols.toClassDenot(newCls)(TreeTypeMap.this.ctx).replace(prevSym, newSym)(TreeTypeMap.this.ctx)
+        </td>
+      </tr><tr>
+        <td>
+          74
+        </td>
+        <td>
+          8523
+        </td>
+        <td>
+          3455
+          -
+          3457
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          ()
+        </td>
+      </tr><tr>
+        <td>
+          76
+        </td>
+        <td>
+          8526
+        </td>
+        <td>
+          3472
+          -
+          3514
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.ast.TreeTypeMap.updateDecls
+        </td>
+        <td style="background: #F0ADAD">
+          TreeTypeMap.this.updateDecls(prevStats.tail, newStats.tail)
+        </td>
+      </tr><tr>
+        <td>
+          76
+        </td>
+        <td>
+          8525
+        </td>
+        <td>
+          3500
+          -
+          3513
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.collection.TraversableLike.tail
+        </td>
+        <td style="background: #F0ADAD">
+          newStats.tail
+        </td>
+      </tr><tr>
+        <td>
+          76
+        </td>
+        <td>
+          8524
+        </td>
+        <td>
+          3484
+          -
+          3498
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.collection.TraversableLike.tail
+        </td>
+        <td style="background: #F0ADAD">
+          prevStats.tail
+        </td>
+      </tr><tr>
+        <td>
+          79
+        </td>
+        <td>
+          8528
+        </td>
+        <td>
+          3598
+          -
+          3611
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Function1.apply
+        </td>
+        <td style="background: #AEF1AE">
+          TreeTypeMap.this.treeMap.apply(tree)
+        </td>
+      </tr><tr>
+        <td>
+          81
+        </td>
+        <td>
+          8531
+        </td>
+        <td>
+          3691
+          -
+          3737
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.ast.TreeTypeMap.withMappedSyms
+        </td>
+        <td style="background: #AEF1AE">
+          TreeTypeMap.this.withMappedSyms(tpd.localSyms({
+  &lt;synthetic&gt; &lt;artifact&gt; val x$2: dotty.tools.dotc.ast.Trees.Template[dotty.tools.dotc.core.Types.Type] = impl;
+  {
+  &lt;synthetic&gt; &lt;artifact&gt; val x$1: dotty.tools.dotc.ast.Trees.ValDef[dotty.tools.dotc.core.Types.Type] = self;
+  scala.collection.immutable.Nil.::[dotty.tools.dotc.ast.Trees.ValDef[dotty.tools.dotc.core.Types.Type]](x$1)
+}.::[dotty.tools.dotc.ast.Trees.DefTree[dotty.tools.dotc.core.Types.Type] with Serializable with dotty.tools.dotc.ast.Trees.WithLazyField[Product]](x$2)
+})(ctx), TreeTypeMap.this.withMappedSyms$default$2)
+        </td>
+      </tr><tr>
+        <td>
+          81
+        </td>
+        <td>
+          8530
+        </td>
+        <td>
+          3691
+          -
+          3691
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.ast.TreeTypeMap.withMappedSyms$default$2
+        </td>
+        <td style="background: #AEF1AE">
+          TreeTypeMap.this.withMappedSyms$default$2
+        </td>
+      </tr><tr>
+        <td>
+          81
+        </td>
+        <td>
+          8529
+        </td>
+        <td>
+          3706
+          -
+          3736
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.TypedTreeInfo.localSyms
+        </td>
+        <td style="background: #AEF1AE">
+          tpd.localSyms({
+  &lt;synthetic&gt; &lt;artifact&gt; val x$2: dotty.tools.dotc.ast.Trees.Template[dotty.tools.dotc.core.Types.Type] = impl;
+  {
+  &lt;synthetic&gt; &lt;artifact&gt; val x$1: dotty.tools.dotc.ast.Trees.ValDef[dotty.tools.dotc.core.Types.Type] = self;
+  scala.collection.immutable.Nil.::[dotty.tools.dotc.ast.Trees.ValDef[dotty.tools.dotc.core.Types.Type]](x$1)
+}.::[dotty.tools.dotc.ast.Trees.DefTree[dotty.tools.dotc.core.Types.Type] with Serializable with dotty.tools.dotc.ast.Trees.WithLazyField[Product]](x$2)
+})(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          88
+        </td>
+        <td>
+          8532
+        </td>
+        <td>
+          3744
+          -
+          4061
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Trees.Tree.withType
+        </td>
+        <td style="background: #AEF1AE">
+          TreeTypeMap.this.cpy.Template(impl)(tmap.transformSub[dotty.tools.dotc.ast.Trees.DefDef[dotty.tools.dotc.core.Types.Type]](constr)(ctx), core.Decorators.ListDecorator[dotty.tools.dotc.ast.Trees.Tree[dotty.tools.dotc.core.Types.Type]](parents).mapconserve[dotty.tools.dotc.ast.tpd.Tree]({
+  ((tree: dotty.tools.dotc.ast.tpd.Tree) =&gt; TreeTypeMap.this.transform(tree)(ctx))
+}), tmap.transformSub[dotty.tools.dotc.ast.Trees.ValDef[dotty.tools.dotc.core.Types.Type]](self)(ctx), core.Decorators.ListDecorator[dotty.tools.dotc.ast.Trees.Tree[dotty.tools.dotc.core.Types.Type]](impl.body(ctx)).mapconserve[dotty.tools.dotc.ast.tpd.Tree](((x$3: dotty.tools.dotc.ast.Trees.Tree[dotty.tools.dotc.core.Types.Type]) =&gt; tmap.transform(x$3)(ctx.withOwner(TreeTypeMap.this.mapOwner(core.Symbols.toDenot(impl.symbol(ctx))(ctx).owner)))))).withType(tmap.mapType(impl.tpe))(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          90
+        </td>
+        <td>
+          8533
+        </td>
+        <td>
+          4086
+          -
+          4120
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Trees.Tree.withType
+        </td>
+        <td style="background: #AEF1AE">
+          tree1.withType(TreeTypeMap.this.mapType(tree1.tpe))(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          91
+        </td>
+        <td>
+          8534
+        </td>
+        <td>
+          4155
+          -
+          4178
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.tpd.needsSelect
+        </td>
+        <td style="background: #AEF1AE">
+          tpd.needsSelect(id.tpe)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          92
+        </td>
+        <td>
+          8535
+        </td>
+        <td>
+          4196
+          -
+          4224
+        </td>
+        <td>
+          TypeApply
+        </td>
+        <td>
+          scala.Any.asInstanceOf
+        </td>
+        <td style="background: #AEF1AE">
+          id.tpe.asInstanceOf[dotty.tools.dotc.core.Types.TermRef]
+        </td>
+      </tr><tr>
+        <td>
+          92
+        </td>
+        <td>
+          8537
+        </td>
+        <td>
+          4192
+          -
+          4241
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Positioned.withPos
+        </td>
+        <td style="background: #AEF1AE">
+          tpd.ref(id.tpe.asInstanceOf[dotty.tools.dotc.core.Types.TermRef])(ctx).withPos(id.pos)
+        </td>
+      </tr><tr>
+        <td>
+          92
+        </td>
+        <td>
+          8536
+        </td>
+        <td>
+          4234
+          -
+          4240
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Positioned.pos
+        </td>
+        <td style="background: #AEF1AE">
+          id.pos
+        </td>
+      </tr><tr>
+        <td>
+          94
+        </td>
+        <td>
+          8539
+        </td>
+        <td>
+          4327
+          -
+          4327
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.Tuple2._2
+        </td>
+        <td style="background: #AEF1AE">
+          x$4._2
+        </td>
+      </tr><tr>
+        <td>
+          94
+        </td>
+        <td>
+          8538
+        </td>
+        <td>
+          4320
+          -
+          4320
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.Tuple2._1
+        </td>
+        <td style="background: #AEF1AE">
+          x$4._1
+        </td>
+      </tr><tr>
+        <td>
+          95
+        </td>
+        <td>
+          8540
+        </td>
+        <td>
+          4382
+          -
+          4382
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.Tuple2._1
+        </td>
+        <td style="background: #AEF1AE">
+          x$5._1
+        </td>
+      </tr><tr>
+        <td>
+          95
+        </td>
+        <td>
+          8541
+        </td>
+        <td>
+          4389
+          -
+          4389
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.Tuple2._2
+        </td>
+        <td style="background: #AEF1AE">
+          x$5._2
+        </td>
+      </tr><tr>
+        <td>
+          96
+        </td>
+        <td>
+          8543
+        </td>
+        <td>
+          4522
+          -
+          4547
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.TreeTypeMap.transform
+        </td>
+        <td style="background: #AEF1AE">
+          tmap2.transform(ddef.rhs(ctx))(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          96
+        </td>
+        <td>
+          8542
+        </td>
+        <td>
+          4500
+          -
+          4520
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.TreeTypeMap.transform
+        </td>
+        <td style="background: #AEF1AE">
+          tmap2.transform(tpt)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          96
+        </td>
+        <td>
+          8544
+        </td>
+        <td>
+          4456
+          -
+          4548
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Trees.Instance.TreeCopier.DefDef
+        </td>
+        <td style="background: #AEF1AE">
+          TreeTypeMap.this.cpy.DefDef(ddef)(name, tparams1, vparamss1, tmap2.transform(tpt)(ctx), tmap2.transform(ddef.rhs(ctx))(ctx))
+        </td>
+      </tr><tr>
+        <td>
+          97
+        </td>
+        <td>
+          8545
+        </td>
+        <td>
+          4559
+          -
+          4703
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.SymDenotations.SymDenotation.transformAnnotations
+        </td>
+        <td style="background: #AEF1AE">
+          core.Symbols.toDenot(res.symbol(ctx))(ctx).transformAnnotations(((x0$1: dotty.tools.dotc.core.Annotations.Annotation) =&gt; x0$1 match {
+  case (ann @ (_: dotty.tools.dotc.core.Annotations.BodyAnnotation)) =&gt; ann.derivedAnnotation(res.rhs(ctx))(ctx)
+  case (ann @ _) =&gt; ann
+}))(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          103
+        </td>
+        <td>
+          8546
+        </td>
+        <td>
+          4786
+          -
+          4786
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.Tuple2._1
+        </td>
+        <td style="background: #AEF1AE">
+          x$6._1
+        </td>
+      </tr><tr>
+        <td>
+          103
+        </td>
+        <td>
+          8547
+        </td>
+        <td>
+          4793
+          -
+          4793
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.Tuple2._2
+        </td>
+        <td style="background: #AEF1AE">
+          x$6._2
+        </td>
+      </tr><tr>
+        <td>
+          104
+        </td>
+        <td>
+          8549
+        </td>
+        <td>
+          4838
+          -
+          4895
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Trees.Instance.TreeCopier.LambdaTypeTree
+        </td>
+        <td style="background: #AEF1AE">
+          TreeTypeMap.this.cpy.LambdaTypeTree(tdef)(tparams1, tmap1.transform(body)(ctx))
+        </td>
+      </tr><tr>
+        <td>
+          104
+        </td>
+        <td>
+          8548
+        </td>
+        <td>
+          4873
+          -
+          4894
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.TreeTypeMap.transform
+        </td>
+        <td style="background: #AEF1AE">
+          tmap1.transform(body)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          106
+        </td>
+        <td>
+          8551
+        </td>
+        <td>
+          4959
+          -
+          4959
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.Tuple2._2
+        </td>
+        <td style="background: #AEF1AE">
+          x$7._2
+        </td>
+      </tr><tr>
+        <td>
+          106
+        </td>
+        <td>
+          8550
+        </td>
+        <td>
+          4952
+          -
+          4952
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.Tuple2._1
+        </td>
+        <td style="background: #AEF1AE">
+          x$7._1
+        </td>
+      </tr><tr>
+        <td>
+          107
+        </td>
+        <td>
+          8552
+        </td>
+        <td>
+          5012
+          -
+          5033
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.TreeTypeMap.transform
+        </td>
+        <td style="background: #AEF1AE">
+          tmap1.transform(expr)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          108
+        </td>
+        <td>
+          8553
+        </td>
+        <td>
+          5044
+          -
+          5073
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Trees.Instance.TreeCopier.Block
+        </td>
+        <td style="background: #AEF1AE">
+          TreeTypeMap.this.cpy.Block(blk)(stats1, expr1)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          110
+        </td>
+        <td>
+          8555
+        </td>
+        <td>
+          5156
+          -
+          5156
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.Tuple2._2
+        </td>
+        <td style="background: #AEF1AE">
+          x$8._2
+        </td>
+      </tr><tr>
+        <td>
+          110
+        </td>
+        <td>
+          8554
+        </td>
+        <td>
+          5149
+          -
+          5149
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.Tuple2._1
+        </td>
+        <td style="background: #AEF1AE">
+          x$8._1
+        </td>
+      </tr><tr>
+        <td>
+          111
+        </td>
+        <td>
+          8556
+        </td>
+        <td>
+          5219
+          -
+          5244
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.TreeTypeMap.transform
+        </td>
+        <td style="background: #AEF1AE">
+          tmap1.transform(expanded)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          112
+        </td>
+        <td>
+          8557
+        </td>
+        <td>
+          5255
+          -
+          5303
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Trees.Instance.TreeCopier.Inlined
+        </td>
+        <td style="background: #AEF1AE">
+          TreeTypeMap.this.cpy.Inlined(inlined)(call, bindings1, expanded1)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          114
+        </td>
+        <td>
+          8558
+        </td>
+        <td>
+          5388
+          -
+          5400
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.TypedTreeInfo.patVars
+        </td>
+        <td style="background: #AEF1AE">
+          tpd.patVars(pat)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          114
+        </td>
+        <td>
+          8560
+        </td>
+        <td>
+          5373
+          -
+          5401
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.ast.TreeTypeMap.withMappedSyms
+        </td>
+        <td style="background: #AEF1AE">
+          TreeTypeMap.this.withMappedSyms(tpd.patVars(pat)(ctx), TreeTypeMap.this.withMappedSyms$default$2)
+        </td>
+      </tr><tr>
+        <td>
+          114
+        </td>
+        <td>
+          8559
+        </td>
+        <td>
+          5373
+          -
+          5373
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.ast.TreeTypeMap.withMappedSyms$default$2
+        </td>
+        <td style="background: #AEF1AE">
+          TreeTypeMap.this.withMappedSyms$default$2
+        </td>
+      </tr><tr>
+        <td>
+          115
+        </td>
+        <td>
+          8561
+        </td>
+        <td>
+          5423
+          -
+          5442
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.TreeTypeMap.transform
+        </td>
+        <td style="background: #AEF1AE">
+          tmap.transform(pat)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          116
+        </td>
+        <td>
+          8562
+        </td>
+        <td>
+          5466
+          -
+          5487
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.TreeTypeMap.transform
+        </td>
+        <td style="background: #AEF1AE">
+          tmap.transform(guard)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          117
+        </td>
+        <td>
+          8563
+        </td>
+        <td>
+          5509
+          -
+          5528
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.TreeTypeMap.transform
+        </td>
+        <td style="background: #AEF1AE">
+          tmap.transform(rhs)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          118
+        </td>
+        <td>
+          8564
+        </td>
+        <td>
+          5539
+          -
+          5576
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Trees.Instance.TreeCopier.CaseDef
+        </td>
+        <td style="background: #AEF1AE">
+          TreeTypeMap.this.cpy.CaseDef(cdef)(pat1, guard1, rhs1)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          120
+        </td>
+        <td>
+          8565
+        </td>
+        <td>
+          5617
+          -
+          5699
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Trees.Tree.withType
+        </td>
+        <td style="background: #AEF1AE">
+          core.tasty.TreePickler.Hole.apply(n, args.mapConserve[dotty.tools.dotc.ast.tpd.Tree]({
+  ((tree: dotty.tools.dotc.ast.tpd.Tree) =&gt; TreeTypeMap.this.transform(tree)(ctx))
+})).withPos(tree.pos).withType(TreeTypeMap.this.mapType(tree.tpe))(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          122
+        </td>
+        <td>
+          8566
+        </td>
+        <td>
+          5732
+          -
+          5754
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Trees.Instance.TreeMap.transform
+        </td>
+        <td style="background: #AEF1AE">
+          TreeTypeMap.super.transform(tree1)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          127
+        </td>
+        <td>
+          8567
+        </td>
+        <td>
+          5850
+          -
+          5873
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.Tuple2._2
+        </td>
+        <td style="background: #F0ADAD">
+          TreeTypeMap.this.transformDefs[dotty.tools.dotc.ast.tpd.Tree](trees)(ctx)._2
+        </td>
+      </tr><tr>
+        <td>
+          130
+        </td>
+        <td>
+          8570
+        </td>
+        <td>
+          6003
+          -
+          6039
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.ast.TreeTypeMap.withMappedSyms
+        </td>
+        <td style="background: #AEF1AE">
+          TreeTypeMap.this.withMappedSyms(tpd.localSyms(trees)(ctx), TreeTypeMap.this.withMappedSyms$default$2)
+        </td>
+      </tr><tr>
+        <td>
+          130
+        </td>
+        <td>
+          8569
+        </td>
+        <td>
+          6003
+          -
+          6003
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.ast.TreeTypeMap.withMappedSyms$default$2
+        </td>
+        <td style="background: #AEF1AE">
+          TreeTypeMap.this.withMappedSyms$default$2
+        </td>
+      </tr><tr>
+        <td>
+          130
+        </td>
+        <td>
+          8568
+        </td>
+        <td>
+          6018
+          -
+          6038
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.TypedTreeInfo.localSyms
+        </td>
+        <td style="background: #AEF1AE">
+          tpd.localSyms(trees)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          131
+        </td>
+        <td>
+          8572
+        </td>
+        <td>
+          6044
+          -
+          6076
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Tuple2.apply
+        </td>
+        <td style="background: #AEF1AE">
+          scala.Tuple2.apply[dotty.tools.dotc.ast.TreeTypeMap, List[TT]](tmap, tmap.transformSub[TT](trees)(ctx))
+        </td>
+      </tr><tr>
+        <td>
+          131
+        </td>
+        <td>
+          8571
+        </td>
+        <td>
+          6051
+          -
+          6075
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Trees.Instance.TreeMap.transformSub
+        </td>
+        <td style="background: #AEF1AE">
+          tmap.transformSub[TT](trees)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          136
+        </td>
+        <td>
+          8573
+        </td>
+        <td>
+          6237
+          -
+          6237
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.Tuple2._1
+        </td>
+        <td style="background: #AEF1AE">
+          x$9._1
+        </td>
+      </tr><tr>
+        <td>
+          136
+        </td>
+        <td>
+          8574
+        </td>
+        <td>
+          6244
+          -
+          6244
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.Tuple2._2
+        </td>
+        <td style="background: #AEF1AE">
+          x$9._2
+        </td>
+      </tr><tr>
+        <td>
+          137
+        </td>
+        <td>
+          8576
+        </td>
+        <td>
+          6297
+          -
+          6297
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.Tuple2._2
+        </td>
+        <td style="background: #AEF1AE">
+          x$10._2
+        </td>
+      </tr><tr>
+        <td>
+          137
+        </td>
+        <td>
+          8575
+        </td>
+        <td>
+          6290
+          -
+          6290
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.Tuple2._1
+        </td>
+        <td style="background: #AEF1AE">
+          x$10._1
+        </td>
+      </tr><tr>
+        <td>
+          138
+        </td>
+        <td>
+          8578
+        </td>
+        <td>
+          6346
+          -
+          6376
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Tuple2.apply
+        </td>
+        <td style="background: #AEF1AE">
+          scala.Tuple2.apply[dotty.tools.dotc.ast.TreeTypeMap, List[List[dotty.tools.dotc.ast.tpd.ValDef]]](tmap2, {
+  &lt;synthetic&gt; &lt;artifact&gt; val x$11: List[dotty.tools.dotc.ast.tpd.ValDef] = vparams1;
+  vparamss2.::[List[dotty.tools.dotc.ast.tpd.ValDef]](x$11)
+})
+        </td>
+      </tr><tr>
+        <td>
+          138
+        </td>
+        <td>
+          8577
+        </td>
+        <td>
+          6363
+          -
+          6375
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.immutable.List.::
+        </td>
+        <td style="background: #AEF1AE">
+          vparamss2.::[List[dotty.tools.dotc.ast.tpd.ValDef]](x$11)
+        </td>
+      </tr><tr>
+        <td>
+          140
+        </td>
+        <td>
+          8579
+        </td>
+        <td>
+          6399
+          -
+          6415
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Tuple2.apply
+        </td>
+        <td style="background: #AEF1AE">
+          scala.Tuple2.apply[dotty.tools.dotc.ast.TreeTypeMap, List[List[dotty.tools.dotc.ast.tpd.ValDef]]](this, vparamss)
+        </td>
+      </tr><tr>
+        <td>
+          143
+        </td>
+        <td>
+          8581
+        </td>
+        <td>
+          6483
+          -
+          6521
+        </td>
+        <td>
+          TypeApply
+        </td>
+        <td>
+          scala.Any.asInstanceOf
+        </td>
+        <td style="background: #AEF1AE">
+          TreeTypeMap.this.transform(tree)(TreeTypeMap.this.ctx).asInstanceOf[ThisTree]
+        </td>
+      </tr><tr>
+        <td>
+          143
+        </td>
+        <td>
+          8580
+        </td>
+        <td>
+          6492
+          -
+          6492
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.ast.TreeTypeMap.ctx
+        </td>
+        <td style="background: #AEF1AE">
+          TreeTypeMap.this.ctx
+        </td>
+      </tr><tr>
+        <td>
+          145
+        </td>
+        <td>
+          8585
+        </td>
+        <td>
+          6591
+          -
+          6591
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.ast.TreeTypeMap.ctx
+        </td>
+        <td style="background: #AEF1AE">
+          TreeTypeMap.this.ctx
+        </td>
+      </tr><tr>
+        <td>
+          145
+        </td>
+        <td>
+          8582
+        </td>
+        <td>
+          6604
+          -
+          6604
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.ast.TreeTypeMap.ctx
+        </td>
+        <td style="background: #AEF1AE">
+          TreeTypeMap.this.ctx
+        </td>
+      </tr><tr>
+        <td>
+          145
+        </td>
+        <td>
+          8584
+        </td>
+        <td>
+          6592
+          -
+          6609
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.ast.TreeTypeMap.apply
+        </td>
+        <td style="background: #AEF1AE">
+          TreeTypeMap.this.apply[dotty.tools.dotc.ast.tpd.Tree](annot.tree(TreeTypeMap.this.ctx))
+        </td>
+      </tr><tr>
+        <td>
+          145
+        </td>
+        <td>
+          8583
+        </td>
+        <td>
+          6598
+          -
+          6608
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.Annotations.Annotation.tree
+        </td>
+        <td style="background: #AEF1AE">
+          annot.tree(TreeTypeMap.this.ctx)
+        </td>
+      </tr><tr>
+        <td>
+          145
+        </td>
+        <td>
+          8586
+        </td>
+        <td>
+          6568
+          -
+          6610
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.Annotations.Annotation.derivedAnnotation
+        </td>
+        <td style="background: #AEF1AE">
+          annot.derivedAnnotation(TreeTypeMap.this.apply[dotty.tools.dotc.ast.tpd.Tree](annot.tree(TreeTypeMap.this.ctx)))(TreeTypeMap.this.ctx)
+        </td>
+      </tr><tr>
+        <td>
+          149
+        </td>
+        <td>
+          8588
+        </td>
+        <td>
+          6780
+          -
+          6784
+        </td>
+        <td>
+          This
+        </td>
+        <td>
+          dotty.tools.dotc.ast.TreeTypeMap
+        </td>
+        <td style="background: #AEF1AE">
+          this
+        </td>
+      </tr><tr>
+        <td>
+          149
+        </td>
+        <td>
+          8587
+        </td>
+        <td>
+          6768
+          -
+          6778
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.Object.eq
+        </td>
+        <td style="background: #AEF1AE">
+          from.eq(to)
+        </td>
+      </tr><tr>
+        <td>
+          150
+        </td>
+        <td>
+          8617
+        </td>
+        <td>
+          6794
+          -
+          7520
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          {
+  scala.Predef.assert(from.exists(((x$12: dotty.tools.dotc.core.Symbols.Symbol) =&gt; TreeTypeMap.this.substTo.contains[dotty.tools.dotc.core.Symbols.Symbol](x$12))).unary_!);
+  scala.Predef.assert(to.exists(((x$13: dotty.tools.dotc.core.Symbols.Symbol) =&gt; TreeTypeMap.this.substFrom.contains[dotty.tools.dotc.core.Symbols.Symbol](x$13))).unary_!);
+  scala.Predef.assert(from.exists(((x$14: dotty.tools.dotc.core.Symbols.Symbol) =&gt; TreeTypeMap.this.newOwners.contains[dotty.tools.dotc.core.Symbols.Symbol](x$14))).unary_!);
+  scala.Predef.assert(to.exists(((x$15: dotty.tools.dotc.core.Symbols.Symbol) =&gt; TreeTypeMap.this.oldOwners.contains[dotty.tools.dotc.core.Symbols.Symbol](x$15))).unary_!);
+  new TreeTypeMap(TreeTypeMap.this.typeMap, TreeTypeMap.this.treeMap, from.++[dotty.tools.dotc.core.Symbols.Symbol, List[dotty.tools.dotc.core.Symbols.Symbol]](TreeTypeMap.this.oldOwners)(immutable.this.List.canBuildFrom[dotty.tools.dotc.core.Symbols.Symbol]), to.++[dotty.tools.dotc.core.Symbols.Symbol, List[dotty.tools.dotc.core.Symbols.Symbol]](TreeTypeMap.this.newOwners)(immutable.this.List.canBuildFrom[dotty.tools.dotc.core.Symbols.Symbol]), from.++[dotty.tools.dotc.core.Symbols.Symbol, List[dotty.tools.dotc.core.Symbols.Symbol]](TreeTypeMap.this.substFrom)(immutable.this.List.canBuildFrom[dotty.tools.dotc.core.Symbols.Symbol]), to.++[dotty.tools.dotc.core.Symbols.Symbol, List[dotty.tools.dotc.core.Symbols.Symbol]](TreeTypeMap.this.substTo)(immutable.this.List.canBuildFrom[dotty.tools.dotc.core.Symbols.Symbol]))(TreeTypeMap.this.ctx)
+}
+        </td>
+      </tr><tr>
+        <td>
+          156
+        </td>
+        <td>
+          8591
+        </td>
+        <td>
+          7172
+          -
+          7212
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Predef.assert
+        </td>
+        <td style="background: #AEF1AE">
+          scala.Predef.assert(from.exists(((x$12: dotty.tools.dotc.core.Symbols.Symbol) =&gt; TreeTypeMap.this.substTo.contains[dotty.tools.dotc.core.Symbols.Symbol](x$12))).unary_!)
+        </td>
+      </tr><tr>
+        <td>
+          156
+        </td>
+        <td>
+          8590
+        </td>
+        <td>
+          7179
+          -
+          7211
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.Boolean.unary_!
+        </td>
+        <td style="background: #AEF1AE">
+          from.exists(((x$12: dotty.tools.dotc.core.Symbols.Symbol) =&gt; TreeTypeMap.this.substTo.contains[dotty.tools.dotc.core.Symbols.Symbol](x$12))).unary_!
+        </td>
+      </tr><tr>
+        <td>
+          156
+        </td>
+        <td>
+          8589
+        </td>
+        <td>
+          7192
+          -
+          7210
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.LinearSeqOptimized.contains
+        </td>
+        <td style="background: #AEF1AE">
+          TreeTypeMap.this.substTo.contains[dotty.tools.dotc.core.Symbols.Symbol](x$12)
+        </td>
+      </tr><tr>
+        <td>
+          157
+        </td>
+        <td>
+          8594
+        </td>
+        <td>
+          7219
+          -
+          7259
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Predef.assert
+        </td>
+        <td style="background: #AEF1AE">
+          scala.Predef.assert(to.exists(((x$13: dotty.tools.dotc.core.Symbols.Symbol) =&gt; TreeTypeMap.this.substFrom.contains[dotty.tools.dotc.core.Symbols.Symbol](x$13))).unary_!)
+        </td>
+      </tr><tr>
+        <td>
+          157
+        </td>
+        <td>
+          8593
+        </td>
+        <td>
+          7226
+          -
+          7258
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.Boolean.unary_!
+        </td>
+        <td style="background: #AEF1AE">
+          to.exists(((x$13: dotty.tools.dotc.core.Symbols.Symbol) =&gt; TreeTypeMap.this.substFrom.contains[dotty.tools.dotc.core.Symbols.Symbol](x$13))).unary_!
+        </td>
+      </tr><tr>
+        <td>
+          157
+        </td>
+        <td>
+          8592
+        </td>
+        <td>
+          7237
+          -
+          7257
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.LinearSeqOptimized.contains
+        </td>
+        <td style="background: #AEF1AE">
+          TreeTypeMap.this.substFrom.contains[dotty.tools.dotc.core.Symbols.Symbol](x$13)
+        </td>
+      </tr><tr>
+        <td>
+          158
+        </td>
+        <td>
+          8597
+        </td>
+        <td>
+          7266
+          -
+          7308
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Predef.assert
+        </td>
+        <td style="background: #AEF1AE">
+          scala.Predef.assert(from.exists(((x$14: dotty.tools.dotc.core.Symbols.Symbol) =&gt; TreeTypeMap.this.newOwners.contains[dotty.tools.dotc.core.Symbols.Symbol](x$14))).unary_!)
+        </td>
+      </tr><tr>
+        <td>
+          158
+        </td>
+        <td>
+          8596
+        </td>
+        <td>
+          7273
+          -
+          7307
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.Boolean.unary_!
+        </td>
+        <td style="background: #AEF1AE">
+          from.exists(((x$14: dotty.tools.dotc.core.Symbols.Symbol) =&gt; TreeTypeMap.this.newOwners.contains[dotty.tools.dotc.core.Symbols.Symbol](x$14))).unary_!
+        </td>
+      </tr><tr>
+        <td>
+          158
+        </td>
+        <td>
+          8595
+        </td>
+        <td>
+          7286
+          -
+          7306
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.LinearSeqOptimized.contains
+        </td>
+        <td style="background: #AEF1AE">
+          TreeTypeMap.this.newOwners.contains[dotty.tools.dotc.core.Symbols.Symbol](x$14)
+        </td>
+      </tr><tr>
+        <td>
+          159
+        </td>
+        <td>
+          8600
+        </td>
+        <td>
+          7315
+          -
+          7355
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Predef.assert
+        </td>
+        <td style="background: #AEF1AE">
+          scala.Predef.assert(to.exists(((x$15: dotty.tools.dotc.core.Symbols.Symbol) =&gt; TreeTypeMap.this.oldOwners.contains[dotty.tools.dotc.core.Symbols.Symbol](x$15))).unary_!)
+        </td>
+      </tr><tr>
+        <td>
+          159
+        </td>
+        <td>
+          8599
+        </td>
+        <td>
+          7322
+          -
+          7354
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.Boolean.unary_!
+        </td>
+        <td style="background: #AEF1AE">
+          to.exists(((x$15: dotty.tools.dotc.core.Symbols.Symbol) =&gt; TreeTypeMap.this.oldOwners.contains[dotty.tools.dotc.core.Symbols.Symbol](x$15))).unary_!
+        </td>
+      </tr><tr>
+        <td>
+          159
+        </td>
+        <td>
+          8598
+        </td>
+        <td>
+          7333
+          -
+          7353
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.LinearSeqOptimized.contains
+        </td>
+        <td style="background: #AEF1AE">
+          TreeTypeMap.this.oldOwners.contains[dotty.tools.dotc.core.Symbols.Symbol](x$15)
+        </td>
+      </tr><tr>
+        <td>
+          160
+        </td>
+        <td>
+          8615
+        </td>
+        <td>
+          7362
+          -
+          7362
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.ast.TreeTypeMap.ctx
+        </td>
+        <td style="background: #AEF1AE">
+          TreeTypeMap.this.ctx
+        </td>
+      </tr><tr>
+        <td>
+          160
+        </td>
+        <td>
+          8616
+        </td>
+        <td>
+          7362
+          -
+          7514
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.TreeTypeMap.&lt;init&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          new TreeTypeMap(TreeTypeMap.this.typeMap, TreeTypeMap.this.treeMap, from.++[dotty.tools.dotc.core.Symbols.Symbol, List[dotty.tools.dotc.core.Symbols.Symbol]](TreeTypeMap.this.oldOwners)(immutable.this.List.canBuildFrom[dotty.tools.dotc.core.Symbols.Symbol]), to.++[dotty.tools.dotc.core.Symbols.Symbol, List[dotty.tools.dotc.core.Symbols.Symbol]](TreeTypeMap.this.newOwners)(immutable.this.List.canBuildFrom[dotty.tools.dotc.core.Symbols.Symbol]), from.++[dotty.tools.dotc.core.Symbols.Symbol, List[dotty.tools.dotc.core.Symbols.Symbol]](TreeTypeMap.this.substFrom)(immutable.this.List.canBuildFrom[dotty.tools.dotc.core.Symbols.Symbol]), to.++[dotty.tools.dotc.core.Symbols.Symbol, List[dotty.tools.dotc.core.Symbols.Symbol]](TreeTypeMap.this.substTo)(immutable.this.List.canBuildFrom[dotty.tools.dotc.core.Symbols.Symbol]))(TreeTypeMap.this.ctx)
+        </td>
+      </tr><tr>
+        <td>
+          161
+        </td>
+        <td>
+          8601
+        </td>
+        <td>
+          7387
+          -
+          7394
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.ast.TreeTypeMap.typeMap
+        </td>
+        <td style="background: #AEF1AE">
+          TreeTypeMap.this.typeMap
+        </td>
+      </tr><tr>
+        <td>
+          162
+        </td>
+        <td>
+          8602
+        </td>
+        <td>
+          7404
+          -
+          7411
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.ast.TreeTypeMap.treeMap
+        </td>
+        <td style="background: #AEF1AE">
+          TreeTypeMap.this.treeMap
+        </td>
+      </tr><tr>
+        <td>
+          163
+        </td>
+        <td>
+          8603
+        </td>
+        <td>
+          7429
+          -
+          7438
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.ast.TreeTypeMap.oldOwners
+        </td>
+        <td style="background: #AEF1AE">
+          TreeTypeMap.this.oldOwners
+        </td>
+      </tr><tr>
+        <td>
+          163
+        </td>
+        <td>
+          8605
+        </td>
+        <td>
+          7421
+          -
+          7438
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          scala.collection.immutable.List.++
+        </td>
+        <td style="background: #AEF1AE">
+          from.++[dotty.tools.dotc.core.Symbols.Symbol, List[dotty.tools.dotc.core.Symbols.Symbol]](TreeTypeMap.this.oldOwners)(immutable.this.List.canBuildFrom[dotty.tools.dotc.core.Symbols.Symbol])
+        </td>
+      </tr><tr>
+        <td>
+          163
+        </td>
+        <td>
+          8604
+        </td>
+        <td>
+          7426
+          -
+          7426
+        </td>
+        <td>
+          TypeApply
+        </td>
+        <td>
+          scala.collection.immutable.List.canBuildFrom
+        </td>
+        <td style="background: #AEF1AE">
+          immutable.this.List.canBuildFrom[dotty.tools.dotc.core.Symbols.Symbol]
+        </td>
+      </tr><tr>
+        <td>
+          164
+        </td>
+        <td>
+          8606
+        </td>
+        <td>
+          7454
+          -
+          7463
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.ast.TreeTypeMap.newOwners
+        </td>
+        <td style="background: #AEF1AE">
+          TreeTypeMap.this.newOwners
+        </td>
+      </tr><tr>
+        <td>
+          164
+        </td>
+        <td>
+          8608
+        </td>
+        <td>
+          7448
+          -
+          7463
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          scala.collection.immutable.List.++
+        </td>
+        <td style="background: #AEF1AE">
+          to.++[dotty.tools.dotc.core.Symbols.Symbol, List[dotty.tools.dotc.core.Symbols.Symbol]](TreeTypeMap.this.newOwners)(immutable.this.List.canBuildFrom[dotty.tools.dotc.core.Symbols.Symbol])
+        </td>
+      </tr><tr>
+        <td>
+          164
+        </td>
+        <td>
+          8607
+        </td>
+        <td>
+          7451
+          -
+          7451
+        </td>
+        <td>
+          TypeApply
+        </td>
+        <td>
+          scala.collection.immutable.List.canBuildFrom
+        </td>
+        <td style="background: #AEF1AE">
+          immutable.this.List.canBuildFrom[dotty.tools.dotc.core.Symbols.Symbol]
+        </td>
+      </tr><tr>
+        <td>
+          165
+        </td>
+        <td>
+          8609
+        </td>
+        <td>
+          7481
+          -
+          7490
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.ast.TreeTypeMap.substFrom
+        </td>
+        <td style="background: #AEF1AE">
+          TreeTypeMap.this.substFrom
+        </td>
+      </tr><tr>
+        <td>
+          165
+        </td>
+        <td>
+          8611
+        </td>
+        <td>
+          7473
+          -
+          7490
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          scala.collection.immutable.List.++
+        </td>
+        <td style="background: #AEF1AE">
+          from.++[dotty.tools.dotc.core.Symbols.Symbol, List[dotty.tools.dotc.core.Symbols.Symbol]](TreeTypeMap.this.substFrom)(immutable.this.List.canBuildFrom[dotty.tools.dotc.core.Symbols.Symbol])
+        </td>
+      </tr><tr>
+        <td>
+          165
+        </td>
+        <td>
+          8610
+        </td>
+        <td>
+          7478
+          -
+          7478
+        </td>
+        <td>
+          TypeApply
+        </td>
+        <td>
+          scala.collection.immutable.List.canBuildFrom
+        </td>
+        <td style="background: #AEF1AE">
+          immutable.this.List.canBuildFrom[dotty.tools.dotc.core.Symbols.Symbol]
+        </td>
+      </tr><tr>
+        <td>
+          166
+        </td>
+        <td>
+          8612
+        </td>
+        <td>
+          7506
+          -
+          7513
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.ast.TreeTypeMap.substTo
+        </td>
+        <td style="background: #AEF1AE">
+          TreeTypeMap.this.substTo
+        </td>
+      </tr><tr>
+        <td>
+          166
+        </td>
+        <td>
+          8614
+        </td>
+        <td>
+          7500
+          -
+          7513
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          scala.collection.immutable.List.++
+        </td>
+        <td style="background: #AEF1AE">
+          to.++[dotty.tools.dotc.core.Symbols.Symbol, List[dotty.tools.dotc.core.Symbols.Symbol]](TreeTypeMap.this.substTo)(immutable.this.List.canBuildFrom[dotty.tools.dotc.core.Symbols.Symbol])
+        </td>
+      </tr><tr>
+        <td>
+          166
+        </td>
+        <td>
+          8613
+        </td>
+        <td>
+          7503
+          -
+          7503
+        </td>
+        <td>
+          TypeApply
+        </td>
+        <td>
+          scala.collection.immutable.List.canBuildFrom
+        </td>
+        <td style="background: #AEF1AE">
+          immutable.this.List.canBuildFrom[dotty.tools.dotc.core.Symbols.Symbol]
+        </td>
+      </tr><tr>
+        <td>
+          174
+        </td>
+        <td>
+          8618
+        </td>
+        <td>
+          7799
+          -
+          7836
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.core.Symbols.mapSymbols
+        </td>
+        <td style="background: #AEF1AE">
+          TreeTypeMap.this.ctx.mapSymbols(syms, this, mapAlways)
+        </td>
+      </tr><tr>
+        <td>
+          174
+        </td>
+        <td>
+          8619
+        </td>
+        <td>
+          7778
+          -
+          7837
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.ast.TreeTypeMap.withMappedSyms
+        </td>
+        <td style="background: #AEF1AE">
+          TreeTypeMap.this.withMappedSyms(syms, TreeTypeMap.this.ctx.mapSymbols(syms, this, mapAlways))
+        </td>
+      </tr><tr>
+        <td>
+          181
+        </td>
+        <td>
+          8620
+        </td>
+        <td>
+          8120
+          -
+          8134
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.Object.ne
+        </td>
+        <td style="background: #AEF1AE">
+          syms.ne(mapped)
+        </td>
+      </tr><tr>
+        <td>
+          182
+        </td>
+        <td>
+          8621
+        </td>
+        <td>
+          8154
+          -
+          8184
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.ast.TreeTypeMap.withSubstitution
+        </td>
+        <td style="background: #AEF1AE">
+          TreeTypeMap.this.withSubstitution(syms, mapped)
+        </td>
+      </tr><tr>
+        <td>
+          183
+        </td>
+        <td>
+          8640
+        </td>
+        <td>
+          8203
+          -
+          8515
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.TraversableOnce./:
+        </td>
+        <td style="background: #AEF1AE">
+          mapped.filter(((x$16: dotty.tools.dotc.core.Symbols.Symbol) =&gt; x$16.isClass))./:[dotty.tools.dotc.ast.TreeTypeMap](x$17)(((tmap: dotty.tools.dotc.ast.TreeTypeMap, cls: dotty.tools.dotc.core.Symbols.Symbol) =&gt; {
+  val origDcls: List[dotty.tools.dotc.core.Symbols.Symbol] = core.Symbols.toDenot(cls)(TreeTypeMap.this.ctx).info(TreeTypeMap.this.ctx).decls(TreeTypeMap.this.ctx).toList(TreeTypeMap.this.ctx);
+  val mappedDcls: List[dotty.tools.dotc.core.Symbols.Symbol] = TreeTypeMap.this.ctx.mapSymbols(origDcls, tmap, TreeTypeMap.this.ctx.mapSymbols$default$3);
+  val tmap1: dotty.tools.dotc.ast.TreeTypeMap = tmap.withMappedSyms(origDcls, mappedDcls);
+  if (symsChanged)
+    scala.Predef.tuple2ToZippedOps[List[dotty.tools.dotc.core.Symbols.Symbol], List[dotty.tools.dotc.core.Symbols.Symbol]](scala.Tuple2.apply[List[dotty.tools.dotc.core.Symbols.Symbol], List[dotty.tools.dotc.core.Symbols.Symbol]](origDcls, mappedDcls)).zipped[dotty.tools.dotc.core.Symbols.Symbol, List[dotty.tools.dotc.core.Symbols.Symbol], dotty.tools.dotc.core.Symbols.Symbol, List[dotty.tools.dotc.core.Symbols.Symbol]](scala.Predef.$conforms[List[dotty.tools.dotc.core.Symbols.Symbol]], scala.Predef.$conforms[List[dotty.tools.dotc.core.Symbols.Symbol]]).foreach[Unit]({
+      &lt;synthetic&gt; val eta$0$1: dotty.tools.dotc.core.SymDenotations.ClassDenotation = core.Symbols.toClassDenot(cls.asClass)(TreeTypeMap.this.ctx);
+      ((prev: dotty.tools.dotc.core.Symbols.Symbol, replacement: dotty.tools.dotc.core.Symbols.Symbol) =&gt; eta$0$1.replace(prev, replacement)(TreeTypeMap.this.ctx))
+    })
+  else
+    ();
+  tmap1
+}))
+        </td>
+      </tr><tr>
+        <td>
+          183
+        </td>
+        <td>
+          8622
+        </td>
+        <td>
+          8230
+          -
+          8239
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Symbols.Symbol.isClass
+        </td>
+        <td style="background: #AEF1AE">
+          x$16.isClass
+        </td>
+      </tr><tr>
+        <td>
+          184
+        </td>
+        <td>
+          8627
+        </td>
+        <td>
+          8280
+          -
+          8301
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.Scopes.Scope.toList
+        </td>
+        <td style="background: #AEF1AE">
+          core.Symbols.toDenot(cls)(TreeTypeMap.this.ctx).info(TreeTypeMap.this.ctx).decls(TreeTypeMap.this.ctx).toList(TreeTypeMap.this.ctx)
+        </td>
+      </tr><tr>
+        <td>
+          184
+        </td>
+        <td>
+          8624
+        </td>
+        <td>
+          8284
+          -
+          8284
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.ast.TreeTypeMap.ctx
+        </td>
+        <td style="background: #AEF1AE">
+          TreeTypeMap.this.ctx
+        </td>
+      </tr><tr>
+        <td>
+          184
+        </td>
+        <td>
+          8626
+        </td>
+        <td>
+          8295
+          -
+          8295
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.ast.TreeTypeMap.ctx
+        </td>
+        <td style="background: #AEF1AE">
+          TreeTypeMap.this.ctx
+        </td>
+      </tr><tr>
+        <td>
+          184
+        </td>
+        <td>
+          8623
+        </td>
+        <td>
+          8280
+          -
+          8280
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.ast.TreeTypeMap.ctx
+        </td>
+        <td style="background: #AEF1AE">
+          TreeTypeMap.this.ctx
+        </td>
+      </tr><tr>
+        <td>
+          184
+        </td>
+        <td>
+          8625
+        </td>
+        <td>
+          8289
+          -
+          8289
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.ast.TreeTypeMap.ctx
+        </td>
+        <td style="background: #AEF1AE">
+          TreeTypeMap.this.ctx
+        </td>
+      </tr><tr>
+        <td>
+          185
+        </td>
+        <td>
+          8629
+        </td>
+        <td>
+          8325
+          -
+          8355
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.core.Symbols.mapSymbols
+        </td>
+        <td style="background: #AEF1AE">
+          TreeTypeMap.this.ctx.mapSymbols(origDcls, tmap, TreeTypeMap.this.ctx.mapSymbols$default$3)
+        </td>
+      </tr><tr>
+        <td>
+          185
+        </td>
+        <td>
+          8628
+        </td>
+        <td>
+          8329
+          -
+          8329
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Symbols.mapSymbols$default$3
+        </td>
+        <td style="background: #AEF1AE">
+          TreeTypeMap.this.ctx.mapSymbols$default$3
+        </td>
+      </tr><tr>
+        <td>
+          186
+        </td>
+        <td>
+          8630
+        </td>
+        <td>
+          8374
+          -
+          8415
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.ast.TreeTypeMap.withMappedSyms
+        </td>
+        <td style="background: #AEF1AE">
+          tmap.withMappedSyms(origDcls, mappedDcls)
+        </td>
+      </tr><tr>
+        <td>
+          187
+        </td>
+        <td>
+          8636
+        </td>
+        <td>
+          8439
+          -
+          8497
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.runtime.Tuple2Zipped.foreach
+        </td>
+        <td style="background: #AEF1AE">
+          scala.Predef.tuple2ToZippedOps[List[dotty.tools.dotc.core.Symbols.Symbol], List[dotty.tools.dotc.core.Symbols.Symbol]](scala.Tuple2.apply[List[dotty.tools.dotc.core.Symbols.Symbol], List[dotty.tools.dotc.core.Symbols.Symbol]](origDcls, mappedDcls)).zipped[dotty.tools.dotc.core.Symbols.Symbol, List[dotty.tools.dotc.core.Symbols.Symbol], dotty.tools.dotc.core.Symbols.Symbol, List[dotty.tools.dotc.core.Symbols.Symbol]](scala.Predef.$conforms[List[dotty.tools.dotc.core.Symbols.Symbol]], scala.Predef.$conforms[List[dotty.tools.dotc.core.Symbols.Symbol]]).foreach[Unit]({
+  &lt;synthetic&gt; val eta$0$1: dotty.tools.dotc.core.SymDenotations.ClassDenotation = core.Symbols.toClassDenot(cls.asClass)(TreeTypeMap.this.ctx);
+  ((prev: dotty.tools.dotc.core.Symbols.Symbol, replacement: dotty.tools.dotc.core.Symbols.Symbol) =&gt; eta$0$1.replace(prev, replacement)(TreeTypeMap.this.ctx))
+})
+        </td>
+      </tr><tr>
+        <td>
+          187
+        </td>
+        <td>
+          8639
+        </td>
+        <td>
+          8422
+          -
+          8422
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          ()
+        </td>
+      </tr><tr>
+        <td>
+          187
+        </td>
+        <td>
+          8633
+        </td>
+        <td>
+          8462
+          -
+          8462
+        </td>
+        <td>
+          TypeApply
+        </td>
+        <td>
+          scala.Predef.$conforms
+        </td>
+        <td style="background: #AEF1AE">
+          scala.Predef.$conforms[List[dotty.tools.dotc.core.Symbols.Symbol]]
+        </td>
+      </tr><tr>
+        <td>
+          187
+        </td>
+        <td>
+          8635
+        </td>
+        <td>
+          8477
+          -
+          8496
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.SymDenotations.ClassDenotation.replace
+        </td>
+        <td style="background: #AEF1AE">
+          eta$0$1.replace(prev, replacement)(TreeTypeMap.this.ctx)
+        </td>
+      </tr><tr>
+        <td>
+          187
+        </td>
+        <td>
+          8638
+        </td>
+        <td>
+          8422
+          -
+          8422
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          ()
+        </td>
+      </tr><tr>
+        <td>
+          187
+        </td>
+        <td>
+          8632
+        </td>
+        <td>
+          8462
+          -
+          8462
+        </td>
+        <td>
+          TypeApply
+        </td>
+        <td>
+          scala.Predef.$conforms
+        </td>
+        <td style="background: #AEF1AE">
+          scala.Predef.$conforms[List[dotty.tools.dotc.core.Symbols.Symbol]]
+        </td>
+      </tr><tr>
+        <td>
+          187
+        </td>
+        <td>
+          8631
+        </td>
+        <td>
+          8439
+          -
+          8461
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Tuple2.apply
+        </td>
+        <td style="background: #AEF1AE">
+          scala.Tuple2.apply[List[dotty.tools.dotc.core.Symbols.Symbol], List[dotty.tools.dotc.core.Symbols.Symbol]](origDcls, mappedDcls)
+        </td>
+      </tr><tr>
+        <td>
+          187
+        </td>
+        <td>
+          8634
+        </td>
+        <td>
+          8489
+          -
+          8489
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.ast.TreeTypeMap.ctx
+        </td>
+        <td style="background: #AEF1AE">
+          TreeTypeMap.this.ctx
+        </td>
+      </tr><tr>
+        <td>
+          187
+        </td>
+        <td>
+          8637
+        </td>
+        <td>
+          8439
+          -
+          8497
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          scala.runtime.Tuple2Zipped.foreach
+        </td>
+        <td style="background: #AEF1AE">
+          scala.Predef.tuple2ToZippedOps[List[dotty.tools.dotc.core.Symbols.Symbol], List[dotty.tools.dotc.core.Symbols.Symbol]](scala.Tuple2.apply[List[dotty.tools.dotc.core.Symbols.Symbol], List[dotty.tools.dotc.core.Symbols.Symbol]](origDcls, mappedDcls)).zipped[dotty.tools.dotc.core.Symbols.Symbol, List[dotty.tools.dotc.core.Symbols.Symbol], dotty.tools.dotc.core.Symbols.Symbol, List[dotty.tools.dotc.core.Symbols.Symbol]](scala.Predef.$conforms[List[dotty.tools.dotc.core.Symbols.Symbol]], scala.Predef.$conforms[List[dotty.tools.dotc.core.Symbols.Symbol]]).foreach[Unit]({
+  &lt;synthetic&gt; val eta$0$1: dotty.tools.dotc.core.SymDenotations.ClassDenotation = core.Symbols.toClassDenot(cls.asClass)(TreeTypeMap.this.ctx);
+  ((prev: dotty.tools.dotc.core.Symbols.Symbol, replacement: dotty.tools.dotc.core.Symbols.Symbol) =&gt; eta$0$1.replace(prev, replacement)(TreeTypeMap.this.ctx))
+})
+        </td>
+      </tr><tr>
+        <td>
+          190
+        </td>
+        <td>
+          8642
+        </td>
+        <td>
+          8524
+          -
+          8560
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Boolean.||
+        </td>
+        <td style="background: #AEF1AE">
+          symsChanged.||(fullMap.eq(substMap))
+        </td>
+      </tr><tr>
+        <td>
+          190
+        </td>
+        <td>
+          8641
+        </td>
+        <td>
+          8540
+          -
+          8559
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.Object.eq
+        </td>
+        <td style="background: #AEF1AE">
+          fullMap.eq(substMap)
+        </td>
+      </tr><tr>
+        <td>
+          190
+        </td>
+        <td>
+          8643
+        </td>
+        <td>
+          8562
+          -
+          8569
+        </td>
+        <td>
+          Ident
+        </td>
+        <td>
+          dotty.tools.dotc.ast.TreeTypeMap.fullMap
+        </td>
+        <td style="background: #AEF1AE">
+          fullMap
+        </td>
+      </tr><tr>
+        <td>
+          191
+        </td>
+        <td>
+          8645
+        </td>
+        <td>
+          8579
+          -
+          8617
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          dotty.tools.dotc.ast.TreeTypeMap.withMappedSyms
+        </td>
+        <td style="background: #F0ADAD">
+          TreeTypeMap.this.withMappedSyms(syms, true)
+        </td>
+      </tr><tr>
+        <td>
+          191
+        </td>
+        <td>
+          8644
+        </td>
+        <td>
+          8579
+          -
+          8617
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.ast.TreeTypeMap.withMappedSyms
+        </td>
+        <td style="background: #F0ADAD">
+          TreeTypeMap.this.withMappedSyms(syms, true)
+        </td>
+      </tr>
+    </table>
+          </div>
+        </div>
+      </body>
+    </html>

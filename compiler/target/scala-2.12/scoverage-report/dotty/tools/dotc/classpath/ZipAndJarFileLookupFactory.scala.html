@@ -1,0 +1,1977 @@
+<html>
+      <head>
+        <meta http-equiv="Content-Type" content="text/html; charset=utf-8"/>
+        <title id="title">
+          dotty/tools/dotc/classpath/ZipAndJarFileLookupFactory.scala.html
+        </title>
+        <script src="https://ajax.googleapis.com/ajax/libs/jquery/1.10.2/jquery.min.js"></script><link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/jquery.tablesorter/2.20.1/css/theme.default.min.css" type="text/css"/><script src="https://cdnjs.cloudflare.com/ajax/libs/jquery.tablesorter/2.20.1/js/jquery.tablesorter.min.js"></script><link rel="stylesheet" href="https://netdna.bootstrapcdn.com/bootstrap/3.0.3/css/bootstrap.min.css" type="text/css"/><script src="https://netdna.bootstrapcdn.com/bootstrap/3.0.3/js/bootstrap.min.js"></script><script type="text/javascript">
+        $(document).ready(function() {$(".tablesorter").tablesorter();});
+      </script>
+        <style>
+          table.codegrid { font-family: monospace; font-size: 12px; width: auto!important; }table.statementlist { width: auto!important; font-size: 13px; } table.codegrid td { padding: 0!important; border: 0!important } table td.linenumber { width: 40px!important; } 
+        </style>
+      </head>
+      <body style="font-family: monospace;">
+        <ul class="nav nav-tabs">
+          <li>
+            <a href="#codegrid" data-toggle="tab">Codegrid</a>
+          </li>
+          <li>
+            <a href="#statementlist" data-toggle="tab">Statement List</a>
+          </li>
+        </ul>
+        <div class="tab-content">
+          <div class="tab-pane active" id="codegrid">
+            <pre style='font-size: 12pt; font-family: courier;'>1 <span style=''>/*
+</span>2 <span style=''> * Copyright (c) 2014 Contributor. All rights reserved.
+</span>3 <span style=''> */
+</span>4 <span style=''>package dotty.tools.dotc.classpath
+</span>5 <span style=''>
+</span>6 <span style=''>import java.io.File
+</span>7 <span style=''>import java.net.URL
+</span>8 <span style=''>import java.nio.file.Files
+</span>9 <span style=''>import java.nio.file.attribute.{BasicFileAttributes, FileTime}
+</span>10 <span style=''>
+</span>11 <span style=''>import scala.annotation.tailrec
+</span>12 <span style=''>import dotty.tools.io.{AbstractFile, ClassPath, ClassRepresentation, FileZipArchive, ManifestResources}
+</span>13 <span style=''>import dotty.tools.dotc.core.Contexts.Context
+</span>14 <span style=''>import FileUtils._
+</span>15 <span style=''>
+</span>16 <span style=''>/**
+</span>17 <span style=''> * A trait providing an optional cache for classpath entries obtained from zip and jar files.
+</span>18 <span style=''> * It allows us to e.g. reduce significantly memory used by PresentationCompilers in Scala IDE
+</span>19 <span style=''> * when there are a lot of projects having a lot of common dependencies.
+</span>20 <span style=''> */
+</span>21 <span style=''>sealed trait ZipAndJarFileLookupFactory {
+</span>22 <span style=''>  private val cache = </span><span style='background: #AEF1AE'>new FileBasedCache[ClassPath]</span><span style=''>
+</span>23 <span style=''>
+</span>24 <span style=''>  def create(zipFile: AbstractFile)(implicit ctx: Context): ClassPath = {
+</span>25 <span style=''>    if (</span><span style='background: #AEF1AE'>ctx.settings.YdisableFlatCpCaching.value || zipFile.file == null</span><span style=''>) </span><span style='background: #F0ADAD'>createForZipFile(zipFile)</span><span style=''>
+</span>26 <span style=''>    else </span><span style='background: #AEF1AE'>createUsingCache(zipFile)</span><span style=''>
+</span>27 <span style=''>  }
+</span>28 <span style=''>
+</span>29 <span style=''>  protected def createForZipFile(zipFile: AbstractFile): ClassPath
+</span>30 <span style=''>
+</span>31 <span style=''>  private def createUsingCache(zipFile: AbstractFile): ClassPath =
+</span>32 <span style=''>    </span><span style='background: #AEF1AE'>cache.getOrCreate(zipFile.file.toPath, () =&gt; createForZipFile(zipFile))</span><span style=''>
+</span>33 <span style=''>}
+</span>34 <span style=''>
+</span>35 <span style=''>/**
+</span>36 <span style=''> * Manages creation of classpath for class files placed in zip and jar files.
+</span>37 <span style=''> * It should be the only way of creating them as it provides caching.
+</span>38 <span style=''> */
+</span>39 <span style=''>object ZipAndJarClassPathFactory extends ZipAndJarFileLookupFactory {
+</span>40 <span style=''>  private case class ZipArchiveClassPath(zipFile: File)
+</span>41 <span style=''>    extends ZipArchiveFileLookup[ClassFileEntryImpl]
+</span>42 <span style=''>    with NoSourcePaths {
+</span>43 <span style=''>
+</span>44 <span style=''>    override def findClassFile(className: String): Option[AbstractFile] = {
+</span>45 <span style=''>      val (pkg, simpleClassName) = PackageNameUtils.separatePkgAndClassNames(className)
+</span>46 <span style=''>      </span><span style='background: #AEF1AE'>file(pkg, simpleClassName + &quot;.class&quot;).map(_.file)</span><span style=''>
+</span>47 <span style=''>    }
+</span>48 <span style=''>
+</span>49 <span style=''>    // This method is performance sensitive as it is used by SBT's ExtractDependencies phase.
+</span>50 <span style=''>    override def findClass(className: String): Option[ClassRepresentation] = {
+</span>51 <span style=''>      val (pkg, simpleClassName) = PackageNameUtils.separatePkgAndClassNames(className)
+</span>52 <span style=''>      </span><span style='background: #AEF1AE'>file(pkg, simpleClassName + &quot;.class&quot;)</span><span style=''>
+</span>53 <span style=''>    }
+</span>54 <span style=''>
+</span>55 <span style=''>    override private[dotty] def classes(inPackage: String): Seq[ClassFileEntry] = </span><span style='background: #F0ADAD'>files(inPackage)</span><span style=''>
+</span>56 <span style=''>
+</span>57 <span style=''>    override protected def createFileEntry(file: FileZipArchive#Entry): ClassFileEntryImpl = </span><span style='background: #AEF1AE'>ClassFileEntryImpl(file)</span><span style=''>
+</span>58 <span style=''>    override protected def isRequiredFileType(file: AbstractFile): Boolean = </span><span style='background: #AEF1AE'>file.isClass</span><span style=''>
+</span>59 <span style=''>  }
+</span>60 <span style=''>
+</span>61 <span style=''>  /**
+</span>62 <span style=''>   * This type of classpath is closely related to the support for JSR-223.
+</span>63 <span style=''>   * Its usage can be observed e.g. when running:
+</span>64 <span style=''>   * jrunscript -classpath scala-compiler.jar;scala-reflect.jar;scala-library.jar -l scala
+</span>65 <span style=''>   * with a particularly prepared scala-library.jar. It should have all classes listed in the manifest like e.g. this entry:
+</span>66 <span style=''>   * Name: scala/Function2$mcFJD$sp.class
+</span>67 <span style=''>   */
+</span>68 <span style=''>  private case class ManifestResourcesClassPath(file: ManifestResources) extends ClassPath with NoSourcePaths {
+</span>69 <span style=''>    override def findClassFile(className: String): Option[AbstractFile] = {
+</span>70 <span style=''>      val (pkg, simpleClassName) = PackageNameUtils.separatePkgAndClassNames(className)
+</span>71 <span style=''>      </span><span style='background: #F0ADAD'>classes(pkg).find(_.name == simpleClassName).map(_.file)</span><span style=''>
+</span>72 <span style=''>    }
+</span>73 <span style=''>
+</span>74 <span style=''>    override def asClassPathStrings: Seq[String] = </span><span style='background: #F0ADAD'>Seq(file.path)</span><span style=''>
+</span>75 <span style=''>
+</span>76 <span style=''>    override def asURLs: Seq[URL] = </span><span style='background: #F0ADAD'>file.toURLs()</span><span style=''>
+</span>77 <span style=''>
+</span>78 <span style=''>    import ManifestResourcesClassPath.PackageFileInfo
+</span>79 <span style=''>    import ManifestResourcesClassPath.PackageInfo
+</span>80 <span style=''>
+</span>81 <span style=''>    /**
+</span>82 <span style=''>     * A cache mapping package name to abstract file for package directory and subpackages of given package.
+</span>83 <span style=''>     *
+</span>84 <span style=''>     * ManifestResources can iterate through the collections of entries from e.g. remote jar file.
+</span>85 <span style=''>     * We can't just specify the path to the concrete directory etc. so we can't just 'jump' into
+</span>86 <span style=''>     * given package, when it's needed. On the other hand we can iterate over entries to get
+</span>87 <span style=''>     * AbstractFiles, iterate over entries of these files etc.
+</span>88 <span style=''>     *
+</span>89 <span style=''>     * Instead of traversing a tree of AbstractFiles once and caching all entries or traversing each time,
+</span>90 <span style=''>     * when we need subpackages of a given package or its classes, we traverse once and cache only packages.
+</span>91 <span style=''>     * Classes for given package can be then easily loaded when they are needed.
+</span>92 <span style=''>     */
+</span>93 <span style=''>    private lazy val cachedPackages: collection.mutable.HashMap[String, PackageFileInfo] = {
+</span>94 <span style=''>      val packages = collection.mutable.HashMap[String, PackageFileInfo]()
+</span>95 <span style=''>
+</span>96 <span style=''>      def getSubpackages(dir: AbstractFile): List[AbstractFile] =
+</span>97 <span style=''>        (for (file &lt;- dir if file.isPackage) yield file)(collection.breakOut)
+</span>98 <span style=''>
+</span>99 <span style=''>      @tailrec
+</span>100 <span style=''>      def traverse(packagePrefix: String,
+</span>101 <span style=''>                   filesForPrefix: List[AbstractFile],
+</span>102 <span style=''>                   subpackagesQueue: collection.mutable.Queue[PackageInfo]): Unit = filesForPrefix match {
+</span>103 <span style=''>        case pkgFile :: remainingFiles =&gt;
+</span>104 <span style=''>          val subpackages = getSubpackages(pkgFile)
+</span>105 <span style=''>          val fullPkgName = packagePrefix + pkgFile.name
+</span>106 <span style=''>          packages.put(fullPkgName, PackageFileInfo(pkgFile, subpackages))
+</span>107 <span style=''>          val newPackagePrefix = fullPkgName + &quot;.&quot;
+</span>108 <span style=''>          subpackagesQueue.enqueue(PackageInfo(newPackagePrefix, subpackages))
+</span>109 <span style=''>          traverse(packagePrefix, remainingFiles, subpackagesQueue)
+</span>110 <span style=''>        case Nil if subpackagesQueue.nonEmpty =&gt;
+</span>111 <span style=''>          val PackageInfo(packagePrefix, filesForPrefix) = subpackagesQueue.dequeue()
+</span>112 <span style=''>          traverse(packagePrefix, filesForPrefix, subpackagesQueue)
+</span>113 <span style=''>        case _ =&gt;
+</span>114 <span style=''>      }
+</span>115 <span style=''>
+</span>116 <span style=''>      val subpackages = getSubpackages(file)
+</span>117 <span style=''>      packages.put(ClassPath.RootPackage, PackageFileInfo(file, subpackages))
+</span>118 <span style=''>      traverse(ClassPath.RootPackage, subpackages, collection.mutable.Queue())
+</span>119 <span style=''>      packages
+</span>120 <span style=''>    }
+</span>121 <span style=''>
+</span>122 <span style=''>    override private[dotty] def packages(inPackage: String): Seq[PackageEntry] = </span><span style='background: #F0ADAD'>cachedPackages.get(inPackage)</span><span style=''> match {
+</span>123 <span style=''>      case None =&gt; </span><span style='background: #F0ADAD'>Seq.empty</span><span style=''>
+</span>124 <span style=''>      case Some(PackageFileInfo(_, subpackages)) =&gt;
+</span>125 <span style=''>        val prefix = </span><span style='background: #F0ADAD'>PackageNameUtils.packagePrefix(inPackage)</span><span style=''>
+</span>126 <span style=''>        </span><span style='background: #F0ADAD'>subpackages.map(packageFile =&gt; PackageEntryImpl(prefix + packageFile.name))</span><span style=''>
+</span>127 <span style=''>    }
+</span>128 <span style=''>
+</span>129 <span style=''>    override private[dotty] def classes(inPackage: String): Seq[ClassFileEntry] = </span><span style='background: #F0ADAD'>cachedPackages.get(inPackage)</span><span style=''> match {
+</span>130 <span style=''>      case None =&gt; </span><span style='background: #F0ADAD'>Seq.empty</span><span style=''>
+</span>131 <span style=''>      case Some(PackageFileInfo(pkg, _)) =&gt;
+</span>132 <span style=''>        </span><span style='background: #F0ADAD'>(for (file &lt;- pkg if file.isClass) yield ClassFileEntryImpl(file))(collection.breakOut)</span><span style=''>
+</span>133 <span style=''>    }
+</span>134 <span style=''>
+</span>135 <span style=''>    override private[dotty] def hasPackage(pkg: String) = </span><span style='background: #F0ADAD'>cachedPackages.contains(pkg)</span><span style=''>
+</span>136 <span style=''>    override private[dotty] def list(inPackage: String): ClassPathEntries = </span><span style='background: #F0ADAD'>ClassPathEntries(packages(inPackage), classes(inPackage))</span><span style=''>
+</span>137 <span style=''>  }
+</span>138 <span style=''>
+</span>139 <span style=''>  private object ManifestResourcesClassPath {
+</span>140 <span style=''>    case class PackageFileInfo(packageFile: AbstractFile, subpackages: Seq[AbstractFile])
+</span>141 <span style=''>    case class PackageInfo(packageName: String, subpackages: List[AbstractFile])
+</span>142 <span style=''>  }
+</span>143 <span style=''>
+</span>144 <span style=''>  override protected def createForZipFile(zipFile: AbstractFile): ClassPath =
+</span>145 <span style=''>    if (</span><span style='background: #AEF1AE'>zipFile.file == null</span><span style=''>) </span><span style='background: #F0ADAD'>createWithoutUnderlyingFile(zipFile)</span><span style=''>
+</span>146 <span style=''>    else </span><span style='background: #AEF1AE'>ZipArchiveClassPath(zipFile.file)</span><span style=''>
+</span>147 <span style=''>
+</span>148 <span style=''>  private def createWithoutUnderlyingFile(zipFile: AbstractFile) = zipFile match {
+</span>149 <span style=''>    case manifestRes: ManifestResources =&gt;
+</span>150 <span style=''>      </span><span style='background: #F0ADAD'>ManifestResourcesClassPath(manifestRes)</span><span style=''>
+</span>151 <span style=''>    case _ =&gt;
+</span>152 <span style=''>      val errorMsg = </span><span style='background: #F0ADAD'>s&quot;Abstract files which don't have an underlying file and are not ManifestResources are not supported. There was $zipFile&quot;</span><span style=''>
+</span>153 <span style=''>      </span><span style='background: #F0ADAD'>throw new IllegalArgumentException(errorMsg)</span><span style=''>
+</span>154 <span style=''>  }
+</span>155 <span style=''>}
+</span>156 <span style=''>
+</span>157 <span style=''>/**
+</span>158 <span style=''> * Manages creation of classpath for source files placed in zip and jar files.
+</span>159 <span style=''> * It should be the only way of creating them as it provides caching.
+</span>160 <span style=''> */
+</span>161 <span style=''>object ZipAndJarSourcePathFactory extends ZipAndJarFileLookupFactory {
+</span>162 <span style=''>  private case class ZipArchiveSourcePath(zipFile: File)
+</span>163 <span style=''>    extends ZipArchiveFileLookup[SourceFileEntryImpl]
+</span>164 <span style=''>    with NoClassPaths {
+</span>165 <span style=''>
+</span>166 <span style=''>    override def asSourcePathString: String = </span><span style='background: #F0ADAD'>asClassPathString</span><span style=''>
+</span>167 <span style=''>
+</span>168 <span style=''>    override private[dotty] def sources(inPackage: String): Seq[SourceFileEntry] = </span><span style='background: #F0ADAD'>files(inPackage)</span><span style=''>
+</span>169 <span style=''>
+</span>170 <span style=''>    override protected def createFileEntry(file: FileZipArchive#Entry): SourceFileEntryImpl = </span><span style='background: #F0ADAD'>SourceFileEntryImpl(file)</span><span style=''>
+</span>171 <span style=''>    override protected def isRequiredFileType(file: AbstractFile): Boolean = </span><span style='background: #F0ADAD'>file.isScalaOrJavaSource</span><span style=''>
+</span>172 <span style=''>  }
+</span>173 <span style=''>
+</span>174 <span style=''>  override protected def createForZipFile(zipFile: AbstractFile): ClassPath = </span><span style='background: #F0ADAD'>ZipArchiveSourcePath(zipFile.file)</span><span style=''>
+</span>175 <span style=''>}
+</span>176 <span style=''>
+</span>177 <span style=''>final class FileBasedCache[T] {
+</span>178 <span style=''>  private case class Stamp(lastModified: FileTime, fileKey: Object)
+</span>179 <span style=''>  private val cache = </span><span style='background: #AEF1AE'>collection.mutable.Map.empty[java.nio.file.Path, (Stamp, T)]</span><span style=''>
+</span>180 <span style=''>
+</span>181 <span style=''>  def getOrCreate(path: java.nio.file.Path, create: () =&gt; T): T = </span><span style='background: #AEF1AE'>cache.synchronized {
+</span>182 <span style=''></span><span style='background: #AEF1AE'>    val attrs = Files.readAttributes(path, classOf[BasicFileAttributes])
+</span>183 <span style=''></span><span style='background: #AEF1AE'>    val lastModified = attrs.lastModifiedTime()
+</span>184 <span style=''></span><span style='background: #AEF1AE'>    // only null on some platforms, but that's okay, we just use the last modified timestamp as our stamp
+</span>185 <span style=''></span><span style='background: #AEF1AE'>    val fileKey = attrs.fileKey()
+</span>186 <span style=''></span><span style='background: #AEF1AE'>    val stamp = Stamp(lastModified, fileKey)
+</span>187 <span style=''></span><span style='background: #AEF1AE'>    cache.get(path) match {
+</span>188 <span style=''></span><span style='background: #AEF1AE'>      case Some((cachedStamp, cached)) if cachedStamp == stamp =&gt; cached
+</span>189 <span style=''></span><span style='background: #AEF1AE'>      case _ =&gt;
+</span>190 <span style=''></span><span style='background: #AEF1AE'>        val value = create()
+</span>191 <span style=''></span><span style='background: #AEF1AE'>        cache.put(path, (stamp, value))
+</span>192 <span style=''></span><span style='background: #AEF1AE'>        value
+</span>193 <span style=''></span><span style='background: #AEF1AE'>    }
+</span>194 <span style=''></span><span style='background: #AEF1AE'>  }</span><span style=''>
+</span>195 <span style=''>
+</span>196 <span style=''>  def clear(): Unit = </span><span style='background: #F0ADAD'>cache.synchronized {
+</span>197 <span style=''></span><span style='background: #F0ADAD'>    // TODO support closing
+</span>198 <span style=''></span><span style='background: #F0ADAD'>    // cache.valuesIterator.foreach(_.close())
+</span>199 <span style=''></span><span style='background: #F0ADAD'>    cache.clear()
+</span>200 <span style=''></span><span style='background: #F0ADAD'>  }</span><span style=''>
+</span>201 <span style=''>}
+</span></pre>
+          </div>
+          <div class="tab-pane" id="statementlist">
+            <table cellspacing="0" cellpadding="0" class="table statementlist">
+      <tr>
+        <th>Line</th>
+        <th>Stmt Id</th>
+        <th>Pos</th>
+        <th>Tree</th>
+        <th>Symbol</th>
+        <th>Code</th>
+      </tr><tr>
+        <td>
+          22
+        </td>
+        <td>
+          11079
+        </td>
+        <td>
+          766
+          -
+          795
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.classpath.FileBasedCache.&lt;init&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          new dotty.tools.dotc.classpath.FileBasedCache[dotty.tools.io.ClassPath]()
+        </td>
+      </tr><tr>
+        <td>
+          25
+        </td>
+        <td>
+          11083
+        </td>
+        <td>
+          945
+          -
+          970
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.classpath.ZipAndJarFileLookupFactory.createForZipFile
+        </td>
+        <td style="background: #F0ADAD">
+          ZipAndJarFileLookupFactory.this.createForZipFile(zipFile)
+        </td>
+      </tr><tr>
+        <td>
+          25
+        </td>
+        <td>
+          11082
+        </td>
+        <td>
+          879
+          -
+          943
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Boolean.||
+        </td>
+        <td style="background: #AEF1AE">
+          Settings.this.Setting.SettingDecorator[Boolean](Contexts.this.Context.toBase(ctx).settings.YdisableFlatCpCaching).value(ctx).||(zipFile.file.==(null))
+        </td>
+      </tr><tr>
+        <td>
+          25
+        </td>
+        <td>
+          11081
+        </td>
+        <td>
+          923
+          -
+          943
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.Object.==
+        </td>
+        <td style="background: #AEF1AE">
+          zipFile.file.==(null)
+        </td>
+      </tr><tr>
+        <td>
+          25
+        </td>
+        <td>
+          11084
+        </td>
+        <td>
+          945
+          -
+          970
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          dotty.tools.dotc.classpath.ZipAndJarFileLookupFactory.createForZipFile
+        </td>
+        <td style="background: #F0ADAD">
+          ZipAndJarFileLookupFactory.this.createForZipFile(zipFile)
+        </td>
+      </tr><tr>
+        <td>
+          25
+        </td>
+        <td>
+          11080
+        </td>
+        <td>
+          879
+          -
+          913
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.config.ScalaSettings.YdisableFlatCpCaching
+        </td>
+        <td style="background: #AEF1AE">
+          Contexts.this.Context.toBase(ctx).settings.YdisableFlatCpCaching
+        </td>
+      </tr><tr>
+        <td>
+          26
+        </td>
+        <td>
+          11085
+        </td>
+        <td>
+          980
+          -
+          1005
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.classpath.ZipAndJarFileLookupFactory.createUsingCache
+        </td>
+        <td style="background: #AEF1AE">
+          ZipAndJarFileLookupFactory.this.createUsingCache(zipFile)
+        </td>
+      </tr><tr>
+        <td>
+          26
+        </td>
+        <td>
+          11086
+        </td>
+        <td>
+          980
+          -
+          1005
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          dotty.tools.dotc.classpath.ZipAndJarFileLookupFactory.createUsingCache
+        </td>
+        <td style="background: #AEF1AE">
+          ZipAndJarFileLookupFactory.this.createUsingCache(zipFile)
+        </td>
+      </tr><tr>
+        <td>
+          32
+        </td>
+        <td>
+          11088
+        </td>
+        <td>
+          1195
+          -
+          1220
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.classpath.ZipAndJarFileLookupFactory.createForZipFile
+        </td>
+        <td style="background: #AEF1AE">
+          ZipAndJarFileLookupFactory.this.createForZipFile(zipFile)
+        </td>
+      </tr><tr>
+        <td>
+          32
+        </td>
+        <td>
+          11087
+        </td>
+        <td>
+          1168
+          -
+          1187
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.io.File.toPath
+        </td>
+        <td style="background: #AEF1AE">
+          zipFile.file.toPath()
+        </td>
+      </tr><tr>
+        <td>
+          32
+        </td>
+        <td>
+          11089
+        </td>
+        <td>
+          1150
+          -
+          1221
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.classpath.FileBasedCache.getOrCreate
+        </td>
+        <td style="background: #AEF1AE">
+          ZipAndJarFileLookupFactory.this.cache.getOrCreate(zipFile.file.toPath(), (() =&gt; ZipAndJarFileLookupFactory.this.createForZipFile(zipFile)))
+        </td>
+      </tr><tr>
+        <td>
+          45
+        </td>
+        <td>
+          11091
+        </td>
+        <td>
+          1678
+          -
+          1678
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.Tuple2._2
+        </td>
+        <td style="background: #AEF1AE">
+          x$1._2
+        </td>
+      </tr><tr>
+        <td>
+          45
+        </td>
+        <td>
+          11090
+        </td>
+        <td>
+          1673
+          -
+          1673
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.Tuple2._1
+        </td>
+        <td style="background: #AEF1AE">
+          x$1._1
+        </td>
+      </tr><tr>
+        <td>
+          46
+        </td>
+        <td>
+          11094
+        </td>
+        <td>
+          1756
+          -
+          1805
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Option.map
+        </td>
+        <td style="background: #AEF1AE">
+          ZipArchiveClassPath.this.file(pkg, simpleClassName.+(&quot;.class&quot;)).map[dotty.tools.io.AbstractFile](((x$2: dotty.tools.dotc.classpath.ClassFileEntryImpl) =&gt; x$2.file))
+        </td>
+      </tr><tr>
+        <td>
+          46
+        </td>
+        <td>
+          11093
+        </td>
+        <td>
+          1798
+          -
+          1804
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.classpath.ClassFileEntryImpl.file
+        </td>
+        <td style="background: #AEF1AE">
+          x$2.file
+        </td>
+      </tr><tr>
+        <td>
+          46
+        </td>
+        <td>
+          11092
+        </td>
+        <td>
+          1766
+          -
+          1792
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.String.+
+        </td>
+        <td style="background: #AEF1AE">
+          simpleClassName.+(&quot;.class&quot;)
+        </td>
+      </tr><tr>
+        <td>
+          51
+        </td>
+        <td>
+          11096
+        </td>
+        <td>
+          2002
+          -
+          2002
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.Tuple2._2
+        </td>
+        <td style="background: #AEF1AE">
+          x$3._2
+        </td>
+      </tr><tr>
+        <td>
+          51
+        </td>
+        <td>
+          11095
+        </td>
+        <td>
+          1997
+          -
+          1997
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.Tuple2._1
+        </td>
+        <td style="background: #AEF1AE">
+          x$3._1
+        </td>
+      </tr><tr>
+        <td>
+          52
+        </td>
+        <td>
+          11097
+        </td>
+        <td>
+          2090
+          -
+          2116
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.String.+
+        </td>
+        <td style="background: #AEF1AE">
+          simpleClassName.+(&quot;.class&quot;)
+        </td>
+      </tr><tr>
+        <td>
+          52
+        </td>
+        <td>
+          11098
+        </td>
+        <td>
+          2080
+          -
+          2117
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.classpath.ZipArchiveFileLookup.file
+        </td>
+        <td style="background: #AEF1AE">
+          ZipArchiveClassPath.this.file(pkg, simpleClassName.+(&quot;.class&quot;))
+        </td>
+      </tr><tr>
+        <td>
+          55
+        </td>
+        <td>
+          11099
+        </td>
+        <td>
+          2207
+          -
+          2223
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.classpath.ZipArchiveFileLookup.files
+        </td>
+        <td style="background: #F0ADAD">
+          ZipArchiveClassPath.this.files(inPackage)
+        </td>
+      </tr><tr>
+        <td>
+          57
+        </td>
+        <td>
+          11100
+        </td>
+        <td>
+          2318
+          -
+          2342
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.classpath.ClassFileEntryImpl.apply
+        </td>
+        <td style="background: #AEF1AE">
+          ClassFileEntryImpl.apply(file)
+        </td>
+      </tr><tr>
+        <td>
+          58
+        </td>
+        <td>
+          11101
+        </td>
+        <td>
+          2420
+          -
+          2432
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.classpath.FileUtils.AbstractFileOps.isClass
+        </td>
+        <td style="background: #AEF1AE">
+          FileUtils.AbstractFileOps(file).isClass
+        </td>
+      </tr><tr>
+        <td>
+          70
+        </td>
+        <td>
+          11103
+        </td>
+        <td>
+          3037
+          -
+          3037
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.Tuple2._2
+        </td>
+        <td style="background: #F0ADAD">
+          x$4._2
+        </td>
+      </tr><tr>
+        <td>
+          70
+        </td>
+        <td>
+          11102
+        </td>
+        <td>
+          3032
+          -
+          3032
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.Tuple2._1
+        </td>
+        <td style="background: #F0ADAD">
+          x$4._1
+        </td>
+      </tr><tr>
+        <td>
+          71
+        </td>
+        <td>
+          11106
+        </td>
+        <td>
+          3115
+          -
+          3171
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Option.map
+        </td>
+        <td style="background: #F0ADAD">
+          ManifestResourcesClassPath.this.classes(pkg).find(((x$5: dotty.tools.dotc.classpath.ClassFileEntry) =&gt; x$5.name.==(simpleClassName))).map[dotty.tools.io.AbstractFile](((x$6: dotty.tools.dotc.classpath.ClassFileEntry) =&gt; x$6.file))
+        </td>
+      </tr><tr>
+        <td>
+          71
+        </td>
+        <td>
+          11105
+        </td>
+        <td>
+          3164
+          -
+          3170
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.classpath.ClassFileEntry.file
+        </td>
+        <td style="background: #F0ADAD">
+          x$6.file
+        </td>
+      </tr><tr>
+        <td>
+          71
+        </td>
+        <td>
+          11104
+        </td>
+        <td>
+          3133
+          -
+          3158
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.Object.==
+        </td>
+        <td style="background: #F0ADAD">
+          x$5.name.==(simpleClassName)
+        </td>
+      </tr><tr>
+        <td>
+          74
+        </td>
+        <td>
+          11108
+        </td>
+        <td>
+          3230
+          -
+          3244
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.generic.GenericCompanion.apply
+        </td>
+        <td style="background: #F0ADAD">
+          scala.collection.Seq.apply[String](ManifestResourcesClassPath.this.file.path)
+        </td>
+      </tr><tr>
+        <td>
+          74
+        </td>
+        <td>
+          11107
+        </td>
+        <td>
+          3234
+          -
+          3243
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.io.ManifestResources.path
+        </td>
+        <td style="background: #F0ADAD">
+          ManifestResourcesClassPath.this.file.path
+        </td>
+      </tr><tr>
+        <td>
+          76
+        </td>
+        <td>
+          11109
+        </td>
+        <td>
+          3282
+          -
+          3286
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.classpath.ZipAndJarClassPathFactory.ManifestResourcesClassPath.file
+        </td>
+        <td style="background: #F0ADAD">
+          ManifestResourcesClassPath.this.file
+        </td>
+      </tr><tr>
+        <td>
+          76
+        </td>
+        <td>
+          11112
+        </td>
+        <td>
+          3287
+          -
+          3287
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Function0.apply
+        </td>
+        <td style="background: #F0ADAD">
+          x$8.apply()
+        </td>
+      </tr><tr>
+        <td>
+          76
+        </td>
+        <td>
+          11111
+        </td>
+        <td>
+          3287
+          -
+          3287
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.classpath.FileUtils.AbstractFileOps.toURLs$default$1
+        </td>
+        <td style="background: #F0ADAD">
+          qual$1.toURLs$default$1
+        </td>
+      </tr><tr>
+        <td>
+          76
+        </td>
+        <td>
+          11110
+        </td>
+        <td>
+          3282
+          -
+          3286
+        </td>
+        <td>
+          ApplyImplicitView
+        </td>
+        <td>
+          dotty.tools.dotc.classpath.FileUtils.AbstractFileOps
+        </td>
+        <td style="background: #F0ADAD">
+          FileUtils.AbstractFileOps(ManifestResourcesClassPath.this.file)
+        </td>
+      </tr><tr>
+        <td>
+          76
+        </td>
+        <td>
+          11113
+        </td>
+        <td>
+          3282
+          -
+          3295
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.classpath.FileUtils.AbstractFileOps.toURLs
+        </td>
+        <td style="background: #F0ADAD">
+          qual$1.toURLs(x$8.apply())
+        </td>
+      </tr><tr>
+        <td>
+          122
+        </td>
+        <td>
+          11114
+        </td>
+        <td>
+          5683
+          -
+          5712
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.mutable.HashMap.get
+        </td>
+        <td style="background: #F0ADAD">
+          ManifestResourcesClassPath.this.cachedPackages.get(inPackage)
+        </td>
+      </tr><tr>
+        <td>
+          123
+        </td>
+        <td>
+          11115
+        </td>
+        <td>
+          5740
+          -
+          5749
+        </td>
+        <td>
+          TypeApply
+        </td>
+        <td>
+          scala.collection.generic.GenericCompanion.empty
+        </td>
+        <td style="background: #F0ADAD">
+          scala.collection.Seq.empty[Nothing]
+        </td>
+      </tr><tr>
+        <td>
+          125
+        </td>
+        <td>
+          11116
+        </td>
+        <td>
+          5823
+          -
+          5864
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.classpath.PackageNameUtils.packagePrefix
+        </td>
+        <td style="background: #F0ADAD">
+          PackageNameUtils.packagePrefix(inPackage)
+        </td>
+      </tr><tr>
+        <td>
+          126
+        </td>
+        <td>
+          11118
+        </td>
+        <td>
+          5921
+          -
+          5946
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.String.+
+        </td>
+        <td style="background: #F0ADAD">
+          prefix.+(packageFile.name)
+        </td>
+      </tr><tr>
+        <td>
+          126
+        </td>
+        <td>
+          11121
+        </td>
+        <td>
+          5873
+          -
+          5948
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          scala.collection.TraversableLike.map
+        </td>
+        <td style="background: #F0ADAD">
+          subpackages.map[dotty.tools.dotc.classpath.PackageEntryImpl, Seq[dotty.tools.dotc.classpath.PackageEntry]](((packageFile: dotty.tools.io.AbstractFile) =&gt; PackageEntryImpl.apply(prefix.+(packageFile.name))))(collection.this.Seq.canBuildFrom[dotty.tools.dotc.classpath.PackageEntryImpl])
+        </td>
+      </tr><tr>
+        <td>
+          126
+        </td>
+        <td>
+          11117
+        </td>
+        <td>
+          5930
+          -
+          5946
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.io.AbstractFile.name
+        </td>
+        <td style="background: #F0ADAD">
+          packageFile.name
+        </td>
+      </tr><tr>
+        <td>
+          126
+        </td>
+        <td>
+          11120
+        </td>
+        <td>
+          5888
+          -
+          5888
+        </td>
+        <td>
+          TypeApply
+        </td>
+        <td>
+          scala.collection.Seq.canBuildFrom
+        </td>
+        <td style="background: #F0ADAD">
+          collection.this.Seq.canBuildFrom[dotty.tools.dotc.classpath.PackageEntryImpl]
+        </td>
+      </tr><tr>
+        <td>
+          126
+        </td>
+        <td>
+          11119
+        </td>
+        <td>
+          5904
+          -
+          5947
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.classpath.PackageEntryImpl.apply
+        </td>
+        <td style="background: #F0ADAD">
+          PackageEntryImpl.apply(prefix.+(packageFile.name))
+        </td>
+      </tr><tr>
+        <td>
+          129
+        </td>
+        <td>
+          11122
+        </td>
+        <td>
+          6038
+          -
+          6067
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.mutable.HashMap.get
+        </td>
+        <td style="background: #F0ADAD">
+          ManifestResourcesClassPath.this.cachedPackages.get(inPackage)
+        </td>
+      </tr><tr>
+        <td>
+          130
+        </td>
+        <td>
+          11123
+        </td>
+        <td>
+          6095
+          -
+          6104
+        </td>
+        <td>
+          TypeApply
+        </td>
+        <td>
+          scala.collection.generic.GenericCompanion.empty
+        </td>
+        <td style="background: #F0ADAD">
+          scala.collection.Seq.empty[Nothing]
+        </td>
+      </tr><tr>
+        <td>
+          132
+        </td>
+        <td>
+          11124
+        </td>
+        <td>
+          6178
+          -
+          6190
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.classpath.FileUtils.AbstractFileOps.isClass
+        </td>
+        <td style="background: #F0ADAD">
+          FileUtils.AbstractFileOps(file).isClass
+        </td>
+      </tr><tr>
+        <td>
+          132
+        </td>
+        <td>
+          11127
+        </td>
+        <td>
+          6224
+          -
+          6243
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          scala.collection.breakOut
+        </td>
+        <td style="background: #F0ADAD">
+          scala.collection.`package`.breakOut[Iterable[dotty.tools.io.AbstractFile], dotty.tools.dotc.classpath.ClassFileEntryImpl, Seq[dotty.tools.dotc.classpath.ClassFileEntry]](scala.Predef.fallbackStringCanBuildFrom[dotty.tools.dotc.classpath.ClassFileEntryImpl])
+        </td>
+      </tr><tr>
+        <td>
+          132
+        </td>
+        <td>
+          11126
+        </td>
+        <td>
+          6235
+          -
+          6235
+        </td>
+        <td>
+          TypeApply
+        </td>
+        <td>
+          scala.LowPriorityImplicits.fallbackStringCanBuildFrom
+        </td>
+        <td style="background: #F0ADAD">
+          scala.Predef.fallbackStringCanBuildFrom[dotty.tools.dotc.classpath.ClassFileEntryImpl]
+        </td>
+      </tr><tr>
+        <td>
+          132
+        </td>
+        <td>
+          11128
+        </td>
+        <td>
+          6157
+          -
+          6244
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.generic.FilterMonadic.map
+        </td>
+        <td style="background: #F0ADAD">
+          pkg.withFilter(((file: dotty.tools.io.AbstractFile) =&gt; FileUtils.AbstractFileOps(file).isClass)).map[dotty.tools.dotc.classpath.ClassFileEntryImpl, Seq[dotty.tools.dotc.classpath.ClassFileEntry]](((file: dotty.tools.io.AbstractFile) =&gt; ClassFileEntryImpl.apply(file)))(scala.collection.`package`.breakOut[Iterable[dotty.tools.io.AbstractFile], dotty.tools.dotc.classpath.ClassFileEntryImpl, Seq[dotty.tools.dotc.classpath.ClassFileEntry]](scala.Predef.fallbackStringCanBuildFrom[dotty.tools.dotc.classpath.ClassFileEntryImpl]))
+        </td>
+      </tr><tr>
+        <td>
+          132
+        </td>
+        <td>
+          11125
+        </td>
+        <td>
+          6198
+          -
+          6222
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.classpath.ClassFileEntryImpl.apply
+        </td>
+        <td style="background: #F0ADAD">
+          ClassFileEntryImpl.apply(file)
+        </td>
+      </tr><tr>
+        <td>
+          135
+        </td>
+        <td>
+          11129
+        </td>
+        <td>
+          6310
+          -
+          6338
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.mutable.HashMap.contains
+        </td>
+        <td style="background: #F0ADAD">
+          ManifestResourcesClassPath.this.cachedPackages.contains(pkg)
+        </td>
+      </tr><tr>
+        <td>
+          136
+        </td>
+        <td>
+          11130
+        </td>
+        <td>
+          6432
+          -
+          6451
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.classpath.ZipAndJarClassPathFactory.ManifestResourcesClassPath.packages
+        </td>
+        <td style="background: #F0ADAD">
+          ManifestResourcesClassPath.this.packages(inPackage)
+        </td>
+      </tr><tr>
+        <td>
+          136
+        </td>
+        <td>
+          11132
+        </td>
+        <td>
+          6415
+          -
+          6472
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.classpath.ClassPathEntries.apply
+        </td>
+        <td style="background: #F0ADAD">
+          ClassPathEntries.apply(ManifestResourcesClassPath.this.packages(inPackage), ManifestResourcesClassPath.this.classes(inPackage))
+        </td>
+      </tr><tr>
+        <td>
+          136
+        </td>
+        <td>
+          11131
+        </td>
+        <td>
+          6453
+          -
+          6471
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.classpath.ZipAndJarClassPathFactory.ManifestResourcesClassPath.classes
+        </td>
+        <td style="background: #F0ADAD">
+          ManifestResourcesClassPath.this.classes(inPackage)
+        </td>
+      </tr><tr>
+        <td>
+          145
+        </td>
+        <td>
+          11133
+        </td>
+        <td>
+          6786
+          -
+          6806
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.Object.==
+        </td>
+        <td style="background: #AEF1AE">
+          zipFile.file.==(null)
+        </td>
+      </tr><tr>
+        <td>
+          145
+        </td>
+        <td>
+          11135
+        </td>
+        <td>
+          6808
+          -
+          6844
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          dotty.tools.dotc.classpath.ZipAndJarClassPathFactory.createWithoutUnderlyingFile
+        </td>
+        <td style="background: #F0ADAD">
+          ZipAndJarClassPathFactory.this.createWithoutUnderlyingFile(zipFile)
+        </td>
+      </tr><tr>
+        <td>
+          145
+        </td>
+        <td>
+          11134
+        </td>
+        <td>
+          6808
+          -
+          6844
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.classpath.ZipAndJarClassPathFactory.createWithoutUnderlyingFile
+        </td>
+        <td style="background: #F0ADAD">
+          ZipAndJarClassPathFactory.this.createWithoutUnderlyingFile(zipFile)
+        </td>
+      </tr><tr>
+        <td>
+          146
+        </td>
+        <td>
+          11136
+        </td>
+        <td>
+          6874
+          -
+          6886
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.io.AbstractFile.file
+        </td>
+        <td style="background: #AEF1AE">
+          zipFile.file
+        </td>
+      </tr><tr>
+        <td>
+          146
+        </td>
+        <td>
+          11138
+        </td>
+        <td>
+          6854
+          -
+          6887
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          dotty.tools.dotc.classpath.ZipAndJarClassPathFactory.ZipArchiveClassPath.apply
+        </td>
+        <td style="background: #AEF1AE">
+          ZipAndJarClassPathFactory.this.ZipArchiveClassPath.apply(zipFile.file)
+        </td>
+      </tr><tr>
+        <td>
+          146
+        </td>
+        <td>
+          11137
+        </td>
+        <td>
+          6854
+          -
+          6887
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.classpath.ZipAndJarClassPathFactory.ZipArchiveClassPath.apply
+        </td>
+        <td style="background: #AEF1AE">
+          ZipAndJarClassPathFactory.this.ZipArchiveClassPath.apply(zipFile.file)
+        </td>
+      </tr><tr>
+        <td>
+          150
+        </td>
+        <td>
+          11139
+        </td>
+        <td>
+          7021
+          -
+          7060
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.classpath.ZipAndJarClassPathFactory.ManifestResourcesClassPath.apply
+        </td>
+        <td style="background: #F0ADAD">
+          ZipAndJarClassPathFactory.this.ManifestResourcesClassPath.apply(manifestRes)
+        </td>
+      </tr><tr>
+        <td>
+          152
+        </td>
+        <td>
+          11140
+        </td>
+        <td>
+          7096
+          -
+          7217
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.StringContext.s
+        </td>
+        <td style="background: #F0ADAD">
+          scala.StringContext.apply(&quot;Abstract files which don\'t have an underlying file and are not ManifestResources are not supported. There was &quot;, &quot;&quot;).s(zipFile)
+        </td>
+      </tr><tr>
+        <td>
+          153
+        </td>
+        <td>
+          11141
+        </td>
+        <td>
+          7224
+          -
+          7268
+        </td>
+        <td>
+          Throw
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          throw new scala.`package`.IllegalArgumentException(errorMsg)
+        </td>
+      </tr><tr>
+        <td>
+          166
+        </td>
+        <td>
+          11142
+        </td>
+        <td>
+          7686
+          -
+          7703
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.io.ClassPath.asClassPathString
+        </td>
+        <td style="background: #F0ADAD">
+          ZipArchiveSourcePath.this.asClassPathString
+        </td>
+      </tr><tr>
+        <td>
+          168
+        </td>
+        <td>
+          11143
+        </td>
+        <td>
+          7788
+          -
+          7804
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.classpath.ZipArchiveFileLookup.files
+        </td>
+        <td style="background: #F0ADAD">
+          ZipArchiveSourcePath.this.files(inPackage)
+        </td>
+      </tr><tr>
+        <td>
+          170
+        </td>
+        <td>
+          11144
+        </td>
+        <td>
+          7900
+          -
+          7925
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.classpath.SourceFileEntryImpl.apply
+        </td>
+        <td style="background: #F0ADAD">
+          SourceFileEntryImpl.apply(file)
+        </td>
+      </tr><tr>
+        <td>
+          171
+        </td>
+        <td>
+          11145
+        </td>
+        <td>
+          8003
+          -
+          8027
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.classpath.FileUtils.AbstractFileOps.isScalaOrJavaSource
+        </td>
+        <td style="background: #F0ADAD">
+          FileUtils.AbstractFileOps(file).isScalaOrJavaSource
+        </td>
+      </tr><tr>
+        <td>
+          174
+        </td>
+        <td>
+          11147
+        </td>
+        <td>
+          8111
+          -
+          8145
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.classpath.ZipAndJarSourcePathFactory.ZipArchiveSourcePath.apply
+        </td>
+        <td style="background: #F0ADAD">
+          ZipAndJarSourcePathFactory.this.ZipArchiveSourcePath.apply(zipFile.file)
+        </td>
+      </tr><tr>
+        <td>
+          174
+        </td>
+        <td>
+          11146
+        </td>
+        <td>
+          8132
+          -
+          8144
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.io.AbstractFile.file
+        </td>
+        <td style="background: #F0ADAD">
+          zipFile.file
+        </td>
+      </tr><tr>
+        <td>
+          179
+        </td>
+        <td>
+          11148
+        </td>
+        <td>
+          8271
+          -
+          8331
+        </td>
+        <td>
+          TypeApply
+        </td>
+        <td>
+          scala.collection.mutable.Map.empty
+        </td>
+        <td style="background: #AEF1AE">
+          scala.collection.mutable.Map.empty[java.nio.file.Path, (FileBasedCache.this.Stamp, T)]
+        </td>
+      </tr><tr>
+        <td>
+          181
+        </td>
+        <td>
+          11158
+        </td>
+        <td>
+          8399
+          -
+          8935
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.Object.synchronized
+        </td>
+        <td style="background: #AEF1AE">
+          FileBasedCache.this.cache.synchronized[T]({
+  val attrs: java.nio.file.attribute.BasicFileAttributes = java.nio.file.Files.readAttributes[java.nio.file.attribute.BasicFileAttributes](path, classOf[java.nio.file.attribute.BasicFileAttributes]);
+  val lastModified: java.nio.file.attribute.FileTime = attrs.lastModifiedTime();
+  val fileKey: Object = attrs.fileKey();
+  val stamp: FileBasedCache.this.Stamp = FileBasedCache.this.Stamp.apply(lastModified, fileKey);
+  FileBasedCache.this.cache.get(path) match {
+    case (value: (FileBasedCache.this.Stamp, T))Some[(FileBasedCache.this.Stamp, T)]((_1: FileBasedCache.this.Stamp, _2: T)(FileBasedCache.this.Stamp, T)((cachedStamp @ _), (cached @ _))) if cachedStamp.==(stamp) =&gt; cached
+    case _ =&gt; {
+      val value: T = create.apply();
+      FileBasedCache.this.cache.put(path, scala.Tuple2.apply[FileBasedCache.this.Stamp, T](stamp, value));
+      value
+    }
+  }
+})
+        </td>
+      </tr><tr>
+        <td>
+          182
+        </td>
+        <td>
+          11149
+        </td>
+        <td>
+          8436
+          -
+          8492
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.nio.file.Files.readAttributes
+        </td>
+        <td style="background: #AEF1AE">
+          java.nio.file.Files.readAttributes[java.nio.file.attribute.BasicFileAttributes](path, classOf[java.nio.file.attribute.BasicFileAttributes])
+        </td>
+      </tr><tr>
+        <td>
+          183
+        </td>
+        <td>
+          11150
+        </td>
+        <td>
+          8516
+          -
+          8540
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.nio.file.attribute.BasicFileAttributes.lastModifiedTime
+        </td>
+        <td style="background: #AEF1AE">
+          attrs.lastModifiedTime()
+        </td>
+      </tr><tr>
+        <td>
+          185
+        </td>
+        <td>
+          11151
+        </td>
+        <td>
+          8665
+          -
+          8680
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.nio.file.attribute.BasicFileAttributes.fileKey
+        </td>
+        <td style="background: #AEF1AE">
+          attrs.fileKey()
+        </td>
+      </tr><tr>
+        <td>
+          186
+        </td>
+        <td>
+          11152
+        </td>
+        <td>
+          8697
+          -
+          8725
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.classpath.FileBasedCache.Stamp.apply
+        </td>
+        <td style="background: #AEF1AE">
+          FileBasedCache.this.Stamp.apply(lastModified, fileKey)
+        </td>
+      </tr><tr>
+        <td>
+          187
+        </td>
+        <td>
+          11153
+        </td>
+        <td>
+          8730
+          -
+          8745
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.MapLike.get
+        </td>
+        <td style="background: #AEF1AE">
+          FileBasedCache.this.cache.get(path)
+        </td>
+      </tr><tr>
+        <td>
+          188
+        </td>
+        <td>
+          11154
+        </td>
+        <td>
+          8796
+          -
+          8816
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.Object.==
+        </td>
+        <td style="background: #AEF1AE">
+          cachedStamp.==(stamp)
+        </td>
+      </tr><tr>
+        <td>
+          190
+        </td>
+        <td>
+          11155
+        </td>
+        <td>
+          8863
+          -
+          8871
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Function0.apply
+        </td>
+        <td style="background: #AEF1AE">
+          create.apply()
+        </td>
+      </tr><tr>
+        <td>
+          191
+        </td>
+        <td>
+          11157
+        </td>
+        <td>
+          8880
+          -
+          8911
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.mutable.MapLike.put
+        </td>
+        <td style="background: #AEF1AE">
+          FileBasedCache.this.cache.put(path, scala.Tuple2.apply[FileBasedCache.this.Stamp, T](stamp, value))
+        </td>
+      </tr><tr>
+        <td>
+          191
+        </td>
+        <td>
+          11156
+        </td>
+        <td>
+          8896
+          -
+          8910
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Tuple2.apply
+        </td>
+        <td style="background: #AEF1AE">
+          scala.Tuple2.apply[FileBasedCache.this.Stamp, T](stamp, value)
+        </td>
+      </tr><tr>
+        <td>
+          196
+        </td>
+        <td>
+          11160
+        </td>
+        <td>
+          8959
+          -
+          9076
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.Object.synchronized
+        </td>
+        <td style="background: #F0ADAD">
+          FileBasedCache.this.cache.synchronized[Unit](FileBasedCache.this.cache.clear())
+        </td>
+      </tr><tr>
+        <td>
+          199
+        </td>
+        <td>
+          11159
+        </td>
+        <td>
+          9059
+          -
+          9072
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.mutable.MapLike.clear
+        </td>
+        <td style="background: #F0ADAD">
+          FileBasedCache.this.cache.clear()
+        </td>
+      </tr>
+    </table>
+          </div>
+        </div>
+      </body>
+    </html>

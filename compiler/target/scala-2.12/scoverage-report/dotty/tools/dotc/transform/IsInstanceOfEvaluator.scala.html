@@ -1,0 +1,3348 @@
+<html>
+      <head>
+        <meta http-equiv="Content-Type" content="text/html; charset=utf-8"/>
+        <title id="title">
+          dotty/tools/dotc/transform/IsInstanceOfEvaluator.scala.html
+        </title>
+        <script src="https://ajax.googleapis.com/ajax/libs/jquery/1.10.2/jquery.min.js"></script><link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/jquery.tablesorter/2.20.1/css/theme.default.min.css" type="text/css"/><script src="https://cdnjs.cloudflare.com/ajax/libs/jquery.tablesorter/2.20.1/js/jquery.tablesorter.min.js"></script><link rel="stylesheet" href="https://netdna.bootstrapcdn.com/bootstrap/3.0.3/css/bootstrap.min.css" type="text/css"/><script src="https://netdna.bootstrapcdn.com/bootstrap/3.0.3/js/bootstrap.min.js"></script><script type="text/javascript">
+        $(document).ready(function() {$(".tablesorter").tablesorter();});
+      </script>
+        <style>
+          table.codegrid { font-family: monospace; font-size: 12px; width: auto!important; }table.statementlist { width: auto!important; font-size: 13px; } table.codegrid td { padding: 0!important; border: 0!important } table td.linenumber { width: 40px!important; } 
+        </style>
+      </head>
+      <body style="font-family: monospace;">
+        <ul class="nav nav-tabs">
+          <li>
+            <a href="#codegrid" data-toggle="tab">Codegrid</a>
+          </li>
+          <li>
+            <a href="#statementlist" data-toggle="tab">Statement List</a>
+          </li>
+        </ul>
+        <div class="tab-content">
+          <div class="tab-pane active" id="codegrid">
+            <pre style='font-size: 12pt; font-family: courier;'>1 <span style=''>package dotty.tools.dotc
+</span>2 <span style=''>package transform
+</span>3 <span style=''>
+</span>4 <span style=''>import dotty.tools.dotc.util.Positions._
+</span>5 <span style=''>import MegaPhase.MiniPhase
+</span>6 <span style=''>import core._
+</span>7 <span style=''>import Contexts.Context, Types._, Constants._, Decorators._, Symbols._
+</span>8 <span style=''>import TypeUtils._, TypeErasure._, Flags._
+</span>9 <span style=''>
+</span>10 <span style=''>/** Implements partial evaluation of `sc.isInstanceOf[Sel]` according to:
+</span>11 <span style=''> *
+</span>12 <span style=''> *  | Sel\sc      | trait                      | class                      | final class      |
+</span>13 <span style=''> *  | ----------: | :------------------------: | :------------------------: | :--------------: |
+</span>14 <span style=''> *  | trait       |               ?            |               ?            | statically known |
+</span>15 <span style=''> *  | class       |               ?            | false if classes unrelated | statically known |
+</span>16 <span style=''> *  | final class | false if classes unrelated | false if classes unrelated | statically known |
+</span>17 <span style=''> *
+</span>18 <span style=''> *  This is a generalized solution to raising an error on unreachable match
+</span>19 <span style=''> *  cases and warnings on other statically known results of `isInstanceOf`.
+</span>20 <span style=''> *
+</span>21 <span style=''> *  Steps taken:
+</span>22 <span style=''> *
+</span>23 <span style=''> *  1. `evalTypeTest` will establish the matrix and choose the appropriate
+</span>24 <span style=''> *     handling for the case:
+</span>25 <span style=''> *      - Sel/sc is a value class or scrutinee is `Any`
+</span>26 <span style=''> *      - `handleStaticallyKnown`
+</span>27 <span style=''> *      - `falseIfUnrelated` with `scrutinee &lt;:&lt; selector`
+</span>28 <span style=''> *      - `handleFalseUnrelated`
+</span>29 <span style=''> *      - leave as is (`happens`)
+</span>30 <span style=''> *  2. Rewrite according to steps taken in 1
+</span>31 <span style=''> */
+</span>32 <span style=''>class IsInstanceOfEvaluator extends MiniPhase {
+</span>33 <span style=''>
+</span>34 <span style=''>  import dotty.tools.dotc.ast.tpd._
+</span>35 <span style=''>
+</span>36 <span style=''>  val phaseName = </span><span style='background: #F0ADAD'>&quot;isInstanceOfEvaluator&quot;</span><span style=''>
+</span>37 <span style=''>
+</span>38 <span style=''>  /** Transforms a [TypeApply](dotty.tools.dotc.ast.Trees.TypeApply) in order to
+</span>39 <span style=''>   *  evaluate an `isInstanceOf` check according to the rules defined above.
+</span>40 <span style=''>   */
+</span>41 <span style=''>  override def transformTypeApply(tree: TypeApply)(implicit ctx: Context): Tree = {
+</span>42 <span style=''>    val defn = </span><span style='background: #F0ADAD'>ctx.definitions</span><span style=''>
+</span>43 <span style=''>
+</span>44 <span style=''>    /** Handles the four cases of statically known `isInstanceOf`s and gives
+</span>45 <span style=''>     *  the correct warnings, or an error if statically known to be false in
+</span>46 <span style=''>     *  match
+</span>47 <span style=''>     */
+</span>48 <span style=''>    def handleStaticallyKnown(qualifier: Tree, scrutinee: Type, selector: Type, inMatch: Boolean, pos: Position): Tree = {
+</span>49 <span style=''>      val scrutineeSubSelector = </span><span style='background: #F0ADAD'>scrutinee &lt;:&lt; selector</span><span style=''>
+</span>50 <span style=''>      if (</span><span style='background: #F0ADAD'>!scrutineeSubSelector &amp;&amp; inMatch</span><span style=''>) </span><span style='background: #F0ADAD'>{
+</span>51 <span style=''></span><span style='background: #F0ADAD'>        ctx.error(
+</span>52 <span style=''></span><span style='background: #F0ADAD'>          s&quot;this case is unreachable due to `${selector.show}` not being a subclass of `${scrutinee.show}`&quot;,
+</span>53 <span style=''></span><span style='background: #F0ADAD'>          Position(pos.start - 5, pos.end - 5)
+</span>54 <span style=''></span><span style='background: #F0ADAD'>        )
+</span>55 <span style=''></span><span style='background: #F0ADAD'>        rewrite(qualifier, to = false)
+</span>56 <span style=''></span><span style='background: #F0ADAD'>      }</span><span style=''> else </span><span style='background: #F0ADAD'>if (!scrutineeSubSelector &amp;&amp; !inMatch) {
+</span>57 <span style=''></span><span style='background: #F0ADAD'>        ctx.warning(
+</span>58 <span style=''></span><span style='background: #F0ADAD'>          s&quot;this will always yield false since `${scrutinee.show}` is not a subclass of `${selector.show}` (will be optimized away)&quot;,
+</span>59 <span style=''></span><span style='background: #F0ADAD'>          pos
+</span>60 <span style=''></span><span style='background: #F0ADAD'>        )
+</span>61 <span style=''></span><span style='background: #F0ADAD'>        rewrite(qualifier, to = false)
+</span>62 <span style=''></span><span style='background: #F0ADAD'>      } else if (scrutineeSubSelector &amp;&amp; !inMatch) {
+</span>63 <span style=''></span><span style='background: #F0ADAD'>        ctx.warning(
+</span>64 <span style=''></span><span style='background: #F0ADAD'>          s&quot;this will always yield true if the scrutinee is non-null, since `${scrutinee.show}` is a subclass of `${selector.show}` (will be optimized away)&quot;,
+</span>65 <span style=''></span><span style='background: #F0ADAD'>          pos
+</span>66 <span style=''></span><span style='background: #F0ADAD'>        )
+</span>67 <span style=''></span><span style='background: #F0ADAD'>        rewrite(qualifier, to = true)
+</span>68 <span style=''></span><span style='background: #F0ADAD'>      } else /* if (scrutineeSubSelector &amp;&amp; inMatch) */ rewrite(qualifier, to = true)</span><span style=''>
+</span>69 <span style=''>    }
+</span>70 <span style=''>
+</span>71 <span style=''>    /** Rewrites cases with unrelated types */
+</span>72 <span style=''>    def handleFalseUnrelated(qualifier: Tree, scrutinee: Type, selector: Type, inMatch: Boolean) =
+</span>73 <span style=''>      if (inMatch) </span><span style='background: #F0ADAD'>{
+</span>74 <span style=''></span><span style='background: #F0ADAD'>        ctx.error(
+</span>75 <span style=''></span><span style='background: #F0ADAD'>          s&quot;will never match since `${selector.show}` is not a subclass of `${scrutinee.show}`&quot;,
+</span>76 <span style=''></span><span style='background: #F0ADAD'>          Position(qualifier.pos.start - 5, qualifier.pos.end - 5) // WHY 5?
+</span>77 <span style=''></span><span style='background: #F0ADAD'>        )
+</span>78 <span style=''></span><span style='background: #F0ADAD'>        rewrite(qualifier, to = false)
+</span>79 <span style=''></span><span style='background: #F0ADAD'>      }</span><span style=''> else </span><span style='background: #F0ADAD'>{
+</span>80 <span style=''></span><span style='background: #F0ADAD'>        ctx.warning(
+</span>81 <span style=''></span><span style='background: #F0ADAD'>          s&quot;will always yield false since `${scrutinee.show}` is not a subclass of `${selector.show}`&quot;,
+</span>82 <span style=''></span><span style='background: #F0ADAD'>          tree.pos
+</span>83 <span style=''></span><span style='background: #F0ADAD'>        )
+</span>84 <span style=''></span><span style='background: #F0ADAD'>        rewrite(qualifier, to = false)
+</span>85 <span style=''></span><span style='background: #F0ADAD'>      }</span><span style=''>
+</span>86 <span style=''>
+</span>87 <span style=''>    /** Rewrites the qualifier of a type test to a boolean if `to` is false or if the qualifier
+</span>88 <span style=''>     *  is a value class.
+</span>89 <span style=''>     *
+</span>90 <span style=''>     *  If `to` is set to true and the qualifier is not a primitive, the
+</span>91 <span style=''>     *  instanceOf is replaced by a null check, since:
+</span>92 <span style=''>     *
+</span>93 <span style=''>     *  `scutinee == null` implies `!scrutinee.isInstanceOf[Selector]`
+</span>94 <span style=''>     */
+</span>95 <span style=''>    def rewrite(qualifier: Tree, to: Boolean): Tree =
+</span>96 <span style=''>      if (</span><span style='background: #F0ADAD'>to &amp;&amp; !qualifier.tpe.isNotNull</span><span style=''>) </span><span style='background: #F0ADAD'>qualifier.testNotNull</span><span style=''>
+</span>97 <span style=''>      else </span><span style='background: #F0ADAD'>{
+</span>98 <span style=''></span><span style='background: #F0ADAD'>        val literal = Literal(Constant(to))
+</span>99 <span style=''></span><span style='background: #F0ADAD'>        if (!isPureExpr(qualifier)) Block(List(qualifier), literal)
+</span>100 <span style=''></span><span style='background: #F0ADAD'>        else literal
+</span>101 <span style=''></span><span style='background: #F0ADAD'>      }</span><span style=''>
+</span>102 <span style=''>
+</span>103 <span style=''>    /** Attempts to rewrite type test to either `scrutinee ne null` or a
+</span>104 <span style=''>     *  constant. Any_typeTest nodes have been rewritten to Any_isInstanceOf at this point.
+</span>105 <span style=''>     *  @param   tree       the whole type test &lt;qualifier&gt;.asInstanceOf[T]
+</span>106 <span style=''>     *  @param   qualifier  the &lt;qualifier&gt; part
+</span>107 <span style=''>     *  @param   inMatch    tree was a type test generated by a pattern match.
+</span>108 <span style=''>     */
+</span>109 <span style=''>    def evalTypeTest(tree: TypeApply, qualifier: Tree, inMatch: Boolean) = {
+</span>110 <span style=''>      val scrutinee = </span><span style='background: #F0ADAD'>erasure(qualifier.tpe.widen)</span><span style=''>
+</span>111 <span style=''>      val selector  = </span><span style='background: #F0ADAD'>erasure(tree.args.head.tpe.widen)</span><span style=''>
+</span>112 <span style=''>
+</span>113 <span style=''>      val scTrait = </span><span style='background: #F0ADAD'>scrutinee.typeSymbol is Trait</span><span style=''>
+</span>114 <span style=''>      val scClass =
+</span>115 <span style=''>        </span><span style='background: #F0ADAD'>scrutinee.typeSymbol.isClass &amp;&amp;
+</span>116 <span style=''></span><span style='background: #F0ADAD'>        !(scrutinee.typeSymbol is Trait) &amp;&amp;
+</span>117 <span style=''></span><span style='background: #F0ADAD'>        !(scrutinee.typeSymbol is Module)</span><span style=''>
+</span>118 <span style=''>
+</span>119 <span style=''>      val scClassNonFinal = </span><span style='background: #F0ADAD'>scClass &amp;&amp; !(scrutinee.typeSymbol is Final)</span><span style=''>
+</span>120 <span style=''>      val scFinalClass    = </span><span style='background: #F0ADAD'>scClass &amp;&amp; (scrutinee.typeSymbol is Final)</span><span style=''>
+</span>121 <span style=''>
+</span>122 <span style=''>      val selTrait = </span><span style='background: #F0ADAD'>selector.typeSymbol is Trait</span><span style=''>
+</span>123 <span style=''>      val selClass =
+</span>124 <span style=''>        </span><span style='background: #F0ADAD'>selector.typeSymbol.isClass &amp;&amp;
+</span>125 <span style=''></span><span style='background: #F0ADAD'>        !(selector.typeSymbol is Trait) &amp;&amp;
+</span>126 <span style=''></span><span style='background: #F0ADAD'>        !(selector.typeSymbol is Module)</span><span style=''>
+</span>127 <span style=''>
+</span>128 <span style=''>      val selClassNonFinal = </span><span style='background: #F0ADAD'>selClass &amp;&amp; !(selector.typeSymbol is Final)</span><span style=''>
+</span>129 <span style=''>      val selFinalClass    = </span><span style='background: #F0ADAD'>selClass &amp;&amp; (selector.typeSymbol is Final)</span><span style=''>
+</span>130 <span style=''>
+</span>131 <span style=''>      // Cases ---------------------------------
+</span>132 <span style=''>      val valueClassesOrAny =
+</span>133 <span style=''>        </span><span style='background: #F0ADAD'>ValueClasses.isDerivedValueClass(scrutinee.typeSymbol) ||
+</span>134 <span style=''></span><span style='background: #F0ADAD'>        ValueClasses.isDerivedValueClass(selector.typeSymbol)  ||
+</span>135 <span style=''></span><span style='background: #F0ADAD'>        scrutinee == defn.ObjectType</span><span style=''>
+</span>136 <span style=''>
+</span>137 <span style=''>      val knownStatically = scFinalClass
+</span>138 <span style=''>
+</span>139 <span style=''>      val falseIfUnrelated =
+</span>140 <span style=''>        </span><span style='background: #F0ADAD'>(scClassNonFinal &amp;&amp; selClassNonFinal) ||
+</span>141 <span style=''></span><span style='background: #F0ADAD'>        (scClassNonFinal &amp;&amp; selFinalClass)    ||
+</span>142 <span style=''></span><span style='background: #F0ADAD'>        (scTrait &amp;&amp; selFinalClass)</span><span style=''>
+</span>143 <span style=''>
+</span>144 <span style=''>      val happens =
+</span>145 <span style=''>        </span><span style='background: #F0ADAD'>(scClassNonFinal &amp;&amp; selClassNonFinal) ||
+</span>146 <span style=''></span><span style='background: #F0ADAD'>        (scTrait &amp;&amp; selClassNonFinal)         ||
+</span>147 <span style=''></span><span style='background: #F0ADAD'>        (scTrait &amp;&amp; selTrait)</span><span style=''>
+</span>148 <span style=''>
+</span>149 <span style=''>      if (valueClassesOrAny) </span><span style='background: #F0ADAD'>tree</span><span style=''>
+</span>150 <span style=''>      else </span><span style='background: #F0ADAD'>if (knownStatically)
+</span>151 <span style=''></span><span style='background: #F0ADAD'>        handleStaticallyKnown(qualifier, scrutinee, selector, inMatch, tree.pos)
+</span>152 <span style=''></span><span style='background: #F0ADAD'>      else if (falseIfUnrelated &amp;&amp; scrutinee &lt;:&lt; selector)
+</span>153 <span style=''></span><span style='background: #F0ADAD'>        // scrutinee is a subtype of the selector, safe to rewrite
+</span>154 <span style=''></span><span style='background: #F0ADAD'>        rewrite(qualifier, to = true)
+</span>155 <span style=''></span><span style='background: #F0ADAD'>      else if (falseIfUnrelated &amp;&amp; !(selector &lt;:&lt; scrutinee))
+</span>156 <span style=''></span><span style='background: #F0ADAD'>        // selector and scrutinee are unrelated
+</span>157 <span style=''></span><span style='background: #F0ADAD'>        handleFalseUnrelated(qualifier, scrutinee, selector, inMatch)
+</span>158 <span style=''></span><span style='background: #F0ADAD'>      else if (happens) tree
+</span>159 <span style=''></span><span style='background: #F0ADAD'>      else tree</span><span style=''>
+</span>160 <span style=''>    }
+</span>161 <span style=''>
+</span>162 <span style=''>    </span><span style='background: #F0ADAD'>tree.fun</span><span style=''> match {
+</span>163 <span style=''>      case fn: Select if </span><span style='background: #F0ADAD'>fn.symbol == defn.Any_typeTest</span><span style=''> =&gt;
+</span>164 <span style=''>        </span><span style='background: #F0ADAD'>evalTypeTest(
+</span>165 <span style=''></span><span style='background: #F0ADAD'>          cpy.TypeApply(tree)(fn.qualifier.select(defn.Any_isInstanceOf), tree.args),
+</span>166 <span style=''></span><span style='background: #F0ADAD'>          fn.qualifier, inMatch = true)</span><span style=''>
+</span>167 <span style=''>      case fn: Select if </span><span style='background: #F0ADAD'>fn.symbol == defn.Any_isInstanceOf</span><span style=''> =&gt;
+</span>168 <span style=''>        </span><span style='background: #F0ADAD'>evalTypeTest(tree, fn.qualifier, inMatch = false)</span><span style=''>
+</span>169 <span style=''>      case _ =&gt; tree
+</span>170 <span style=''>    }
+</span>171 <span style=''>  }
+</span>172 <span style=''>}
+</span></pre>
+          </div>
+          <div class="tab-pane" id="statementlist">
+            <table cellspacing="0" cellpadding="0" class="table statementlist">
+      <tr>
+        <th>Line</th>
+        <th>Stmt Id</th>
+        <th>Pos</th>
+        <th>Tree</th>
+        <th>Symbol</th>
+        <th>Code</th>
+      </tr><tr>
+        <td>
+          36
+        </td>
+        <td>
+          55937
+        </td>
+        <td>
+          1455
+          -
+          1478
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          &quot;isInstanceOfEvaluator&quot;
+        </td>
+      </tr><tr>
+        <td>
+          42
+        </td>
+        <td>
+          55938
+        </td>
+        <td>
+          1743
+          -
+          1758
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Contexts.ContextBase.definitions
+        </td>
+        <td style="background: #F0ADAD">
+          Contexts.this.Context.toBase(ctx).definitions
+        </td>
+      </tr><tr>
+        <td>
+          49
+        </td>
+        <td>
+          55939
+        </td>
+        <td>
+          2092
+          -
+          2114
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.Types.Type.&lt;:&lt;
+        </td>
+        <td style="background: #F0ADAD">
+          scrutinee.&lt;:&lt;(selector)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          50
+        </td>
+        <td>
+          55951
+        </td>
+        <td>
+          2159
+          -
+          2392
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          {
+  ctx.error(diagnostic.this.Message.toNoExplanation(scala.StringContext.apply(&quot;this case is unreachable due to `&quot;, &quot;` not being a subclass of `&quot;, &quot;`&quot;).s(selector.show(ctx), scrutinee.show(ctx))), core.Decorators.sourcePos(dotty.tools.dotc.util.Positions.Position(pos.start.-(5), pos.end.-(5)))(ctx));
+  rewrite(qualifier, false)
+}
+        </td>
+      </tr><tr>
+        <td>
+          50
+        </td>
+        <td>
+          55940
+        </td>
+        <td>
+          2125
+          -
+          2157
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Boolean.&amp;&amp;
+        </td>
+        <td style="background: #F0ADAD">
+          scrutineeSubSelector.unary_!.&amp;&amp;(inMatch)
+        </td>
+      </tr><tr>
+        <td>
+          51
+        </td>
+        <td>
+          55949
+        </td>
+        <td>
+          2169
+          -
+          2345
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.reporting.Reporting.error
+        </td>
+        <td style="background: #F0ADAD">
+          ctx.error(diagnostic.this.Message.toNoExplanation(scala.StringContext.apply(&quot;this case is unreachable due to `&quot;, &quot;` not being a subclass of `&quot;, &quot;`&quot;).s(selector.show(ctx), scrutinee.show(ctx))), core.Decorators.sourcePos(dotty.tools.dotc.util.Positions.Position(pos.start.-(5), pos.end.-(5)))(ctx))
+        </td>
+      </tr><tr>
+        <td>
+          52
+        </td>
+        <td>
+          55942
+        </td>
+        <td>
+          2241
+          -
+          2269
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          &quot;` not being a subclass of `&quot;
+        </td>
+      </tr><tr>
+        <td>
+          52
+        </td>
+        <td>
+          55944
+        </td>
+        <td>
+          2227
+          -
+          2240
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.printing.Showable.show
+        </td>
+        <td style="background: #F0ADAD">
+          selector.show(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          52
+        </td>
+        <td>
+          55947
+        </td>
+        <td>
+          2190
+          -
+          2287
+        </td>
+        <td>
+          ApplyImplicitView
+        </td>
+        <td>
+          dotty.tools.dotc.reporting.diagnostic.Message.toNoExplanation
+        </td>
+        <td style="background: #F0ADAD">
+          diagnostic.this.Message.toNoExplanation(scala.StringContext.apply(&quot;this case is unreachable due to `&quot;, &quot;` not being a subclass of `&quot;, &quot;`&quot;).s(selector.show(ctx), scrutinee.show(ctx)))
+        </td>
+      </tr><tr>
+        <td>
+          52
+        </td>
+        <td>
+          55941
+        </td>
+        <td>
+          2192
+          -
+          2226
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          &quot;this case is unreachable due to `&quot;
+        </td>
+      </tr><tr>
+        <td>
+          52
+        </td>
+        <td>
+          55943
+        </td>
+        <td>
+          2285
+          -
+          2287
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          &quot;`&quot;
+        </td>
+      </tr><tr>
+        <td>
+          52
+        </td>
+        <td>
+          55946
+        </td>
+        <td>
+          2190
+          -
+          2287
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.StringContext.s
+        </td>
+        <td style="background: #F0ADAD">
+          scala.StringContext.apply(&quot;this case is unreachable due to `&quot;, &quot;` not being a subclass of `&quot;, &quot;`&quot;).s(selector.show(ctx), scrutinee.show(ctx))
+        </td>
+      </tr><tr>
+        <td>
+          52
+        </td>
+        <td>
+          55945
+        </td>
+        <td>
+          2270
+          -
+          2284
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.printing.Showable.show
+        </td>
+        <td style="background: #F0ADAD">
+          scrutinee.show(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          53
+        </td>
+        <td>
+          55948
+        </td>
+        <td>
+          2299
+          -
+          2335
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.Decorators.sourcePos
+        </td>
+        <td style="background: #F0ADAD">
+          core.Decorators.sourcePos(dotty.tools.dotc.util.Positions.Position(pos.start.-(5), pos.end.-(5)))(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          55
+        </td>
+        <td>
+          55950
+        </td>
+        <td>
+          2354
+          -
+          2384
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.transform.IsInstanceOfEvaluator.rewrite
+        </td>
+        <td style="background: #F0ADAD">
+          rewrite(qualifier, false)
+        </td>
+      </tr><tr>
+        <td>
+          56
+        </td>
+        <td>
+          55953
+        </td>
+        <td>
+          2402
+          -
+          2435
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Boolean.&amp;&amp;
+        </td>
+        <td style="background: #F0ADAD">
+          scrutineeSubSelector.unary_!.&amp;&amp;(inMatch.unary_!)
+        </td>
+      </tr><tr>
+        <td>
+          56
+        </td>
+        <td>
+          55952
+        </td>
+        <td>
+          2427
+          -
+          2435
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.Boolean.unary_!
+        </td>
+        <td style="background: #F0ADAD">
+          inMatch.unary_!
+        </td>
+      </tr><tr>
+        <td>
+          56
+        </td>
+        <td>
+          55964
+        </td>
+        <td>
+          2437
+          -
+          2664
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          {
+  ctx.warning(diagnostic.this.Message.toNoExplanation(scala.StringContext.apply(&quot;this will always yield false since `&quot;, &quot;` is not a subclass of `&quot;, &quot;` (will be optimized away)&quot;).s(scrutinee.show(ctx), selector.show(ctx))), core.Decorators.sourcePos(pos)(ctx));
+  rewrite(qualifier, false)
+}
+        </td>
+      </tr><tr>
+        <td>
+          56
+        </td>
+        <td>
+          55981
+        </td>
+        <td>
+          2398
+          -
+          3037
+        </td>
+        <td>
+          If
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          if (scrutineeSubSelector.unary_!.&amp;&amp;(inMatch.unary_!))
+  {
+    ctx.warning(diagnostic.this.Message.toNoExplanation(scala.StringContext.apply(&quot;this will always yield false since `&quot;, &quot;` is not a subclass of `&quot;, &quot;` (will be optimized away)&quot;).s(scrutinee.show(ctx), selector.show(ctx))), core.Decorators.sourcePos(pos)(ctx));
+    rewrite(qualifier, false)
+  }
+else
+  if (scrutineeSubSelector.&amp;&amp;(inMatch.unary_!))
+    {
+      ctx.warning(diagnostic.this.Message.toNoExplanation(scala.StringContext.apply(&quot;this will always yield true if the scrutinee is non-null, since `&quot;, &quot;` is a subclass of `&quot;, &quot;` (will be optimized away)&quot;).s(scrutinee.show(ctx), selector.show(ctx))), core.Decorators.sourcePos(pos)(ctx));
+      rewrite(qualifier, true)
+    }
+  else
+    rewrite(qualifier, true)
+        </td>
+      </tr><tr>
+        <td>
+          57
+        </td>
+        <td>
+          55962
+        </td>
+        <td>
+          2447
+          -
+          2617
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.reporting.Reporting.warning
+        </td>
+        <td style="background: #F0ADAD">
+          ctx.warning(diagnostic.this.Message.toNoExplanation(scala.StringContext.apply(&quot;this will always yield false since `&quot;, &quot;` is not a subclass of `&quot;, &quot;` (will be optimized away)&quot;).s(scrutinee.show(ctx), selector.show(ctx))), core.Decorators.sourcePos(pos)(ctx))
+        </td>
+      </tr><tr>
+        <td>
+          58
+        </td>
+        <td>
+          55960
+        </td>
+        <td>
+          2470
+          -
+          2592
+        </td>
+        <td>
+          ApplyImplicitView
+        </td>
+        <td>
+          dotty.tools.dotc.reporting.diagnostic.Message.toNoExplanation
+        </td>
+        <td style="background: #F0ADAD">
+          diagnostic.this.Message.toNoExplanation(scala.StringContext.apply(&quot;this will always yield false since `&quot;, &quot;` is not a subclass of `&quot;, &quot;` (will be optimized away)&quot;).s(scrutinee.show(ctx), selector.show(ctx)))
+        </td>
+      </tr><tr>
+        <td>
+          58
+        </td>
+        <td>
+          55956
+        </td>
+        <td>
+          2565
+          -
+          2592
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          &quot;` (will be optimized away)&quot;
+        </td>
+      </tr><tr>
+        <td>
+          58
+        </td>
+        <td>
+          55959
+        </td>
+        <td>
+          2470
+          -
+          2592
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.StringContext.s
+        </td>
+        <td style="background: #F0ADAD">
+          scala.StringContext.apply(&quot;this will always yield false since `&quot;, &quot;` is not a subclass of `&quot;, &quot;` (will be optimized away)&quot;).s(scrutinee.show(ctx), selector.show(ctx))
+        </td>
+      </tr><tr>
+        <td>
+          58
+        </td>
+        <td>
+          55958
+        </td>
+        <td>
+          2551
+          -
+          2564
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.printing.Showable.show
+        </td>
+        <td style="background: #F0ADAD">
+          selector.show(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          58
+        </td>
+        <td>
+          55955
+        </td>
+        <td>
+          2525
+          -
+          2550
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          &quot;` is not a subclass of `&quot;
+        </td>
+      </tr><tr>
+        <td>
+          58
+        </td>
+        <td>
+          55954
+        </td>
+        <td>
+          2472
+          -
+          2509
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          &quot;this will always yield false since `&quot;
+        </td>
+      </tr><tr>
+        <td>
+          58
+        </td>
+        <td>
+          55957
+        </td>
+        <td>
+          2510
+          -
+          2524
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.printing.Showable.show
+        </td>
+        <td style="background: #F0ADAD">
+          scrutinee.show(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          59
+        </td>
+        <td>
+          55961
+        </td>
+        <td>
+          2604
+          -
+          2607
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.Decorators.sourcePos
+        </td>
+        <td style="background: #F0ADAD">
+          core.Decorators.sourcePos(pos)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          61
+        </td>
+        <td>
+          55963
+        </td>
+        <td>
+          2626
+          -
+          2656
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.transform.IsInstanceOfEvaluator.rewrite
+        </td>
+        <td style="background: #F0ADAD">
+          rewrite(qualifier, false)
+        </td>
+      </tr><tr>
+        <td>
+          62
+        </td>
+        <td>
+          55977
+        </td>
+        <td>
+          2708
+          -
+          2959
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          {
+  ctx.warning(diagnostic.this.Message.toNoExplanation(scala.StringContext.apply(&quot;this will always yield true if the scrutinee is non-null, since `&quot;, &quot;` is a subclass of `&quot;, &quot;` (will be optimized away)&quot;).s(scrutinee.show(ctx), selector.show(ctx))), core.Decorators.sourcePos(pos)(ctx));
+  rewrite(qualifier, true)
+}
+        </td>
+      </tr><tr>
+        <td>
+          62
+        </td>
+        <td>
+          55980
+        </td>
+        <td>
+          2670
+          -
+          3037
+        </td>
+        <td>
+          If
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          if (scrutineeSubSelector.&amp;&amp;(inMatch.unary_!))
+  {
+    ctx.warning(diagnostic.this.Message.toNoExplanation(scala.StringContext.apply(&quot;this will always yield true if the scrutinee is non-null, since `&quot;, &quot;` is a subclass of `&quot;, &quot;` (will be optimized away)&quot;).s(scrutinee.show(ctx), selector.show(ctx))), core.Decorators.sourcePos(pos)(ctx));
+    rewrite(qualifier, true)
+  }
+else
+  rewrite(qualifier, true)
+        </td>
+      </tr><tr>
+        <td>
+          62
+        </td>
+        <td>
+          55965
+        </td>
+        <td>
+          2698
+          -
+          2706
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.Boolean.unary_!
+        </td>
+        <td style="background: #F0ADAD">
+          inMatch.unary_!
+        </td>
+      </tr><tr>
+        <td>
+          62
+        </td>
+        <td>
+          55966
+        </td>
+        <td>
+          2674
+          -
+          2706
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Boolean.&amp;&amp;
+        </td>
+        <td style="background: #F0ADAD">
+          scrutineeSubSelector.&amp;&amp;(inMatch.unary_!)
+        </td>
+      </tr><tr>
+        <td>
+          63
+        </td>
+        <td>
+          55975
+        </td>
+        <td>
+          2718
+          -
+          2913
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.reporting.Reporting.warning
+        </td>
+        <td style="background: #F0ADAD">
+          ctx.warning(diagnostic.this.Message.toNoExplanation(scala.StringContext.apply(&quot;this will always yield true if the scrutinee is non-null, since `&quot;, &quot;` is a subclass of `&quot;, &quot;` (will be optimized away)&quot;).s(scrutinee.show(ctx), selector.show(ctx))), core.Decorators.sourcePos(pos)(ctx))
+        </td>
+      </tr><tr>
+        <td>
+          64
+        </td>
+        <td>
+          55969
+        </td>
+        <td>
+          2861
+          -
+          2888
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          &quot;` (will be optimized away)&quot;
+        </td>
+      </tr><tr>
+        <td>
+          64
+        </td>
+        <td>
+          55968
+        </td>
+        <td>
+          2825
+          -
+          2846
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          &quot;` is a subclass of `&quot;
+        </td>
+      </tr><tr>
+        <td>
+          64
+        </td>
+        <td>
+          55971
+        </td>
+        <td>
+          2847
+          -
+          2860
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.printing.Showable.show
+        </td>
+        <td style="background: #F0ADAD">
+          selector.show(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          64
+        </td>
+        <td>
+          55967
+        </td>
+        <td>
+          2743
+          -
+          2809
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          &quot;this will always yield true if the scrutinee is non-null, since `&quot;
+        </td>
+      </tr><tr>
+        <td>
+          64
+        </td>
+        <td>
+          55970
+        </td>
+        <td>
+          2810
+          -
+          2824
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.printing.Showable.show
+        </td>
+        <td style="background: #F0ADAD">
+          scrutinee.show(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          64
+        </td>
+        <td>
+          55973
+        </td>
+        <td>
+          2741
+          -
+          2888
+        </td>
+        <td>
+          ApplyImplicitView
+        </td>
+        <td>
+          dotty.tools.dotc.reporting.diagnostic.Message.toNoExplanation
+        </td>
+        <td style="background: #F0ADAD">
+          diagnostic.this.Message.toNoExplanation(scala.StringContext.apply(&quot;this will always yield true if the scrutinee is non-null, since `&quot;, &quot;` is a subclass of `&quot;, &quot;` (will be optimized away)&quot;).s(scrutinee.show(ctx), selector.show(ctx)))
+        </td>
+      </tr><tr>
+        <td>
+          64
+        </td>
+        <td>
+          55972
+        </td>
+        <td>
+          2741
+          -
+          2888
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.StringContext.s
+        </td>
+        <td style="background: #F0ADAD">
+          scala.StringContext.apply(&quot;this will always yield true if the scrutinee is non-null, since `&quot;, &quot;` is a subclass of `&quot;, &quot;` (will be optimized away)&quot;).s(scrutinee.show(ctx), selector.show(ctx))
+        </td>
+      </tr><tr>
+        <td>
+          65
+        </td>
+        <td>
+          55974
+        </td>
+        <td>
+          2900
+          -
+          2903
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.Decorators.sourcePos
+        </td>
+        <td style="background: #F0ADAD">
+          core.Decorators.sourcePos(pos)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          67
+        </td>
+        <td>
+          55976
+        </td>
+        <td>
+          2922
+          -
+          2951
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.transform.IsInstanceOfEvaluator.rewrite
+        </td>
+        <td style="background: #F0ADAD">
+          rewrite(qualifier, true)
+        </td>
+      </tr><tr>
+        <td>
+          68
+        </td>
+        <td>
+          55978
+        </td>
+        <td>
+          3008
+          -
+          3037
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.transform.IsInstanceOfEvaluator.rewrite
+        </td>
+        <td style="background: #F0ADAD">
+          rewrite(qualifier, true)
+        </td>
+      </tr><tr>
+        <td>
+          68
+        </td>
+        <td>
+          55979
+        </td>
+        <td>
+          3008
+          -
+          3037
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          dotty.tools.dotc.transform.IsInstanceOfEvaluator.rewrite
+        </td>
+        <td style="background: #F0ADAD">
+          rewrite(qualifier, true)
+        </td>
+      </tr><tr>
+        <td>
+          73
+        </td>
+        <td>
+          55992
+        </td>
+        <td>
+          3210
+          -
+          3461
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          {
+  ctx.error(diagnostic.this.Message.toNoExplanation(scala.StringContext.apply(&quot;will never match since `&quot;, &quot;` is not a subclass of `&quot;, &quot;`&quot;).s(selector.show(ctx), scrutinee.show(ctx))), core.Decorators.sourcePos(dotty.tools.dotc.util.Positions.Position(qualifier.pos.start.-(5), qualifier.pos.end.-(5)))(ctx));
+  rewrite(qualifier, false)
+}
+        </td>
+      </tr><tr>
+        <td>
+          74
+        </td>
+        <td>
+          55990
+        </td>
+        <td>
+          3220
+          -
+          3414
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.reporting.Reporting.error
+        </td>
+        <td style="background: #F0ADAD">
+          ctx.error(diagnostic.this.Message.toNoExplanation(scala.StringContext.apply(&quot;will never match since `&quot;, &quot;` is not a subclass of `&quot;, &quot;`&quot;).s(selector.show(ctx), scrutinee.show(ctx))), core.Decorators.sourcePos(dotty.tools.dotc.util.Positions.Position(qualifier.pos.start.-(5), qualifier.pos.end.-(5)))(ctx))
+        </td>
+      </tr><tr>
+        <td>
+          75
+        </td>
+        <td>
+          55987
+        </td>
+        <td>
+          3241
+          -
+          3326
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.StringContext.s
+        </td>
+        <td style="background: #F0ADAD">
+          scala.StringContext.apply(&quot;will never match since `&quot;, &quot;` is not a subclass of `&quot;, &quot;`&quot;).s(selector.show(ctx), scrutinee.show(ctx))
+        </td>
+      </tr><tr>
+        <td>
+          75
+        </td>
+        <td>
+          55986
+        </td>
+        <td>
+          3309
+          -
+          3323
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.printing.Showable.show
+        </td>
+        <td style="background: #F0ADAD">
+          scrutinee.show(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          75
+        </td>
+        <td>
+          55983
+        </td>
+        <td>
+          3283
+          -
+          3308
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          &quot;` is not a subclass of `&quot;
+        </td>
+      </tr><tr>
+        <td>
+          75
+        </td>
+        <td>
+          55985
+        </td>
+        <td>
+          3269
+          -
+          3282
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.printing.Showable.show
+        </td>
+        <td style="background: #F0ADAD">
+          selector.show(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          75
+        </td>
+        <td>
+          55988
+        </td>
+        <td>
+          3241
+          -
+          3326
+        </td>
+        <td>
+          ApplyImplicitView
+        </td>
+        <td>
+          dotty.tools.dotc.reporting.diagnostic.Message.toNoExplanation
+        </td>
+        <td style="background: #F0ADAD">
+          diagnostic.this.Message.toNoExplanation(scala.StringContext.apply(&quot;will never match since `&quot;, &quot;` is not a subclass of `&quot;, &quot;`&quot;).s(selector.show(ctx), scrutinee.show(ctx)))
+        </td>
+      </tr><tr>
+        <td>
+          75
+        </td>
+        <td>
+          55982
+        </td>
+        <td>
+          3243
+          -
+          3268
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          &quot;will never match since `&quot;
+        </td>
+      </tr><tr>
+        <td>
+          75
+        </td>
+        <td>
+          55984
+        </td>
+        <td>
+          3324
+          -
+          3326
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          &quot;`&quot;
+        </td>
+      </tr><tr>
+        <td>
+          76
+        </td>
+        <td>
+          55989
+        </td>
+        <td>
+          3338
+          -
+          3394
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.Decorators.sourcePos
+        </td>
+        <td style="background: #F0ADAD">
+          core.Decorators.sourcePos(dotty.tools.dotc.util.Positions.Position(qualifier.pos.start.-(5), qualifier.pos.end.-(5)))(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          78
+        </td>
+        <td>
+          55991
+        </td>
+        <td>
+          3423
+          -
+          3453
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.transform.IsInstanceOfEvaluator.rewrite
+        </td>
+        <td style="background: #F0ADAD">
+          rewrite(qualifier, false)
+        </td>
+      </tr><tr>
+        <td>
+          79
+        </td>
+        <td>
+          56003
+        </td>
+        <td>
+          3467
+          -
+          3669
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          {
+  ctx.warning(diagnostic.this.Message.toNoExplanation(scala.StringContext.apply(&quot;will always yield false since `&quot;, &quot;` is not a subclass of `&quot;, &quot;`&quot;).s(scrutinee.show(ctx), selector.show(ctx))), core.Decorators.sourcePos(tree.pos)(ctx));
+  rewrite(qualifier, false)
+}
+        </td>
+      </tr><tr>
+        <td>
+          80
+        </td>
+        <td>
+          56001
+        </td>
+        <td>
+          3477
+          -
+          3622
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.reporting.Reporting.warning
+        </td>
+        <td style="background: #F0ADAD">
+          ctx.warning(diagnostic.this.Message.toNoExplanation(scala.StringContext.apply(&quot;will always yield false since `&quot;, &quot;` is not a subclass of `&quot;, &quot;`&quot;).s(scrutinee.show(ctx), selector.show(ctx))), core.Decorators.sourcePos(tree.pos)(ctx))
+        </td>
+      </tr><tr>
+        <td>
+          81
+        </td>
+        <td>
+          55996
+        </td>
+        <td>
+          3535
+          -
+          3549
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.printing.Showable.show
+        </td>
+        <td style="background: #F0ADAD">
+          scrutinee.show(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          81
+        </td>
+        <td>
+          55995
+        </td>
+        <td>
+          3590
+          -
+          3592
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          &quot;`&quot;
+        </td>
+      </tr><tr>
+        <td>
+          81
+        </td>
+        <td>
+          55998
+        </td>
+        <td>
+          3500
+          -
+          3592
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.StringContext.s
+        </td>
+        <td style="background: #F0ADAD">
+          scala.StringContext.apply(&quot;will always yield false since `&quot;, &quot;` is not a subclass of `&quot;, &quot;`&quot;).s(scrutinee.show(ctx), selector.show(ctx))
+        </td>
+      </tr><tr>
+        <td>
+          81
+        </td>
+        <td>
+          55994
+        </td>
+        <td>
+          3550
+          -
+          3575
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          &quot;` is not a subclass of `&quot;
+        </td>
+      </tr><tr>
+        <td>
+          81
+        </td>
+        <td>
+          55997
+        </td>
+        <td>
+          3576
+          -
+          3589
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.printing.Showable.show
+        </td>
+        <td style="background: #F0ADAD">
+          selector.show(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          81
+        </td>
+        <td>
+          55999
+        </td>
+        <td>
+          3500
+          -
+          3592
+        </td>
+        <td>
+          ApplyImplicitView
+        </td>
+        <td>
+          dotty.tools.dotc.reporting.diagnostic.Message.toNoExplanation
+        </td>
+        <td style="background: #F0ADAD">
+          diagnostic.this.Message.toNoExplanation(scala.StringContext.apply(&quot;will always yield false since `&quot;, &quot;` is not a subclass of `&quot;, &quot;`&quot;).s(scrutinee.show(ctx), selector.show(ctx)))
+        </td>
+      </tr><tr>
+        <td>
+          81
+        </td>
+        <td>
+          55993
+        </td>
+        <td>
+          3502
+          -
+          3534
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          &quot;will always yield false since `&quot;
+        </td>
+      </tr><tr>
+        <td>
+          82
+        </td>
+        <td>
+          56000
+        </td>
+        <td>
+          3604
+          -
+          3612
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.Decorators.sourcePos
+        </td>
+        <td style="background: #F0ADAD">
+          core.Decorators.sourcePos(tree.pos)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          84
+        </td>
+        <td>
+          56002
+        </td>
+        <td>
+          3631
+          -
+          3661
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.transform.IsInstanceOfEvaluator.rewrite
+        </td>
+        <td style="background: #F0ADAD">
+          rewrite(qualifier, false)
+        </td>
+      </tr><tr>
+        <td>
+          96
+        </td>
+        <td>
+          56004
+        </td>
+        <td>
+          4084
+          -
+          4108
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.Boolean.unary_!
+        </td>
+        <td style="background: #F0ADAD">
+          qualifier.tpe.isNotNull(ctx).unary_!
+        </td>
+      </tr><tr>
+        <td>
+          96
+        </td>
+        <td>
+          56007
+        </td>
+        <td>
+          4110
+          -
+          4131
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          dotty.tools.dotc.ast.tpd.TreeOps.testNotNull
+        </td>
+        <td style="background: #F0ADAD">
+          dotty.tools.dotc.ast.tpd.TreeOps[dotty.tools.dotc.ast.tpd.Tree](qualifier).testNotNull(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          96
+        </td>
+        <td>
+          56006
+        </td>
+        <td>
+          4110
+          -
+          4131
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.tpd.TreeOps.testNotNull
+        </td>
+        <td style="background: #F0ADAD">
+          dotty.tools.dotc.ast.tpd.TreeOps[dotty.tools.dotc.ast.tpd.Tree](qualifier).testNotNull(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          96
+        </td>
+        <td>
+          56005
+        </td>
+        <td>
+          4078
+          -
+          4108
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Boolean.&amp;&amp;
+        </td>
+        <td style="background: #F0ADAD">
+          to.&amp;&amp;(qualifier.tpe.isNotNull(ctx).unary_!)
+        </td>
+      </tr><tr>
+        <td>
+          97
+        </td>
+        <td>
+          56013
+        </td>
+        <td>
+          4143
+          -
+          4285
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          {
+  val literal: dotty.tools.dotc.ast.tpd.Literal = dotty.tools.dotc.ast.tpd.Literal(core.Constants.Constant.apply(to))(ctx);
+  if (dotty.tools.dotc.ast.tpd.isPureExpr(qualifier)(ctx).unary_!)
+    dotty.tools.dotc.ast.tpd.Block(scala.collection.immutable.List.apply[dotty.tools.dotc.ast.tpd.Tree](qualifier), literal)(ctx)
+  else
+    literal
+}
+        </td>
+      </tr><tr>
+        <td>
+          98
+        </td>
+        <td>
+          56008
+        </td>
+        <td>
+          4167
+          -
+          4188
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.tpd.Literal
+        </td>
+        <td style="background: #F0ADAD">
+          dotty.tools.dotc.ast.tpd.Literal(core.Constants.Constant.apply(to))(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          99
+        </td>
+        <td>
+          56010
+        </td>
+        <td>
+          4225
+          -
+          4256
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.tpd.Block
+        </td>
+        <td style="background: #F0ADAD">
+          dotty.tools.dotc.ast.tpd.Block(scala.collection.immutable.List.apply[dotty.tools.dotc.ast.tpd.Tree](qualifier), literal)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          99
+        </td>
+        <td>
+          56009
+        </td>
+        <td>
+          4201
+          -
+          4223
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.Boolean.unary_!
+        </td>
+        <td style="background: #F0ADAD">
+          dotty.tools.dotc.ast.tpd.isPureExpr(qualifier)(ctx).unary_!
+        </td>
+      </tr><tr>
+        <td>
+          99
+        </td>
+        <td>
+          56011
+        </td>
+        <td>
+          4225
+          -
+          4256
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          dotty.tools.dotc.ast.tpd.Block
+        </td>
+        <td style="background: #F0ADAD">
+          dotty.tools.dotc.ast.tpd.Block(scala.collection.immutable.List.apply[dotty.tools.dotc.ast.tpd.Tree](qualifier), literal)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          100
+        </td>
+        <td>
+          56012
+        </td>
+        <td>
+          4270
+          -
+          4277
+        </td>
+        <td>
+          Ident
+        </td>
+        <td>
+          dotty.tools.dotc.transform.IsInstanceOfEvaluator.literal
+        </td>
+        <td style="background: #F0ADAD">
+          literal
+        </td>
+      </tr><tr>
+        <td>
+          110
+        </td>
+        <td>
+          56014
+        </td>
+        <td>
+          4763
+          -
+          4791
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.TypeErasure.erasure
+        </td>
+        <td style="background: #F0ADAD">
+          core.TypeErasure.erasure(qualifier.tpe.widen(ctx))(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          111
+        </td>
+        <td>
+          56015
+        </td>
+        <td>
+          4814
+          -
+          4847
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.TypeErasure.erasure
+        </td>
+        <td style="background: #F0ADAD">
+          core.TypeErasure.erasure(tree.args.head.tpe.widen(ctx))(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          113
+        </td>
+        <td>
+          56016
+        </td>
+        <td>
+          4869
+          -
+          4898
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.SymDenotations.SymDenotation.is
+        </td>
+        <td style="background: #F0ADAD">
+          core.Symbols.toDenot(scrutinee.typeSymbol(ctx))(ctx).is(core.Flags.Trait)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          116
+        </td>
+        <td>
+          56019
+        </td>
+        <td>
+          4967
+          -
+          4999
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.Boolean.unary_!
+        </td>
+        <td style="background: #F0ADAD">
+          core.Symbols.toDenot(scrutinee.typeSymbol(ctx))(ctx).is(core.Flags.Trait)(ctx).unary_!
+        </td>
+      </tr><tr>
+        <td>
+          116
+        </td>
+        <td>
+          56018
+        </td>
+        <td>
+          4993
+          -
+          4998
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Flags.Trait
+        </td>
+        <td style="background: #F0ADAD">
+          core.Flags.Trait
+        </td>
+      </tr><tr>
+        <td>
+          116
+        </td>
+        <td>
+          56023
+        </td>
+        <td>
+          4927
+          -
+          5044
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Boolean.&amp;&amp;
+        </td>
+        <td style="background: #F0ADAD">
+          scrutinee.typeSymbol(ctx).isClass.&amp;&amp;(core.Symbols.toDenot(scrutinee.typeSymbol(ctx))(ctx).is(core.Flags.Trait)(ctx).unary_!).&amp;&amp;(core.Symbols.toDenot(scrutinee.typeSymbol(ctx))(ctx).is(core.Flags.Module)(ctx).unary_!)
+        </td>
+      </tr><tr>
+        <td>
+          116
+        </td>
+        <td>
+          56017
+        </td>
+        <td>
+          4969
+          -
+          4989
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.Types.Type.typeSymbol
+        </td>
+        <td style="background: #F0ADAD">
+          scrutinee.typeSymbol(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          117
+        </td>
+        <td>
+          56022
+        </td>
+        <td>
+          5011
+          -
+          5044
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.Boolean.unary_!
+        </td>
+        <td style="background: #F0ADAD">
+          core.Symbols.toDenot(scrutinee.typeSymbol(ctx))(ctx).is(core.Flags.Module)(ctx).unary_!
+        </td>
+      </tr><tr>
+        <td>
+          117
+        </td>
+        <td>
+          56021
+        </td>
+        <td>
+          5037
+          -
+          5043
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Flags.Module
+        </td>
+        <td style="background: #F0ADAD">
+          core.Flags.Module
+        </td>
+      </tr><tr>
+        <td>
+          117
+        </td>
+        <td>
+          56020
+        </td>
+        <td>
+          5013
+          -
+          5033
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.Types.Type.typeSymbol
+        </td>
+        <td style="background: #F0ADAD">
+          scrutinee.typeSymbol(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          119
+        </td>
+        <td>
+          56025
+        </td>
+        <td>
+          5111
+          -
+          5116
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Flags.Final
+        </td>
+        <td style="background: #F0ADAD">
+          core.Flags.Final
+        </td>
+      </tr><tr>
+        <td>
+          119
+        </td>
+        <td>
+          56027
+        </td>
+        <td>
+          5074
+          -
+          5117
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Boolean.&amp;&amp;
+        </td>
+        <td style="background: #F0ADAD">
+          scClass.&amp;&amp;(core.Symbols.toDenot(scrutinee.typeSymbol(ctx))(ctx).is(core.Flags.Final)(ctx).unary_!)
+        </td>
+      </tr><tr>
+        <td>
+          119
+        </td>
+        <td>
+          56024
+        </td>
+        <td>
+          5087
+          -
+          5107
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.Types.Type.typeSymbol
+        </td>
+        <td style="background: #F0ADAD">
+          scrutinee.typeSymbol(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          119
+        </td>
+        <td>
+          56026
+        </td>
+        <td>
+          5085
+          -
+          5117
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.Boolean.unary_!
+        </td>
+        <td style="background: #F0ADAD">
+          core.Symbols.toDenot(scrutinee.typeSymbol(ctx))(ctx).is(core.Flags.Final)(ctx).unary_!
+        </td>
+      </tr><tr>
+        <td>
+          120
+        </td>
+        <td>
+          56028
+        </td>
+        <td>
+          5158
+          -
+          5187
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.SymDenotations.SymDenotation.is
+        </td>
+        <td style="background: #F0ADAD">
+          core.Symbols.toDenot(scrutinee.typeSymbol(ctx))(ctx).is(core.Flags.Final)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          120
+        </td>
+        <td>
+          56029
+        </td>
+        <td>
+          5146
+          -
+          5188
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Boolean.&amp;&amp;
+        </td>
+        <td style="background: #F0ADAD">
+          scClass.&amp;&amp;(core.Symbols.toDenot(scrutinee.typeSymbol(ctx))(ctx).is(core.Flags.Final)(ctx))
+        </td>
+      </tr><tr>
+        <td>
+          122
+        </td>
+        <td>
+          56030
+        </td>
+        <td>
+          5211
+          -
+          5239
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.SymDenotations.SymDenotation.is
+        </td>
+        <td style="background: #F0ADAD">
+          core.Symbols.toDenot(selector.typeSymbol(ctx))(ctx).is(core.Flags.Trait)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          125
+        </td>
+        <td>
+          56037
+        </td>
+        <td>
+          5269
+          -
+          5383
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Boolean.&amp;&amp;
+        </td>
+        <td style="background: #F0ADAD">
+          selector.typeSymbol(ctx).isClass.&amp;&amp;(core.Symbols.toDenot(selector.typeSymbol(ctx))(ctx).is(core.Flags.Trait)(ctx).unary_!).&amp;&amp;(core.Symbols.toDenot(selector.typeSymbol(ctx))(ctx).is(core.Flags.Module)(ctx).unary_!)
+        </td>
+      </tr><tr>
+        <td>
+          125
+        </td>
+        <td>
+          56031
+        </td>
+        <td>
+          5310
+          -
+          5329
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.Types.Type.typeSymbol
+        </td>
+        <td style="background: #F0ADAD">
+          selector.typeSymbol(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          125
+        </td>
+        <td>
+          56033
+        </td>
+        <td>
+          5308
+          -
+          5339
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.Boolean.unary_!
+        </td>
+        <td style="background: #F0ADAD">
+          core.Symbols.toDenot(selector.typeSymbol(ctx))(ctx).is(core.Flags.Trait)(ctx).unary_!
+        </td>
+      </tr><tr>
+        <td>
+          125
+        </td>
+        <td>
+          56032
+        </td>
+        <td>
+          5333
+          -
+          5338
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Flags.Trait
+        </td>
+        <td style="background: #F0ADAD">
+          core.Flags.Trait
+        </td>
+      </tr><tr>
+        <td>
+          126
+        </td>
+        <td>
+          56034
+        </td>
+        <td>
+          5353
+          -
+          5372
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.Types.Type.typeSymbol
+        </td>
+        <td style="background: #F0ADAD">
+          selector.typeSymbol(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          126
+        </td>
+        <td>
+          56036
+        </td>
+        <td>
+          5351
+          -
+          5383
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.Boolean.unary_!
+        </td>
+        <td style="background: #F0ADAD">
+          core.Symbols.toDenot(selector.typeSymbol(ctx))(ctx).is(core.Flags.Module)(ctx).unary_!
+        </td>
+      </tr><tr>
+        <td>
+          126
+        </td>
+        <td>
+          56035
+        </td>
+        <td>
+          5376
+          -
+          5382
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Flags.Module
+        </td>
+        <td style="background: #F0ADAD">
+          core.Flags.Module
+        </td>
+      </tr><tr>
+        <td>
+          128
+        </td>
+        <td>
+          56040
+        </td>
+        <td>
+          5426
+          -
+          5457
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.Boolean.unary_!
+        </td>
+        <td style="background: #F0ADAD">
+          core.Symbols.toDenot(selector.typeSymbol(ctx))(ctx).is(core.Flags.Final)(ctx).unary_!
+        </td>
+      </tr><tr>
+        <td>
+          128
+        </td>
+        <td>
+          56039
+        </td>
+        <td>
+          5451
+          -
+          5456
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Flags.Final
+        </td>
+        <td style="background: #F0ADAD">
+          core.Flags.Final
+        </td>
+      </tr><tr>
+        <td>
+          128
+        </td>
+        <td>
+          56041
+        </td>
+        <td>
+          5414
+          -
+          5457
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Boolean.&amp;&amp;
+        </td>
+        <td style="background: #F0ADAD">
+          selClass.&amp;&amp;(core.Symbols.toDenot(selector.typeSymbol(ctx))(ctx).is(core.Flags.Final)(ctx).unary_!)
+        </td>
+      </tr><tr>
+        <td>
+          128
+        </td>
+        <td>
+          56038
+        </td>
+        <td>
+          5428
+          -
+          5447
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.Types.Type.typeSymbol
+        </td>
+        <td style="background: #F0ADAD">
+          selector.typeSymbol(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          129
+        </td>
+        <td>
+          56043
+        </td>
+        <td>
+          5487
+          -
+          5529
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Boolean.&amp;&amp;
+        </td>
+        <td style="background: #F0ADAD">
+          selClass.&amp;&amp;(core.Symbols.toDenot(selector.typeSymbol(ctx))(ctx).is(core.Flags.Final)(ctx))
+        </td>
+      </tr><tr>
+        <td>
+          129
+        </td>
+        <td>
+          56042
+        </td>
+        <td>
+          5500
+          -
+          5528
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.SymDenotations.SymDenotation.is
+        </td>
+        <td style="background: #F0ADAD">
+          core.Symbols.toDenot(selector.typeSymbol(ctx))(ctx).is(core.Flags.Final)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          133
+        </td>
+        <td>
+          56044
+        </td>
+        <td>
+          5651
+          -
+          5671
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.Symbols.toDenot
+        </td>
+        <td style="background: #F0ADAD">
+          core.Symbols.toDenot(scrutinee.typeSymbol(ctx))(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          134
+        </td>
+        <td>
+          56045
+        </td>
+        <td>
+          5684
+          -
+          5737
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.transform.ValueClasses.isDerivedValueClass
+        </td>
+        <td style="background: #F0ADAD">
+          ValueClasses.isDerivedValueClass(core.Symbols.toDenot(selector.typeSymbol(ctx))(ctx))(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          134
+        </td>
+        <td>
+          56048
+        </td>
+        <td>
+          5618
+          -
+          5778
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Boolean.||
+        </td>
+        <td style="background: #F0ADAD">
+          ValueClasses.isDerivedValueClass(core.Symbols.toDenot(scrutinee.typeSymbol(ctx))(ctx))(ctx).||(ValueClasses.isDerivedValueClass(core.Symbols.toDenot(selector.typeSymbol(ctx))(ctx))(ctx)).||(scrutinee.==(defn.ObjectType))
+        </td>
+      </tr><tr>
+        <td>
+          135
+        </td>
+        <td>
+          56046
+        </td>
+        <td>
+          5763
+          -
+          5778
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Definitions.ObjectType
+        </td>
+        <td style="background: #F0ADAD">
+          defn.ObjectType
+        </td>
+      </tr><tr>
+        <td>
+          135
+        </td>
+        <td>
+          56047
+        </td>
+        <td>
+          5750
+          -
+          5778
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.Object.==
+        </td>
+        <td style="background: #F0ADAD">
+          scrutinee.==(defn.ObjectType)
+        </td>
+      </tr><tr>
+        <td>
+          141
+        </td>
+        <td>
+          56049
+        </td>
+        <td>
+          5909
+          -
+          5941
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Boolean.&amp;&amp;
+        </td>
+        <td style="background: #F0ADAD">
+          scClassNonFinal.&amp;&amp;(selFinalClass)
+        </td>
+      </tr><tr>
+        <td>
+          141
+        </td>
+        <td>
+          56051
+        </td>
+        <td>
+          5859
+          -
+          5983
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Boolean.||
+        </td>
+        <td style="background: #F0ADAD">
+          scClassNonFinal.&amp;&amp;(selClassNonFinal).||(scClassNonFinal.&amp;&amp;(selFinalClass)).||(scTrait.&amp;&amp;(selFinalClass))
+        </td>
+      </tr><tr>
+        <td>
+          142
+        </td>
+        <td>
+          56050
+        </td>
+        <td>
+          5958
+          -
+          5982
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Boolean.&amp;&amp;
+        </td>
+        <td style="background: #F0ADAD">
+          scTrait.&amp;&amp;(selFinalClass)
+        </td>
+      </tr><tr>
+        <td>
+          146
+        </td>
+        <td>
+          56052
+        </td>
+        <td>
+          6063
+          -
+          6090
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Boolean.&amp;&amp;
+        </td>
+        <td style="background: #F0ADAD">
+          scTrait.&amp;&amp;(selClassNonFinal)
+        </td>
+      </tr><tr>
+        <td>
+          146
+        </td>
+        <td>
+          56054
+        </td>
+        <td>
+          6013
+          -
+          6132
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Boolean.||
+        </td>
+        <td style="background: #F0ADAD">
+          scClassNonFinal.&amp;&amp;(selClassNonFinal).||(scTrait.&amp;&amp;(selClassNonFinal)).||(scTrait.&amp;&amp;(selTrait))
+        </td>
+      </tr><tr>
+        <td>
+          147
+        </td>
+        <td>
+          56053
+        </td>
+        <td>
+          6112
+          -
+          6131
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Boolean.&amp;&amp;
+        </td>
+        <td style="background: #F0ADAD">
+          scTrait.&amp;&amp;(selTrait)
+        </td>
+      </tr><tr>
+        <td>
+          149
+        </td>
+        <td>
+          56055
+        </td>
+        <td>
+          6163
+          -
+          6167
+        </td>
+        <td>
+          Ident
+        </td>
+        <td>
+          dotty.tools.dotc.transform.IsInstanceOfEvaluator.tree
+        </td>
+        <td style="background: #F0ADAD">
+          tree
+        </td>
+      </tr><tr>
+        <td>
+          150
+        </td>
+        <td>
+          56072
+        </td>
+        <td>
+          6179
+          -
+          6669
+        </td>
+        <td>
+          If
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          if (knownStatically)
+  handleStaticallyKnown(qualifier, scrutinee, selector, inMatch, tree.pos)
+else
+  if (falseIfUnrelated.&amp;&amp;(scrutinee.&lt;:&lt;(selector)(ctx)))
+    rewrite(qualifier, true)
+  else
+    if (falseIfUnrelated.&amp;&amp;(selector.&lt;:&lt;(scrutinee)(ctx).unary_!))
+      handleFalseUnrelated(qualifier, scrutinee, selector, inMatch)
+    else
+      if (happens)
+        tree
+      else
+        tree
+        </td>
+      </tr><tr>
+        <td>
+          151
+        </td>
+        <td>
+          56058
+        </td>
+        <td>
+          6208
+          -
+          6280
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          dotty.tools.dotc.transform.IsInstanceOfEvaluator.handleStaticallyKnown
+        </td>
+        <td style="background: #F0ADAD">
+          handleStaticallyKnown(qualifier, scrutinee, selector, inMatch, tree.pos)
+        </td>
+      </tr><tr>
+        <td>
+          151
+        </td>
+        <td>
+          56057
+        </td>
+        <td>
+          6208
+          -
+          6280
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.transform.IsInstanceOfEvaluator.handleStaticallyKnown
+        </td>
+        <td style="background: #F0ADAD">
+          handleStaticallyKnown(qualifier, scrutinee, selector, inMatch, tree.pos)
+        </td>
+      </tr><tr>
+        <td>
+          151
+        </td>
+        <td>
+          56056
+        </td>
+        <td>
+          6271
+          -
+          6279
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Positioned.pos
+        </td>
+        <td style="background: #F0ADAD">
+          tree.pos
+        </td>
+      </tr><tr>
+        <td>
+          152
+        </td>
+        <td>
+          56060
+        </td>
+        <td>
+          6296
+          -
+          6338
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Boolean.&amp;&amp;
+        </td>
+        <td style="background: #F0ADAD">
+          falseIfUnrelated.&amp;&amp;(scrutinee.&lt;:&lt;(selector)(ctx))
+        </td>
+      </tr><tr>
+        <td>
+          152
+        </td>
+        <td>
+          56059
+        </td>
+        <td>
+          6316
+          -
+          6338
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.Types.Type.&lt;:&lt;
+        </td>
+        <td style="background: #F0ADAD">
+          scrutinee.&lt;:&lt;(selector)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          152
+        </td>
+        <td>
+          56071
+        </td>
+        <td>
+          6292
+          -
+          6669
+        </td>
+        <td>
+          If
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          if (falseIfUnrelated.&amp;&amp;(scrutinee.&lt;:&lt;(selector)(ctx)))
+  rewrite(qualifier, true)
+else
+  if (falseIfUnrelated.&amp;&amp;(selector.&lt;:&lt;(scrutinee)(ctx).unary_!))
+    handleFalseUnrelated(qualifier, scrutinee, selector, inMatch)
+  else
+    if (happens)
+      tree
+    else
+      tree
+        </td>
+      </tr><tr>
+        <td>
+          154
+        </td>
+        <td>
+          56061
+        </td>
+        <td>
+          6415
+          -
+          6444
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.transform.IsInstanceOfEvaluator.rewrite
+        </td>
+        <td style="background: #F0ADAD">
+          rewrite(qualifier, true)
+        </td>
+      </tr><tr>
+        <td>
+          154
+        </td>
+        <td>
+          56062
+        </td>
+        <td>
+          6415
+          -
+          6444
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          dotty.tools.dotc.transform.IsInstanceOfEvaluator.rewrite
+        </td>
+        <td style="background: #F0ADAD">
+          rewrite(qualifier, true)
+        </td>
+      </tr><tr>
+        <td>
+          155
+        </td>
+        <td>
+          56064
+        </td>
+        <td>
+          6460
+          -
+          6505
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Boolean.&amp;&amp;
+        </td>
+        <td style="background: #F0ADAD">
+          falseIfUnrelated.&amp;&amp;(selector.&lt;:&lt;(scrutinee)(ctx).unary_!)
+        </td>
+      </tr><tr>
+        <td>
+          155
+        </td>
+        <td>
+          56070
+        </td>
+        <td>
+          6456
+          -
+          6669
+        </td>
+        <td>
+          If
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          if (falseIfUnrelated.&amp;&amp;(selector.&lt;:&lt;(scrutinee)(ctx).unary_!))
+  handleFalseUnrelated(qualifier, scrutinee, selector, inMatch)
+else
+  if (happens)
+    tree
+  else
+    tree
+        </td>
+      </tr><tr>
+        <td>
+          155
+        </td>
+        <td>
+          56063
+        </td>
+        <td>
+          6480
+          -
+          6505
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.Boolean.unary_!
+        </td>
+        <td style="background: #F0ADAD">
+          selector.&lt;:&lt;(scrutinee)(ctx).unary_!
+        </td>
+      </tr><tr>
+        <td>
+          157
+        </td>
+        <td>
+          56066
+        </td>
+        <td>
+          6563
+          -
+          6624
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          dotty.tools.dotc.transform.IsInstanceOfEvaluator.handleFalseUnrelated
+        </td>
+        <td style="background: #F0ADAD">
+          handleFalseUnrelated(qualifier, scrutinee, selector, inMatch)
+        </td>
+      </tr><tr>
+        <td>
+          157
+        </td>
+        <td>
+          56065
+        </td>
+        <td>
+          6563
+          -
+          6624
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.transform.IsInstanceOfEvaluator.handleFalseUnrelated
+        </td>
+        <td style="background: #F0ADAD">
+          handleFalseUnrelated(qualifier, scrutinee, selector, inMatch)
+        </td>
+      </tr><tr>
+        <td>
+          158
+        </td>
+        <td>
+          56067
+        </td>
+        <td>
+          6649
+          -
+          6653
+        </td>
+        <td>
+          Ident
+        </td>
+        <td>
+          dotty.tools.dotc.transform.IsInstanceOfEvaluator.tree
+        </td>
+        <td style="background: #F0ADAD">
+          tree
+        </td>
+      </tr><tr>
+        <td>
+          158
+        </td>
+        <td>
+          56069
+        </td>
+        <td>
+          6636
+          -
+          6669
+        </td>
+        <td>
+          If
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          if (happens)
+  tree
+else
+  tree
+        </td>
+      </tr><tr>
+        <td>
+          159
+        </td>
+        <td>
+          56068
+        </td>
+        <td>
+          6665
+          -
+          6669
+        </td>
+        <td>
+          Ident
+        </td>
+        <td>
+          dotty.tools.dotc.transform.IsInstanceOfEvaluator.tree
+        </td>
+        <td style="background: #F0ADAD">
+          tree
+        </td>
+      </tr><tr>
+        <td>
+          162
+        </td>
+        <td>
+          56073
+        </td>
+        <td>
+          6681
+          -
+          6689
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Trees.TypeApply.fun
+        </td>
+        <td style="background: #F0ADAD">
+          tree.fun
+        </td>
+      </tr><tr>
+        <td>
+          163
+        </td>
+        <td>
+          56074
+        </td>
+        <td>
+          6723
+          -
+          6753
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.Object.==
+        </td>
+        <td style="background: #F0ADAD">
+          fn.symbol(ctx).==(defn.Any_typeTest)
+        </td>
+      </tr><tr>
+        <td>
+          164
+        </td>
+        <td>
+          56078
+        </td>
+        <td>
+          6765
+          -
+          6904
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.transform.IsInstanceOfEvaluator.evalTypeTest
+        </td>
+        <td style="background: #F0ADAD">
+          evalTypeTest(IsInstanceOfEvaluator.this.cpy.TypeApply(tree)(dotty.tools.dotc.ast.tpd.TreeOps[dotty.tools.dotc.ast.Trees.Tree[dotty.tools.dotc.core.Types.Type]](fn.qualifier).select(defn.Any_isInstanceOf)(ctx), tree.args)(ctx), fn.qualifier, true)
+        </td>
+      </tr><tr>
+        <td>
+          165
+        </td>
+        <td>
+          56075
+        </td>
+        <td>
+          6789
+          -
+          6863
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.tpd.TypedTreeCopier.TypeApply
+        </td>
+        <td style="background: #F0ADAD">
+          IsInstanceOfEvaluator.this.cpy.TypeApply(tree)(dotty.tools.dotc.ast.tpd.TreeOps[dotty.tools.dotc.ast.Trees.Tree[dotty.tools.dotc.core.Types.Type]](fn.qualifier).select(defn.Any_isInstanceOf)(ctx), tree.args)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          166
+        </td>
+        <td>
+          56076
+        </td>
+        <td>
+          6875
+          -
+          6887
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Trees.Select.qualifier
+        </td>
+        <td style="background: #F0ADAD">
+          fn.qualifier
+        </td>
+      </tr><tr>
+        <td>
+          166
+        </td>
+        <td>
+          56077
+        </td>
+        <td>
+          6899
+          -
+          6903
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          true
+        </td>
+      </tr><tr>
+        <td>
+          167
+        </td>
+        <td>
+          56079
+        </td>
+        <td>
+          6930
+          -
+          6964
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.Object.==
+        </td>
+        <td style="background: #F0ADAD">
+          fn.symbol(ctx).==(defn.Any_isInstanceOf)
+        </td>
+      </tr><tr>
+        <td>
+          168
+        </td>
+        <td>
+          56082
+        </td>
+        <td>
+          6976
+          -
+          7025
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.transform.IsInstanceOfEvaluator.evalTypeTest
+        </td>
+        <td style="background: #F0ADAD">
+          evalTypeTest(tree, fn.qualifier, false)
+        </td>
+      </tr><tr>
+        <td>
+          168
+        </td>
+        <td>
+          56081
+        </td>
+        <td>
+          7019
+          -
+          7024
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          false
+        </td>
+      </tr><tr>
+        <td>
+          168
+        </td>
+        <td>
+          56080
+        </td>
+        <td>
+          6995
+          -
+          7007
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Trees.Select.qualifier
+        </td>
+        <td style="background: #F0ADAD">
+          fn.qualifier
+        </td>
+      </tr>
+    </table>
+          </div>
+        </div>
+      </body>
+    </html>

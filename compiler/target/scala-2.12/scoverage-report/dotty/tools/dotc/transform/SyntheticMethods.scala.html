@@ -1,0 +1,3982 @@
+<html>
+      <head>
+        <meta http-equiv="Content-Type" content="text/html; charset=utf-8"/>
+        <title id="title">
+          dotty/tools/dotc/transform/SyntheticMethods.scala.html
+        </title>
+        <script src="https://ajax.googleapis.com/ajax/libs/jquery/1.10.2/jquery.min.js"></script><link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/jquery.tablesorter/2.20.1/css/theme.default.min.css" type="text/css"/><script src="https://cdnjs.cloudflare.com/ajax/libs/jquery.tablesorter/2.20.1/js/jquery.tablesorter.min.js"></script><link rel="stylesheet" href="https://netdna.bootstrapcdn.com/bootstrap/3.0.3/css/bootstrap.min.css" type="text/css"/><script src="https://netdna.bootstrapcdn.com/bootstrap/3.0.3/js/bootstrap.min.js"></script><script type="text/javascript">
+        $(document).ready(function() {$(".tablesorter").tablesorter();});
+      </script>
+        <style>
+          table.codegrid { font-family: monospace; font-size: 12px; width: auto!important; }table.statementlist { width: auto!important; font-size: 13px; } table.codegrid td { padding: 0!important; border: 0!important } table td.linenumber { width: 40px!important; } 
+        </style>
+      </head>
+      <body style="font-family: monospace;">
+        <ul class="nav nav-tabs">
+          <li>
+            <a href="#codegrid" data-toggle="tab">Codegrid</a>
+          </li>
+          <li>
+            <a href="#statementlist" data-toggle="tab">Statement List</a>
+          </li>
+        </ul>
+        <div class="tab-content">
+          <div class="tab-pane active" id="codegrid">
+            <pre style='font-size: 12pt; font-family: courier;'>1 <span style=''>package dotty.tools.dotc
+</span>2 <span style=''>package transform
+</span>3 <span style=''>
+</span>4 <span style=''>import core._
+</span>5 <span style=''>import Symbols._, Types._, Contexts._, Names._, StdNames._, Constants._, SymUtils._
+</span>6 <span style=''>import scala.collection.{ mutable, immutable }
+</span>7 <span style=''>import Flags._
+</span>8 <span style=''>import MegaPhase._
+</span>9 <span style=''>import DenotTransformers._
+</span>10 <span style=''>import ast.Trees._
+</span>11 <span style=''>import ast.untpd
+</span>12 <span style=''>import Decorators._
+</span>13 <span style=''>import NameOps._
+</span>14 <span style=''>import ValueClasses.isDerivedValueClass
+</span>15 <span style=''>import scala.collection.mutable.ListBuffer
+</span>16 <span style=''>import scala.language.postfixOps
+</span>17 <span style=''>
+</span>18 <span style=''>/** Synthetic method implementations for case classes, case objects,
+</span>19 <span style=''> *  and value classes.
+</span>20 <span style=''> *
+</span>21 <span style=''> *  Selectively added to case classes/objects, unless a non-default
+</span>22 <span style=''> *  implementation already exists:
+</span>23 <span style=''> *    def equals(other: Any): Boolean
+</span>24 <span style=''> *    def hashCode(): Int
+</span>25 <span style=''> *    def canEqual(other: Any): Boolean
+</span>26 <span style=''> *    def toString(): String
+</span>27 <span style=''> *    def productElement(i: Int): Any
+</span>28 <span style=''> *    def productArity: Int
+</span>29 <span style=''> *    def productPrefix: String
+</span>30 <span style=''> *
+</span>31 <span style=''> *  Special handling:
+</span>32 <span style=''> *    protected def readResolve(): AnyRef
+</span>33 <span style=''> *
+</span>34 <span style=''> *  Selectively added to value classes, unless a non-default
+</span>35 <span style=''> *  implementation already exists:
+</span>36 <span style=''> *    def equals(other: Any): Boolean
+</span>37 <span style=''> *    def hashCode(): Int
+</span>38 <span style=''> */
+</span>39 <span style=''>class SyntheticMethods(thisPhase: DenotTransformer) {
+</span>40 <span style=''>  import ast.tpd._
+</span>41 <span style=''>
+</span>42 <span style=''>  private[this] var myValueSymbols: List[Symbol] = </span><span style='background: #AEF1AE'>Nil</span><span style=''>
+</span>43 <span style=''>  private[this] var myCaseSymbols: List[Symbol] = </span><span style='background: #AEF1AE'>Nil</span><span style=''>
+</span>44 <span style=''>  private[this] var myCaseModuleSymbols: List[Symbol] = </span><span style='background: #AEF1AE'>Nil</span><span style=''>
+</span>45 <span style=''>
+</span>46 <span style=''>  private def initSymbols(implicit ctx: Context) =
+</span>47 <span style=''>    if (</span><span style='background: #AEF1AE'>myValueSymbols.isEmpty</span><span style=''>) </span><span style='background: #AEF1AE'>{
+</span>48 <span style=''></span><span style='background: #AEF1AE'>      myValueSymbols = List(defn.Any_hashCode, defn.Any_equals)
+</span>49 <span style=''></span><span style='background: #AEF1AE'>      myCaseSymbols = myValueSymbols ++ List(defn.Any_toString, defn.Product_canEqual,
+</span>50 <span style=''></span><span style='background: #AEF1AE'>        defn.Product_productArity, defn.Product_productPrefix, defn.Product_productElement)
+</span>51 <span style=''></span><span style='background: #AEF1AE'>      myCaseModuleSymbols = myCaseSymbols.filter(_ ne defn.Any_equals)
+</span>52 <span style=''></span><span style='background: #AEF1AE'>    }</span><span style=''>
+</span>53 <span style=''>
+</span>54 <span style=''>  def valueSymbols(implicit ctx: Context) = { </span><span style='background: #AEF1AE'>initSymbols</span><span style=''>; </span><span style='background: #AEF1AE'>myValueSymbols</span><span style=''> }
+</span>55 <span style=''>  def caseSymbols(implicit ctx: Context) = { </span><span style='background: #AEF1AE'>initSymbols</span><span style=''>; </span><span style='background: #AEF1AE'>myCaseSymbols</span><span style=''> }
+</span>56 <span style=''>  def caseModuleSymbols(implicit ctx: Context) = { </span><span style='background: #AEF1AE'>initSymbols</span><span style=''>; </span><span style='background: #AEF1AE'>myCaseModuleSymbols</span><span style=''> }
+</span>57 <span style=''>
+</span>58 <span style=''>  /** The synthetic methods of the case or value class `clazz`. */
+</span>59 <span style=''>  def syntheticMethods(clazz: ClassSymbol)(implicit ctx: Context): List[Tree] = {
+</span>60 <span style=''>    val clazzType = </span><span style='background: #AEF1AE'>clazz.appliedRef</span><span style=''>
+</span>61 <span style=''>    lazy val accessors =
+</span>62 <span style=''>      if (isDerivedValueClass(clazz)) clazz.paramAccessors
+</span>63 <span style=''>      else clazz.caseAccessors
+</span>64 <span style=''>
+</span>65 <span style=''>    val symbolsToSynthesize: List[Symbol] =
+</span>66 <span style=''>      if (</span><span style='background: #AEF1AE'>clazz.is(Case)</span><span style=''>) {
+</span>67 <span style=''>        </span><span style='background: #AEF1AE'>if (clazz.is(Module)) caseModuleSymbols
+</span>68 <span style=''></span><span style='background: #AEF1AE'>        else caseSymbols</span><span style=''>
+</span>69 <span style=''>      }
+</span>70 <span style=''>      else </span><span style='background: #AEF1AE'>if (isDerivedValueClass(clazz)) valueSymbols
+</span>71 <span style=''></span><span style='background: #AEF1AE'>      else </span><span style='background: #F0ADAD'>Nil</span><span style=''>
+</span>72 <span style=''>
+</span>73 <span style=''>    def syntheticDefIfMissing(sym: Symbol): List[Tree] = {
+</span>74 <span style=''>      val existing = </span><span style='background: #AEF1AE'>sym.matchingMember(clazz.thisType)</span><span style=''>
+</span>75 <span style=''>      if (</span><span style='background: #AEF1AE'>existing == sym || existing.is(Deferred)</span><span style=''>) </span><span style='background: #AEF1AE'>syntheticDef(sym) :: Nil</span><span style=''>
+</span>76 <span style=''>      else </span><span style='background: #AEF1AE'>Nil</span><span style=''>
+</span>77 <span style=''>    }
+</span>78 <span style=''>
+</span>79 <span style=''>    def syntheticDef(sym: Symbol): Tree = {
+</span>80 <span style=''>      val synthetic = </span><span style='background: #AEF1AE'>sym.copy(
+</span>81 <span style=''></span><span style='background: #AEF1AE'>        owner = clazz,
+</span>82 <span style=''></span><span style='background: #AEF1AE'>        flags = sym.flags &amp;~ Deferred | Synthetic | Override,
+</span>83 <span style=''></span><span style='background: #AEF1AE'>        coord = clazz.coord).enteredAfter(thisPhase).asTerm</span><span style=''>
+</span>84 <span style=''>
+</span>85 <span style=''>      def forwardToRuntime(vrefss: List[List[Tree]]): Tree =
+</span>86 <span style=''>        </span><span style='background: #AEF1AE'>ref(defn.runtimeMethodRef(&quot;_&quot; + sym.name.toString)).appliedToArgs(This(clazz) :: vrefss.head)</span><span style=''>
+</span>87 <span style=''>
+</span>88 <span style=''>      def ownName(vrefss: List[List[Tree]]): Tree =
+</span>89 <span style=''>        </span><span style='background: #AEF1AE'>Literal(Constant(clazz.name.stripModuleClassSuffix.toString))</span><span style=''>
+</span>90 <span style=''>
+</span>91 <span style=''>      def syntheticRHS(implicit ctx: Context): List[List[Tree]] =&gt; Tree = </span><span style='background: #AEF1AE'>synthetic.name</span><span style=''> match {
+</span>92 <span style=''>        case nme.hashCode_ if </span><span style='background: #AEF1AE'>isDerivedValueClass(clazz)</span><span style=''> =&gt; vrefss =&gt; </span><span style='background: #AEF1AE'>valueHashCodeBody</span><span style=''>
+</span>93 <span style=''>        case nme.hashCode_ =&gt; vrefss =&gt; </span><span style='background: #AEF1AE'>caseHashCodeBody</span><span style=''>
+</span>94 <span style=''>        case nme.toString_ =&gt; if (</span><span style='background: #AEF1AE'>clazz.is(ModuleClass)</span><span style=''>) </span><span style='background: #AEF1AE'>ownName</span><span style=''> else </span><span style='background: #AEF1AE'>forwardToRuntime</span><span style=''>
+</span>95 <span style=''>        case nme.equals_ =&gt; vrefss =&gt; </span><span style='background: #AEF1AE'>equalsBody(vrefss.head.head)</span><span style=''>
+</span>96 <span style=''>        case nme.canEqual_ =&gt; vrefss =&gt; </span><span style='background: #AEF1AE'>canEqualBody(vrefss.head.head)</span><span style=''>
+</span>97 <span style=''>        case nme.productArity =&gt; vrefss =&gt; </span><span style='background: #AEF1AE'>Literal(Constant(accessors.length))</span><span style=''>
+</span>98 <span style=''>        case nme.productPrefix =&gt; </span><span style='background: #AEF1AE'>ownName</span><span style=''>
+</span>99 <span style=''>        case nme.productElement =&gt; vrefss =&gt; </span><span style='background: #AEF1AE'>productElementBody(accessors.length, vrefss.head.head)</span><span style=''>
+</span>100 <span style=''>      }
+</span>101 <span style=''>      </span><span style='background: #AEF1AE'>ctx.log(</span><span style='background: #F0ADAD'>s&quot;adding $synthetic to $clazz at ${ctx.phase}&quot;</span><span style='background: #AEF1AE'>)</span><span style=''>
+</span>102 <span style=''>      </span><span style='background: #AEF1AE'>DefDef(synthetic, syntheticRHS(ctx.withOwner(synthetic))).withPos(ctx.owner.pos.focus)</span><span style=''>
+</span>103 <span style=''>    }
+</span>104 <span style=''>
+</span>105 <span style=''>    /** The class
+</span>106 <span style=''>     *
+</span>107 <span style=''>     *  ```
+</span>108 <span style=''>     *  case class C(x: T, y: T)
+</span>109 <span style=''>     *  ```
+</span>110 <span style=''>     *
+</span>111 <span style=''>     *  gets the `productElement` method:
+</span>112 <span style=''>     *
+</span>113 <span style=''>     *  ```
+</span>114 <span style=''>     *  def productElement(index: Int): Any = index match {
+</span>115 <span style=''>     *    case 0 =&gt; this._1
+</span>116 <span style=''>     *    case 1 =&gt; this._2
+</span>117 <span style=''>     *    case _ =&gt; throw new IndexOutOfBoundsException(index.toString)
+</span>118 <span style=''>     *  }
+</span>119 <span style=''>     *  ```
+</span>120 <span style=''>     */
+</span>121 <span style=''>    def productElementBody(arity: Int, index: Tree)(implicit ctx: Context): Tree = {
+</span>122 <span style=''>      val ioob = </span><span style='background: #AEF1AE'>defn.IndexOutOfBoundsException.typeRef</span><span style=''>
+</span>123 <span style=''>      // Second constructor of ioob that takes a String argument
+</span>124 <span style=''>      def filterStringConstructor(s: Symbol): Boolean = </span><span style='background: #AEF1AE'>s.info</span><span style=''> match {
+</span>125 <span style=''>        case m: MethodType if </span><span style='background: #AEF1AE'>s.isConstructor</span><span style=''> =&gt; </span><span style='background: #AEF1AE'>m.paramInfos == List(defn.StringType)</span><span style=''>
+</span>126 <span style=''>        case _ =&gt; </span><span style='background: #AEF1AE'>false</span><span style=''>
+</span>127 <span style=''>      }
+</span>128 <span style=''>      val constructor = </span><span style='background: #AEF1AE'>ioob.typeSymbol.info.decls.find(filterStringConstructor _).asTerm</span><span style=''>
+</span>129 <span style=''>      val stringIndex = </span><span style='background: #AEF1AE'>Apply(Select(index, nme.toString_), Nil)</span><span style=''>
+</span>130 <span style=''>      val error = </span><span style='background: #AEF1AE'>Throw(New(ioob, constructor, List(stringIndex)))</span><span style=''>
+</span>131 <span style=''>
+</span>132 <span style=''>      // case _ =&gt; throw new IndexOutOfBoundsException(i.toString)
+</span>133 <span style=''>      val defaultCase = </span><span style='background: #AEF1AE'>CaseDef(Underscore(defn.IntType), EmptyTree, error)</span><span style=''>
+</span>134 <span style=''>
+</span>135 <span style=''>      // case N =&gt; _${N + 1}
+</span>136 <span style=''>      val cases = </span><span style='background: #AEF1AE'>0.until(arity).map { i =&gt;
+</span>137 <span style=''></span><span style='background: #AEF1AE'>        CaseDef(Literal(Constant(i)), EmptyTree, Select(This(clazz), nme.selectorName(i)))
+</span>138 <span style=''></span><span style='background: #AEF1AE'>      }</span><span style=''>
+</span>139 <span style=''>
+</span>140 <span style=''>      </span><span style='background: #AEF1AE'>Match(index, (cases :+ defaultCase).toList)</span><span style=''>
+</span>141 <span style=''>    }
+</span>142 <span style=''>
+</span>143 <span style=''>    /** The class
+</span>144 <span style=''>     *
+</span>145 <span style=''>     *  ```
+</span>146 <span style=''>     *  case class C(x: T, y: U)
+</span>147 <span style=''>     *  ```
+</span>148 <span style=''>     *
+</span>149 <span style=''>     *  gets the `equals` method:
+</span>150 <span style=''>     *
+</span>151 <span style=''>     *  ```
+</span>152 <span style=''>     *  def equals(that: Any): Boolean =
+</span>153 <span style=''>     *    (this eq that) || {
+</span>154 <span style=''>     *      that match {
+</span>155 <span style=''>     *        case x$0 @ (_: C) =&gt; this.x == this$0.x &amp;&amp; this.y == x$0.y
+</span>156 <span style=''>     *        case _ =&gt; false
+</span>157 <span style=''>     *     }
+</span>158 <span style=''>     *  ```
+</span>159 <span style=''>     *
+</span>160 <span style=''>     *  If `C` is a value class the initial `eq` test is omitted.
+</span>161 <span style=''>     */
+</span>162 <span style=''>    def equalsBody(that: Tree)(implicit ctx: Context): Tree = {
+</span>163 <span style=''>      val thatAsClazz = </span><span style='background: #AEF1AE'>ctx.newSymbol(ctx.owner, nme.x_0, Synthetic, clazzType, coord = ctx.owner.pos)</span><span style=''> // x$0
+</span>164 <span style=''>      def wildcardAscription(tp: Type) = </span><span style='background: #AEF1AE'>Typed(Underscore(tp), TypeTree(tp))</span><span style=''>
+</span>165 <span style=''>      val pattern = </span><span style='background: #AEF1AE'>Bind(thatAsClazz, wildcardAscription(clazzType))</span><span style=''> // x$0 @ (_: C)
+</span>166 <span style=''>      val comparisons = </span><span style='background: #AEF1AE'>accessors collect { case accessor if !accessor.info.isPhantom =&gt;
+</span>167 <span style=''></span><span style='background: #AEF1AE'>        This(clazz).select(accessor).select(defn.Any_==).appliedTo(ref(thatAsClazz).select(accessor)) }</span><span style=''>
+</span>168 <span style=''>      val rhs = // this.x == this$0.x &amp;&amp; this.y == x$0.y
+</span>169 <span style=''>        if (</span><span style='background: #AEF1AE'>comparisons.isEmpty</span><span style=''>) </span><span style='background: #AEF1AE'>Literal(Constant(true))</span><span style=''> else </span><span style='background: #AEF1AE'>comparisons.reduceLeft(_ and _)</span><span style=''>
+</span>170 <span style=''>      val matchingCase = </span><span style='background: #AEF1AE'>CaseDef(pattern, EmptyTree, rhs)</span><span style=''> // case x$0 @ (_: C) =&gt; this.x == this$0.x &amp;&amp; this.y == x$0.y
+</span>171 <span style=''>      val defaultCase = </span><span style='background: #AEF1AE'>CaseDef(wildcardAscription(defn.AnyType), EmptyTree, Literal(Constant(false)))</span><span style=''> // case _ =&gt; false
+</span>172 <span style=''>      val matchExpr = </span><span style='background: #AEF1AE'>Match(that, List(matchingCase, defaultCase))</span><span style=''>
+</span>173 <span style=''>      if (</span><span style='background: #AEF1AE'>isDerivedValueClass(clazz)</span><span style=''>) </span><span style='background: #AEF1AE'>matchExpr</span><span style=''>
+</span>174 <span style=''>      else </span><span style='background: #AEF1AE'>{
+</span>175 <span style=''></span><span style='background: #AEF1AE'>        val eqCompare = This(clazz).select(defn.Object_eq).appliedTo(that.asInstance(defn.ObjectType))
+</span>176 <span style=''></span><span style='background: #AEF1AE'>        eqCompare or matchExpr
+</span>177 <span style=''></span><span style='background: #AEF1AE'>      }</span><span style=''>
+</span>178 <span style=''>    }
+</span>179 <span style=''>
+</span>180 <span style=''>    /** The class
+</span>181 <span style=''>     *
+</span>182 <span style=''>     *  ```
+</span>183 <span style=''>     *  class C(x: T) extends AnyVal
+</span>184 <span style=''>     *  ```
+</span>185 <span style=''>     *
+</span>186 <span style=''>     *  gets the `hashCode` method:
+</span>187 <span style=''>     *
+</span>188 <span style=''>     *  ```
+</span>189 <span style=''>     *  def hashCode: Int = x.hashCode()
+</span>190 <span style=''>     *  ```
+</span>191 <span style=''>     */
+</span>192 <span style=''>    def valueHashCodeBody(implicit ctx: Context): Tree = {
+</span>193 <span style=''>      </span><span style='background: #AEF1AE'>assert(accessors.nonEmpty)</span><span style=''>
+</span>194 <span style=''>      </span><span style='background: #AEF1AE'>assert(accessors.tail.forall(_.info.isPhantom))</span><span style=''>
+</span>195 <span style=''>      </span><span style='background: #AEF1AE'>ref(accessors.head).select(nme.hashCode_).ensureApplied</span><span style=''>
+</span>196 <span style=''>    }
+</span>197 <span style=''>
+</span>198 <span style=''>    /** The class
+</span>199 <span style=''>     *
+</span>200 <span style=''>     *  ```
+</span>201 <span style=''>     *  package p
+</span>202 <span style=''>     *  case class C(x: T, y: T)
+</span>203 <span style=''>     *  ```
+</span>204 <span style=''>     *
+</span>205 <span style=''>     *  gets the `hashCode` method:
+</span>206 <span style=''>     *
+</span>207 <span style=''>     *  ```
+</span>208 <span style=''>     *  def hashCode: Int = {
+</span>209 <span style=''>     *    &lt;synthetic&gt; var acc: Int = &quot;p.C&quot;.hashCode // constant folded
+</span>210 <span style=''>     *    acc = Statics.mix(acc, x);
+</span>211 <span style=''>     *    acc = Statics.mix(acc, Statics.this.anyHash(y));
+</span>212 <span style=''>     *    Statics.finalizeHash(acc, 2)
+</span>213 <span style=''>     *  }
+</span>214 <span style=''>     *  ```
+</span>215 <span style=''>     */
+</span>216 <span style=''>    def caseHashCodeBody(implicit ctx: Context): Tree = {
+</span>217 <span style=''>      val seed = </span><span style='background: #AEF1AE'>clazz.fullName.toString.hashCode</span><span style=''>
+</span>218 <span style=''>      if (</span><span style='background: #AEF1AE'>accessors.nonEmpty</span><span style=''>) </span><span style='background: #AEF1AE'>{
+</span>219 <span style=''></span><span style='background: #AEF1AE'>        val acc = ctx.newSymbol(ctx.owner, &quot;acc&quot;.toTermName, Mutable | Synthetic, defn.IntType, coord = ctx.owner.pos)
+</span>220 <span style=''></span><span style='background: #AEF1AE'>        val accDef = ValDef(acc, Literal(Constant(seed)))
+</span>221 <span style=''></span><span style='background: #AEF1AE'>        val mixes = for (accessor &lt;- accessors) yield
+</span>222 <span style=''></span><span style='background: #AEF1AE'>          Assign(ref(acc), ref(defn.staticsMethod(&quot;mix&quot;)).appliedTo(ref(acc), hashImpl(accessor)))
+</span>223 <span style=''></span><span style='background: #AEF1AE'>        val finish = ref(defn.staticsMethod(&quot;finalizeHash&quot;)).appliedTo(ref(acc), Literal(Constant(accessors.size)))
+</span>224 <span style=''></span><span style='background: #AEF1AE'>        Block(accDef :: mixes, finish)
+</span>225 <span style=''></span><span style='background: #AEF1AE'>      }</span><span style=''> else </span><span style='background: #AEF1AE'>{
+</span>226 <span style=''></span><span style='background: #AEF1AE'>        // Pre-compute the hash code
+</span>227 <span style=''></span><span style='background: #AEF1AE'>        val hash = scala.runtime.Statics.finalizeHash(seed, 0)
+</span>228 <span style=''></span><span style='background: #AEF1AE'>        Literal(Constant(hash))
+</span>229 <span style=''></span><span style='background: #AEF1AE'>      }</span><span style=''>
+</span>230 <span style=''>    }
+</span>231 <span style=''>
+</span>232 <span style=''>    /** The `hashCode` implementation for given symbol `sym`. */
+</span>233 <span style=''>    def hashImpl(sym: Symbol)(implicit ctx: Context): Tree =
+</span>234 <span style=''>      </span><span style='background: #AEF1AE'>defn.scalaClassName(sym.info.finalResultType)</span><span style=''> match {
+</span>235 <span style=''>        case tpnme.Unit | tpnme.Null               =&gt; </span><span style='background: #F0ADAD'>Literal(Constant(0))</span><span style=''>
+</span>236 <span style=''>        case tpnme.Boolean                         =&gt; </span><span style='background: #AEF1AE'>If(ref(sym), Literal(Constant(1231)), Literal(Constant(1237)))</span><span style=''>
+</span>237 <span style=''>        case tpnme.Int                             =&gt; </span><span style='background: #AEF1AE'>ref(sym)</span><span style=''>
+</span>238 <span style=''>        case tpnme.Short | tpnme.Byte | tpnme.Char =&gt; </span><span style='background: #AEF1AE'>ref(sym).select(nme.toInt)</span><span style=''>
+</span>239 <span style=''>        case tpnme.Long                            =&gt; </span><span style='background: #AEF1AE'>ref(defn.staticsMethod(&quot;longHash&quot;)).appliedTo(ref(sym))</span><span style=''>
+</span>240 <span style=''>        case tpnme.Double                          =&gt; </span><span style='background: #AEF1AE'>ref(defn.staticsMethod(&quot;doubleHash&quot;)).appliedTo(ref(sym))</span><span style=''>
+</span>241 <span style=''>        case tpnme.Float                           =&gt; </span><span style='background: #AEF1AE'>ref(defn.staticsMethod(&quot;floatHash&quot;)).appliedTo(ref(sym))</span><span style=''>
+</span>242 <span style=''>        case _                                     =&gt; </span><span style='background: #AEF1AE'>ref(defn.staticsMethod(&quot;anyHash&quot;)).appliedTo(ref(sym))</span><span style=''>
+</span>243 <span style=''>      }
+</span>244 <span style=''>
+</span>245 <span style=''>    /** The class
+</span>246 <span style=''>     *
+</span>247 <span style=''>     *  ```
+</span>248 <span style=''>     *  case class C(...)
+</span>249 <span style=''>     *  ```
+</span>250 <span style=''>     *
+</span>251 <span style=''>     *  gets the `canEqual` method
+</span>252 <span style=''>     *
+</span>253 <span style=''>     *  ```
+</span>254 <span style=''>     *  def canEqual(that: Any) = that.isInstanceOf[C]
+</span>255 <span style=''>     *  ```
+</span>256 <span style=''>     */
+</span>257 <span style=''>    def canEqualBody(that: Tree): Tree = </span><span style='background: #AEF1AE'>that.isInstance(clazzType)</span><span style=''>
+</span>258 <span style=''>
+</span>259 <span style=''>    </span><span style='background: #AEF1AE'>symbolsToSynthesize flatMap syntheticDefIfMissing</span><span style=''>
+</span>260 <span style=''>  }
+</span>261 <span style=''>
+</span>262 <span style=''>  def addSyntheticMethods(impl: Template)(implicit ctx: Context) =
+</span>263 <span style=''>    if (</span><span style='background: #AEF1AE'>ctx.owner.is(Case) || isDerivedValueClass(ctx.owner)</span><span style=''>)
+</span>264 <span style=''>      </span><span style='background: #AEF1AE'>cpy.Template(impl)(body = impl.body ++ syntheticMethods(ctx.owner.asClass))</span><span style=''>
+</span>265 <span style=''>    else
+</span>266 <span style=''>      </span><span style='background: #AEF1AE'>impl</span><span style=''>
+</span>267 <span style=''>}
+</span></pre>
+          </div>
+          <div class="tab-pane" id="statementlist">
+            <table cellspacing="0" cellpadding="0" class="table statementlist">
+      <tr>
+        <th>Line</th>
+        <th>Stmt Id</th>
+        <th>Pos</th>
+        <th>Tree</th>
+        <th>Symbol</th>
+        <th>Code</th>
+      </tr><tr>
+        <td>
+          42
+        </td>
+        <td>
+          62976
+        </td>
+        <td>
+          1228
+          -
+          1231
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.collection.immutable.Nil
+        </td>
+        <td style="background: #AEF1AE">
+          scala.collection.immutable.Nil
+        </td>
+      </tr><tr>
+        <td>
+          43
+        </td>
+        <td>
+          62977
+        </td>
+        <td>
+          1282
+          -
+          1285
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.collection.immutable.Nil
+        </td>
+        <td style="background: #AEF1AE">
+          scala.collection.immutable.Nil
+        </td>
+      </tr><tr>
+        <td>
+          44
+        </td>
+        <td>
+          62978
+        </td>
+        <td>
+          1342
+          -
+          1345
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.collection.immutable.Nil
+        </td>
+        <td style="background: #AEF1AE">
+          scala.collection.immutable.Nil
+        </td>
+      </tr><tr>
+        <td>
+          47
+        </td>
+        <td>
+          62990
+        </td>
+        <td>
+          1430
+          -
+          1751
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          {
+  SyntheticMethods.this.myValueSymbols = scala.collection.immutable.List.apply[dotty.tools.dotc.core.Symbols.TermSymbol](core.Symbols.defn(ctx).Any_hashCode, core.Symbols.defn(ctx).Any_equals);
+  SyntheticMethods.this.myCaseSymbols = SyntheticMethods.this.myValueSymbols.++[dotty.tools.dotc.core.Symbols.Symbol, List[dotty.tools.dotc.core.Symbols.Symbol]](scala.collection.immutable.List.apply[dotty.tools.dotc.core.Symbols.Symbol](core.Symbols.defn(ctx).Any_toString, core.Symbols.defn(ctx).Product_canEqual(ctx), core.Symbols.defn(ctx).Product_productArity(ctx), core.Symbols.defn(ctx).Product_productPrefix(ctx), core.Symbols.defn(ctx).Product_productElement(ctx)))(immutable.this.List.canBuildFrom[dotty.tools.dotc.core.Symbols.Symbol]);
+  SyntheticMethods.this.myCaseModuleSymbols = SyntheticMethods.this.myCaseSymbols.filter(((x$1: dotty.tools.dotc.core.Symbols.Symbol) =&gt; x$1.ne(core.Symbols.defn(ctx).Any_equals)))
+}
+        </td>
+      </tr><tr>
+        <td>
+          47
+        </td>
+        <td>
+          62992
+        </td>
+        <td>
+          1402
+          -
+          1402
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          ()
+        </td>
+      </tr><tr>
+        <td>
+          47
+        </td>
+        <td>
+          62979
+        </td>
+        <td>
+          1406
+          -
+          1428
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.collection.SeqLike.isEmpty
+        </td>
+        <td style="background: #AEF1AE">
+          SyntheticMethods.this.myValueSymbols.isEmpty
+        </td>
+      </tr><tr>
+        <td>
+          47
+        </td>
+        <td>
+          62991
+        </td>
+        <td>
+          1402
+          -
+          1402
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          ()
+        </td>
+      </tr><tr>
+        <td>
+          48
+        </td>
+        <td>
+          62980
+        </td>
+        <td>
+          1455
+          -
+          1495
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.immutable.List.apply
+        </td>
+        <td style="background: #AEF1AE">
+          scala.collection.immutable.List.apply[dotty.tools.dotc.core.Symbols.TermSymbol](core.Symbols.defn(ctx).Any_hashCode, core.Symbols.defn(ctx).Any_equals)
+        </td>
+      </tr><tr>
+        <td>
+          49
+        </td>
+        <td>
+          62985
+        </td>
+        <td>
+          1536
+          -
+          1674
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.immutable.List.apply
+        </td>
+        <td style="background: #AEF1AE">
+          scala.collection.immutable.List.apply[dotty.tools.dotc.core.Symbols.Symbol](core.Symbols.defn(ctx).Any_toString, core.Symbols.defn(ctx).Product_canEqual(ctx), core.Symbols.defn(ctx).Product_productArity(ctx), core.Symbols.defn(ctx).Product_productPrefix(ctx), core.Symbols.defn(ctx).Product_productElement(ctx))
+        </td>
+      </tr><tr>
+        <td>
+          49
+        </td>
+        <td>
+          62987
+        </td>
+        <td>
+          1518
+          -
+          1674
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          scala.collection.immutable.List.++
+        </td>
+        <td style="background: #AEF1AE">
+          SyntheticMethods.this.myValueSymbols.++[dotty.tools.dotc.core.Symbols.Symbol, List[dotty.tools.dotc.core.Symbols.Symbol]](scala.collection.immutable.List.apply[dotty.tools.dotc.core.Symbols.Symbol](core.Symbols.defn(ctx).Any_toString, core.Symbols.defn(ctx).Product_canEqual(ctx), core.Symbols.defn(ctx).Product_productArity(ctx), core.Symbols.defn(ctx).Product_productPrefix(ctx), core.Symbols.defn(ctx).Product_productElement(ctx)))(immutable.this.List.canBuildFrom[dotty.tools.dotc.core.Symbols.Symbol])
+        </td>
+      </tr><tr>
+        <td>
+          49
+        </td>
+        <td>
+          62981
+        </td>
+        <td>
+          1560
+          -
+          1581
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.Definitions.Product_canEqual
+        </td>
+        <td style="background: #AEF1AE">
+          core.Symbols.defn(ctx).Product_canEqual(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          49
+        </td>
+        <td>
+          62986
+        </td>
+        <td>
+          1533
+          -
+          1533
+        </td>
+        <td>
+          TypeApply
+        </td>
+        <td>
+          scala.collection.immutable.List.canBuildFrom
+        </td>
+        <td style="background: #AEF1AE">
+          immutable.this.List.canBuildFrom[dotty.tools.dotc.core.Symbols.Symbol]
+        </td>
+      </tr><tr>
+        <td>
+          50
+        </td>
+        <td>
+          62984
+        </td>
+        <td>
+          1646
+          -
+          1673
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.Definitions.Product_productElement
+        </td>
+        <td style="background: #AEF1AE">
+          core.Symbols.defn(ctx).Product_productElement(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          50
+        </td>
+        <td>
+          62983
+        </td>
+        <td>
+          1618
+          -
+          1644
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.Definitions.Product_productPrefix
+        </td>
+        <td style="background: #AEF1AE">
+          core.Symbols.defn(ctx).Product_productPrefix(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          50
+        </td>
+        <td>
+          62982
+        </td>
+        <td>
+          1591
+          -
+          1616
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.Definitions.Product_productArity
+        </td>
+        <td style="background: #AEF1AE">
+          core.Symbols.defn(ctx).Product_productArity(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          51
+        </td>
+        <td>
+          62989
+        </td>
+        <td>
+          1703
+          -
+          1745
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.TraversableLike.filter
+        </td>
+        <td style="background: #AEF1AE">
+          SyntheticMethods.this.myCaseSymbols.filter(((x$1: dotty.tools.dotc.core.Symbols.Symbol) =&gt; x$1.ne(core.Symbols.defn(ctx).Any_equals)))
+        </td>
+      </tr><tr>
+        <td>
+          51
+        </td>
+        <td>
+          62988
+        </td>
+        <td>
+          1724
+          -
+          1744
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.Object.ne
+        </td>
+        <td style="background: #AEF1AE">
+          x$1.ne(core.Symbols.defn(ctx).Any_equals)
+        </td>
+      </tr><tr>
+        <td>
+          54
+        </td>
+        <td>
+          62994
+        </td>
+        <td>
+          1812
+          -
+          1826
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.transform.SyntheticMethods.myValueSymbols
+        </td>
+        <td style="background: #AEF1AE">
+          SyntheticMethods.this.myValueSymbols
+        </td>
+      </tr><tr>
+        <td>
+          54
+        </td>
+        <td>
+          62993
+        </td>
+        <td>
+          1799
+          -
+          1810
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.transform.SyntheticMethods.initSymbols
+        </td>
+        <td style="background: #AEF1AE">
+          SyntheticMethods.this.initSymbols(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          55
+        </td>
+        <td>
+          62996
+        </td>
+        <td>
+          1887
+          -
+          1900
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.transform.SyntheticMethods.myCaseSymbols
+        </td>
+        <td style="background: #AEF1AE">
+          SyntheticMethods.this.myCaseSymbols
+        </td>
+      </tr><tr>
+        <td>
+          55
+        </td>
+        <td>
+          62995
+        </td>
+        <td>
+          1874
+          -
+          1885
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.transform.SyntheticMethods.initSymbols
+        </td>
+        <td style="background: #AEF1AE">
+          SyntheticMethods.this.initSymbols(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          56
+        </td>
+        <td>
+          62998
+        </td>
+        <td>
+          1967
+          -
+          1986
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.transform.SyntheticMethods.myCaseModuleSymbols
+        </td>
+        <td style="background: #AEF1AE">
+          SyntheticMethods.this.myCaseModuleSymbols
+        </td>
+      </tr><tr>
+        <td>
+          56
+        </td>
+        <td>
+          62997
+        </td>
+        <td>
+          1954
+          -
+          1965
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.transform.SyntheticMethods.initSymbols
+        </td>
+        <td style="background: #AEF1AE">
+          SyntheticMethods.this.initSymbols(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          60
+        </td>
+        <td>
+          62999
+        </td>
+        <td>
+          2159
+          -
+          2175
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.SymDenotations.ClassDenotation.appliedRef
+        </td>
+        <td style="background: #AEF1AE">
+          core.Symbols.toClassDenot(clazz)(ctx).appliedRef(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          66
+        </td>
+        <td>
+          63000
+        </td>
+        <td>
+          2346
+          -
+          2360
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.SymDenotations.SymDenotation.is
+        </td>
+        <td style="background: #AEF1AE">
+          core.Symbols.toClassDenot(clazz)(ctx).is(core.Flags.Case)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          67
+        </td>
+        <td>
+          63003
+        </td>
+        <td>
+          2394
+          -
+          2411
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          dotty.tools.dotc.transform.SyntheticMethods.caseModuleSymbols
+        </td>
+        <td style="background: #AEF1AE">
+          SyntheticMethods.this.caseModuleSymbols(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          67
+        </td>
+        <td>
+          63002
+        </td>
+        <td>
+          2394
+          -
+          2411
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.transform.SyntheticMethods.caseModuleSymbols
+        </td>
+        <td style="background: #AEF1AE">
+          SyntheticMethods.this.caseModuleSymbols(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          67
+        </td>
+        <td>
+          63001
+        </td>
+        <td>
+          2376
+          -
+          2392
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.SymDenotations.SymDenotation.is
+        </td>
+        <td style="background: #AEF1AE">
+          core.Symbols.toClassDenot(clazz)(ctx).is(core.Flags.Module)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          67
+        </td>
+        <td>
+          63006
+        </td>
+        <td>
+          2372
+          -
+          2436
+        </td>
+        <td>
+          If
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          if (core.Symbols.toClassDenot(clazz)(ctx).is(core.Flags.Module)(ctx))
+  SyntheticMethods.this.caseModuleSymbols(ctx)
+else
+  SyntheticMethods.this.caseSymbols(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          68
+        </td>
+        <td>
+          63005
+        </td>
+        <td>
+          2425
+          -
+          2436
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          dotty.tools.dotc.transform.SyntheticMethods.caseSymbols
+        </td>
+        <td style="background: #AEF1AE">
+          SyntheticMethods.this.caseSymbols(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          68
+        </td>
+        <td>
+          63004
+        </td>
+        <td>
+          2425
+          -
+          2436
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.transform.SyntheticMethods.caseSymbols
+        </td>
+        <td style="background: #AEF1AE">
+          SyntheticMethods.this.caseSymbols(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          70
+        </td>
+        <td>
+          63008
+        </td>
+        <td>
+          2488
+          -
+          2500
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.transform.SyntheticMethods.valueSymbols
+        </td>
+        <td style="background: #AEF1AE">
+          SyntheticMethods.this.valueSymbols(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          70
+        </td>
+        <td>
+          63007
+        </td>
+        <td>
+          2460
+          -
+          2486
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.transform.ValueClasses.isDerivedValueClass
+        </td>
+        <td style="background: #AEF1AE">
+          ValueClasses.isDerivedValueClass(core.Symbols.toClassDenot(clazz)(ctx))(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          70
+        </td>
+        <td>
+          63012
+        </td>
+        <td>
+          2456
+          -
+          2515
+        </td>
+        <td>
+          If
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          if (ValueClasses.isDerivedValueClass(core.Symbols.toClassDenot(clazz)(ctx))(ctx))
+  SyntheticMethods.this.valueSymbols(ctx)
+else
+  scala.collection.immutable.Nil
+        </td>
+      </tr><tr>
+        <td>
+          70
+        </td>
+        <td>
+          63009
+        </td>
+        <td>
+          2488
+          -
+          2500
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          dotty.tools.dotc.transform.SyntheticMethods.valueSymbols
+        </td>
+        <td style="background: #AEF1AE">
+          SyntheticMethods.this.valueSymbols(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          71
+        </td>
+        <td>
+          63011
+        </td>
+        <td>
+          2512
+          -
+          2515
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          scala.collection.immutable.Nil
+        </td>
+        <td style="background: #F0ADAD">
+          scala.collection.immutable.Nil
+        </td>
+      </tr><tr>
+        <td>
+          71
+        </td>
+        <td>
+          63010
+        </td>
+        <td>
+          2512
+          -
+          2515
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.collection.immutable.Nil
+        </td>
+        <td style="background: #F0ADAD">
+          scala.collection.immutable.Nil
+        </td>
+      </tr><tr>
+        <td>
+          74
+        </td>
+        <td>
+          63013
+        </td>
+        <td>
+          2597
+          -
+          2631
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.SymDenotations.SymDenotation.matchingMember
+        </td>
+        <td style="background: #AEF1AE">
+          core.Symbols.toDenot(sym)(ctx).matchingMember(core.Symbols.toClassDenot(clazz)(ctx).thisType(ctx))(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          75
+        </td>
+        <td>
+          63014
+        </td>
+        <td>
+          2661
+          -
+          2682
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.SymDenotations.SymDenotation.is
+        </td>
+        <td style="background: #AEF1AE">
+          core.Symbols.toDenot(existing)(ctx).is(core.Flags.Deferred)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          75
+        </td>
+        <td>
+          63017
+        </td>
+        <td>
+          2684
+          -
+          2708
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          {
+  &lt;synthetic&gt; &lt;artifact&gt; val x$2: dotty.tools.dotc.ast.tpd.Tree = syntheticDef(sym);
+  scala.collection.immutable.Nil.::[dotty.tools.dotc.ast.tpd.Tree](x$2)
+}
+        </td>
+      </tr><tr>
+        <td>
+          75
+        </td>
+        <td>
+          63016
+        </td>
+        <td>
+          2702
+          -
+          2708
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.immutable.List.::
+        </td>
+        <td style="background: #AEF1AE">
+          scala.collection.immutable.Nil.::[dotty.tools.dotc.ast.tpd.Tree](x$2)
+        </td>
+      </tr><tr>
+        <td>
+          75
+        </td>
+        <td>
+          63015
+        </td>
+        <td>
+          2642
+          -
+          2682
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Boolean.||
+        </td>
+        <td style="background: #AEF1AE">
+          existing.==(sym).||(core.Symbols.toDenot(existing)(ctx).is(core.Flags.Deferred)(ctx))
+        </td>
+      </tr><tr>
+        <td>
+          76
+        </td>
+        <td>
+          63019
+        </td>
+        <td>
+          2720
+          -
+          2723
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          scala.collection.immutable.Nil
+        </td>
+        <td style="background: #AEF1AE">
+          scala.collection.immutable.Nil
+        </td>
+      </tr><tr>
+        <td>
+          76
+        </td>
+        <td>
+          63018
+        </td>
+        <td>
+          2720
+          -
+          2723
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.collection.immutable.Nil
+        </td>
+        <td style="background: #AEF1AE">
+          scala.collection.immutable.Nil
+        </td>
+      </tr><tr>
+        <td>
+          83
+        </td>
+        <td>
+          63020
+        </td>
+        <td>
+          2797
+          -
+          2951
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.Symbols.Symbol.asTerm
+        </td>
+        <td style="background: #AEF1AE">
+          {
+  &lt;artifact&gt; val qual$1: dotty.tools.dotc.core.Symbols.Copier[sym.ThisName] = core.Symbols.Copier[sym.ThisName](sym)(ctx);
+  &lt;artifact&gt; val x$13: dotty.tools.dotc.core.Symbols.ClassSymbol = clazz;
+  &lt;artifact&gt; val x$14: dotty.tools.dotc.core.Flags.FlagSet = core.Symbols.toDenot(sym)(ctx).flags(ctx).&amp;~(core.Flags.Deferred).|(core.Flags.Synthetic).|(core.Flags.Override);
+  &lt;artifact&gt; val x$15: dotty.tools.dotc.util.Positions.Coord = clazz.coord;
+  &lt;artifact&gt; val x$16: sym.ThisName = qual$1.copy$default$2;
+  &lt;artifact&gt; val x$17: dotty.tools.dotc.core.Types.Type = qual$1.copy$default$4;
+  &lt;artifact&gt; val x$18: dotty.tools.dotc.core.Symbols.Symbol = qual$1.copy$default$5;
+  &lt;artifact&gt; val x$19: dotty.tools.io.AbstractFile = qual$1.copy$default$7;
+  qual$1.copy(x$13, x$16, x$14, x$17, x$18, x$15, x$19)
+}.enteredAfter(SyntheticMethods.this.thisPhase)(ctx).asTerm(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          86
+        </td>
+        <td>
+          63021
+        </td>
+        <td>
+          3022
+          -
+          3115
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.tpd.TreeOps.appliedToArgs
+        </td>
+        <td style="background: #AEF1AE">
+          ast.tpd.TreeOps[dotty.tools.dotc.ast.tpd.Tree](ast.tpd.ref(core.Symbols.defn(ctx).runtimeMethodRef(core.Decorators.PreNamedString(&quot;_&quot;.+(sym.name(ctx).toString()))))(ctx)).appliedToArgs({
+  &lt;synthetic&gt; &lt;artifact&gt; val x$3: dotty.tools.dotc.ast.tpd.This = ast.tpd.This(clazz)(ctx);
+  vrefss.head.::[dotty.tools.dotc.ast.tpd.Tree](x$3)
+})(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          89
+        </td>
+        <td>
+          63022
+        </td>
+        <td>
+          3177
+          -
+          3238
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.tpd.Literal
+        </td>
+        <td style="background: #AEF1AE">
+          ast.tpd.Literal(core.Constants.Constant.apply(core.NameOps.NameDecorator[clazz.ThisName](clazz.name(ctx)).stripModuleClassSuffix.toString()))(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          91
+        </td>
+        <td>
+          63023
+        </td>
+        <td>
+          3314
+          -
+          3328
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.Symbols.Symbol.name
+        </td>
+        <td style="background: #AEF1AE">
+          synthetic.name(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          92
+        </td>
+        <td>
+          63025
+        </td>
+        <td>
+          3407
+          -
+          3424
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.transform.SyntheticMethods.valueHashCodeBody
+        </td>
+        <td style="background: #AEF1AE">
+          valueHashCodeBody(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          92
+        </td>
+        <td>
+          63024
+        </td>
+        <td>
+          3367
+          -
+          3393
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.transform.ValueClasses.isDerivedValueClass
+        </td>
+        <td style="background: #AEF1AE">
+          ValueClasses.isDerivedValueClass(core.Symbols.toClassDenot(clazz)(ctx))(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          93
+        </td>
+        <td>
+          63026
+        </td>
+        <td>
+          3465
+          -
+          3481
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.transform.SyntheticMethods.caseHashCodeBody
+        </td>
+        <td style="background: #AEF1AE">
+          caseHashCodeBody(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          94
+        </td>
+        <td>
+          63029
+        </td>
+        <td>
+          3539
+          -
+          3546
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          {
+  ((vrefss: List[List[dotty.tools.dotc.ast.tpd.Tree]]) =&gt; ownName(vrefss))
+}
+        </td>
+      </tr><tr>
+        <td>
+          94
+        </td>
+        <td>
+          63028
+        </td>
+        <td>
+          3539
+          -
+          3546
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.transform.SyntheticMethods.ownName
+        </td>
+        <td style="background: #AEF1AE">
+          ownName(vrefss)
+        </td>
+      </tr><tr>
+        <td>
+          94
+        </td>
+        <td>
+          63031
+        </td>
+        <td>
+          3552
+          -
+          3568
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          {
+  ((vrefss: List[List[dotty.tools.dotc.ast.tpd.Tree]]) =&gt; forwardToRuntime(vrefss))
+}
+        </td>
+      </tr><tr>
+        <td>
+          94
+        </td>
+        <td>
+          63030
+        </td>
+        <td>
+          3552
+          -
+          3568
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.transform.SyntheticMethods.forwardToRuntime
+        </td>
+        <td style="background: #AEF1AE">
+          forwardToRuntime(vrefss)
+        </td>
+      </tr><tr>
+        <td>
+          94
+        </td>
+        <td>
+          63027
+        </td>
+        <td>
+          3516
+          -
+          3537
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.SymDenotations.SymDenotation.is
+        </td>
+        <td style="background: #AEF1AE">
+          core.Symbols.toClassDenot(clazz)(ctx).is(core.Flags.ModuleClass)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          95
+        </td>
+        <td>
+          63032
+        </td>
+        <td>
+          3607
+          -
+          3635
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.transform.SyntheticMethods.equalsBody
+        </td>
+        <td style="background: #AEF1AE">
+          equalsBody(vrefss.head.head)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          96
+        </td>
+        <td>
+          63034
+        </td>
+        <td>
+          3676
+          -
+          3706
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.transform.SyntheticMethods.canEqualBody
+        </td>
+        <td style="background: #AEF1AE">
+          canEqualBody(vrefss.head.head)
+        </td>
+      </tr><tr>
+        <td>
+          96
+        </td>
+        <td>
+          63033
+        </td>
+        <td>
+          3689
+          -
+          3705
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.collection.IterableLike.head
+        </td>
+        <td style="background: #AEF1AE">
+          vrefss.head.head
+        </td>
+      </tr><tr>
+        <td>
+          97
+        </td>
+        <td>
+          63035
+        </td>
+        <td>
+          3750
+          -
+          3785
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.tpd.Literal
+        </td>
+        <td style="background: #AEF1AE">
+          ast.tpd.Literal(core.Constants.Constant.apply(accessors.length))(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          98
+        </td>
+        <td>
+          63036
+        </td>
+        <td>
+          3820
+          -
+          3827
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.transform.SyntheticMethods.ownName
+        </td>
+        <td style="background: #AEF1AE">
+          ownName(vrefss)
+        </td>
+      </tr><tr>
+        <td>
+          99
+        </td>
+        <td>
+          63037
+        </td>
+        <td>
+          3873
+          -
+          3927
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.transform.SyntheticMethods.productElementBody
+        </td>
+        <td style="background: #AEF1AE">
+          productElementBody(accessors.length, vrefss.head.head)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          101
+        </td>
+        <td>
+          63044
+        </td>
+        <td>
+          3946
+          -
+          3946
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.reporting.Reporting.log$default$2
+        </td>
+        <td style="background: #AEF1AE">
+          ctx.log$default$2
+        </td>
+      </tr><tr>
+        <td>
+          101
+        </td>
+        <td>
+          63038
+        </td>
+        <td>
+          3952
+          -
+          3960
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          &quot;adding &quot;
+        </td>
+      </tr><tr>
+        <td>
+          101
+        </td>
+        <td>
+          63041
+        </td>
+        <td>
+          3995
+          -
+          3996
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          &quot;&quot;
+        </td>
+      </tr><tr>
+        <td>
+          101
+        </td>
+        <td>
+          63043
+        </td>
+        <td>
+          3950
+          -
+          3996
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.StringContext.s
+        </td>
+        <td style="background: #F0ADAD">
+          scala.StringContext.apply(&quot;adding &quot;, &quot; to &quot;, &quot; at &quot;, &quot;&quot;).s(synthetic, clazz, ctx.phase)
+        </td>
+      </tr><tr>
+        <td>
+          101
+        </td>
+        <td>
+          63040
+        </td>
+        <td>
+          3979
+          -
+          3984
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          &quot; at &quot;
+        </td>
+      </tr><tr>
+        <td>
+          101
+        </td>
+        <td>
+          63039
+        </td>
+        <td>
+          3969
+          -
+          3974
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          &quot; to &quot;
+        </td>
+      </tr><tr>
+        <td>
+          101
+        </td>
+        <td>
+          63042
+        </td>
+        <td>
+          3985
+          -
+          3994
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Phases.phase
+        </td>
+        <td style="background: #F0ADAD">
+          ctx.phase
+        </td>
+      </tr><tr>
+        <td>
+          101
+        </td>
+        <td>
+          63045
+        </td>
+        <td>
+          3942
+          -
+          3997
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.reporting.Reporting.log
+        </td>
+        <td style="background: #AEF1AE">
+          ctx.log(scala.StringContext.apply(&quot;adding &quot;, &quot; to &quot;, &quot; at &quot;, &quot;&quot;).s(synthetic, clazz, ctx.phase), ctx.log$default$2)
+        </td>
+      </tr><tr>
+        <td>
+          102
+        </td>
+        <td>
+          63047
+        </td>
+        <td>
+          4022
+          -
+          4060
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.transform.SyntheticMethods.syntheticRHS
+        </td>
+        <td style="background: #AEF1AE">
+          syntheticRHS(ctx.withOwner(synthetic))
+        </td>
+      </tr><tr>
+        <td>
+          102
+        </td>
+        <td>
+          63046
+        </td>
+        <td>
+          4035
+          -
+          4059
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.core.Contexts.Context.withOwner
+        </td>
+        <td style="background: #AEF1AE">
+          ctx.withOwner(synthetic)
+        </td>
+      </tr><tr>
+        <td>
+          102
+        </td>
+        <td>
+          63049
+        </td>
+        <td>
+          4004
+          -
+          4090
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Positioned.withPos
+        </td>
+        <td style="background: #AEF1AE">
+          ast.tpd.DefDef(synthetic, syntheticRHS(ctx.withOwner(synthetic)))(ctx).withPos(ctx.owner.pos.focus)
+        </td>
+      </tr><tr>
+        <td>
+          102
+        </td>
+        <td>
+          63048
+        </td>
+        <td>
+          4070
+          -
+          4089
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.util.Positions.Position.focus
+        </td>
+        <td style="background: #AEF1AE">
+          ctx.owner.pos.focus
+        </td>
+      </tr><tr>
+        <td>
+          122
+        </td>
+        <td>
+          63050
+        </td>
+        <td>
+          4568
+          -
+          4606
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.SymDenotations.ClassDenotation.typeRef
+        </td>
+        <td style="background: #AEF1AE">
+          core.Symbols.toClassDenot(core.Symbols.defn(ctx).IndexOutOfBoundsException)(ctx).typeRef(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          124
+        </td>
+        <td>
+          63051
+        </td>
+        <td>
+          4728
+          -
+          4734
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.SymDenotations.SymDenotation.info
+        </td>
+        <td style="background: #AEF1AE">
+          core.Symbols.toDenot(s)(ctx).info(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          125
+        </td>
+        <td>
+          63053
+        </td>
+        <td>
+          4813
+          -
+          4828
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Definitions.StringType
+        </td>
+        <td style="background: #AEF1AE">
+          core.Symbols.defn(ctx).StringType
+        </td>
+      </tr><tr>
+        <td>
+          125
+        </td>
+        <td>
+          63052
+        </td>
+        <td>
+          4773
+          -
+          4788
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.SymDenotations.SymDenotation.isConstructor
+        </td>
+        <td style="background: #AEF1AE">
+          core.Symbols.toDenot(s)(ctx).isConstructor
+        </td>
+      </tr><tr>
+        <td>
+          125
+        </td>
+        <td>
+          63055
+        </td>
+        <td>
+          4792
+          -
+          4829
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.Object.==
+        </td>
+        <td style="background: #AEF1AE">
+          m.paramInfos.==(scala.collection.immutable.List.apply[dotty.tools.dotc.core.Types.Type](core.Symbols.defn(ctx).StringType))
+        </td>
+      </tr><tr>
+        <td>
+          125
+        </td>
+        <td>
+          63054
+        </td>
+        <td>
+          4808
+          -
+          4829
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.immutable.List.apply
+        </td>
+        <td style="background: #AEF1AE">
+          scala.collection.immutable.List.apply[dotty.tools.dotc.core.Types.Type](core.Symbols.defn(ctx).StringType)
+        </td>
+      </tr><tr>
+        <td>
+          126
+        </td>
+        <td>
+          63056
+        </td>
+        <td>
+          4848
+          -
+          4853
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          false
+        </td>
+      </tr><tr>
+        <td>
+          128
+        </td>
+        <td>
+          63057
+        </td>
+        <td>
+          4886
+          -
+          4951
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.Symbols.Symbol.asTerm
+        </td>
+        <td style="background: #AEF1AE">
+          core.Symbols.toDenot(ioob.typeSymbol(ctx))(ctx).info(ctx).decls(ctx).find({
+  ((s: dotty.tools.dotc.core.Symbols.Symbol) =&gt; filterStringConstructor(s))
+})(ctx).asTerm(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          129
+        </td>
+        <td>
+          63058
+        </td>
+        <td>
+          4976
+          -
+          5016
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.tpd.Apply
+        </td>
+        <td style="background: #AEF1AE">
+          ast.tpd.Apply(ast.tpd.Select(index, core.StdNames.nme.toString_)(ctx), scala.collection.immutable.Nil)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          130
+        </td>
+        <td>
+          63059
+        </td>
+        <td>
+          5035
+          -
+          5083
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.tpd.Throw
+        </td>
+        <td style="background: #AEF1AE">
+          ast.tpd.Throw(ast.tpd.New(ioob, constructor, scala.collection.immutable.List.apply[dotty.tools.dotc.ast.tpd.Apply](stringIndex))(ctx))(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          133
+        </td>
+        <td>
+          63060
+        </td>
+        <td>
+          5176
+          -
+          5227
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.tpd.CaseDef
+        </td>
+        <td style="background: #AEF1AE">
+          ast.tpd.CaseDef(ast.tpd.Underscore(core.Symbols.defn(ctx).IntType)(ctx), ast.tpd.EmptyTree, error)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          136
+        </td>
+        <td>
+          63061
+        </td>
+        <td>
+          5276
+          -
+          5277
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          0
+        </td>
+      </tr><tr>
+        <td>
+          136
+        </td>
+        <td>
+          63064
+        </td>
+        <td>
+          5276
+          -
+          5400
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          scala.collection.TraversableLike.map
+        </td>
+        <td style="background: #AEF1AE">
+          scala.Predef.intWrapper(0).until(arity).map[dotty.tools.dotc.ast.tpd.CaseDef, scala.collection.immutable.IndexedSeq[dotty.tools.dotc.ast.tpd.CaseDef]](((i: Int) =&gt; ast.tpd.CaseDef(ast.tpd.Literal(core.Constants.Constant.apply(i))(ctx), ast.tpd.EmptyTree, ast.tpd.Select(ast.tpd.This(clazz)(ctx), core.StdNames.nme.selectorName(i))(ctx))(ctx)))(immutable.this.IndexedSeq.canBuildFrom[dotty.tools.dotc.ast.tpd.CaseDef])
+        </td>
+      </tr><tr>
+        <td>
+          136
+        </td>
+        <td>
+          63063
+        </td>
+        <td>
+          5295
+          -
+          5295
+        </td>
+        <td>
+          TypeApply
+        </td>
+        <td>
+          scala.collection.immutable.IndexedSeq.canBuildFrom
+        </td>
+        <td style="background: #AEF1AE">
+          immutable.this.IndexedSeq.canBuildFrom[dotty.tools.dotc.ast.tpd.CaseDef]
+        </td>
+      </tr><tr>
+        <td>
+          137
+        </td>
+        <td>
+          63062
+        </td>
+        <td>
+          5310
+          -
+          5392
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.tpd.CaseDef
+        </td>
+        <td style="background: #AEF1AE">
+          ast.tpd.CaseDef(ast.tpd.Literal(core.Constants.Constant.apply(i))(ctx), ast.tpd.EmptyTree, ast.tpd.Select(ast.tpd.This(clazz)(ctx), core.StdNames.nme.selectorName(i))(ctx))(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          140
+        </td>
+        <td>
+          63065
+        </td>
+        <td>
+          5408
+          -
+          5451
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.tpd.Match
+        </td>
+        <td style="background: #AEF1AE">
+          ast.tpd.Match(index, cases.:+[dotty.tools.dotc.ast.tpd.CaseDef, scala.collection.immutable.IndexedSeq[dotty.tools.dotc.ast.tpd.CaseDef]](defaultCase)(immutable.this.IndexedSeq.canBuildFrom[dotty.tools.dotc.ast.tpd.CaseDef]).toList)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          163
+        </td>
+        <td>
+          63071
+        </td>
+        <td>
+          5998
+          -
+          5998
+        </td>
+        <td>
+          TypeApply
+        </td>
+        <td>
+          dotty.tools.dotc.core.Symbols.newSymbol$default$5
+        </td>
+        <td style="background: #AEF1AE">
+          ctx.newSymbol$default$5[Nothing]
+        </td>
+      </tr><tr>
+        <td>
+          163
+        </td>
+        <td>
+          63068
+        </td>
+        <td>
+          6028
+          -
+          6037
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Flags.Synthetic
+        </td>
+        <td style="background: #AEF1AE">
+          core.Flags.Synthetic
+        </td>
+      </tr><tr>
+        <td>
+          163
+        </td>
+        <td>
+          63067
+        </td>
+        <td>
+          6019
+          -
+          6026
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.StdNames.ScalaNames.x_0
+        </td>
+        <td style="background: #AEF1AE">
+          core.StdNames.nme.x_0
+        </td>
+      </tr><tr>
+        <td>
+          163
+        </td>
+        <td>
+          63070
+        </td>
+        <td>
+          6058
+          -
+          6071
+        </td>
+        <td>
+          ApplyImplicitView
+        </td>
+        <td>
+          dotty.tools.dotc.util.Positions.positionCoord
+        </td>
+        <td style="background: #AEF1AE">
+          util.this.Positions.positionCoord(ctx.owner.pos)
+        </td>
+      </tr><tr>
+        <td>
+          163
+        </td>
+        <td>
+          63072
+        </td>
+        <td>
+          5994
+          -
+          6072
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.core.Symbols.newSymbol
+        </td>
+        <td style="background: #AEF1AE">
+          ctx.newSymbol[dotty.tools.dotc.core.Names.TermName](x$20, x$21, x$22, x$23, x$25, x$24)
+        </td>
+      </tr><tr>
+        <td>
+          163
+        </td>
+        <td>
+          63066
+        </td>
+        <td>
+          6008
+          -
+          6017
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Contexts.Context.owner
+        </td>
+        <td style="background: #AEF1AE">
+          ctx.owner
+        </td>
+      </tr><tr>
+        <td>
+          163
+        </td>
+        <td>
+          63069
+        </td>
+        <td>
+          6058
+          -
+          6071
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Symbols.Symbol.pos
+        </td>
+        <td style="background: #AEF1AE">
+          ctx.owner.pos
+        </td>
+      </tr><tr>
+        <td>
+          164
+        </td>
+        <td>
+          63073
+        </td>
+        <td>
+          6121
+          -
+          6156
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.tpd.Typed
+        </td>
+        <td style="background: #AEF1AE">
+          ast.tpd.Typed(ast.tpd.Underscore(tp)(ctx), ast.tpd.TypeTree(tp)(ctx))(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          165
+        </td>
+        <td>
+          63074
+        </td>
+        <td>
+          6177
+          -
+          6225
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.tpd.Bind
+        </td>
+        <td style="background: #AEF1AE">
+          ast.tpd.Bind(thatAsClazz, wildcardAscription(clazzType))(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          166
+        </td>
+        <td>
+          63077
+        </td>
+        <td>
+          6284
+          -
+          6284
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.transform.SyntheticMethods.$anonfun.&lt;init&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          new $anonfun()
+        </td>
+      </tr><tr>
+        <td>
+          166
+        </td>
+        <td>
+          63079
+        </td>
+        <td>
+          6266
+          -
+          6434
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          scala.collection.immutable.List.collect
+        </td>
+        <td style="background: #AEF1AE">
+          accessors.collect[dotty.tools.dotc.ast.tpd.Tree, List[dotty.tools.dotc.ast.tpd.Tree]](({
+  @SerialVersionUID(value = 0) final &lt;synthetic&gt; class $anonfun extends scala.runtime.AbstractPartialFunction[dotty.tools.dotc.core.Symbols.Symbol,dotty.tools.dotc.ast.tpd.Tree] with Serializable {
+    def &lt;init&gt;(): &lt;$anon: dotty.tools.dotc.core.Symbols.Symbol =&gt; dotty.tools.dotc.ast.tpd.Tree&gt; = {
+      $anonfun.super.&lt;init&gt;();
+      ()
+    };
+    final override def applyOrElse[A1 &lt;: dotty.tools.dotc.core.Symbols.Symbol, B1 &gt;: dotty.tools.dotc.ast.tpd.Tree](x1: A1, default: A1 =&gt; B1): B1 = ((x1.asInstanceOf[dotty.tools.dotc.core.Symbols.Symbol]: dotty.tools.dotc.core.Symbols.Symbol): dotty.tools.dotc.core.Symbols.Symbol @unchecked) match {
+      case (accessor @ _) if core.Symbols.toDenot(accessor)(ctx).info(ctx).isPhantom(ctx).unary_! =&gt; ast.tpd.TreeOps[dotty.tools.dotc.ast.tpd.Select](ast.tpd.TreeOps[dotty.tools.dotc.ast.tpd.Select](ast.tpd.TreeOps[dotty.tools.dotc.ast.tpd.This](ast.tpd.This(clazz)(ctx)).select(accessor)(ctx)).select(core.Symbols.defn(ctx).Any_==)(ctx)).appliedTo(ast.tpd.TreeOps[dotty.tools.dotc.ast.tpd.Tree](ast.tpd.ref(thatAsClazz)(ctx)).select(accessor)(ctx))(ctx)
+      case (defaultCase$ @ _) =&gt; default.apply(x1)
+    };
+    final def isDefinedAt(x1: dotty.tools.dotc.core.Symbols.Symbol): Boolean = ((x1.asInstanceOf[dotty.tools.dotc.core.Symbols.Symbol]: dotty.tools.dotc.core.Symbols.Symbol): dotty.tools.dotc.core.Symbols.Symbol @unchecked) match {
+      case (accessor @ _) if core.Symbols.toDenot(accessor)(ctx).info(ctx).isPhantom(ctx).unary_! =&gt; true
+      case (defaultCase$ @ _) =&gt; false
+    }
+  };
+  new $anonfun()
+}: PartialFunction[dotty.tools.dotc.core.Symbols.Symbol,dotty.tools.dotc.ast.tpd.Tree]))(immutable.this.List.canBuildFrom[dotty.tools.dotc.ast.tpd.Tree])
+        </td>
+      </tr><tr>
+        <td>
+          166
+        </td>
+        <td>
+          63075
+        </td>
+        <td>
+          6303
+          -
+          6327
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.Boolean.unary_!
+        </td>
+        <td style="background: #AEF1AE">
+          core.Symbols.toDenot(accessor)(ctx).info(ctx).isPhantom(ctx).unary_!
+        </td>
+      </tr><tr>
+        <td>
+          166
+        </td>
+        <td>
+          63078
+        </td>
+        <td>
+          6276
+          -
+          6276
+        </td>
+        <td>
+          TypeApply
+        </td>
+        <td>
+          scala.collection.immutable.List.canBuildFrom
+        </td>
+        <td style="background: #AEF1AE">
+          immutable.this.List.canBuildFrom[dotty.tools.dotc.ast.tpd.Tree]
+        </td>
+      </tr><tr>
+        <td>
+          167
+        </td>
+        <td>
+          63076
+        </td>
+        <td>
+          6339
+          -
+          6432
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.tpd.TreeOps.appliedTo
+        </td>
+        <td style="background: #AEF1AE">
+          ast.tpd.TreeOps[dotty.tools.dotc.ast.tpd.Select](ast.tpd.TreeOps[dotty.tools.dotc.ast.tpd.Select](ast.tpd.TreeOps[dotty.tools.dotc.ast.tpd.This](ast.tpd.This(clazz)(ctx)).select(accessor)(ctx)).select(core.Symbols.defn(ctx).Any_==)(ctx)).appliedTo(ast.tpd.TreeOps[dotty.tools.dotc.ast.tpd.Tree](ast.tpd.ref(thatAsClazz)(ctx)).select(accessor)(ctx))(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          169
+        </td>
+        <td>
+          63080
+        </td>
+        <td>
+          6504
+          -
+          6523
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.collection.SeqLike.isEmpty
+        </td>
+        <td style="background: #AEF1AE">
+          comparisons.isEmpty
+        </td>
+      </tr><tr>
+        <td>
+          169
+        </td>
+        <td>
+          63083
+        </td>
+        <td>
+          6577
+          -
+          6584
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.tpd.TreeOps.and
+        </td>
+        <td style="background: #AEF1AE">
+          ast.tpd.TreeOps[dotty.tools.dotc.ast.tpd.Tree](x$4).and(x$5)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          169
+        </td>
+        <td>
+          63085
+        </td>
+        <td>
+          6554
+          -
+          6585
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          scala.collection.LinearSeqOptimized.reduceLeft
+        </td>
+        <td style="background: #AEF1AE">
+          comparisons.reduceLeft[dotty.tools.dotc.ast.tpd.Tree](((x$4: dotty.tools.dotc.ast.tpd.Tree, x$5: dotty.tools.dotc.ast.tpd.Tree) =&gt; ast.tpd.TreeOps[dotty.tools.dotc.ast.tpd.Tree](x$4).and(x$5)(ctx)))
+        </td>
+      </tr><tr>
+        <td>
+          169
+        </td>
+        <td>
+          63082
+        </td>
+        <td>
+          6525
+          -
+          6548
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          dotty.tools.dotc.ast.tpd.Literal
+        </td>
+        <td style="background: #AEF1AE">
+          ast.tpd.Literal(core.Constants.Constant.apply(true))(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          169
+        </td>
+        <td>
+          63081
+        </td>
+        <td>
+          6525
+          -
+          6548
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.tpd.Literal
+        </td>
+        <td style="background: #AEF1AE">
+          ast.tpd.Literal(core.Constants.Constant.apply(true))(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          169
+        </td>
+        <td>
+          63084
+        </td>
+        <td>
+          6554
+          -
+          6585
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.LinearSeqOptimized.reduceLeft
+        </td>
+        <td style="background: #AEF1AE">
+          comparisons.reduceLeft[dotty.tools.dotc.ast.tpd.Tree](((x$4: dotty.tools.dotc.ast.tpd.Tree, x$5: dotty.tools.dotc.ast.tpd.Tree) =&gt; ast.tpd.TreeOps[dotty.tools.dotc.ast.tpd.Tree](x$4).and(x$5)(ctx)))
+        </td>
+      </tr><tr>
+        <td>
+          170
+        </td>
+        <td>
+          63086
+        </td>
+        <td>
+          6611
+          -
+          6643
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.tpd.CaseDef
+        </td>
+        <td style="background: #AEF1AE">
+          ast.tpd.CaseDef(pattern, ast.tpd.EmptyTree, rhs)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          171
+        </td>
+        <td>
+          63087
+        </td>
+        <td>
+          6730
+          -
+          6808
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.tpd.CaseDef
+        </td>
+        <td style="background: #AEF1AE">
+          ast.tpd.CaseDef(wildcardAscription(core.Symbols.defn(ctx).AnyType), ast.tpd.EmptyTree, ast.tpd.Literal(core.Constants.Constant.apply(false))(ctx))(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          172
+        </td>
+        <td>
+          63088
+        </td>
+        <td>
+          6850
+          -
+          6894
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.tpd.Match
+        </td>
+        <td style="background: #AEF1AE">
+          ast.tpd.Match(that, scala.collection.immutable.List.apply[dotty.tools.dotc.ast.tpd.CaseDef](matchingCase, defaultCase))(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          173
+        </td>
+        <td>
+          63089
+        </td>
+        <td>
+          6905
+          -
+          6931
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.transform.ValueClasses.isDerivedValueClass
+        </td>
+        <td style="background: #AEF1AE">
+          ValueClasses.isDerivedValueClass(core.Symbols.toClassDenot(clazz)(ctx))(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          173
+        </td>
+        <td>
+          63090
+        </td>
+        <td>
+          6933
+          -
+          6942
+        </td>
+        <td>
+          Ident
+        </td>
+        <td>
+          dotty.tools.dotc.transform.SyntheticMethods.matchExpr
+        </td>
+        <td style="background: #AEF1AE">
+          matchExpr
+        </td>
+      </tr><tr>
+        <td>
+          174
+        </td>
+        <td>
+          63093
+        </td>
+        <td>
+          6954
+          -
+          7097
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          {
+  val eqCompare: dotty.tools.dotc.ast.tpd.Tree = ast.tpd.TreeOps[dotty.tools.dotc.ast.tpd.Select](ast.tpd.TreeOps[dotty.tools.dotc.ast.tpd.This](ast.tpd.This(clazz)(ctx)).select(core.Symbols.defn(ctx).Object_eq)(ctx)).appliedTo(ast.tpd.TreeOps[dotty.tools.dotc.ast.tpd.Tree](that).asInstance(core.Symbols.defn(ctx).ObjectType)(ctx))(ctx);
+  ast.tpd.TreeOps[dotty.tools.dotc.ast.tpd.Tree](eqCompare).or(matchExpr)(ctx)
+}
+        </td>
+      </tr><tr>
+        <td>
+          175
+        </td>
+        <td>
+          63091
+        </td>
+        <td>
+          6980
+          -
+          7058
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.tpd.TreeOps.appliedTo
+        </td>
+        <td style="background: #AEF1AE">
+          ast.tpd.TreeOps[dotty.tools.dotc.ast.tpd.Select](ast.tpd.TreeOps[dotty.tools.dotc.ast.tpd.This](ast.tpd.This(clazz)(ctx)).select(core.Symbols.defn(ctx).Object_eq)(ctx)).appliedTo(ast.tpd.TreeOps[dotty.tools.dotc.ast.tpd.Tree](that).asInstance(core.Symbols.defn(ctx).ObjectType)(ctx))(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          176
+        </td>
+        <td>
+          63092
+        </td>
+        <td>
+          7067
+          -
+          7089
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.tpd.TreeOps.or
+        </td>
+        <td style="background: #AEF1AE">
+          ast.tpd.TreeOps[dotty.tools.dotc.ast.tpd.Tree](eqCompare).or(matchExpr)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          193
+        </td>
+        <td>
+          63095
+        </td>
+        <td>
+          7379
+          -
+          7405
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Predef.assert
+        </td>
+        <td style="background: #AEF1AE">
+          scala.Predef.assert(accessors.nonEmpty)
+        </td>
+      </tr><tr>
+        <td>
+          193
+        </td>
+        <td>
+          63094
+        </td>
+        <td>
+          7386
+          -
+          7404
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.collection.TraversableOnce.nonEmpty
+        </td>
+        <td style="background: #AEF1AE">
+          accessors.nonEmpty
+        </td>
+      </tr><tr>
+        <td>
+          194
+        </td>
+        <td>
+          63098
+        </td>
+        <td>
+          7412
+          -
+          7459
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Predef.assert
+        </td>
+        <td style="background: #AEF1AE">
+          scala.Predef.assert(accessors.tail.forall(((x$6: dotty.tools.dotc.core.Symbols.Symbol) =&gt; core.Symbols.toDenot(x$6)(ctx).info(ctx).isPhantom(ctx))))
+        </td>
+      </tr><tr>
+        <td>
+          194
+        </td>
+        <td>
+          63097
+        </td>
+        <td>
+          7419
+          -
+          7458
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.LinearSeqOptimized.forall
+        </td>
+        <td style="background: #AEF1AE">
+          accessors.tail.forall(((x$6: dotty.tools.dotc.core.Symbols.Symbol) =&gt; core.Symbols.toDenot(x$6)(ctx).info(ctx).isPhantom(ctx)))
+        </td>
+      </tr><tr>
+        <td>
+          194
+        </td>
+        <td>
+          63096
+        </td>
+        <td>
+          7441
+          -
+          7457
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.Types.Type.isPhantom
+        </td>
+        <td style="background: #AEF1AE">
+          core.Symbols.toDenot(x$6)(ctx).info(ctx).isPhantom(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          195
+        </td>
+        <td>
+          63099
+        </td>
+        <td>
+          7466
+          -
+          7521
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.tpd.TreeOps.ensureApplied
+        </td>
+        <td style="background: #AEF1AE">
+          ast.tpd.TreeOps[dotty.tools.dotc.ast.tpd.Select](ast.tpd.TreeOps[dotty.tools.dotc.ast.tpd.Tree](ast.tpd.ref(accessors.head)(ctx)).select(core.StdNames.nme.hashCode_)(ctx)).ensureApplied(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          217
+        </td>
+        <td>
+          63100
+        </td>
+        <td>
+          8032
+          -
+          8064
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.String.hashCode
+        </td>
+        <td style="background: #AEF1AE">
+          core.Symbols.toClassDenot(clazz)(ctx).fullName(ctx).toString().hashCode()
+        </td>
+      </tr><tr>
+        <td>
+          218
+        </td>
+        <td>
+          63101
+        </td>
+        <td>
+          8075
+          -
+          8093
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.collection.TraversableOnce.nonEmpty
+        </td>
+        <td style="background: #AEF1AE">
+          accessors.nonEmpty
+        </td>
+      </tr><tr>
+        <td>
+          218
+        </td>
+        <td>
+          63117
+        </td>
+        <td>
+          8095
+          -
+          8589
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          {
+  val acc: dotty.tools.dotc.core.Symbols.Symbol{type ThisName = dotty.tools.dotc.core.Names.TermName} = {
+    &lt;artifact&gt; val x$26: dotty.tools.dotc.core.Symbols.Symbol = ctx.owner;
+    &lt;artifact&gt; val x$27: dotty.tools.dotc.core.Names.TermName = core.Decorators.PreNamedString(&quot;acc&quot;).toTermName;
+    &lt;artifact&gt; val x$28: dotty.tools.dotc.core.Flags.FlagSet = core.Flags.Mutable.|(core.Flags.Synthetic);
+    &lt;artifact&gt; val x$29: dotty.tools.dotc.core.Types.TypeRef = core.Symbols.defn(ctx).IntType;
+    &lt;artifact&gt; val x$30: dotty.tools.dotc.util.Positions.Coord = util.this.Positions.positionCoord(ctx.owner.pos);
+    &lt;artifact&gt; val x$31: dotty.tools.dotc.core.Symbols.Symbol = ctx.newSymbol$default$5[Nothing];
+    ctx.newSymbol[dotty.tools.dotc.core.Names.TermName](x$26, x$27, x$28, x$29, x$31, x$30)
+  };
+  val accDef: dotty.tools.dotc.ast.tpd.ValDef = ast.tpd.ValDef(acc, ast.tpd.Literal(core.Constants.Constant.apply(seed))(ctx))(ctx);
+  val mixes: List[dotty.tools.dotc.ast.tpd.Assign] = accessors.map[dotty.tools.dotc.ast.tpd.Assign, List[dotty.tools.dotc.ast.tpd.Assign]](((accessor: dotty.tools.dotc.core.Symbols.Symbol) =&gt; ast.tpd.Assign(ast.tpd.ref(acc)(ctx), ast.tpd.TreeOps[dotty.tools.dotc.ast.tpd.Tree](ast.tpd.ref(core.Symbols.defn(ctx).staticsMethod(core.Decorators.PreNamedString(&quot;mix&quot;)))(ctx)).appliedTo(ast.tpd.ref(acc)(ctx), hashImpl(accessor)(ctx))(ctx))(ctx)))(immutable.this.List.canBuildFrom[dotty.tools.dotc.ast.tpd.Assign]);
+  val finish: dotty.tools.dotc.ast.tpd.Tree = ast.tpd.TreeOps[dotty.tools.dotc.ast.tpd.Tree](ast.tpd.ref(core.Symbols.defn(ctx).staticsMethod(core.Decorators.PreNamedString(&quot;finalizeHash&quot;)))(ctx)).appliedTo(ast.tpd.ref(acc)(ctx), ast.tpd.Literal(core.Constants.Constant.apply(accessors.size))(ctx))(ctx);
+  ast.tpd.Block({
+    &lt;synthetic&gt; &lt;artifact&gt; val x$7: dotty.tools.dotc.ast.tpd.ValDef = accDef;
+    mixes.::[dotty.tools.dotc.ast.Trees.Tree[dotty.tools.dotc.core.Types.Type] with Serializable](x$7)
+  }, finish)(ctx)
+}
+        </td>
+      </tr><tr>
+        <td>
+          219
+        </td>
+        <td>
+          63104
+        </td>
+        <td>
+          8140
+          -
+          8156
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Decorators.PreNamedString.toTermName
+        </td>
+        <td style="background: #AEF1AE">
+          core.Decorators.PreNamedString(&quot;acc&quot;).toTermName
+        </td>
+      </tr><tr>
+        <td>
+          219
+        </td>
+        <td>
+          63107
+        </td>
+        <td>
+          8201
+          -
+          8214
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Symbols.Symbol.pos
+        </td>
+        <td style="background: #AEF1AE">
+          ctx.owner.pos
+        </td>
+      </tr><tr>
+        <td>
+          219
+        </td>
+        <td>
+          63110
+        </td>
+        <td>
+          8115
+          -
+          8215
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.core.Symbols.newSymbol
+        </td>
+        <td style="background: #AEF1AE">
+          ctx.newSymbol[dotty.tools.dotc.core.Names.TermName](x$26, x$27, x$28, x$29, x$31, x$30)
+        </td>
+      </tr><tr>
+        <td>
+          219
+        </td>
+        <td>
+          63103
+        </td>
+        <td>
+          8140
+          -
+          8145
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          &quot;acc&quot;
+        </td>
+      </tr><tr>
+        <td>
+          219
+        </td>
+        <td>
+          63106
+        </td>
+        <td>
+          8158
+          -
+          8177
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.core.Flags.FlagSet.|
+        </td>
+        <td style="background: #AEF1AE">
+          core.Flags.Mutable.|(core.Flags.Synthetic)
+        </td>
+      </tr><tr>
+        <td>
+          219
+        </td>
+        <td>
+          63109
+        </td>
+        <td>
+          8119
+          -
+          8119
+        </td>
+        <td>
+          TypeApply
+        </td>
+        <td>
+          dotty.tools.dotc.core.Symbols.newSymbol$default$5
+        </td>
+        <td style="background: #AEF1AE">
+          ctx.newSymbol$default$5[Nothing]
+        </td>
+      </tr><tr>
+        <td>
+          219
+        </td>
+        <td>
+          63108
+        </td>
+        <td>
+          8201
+          -
+          8214
+        </td>
+        <td>
+          ApplyImplicitView
+        </td>
+        <td>
+          dotty.tools.dotc.util.Positions.positionCoord
+        </td>
+        <td style="background: #AEF1AE">
+          util.this.Positions.positionCoord(ctx.owner.pos)
+        </td>
+      </tr><tr>
+        <td>
+          219
+        </td>
+        <td>
+          63102
+        </td>
+        <td>
+          8129
+          -
+          8138
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Contexts.Context.owner
+        </td>
+        <td style="background: #AEF1AE">
+          ctx.owner
+        </td>
+      </tr><tr>
+        <td>
+          219
+        </td>
+        <td>
+          63105
+        </td>
+        <td>
+          8168
+          -
+          8177
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Flags.Synthetic
+        </td>
+        <td style="background: #AEF1AE">
+          core.Flags.Synthetic
+        </td>
+      </tr><tr>
+        <td>
+          220
+        </td>
+        <td>
+          63111
+        </td>
+        <td>
+          8237
+          -
+          8273
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.tpd.ValDef
+        </td>
+        <td style="background: #AEF1AE">
+          ast.tpd.ValDef(acc, ast.tpd.Literal(core.Constants.Constant.apply(seed))(ctx))(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          221
+        </td>
+        <td>
+          63113
+        </td>
+        <td>
+          8308
+          -
+          8308
+        </td>
+        <td>
+          TypeApply
+        </td>
+        <td>
+          scala.collection.immutable.List.canBuildFrom
+        </td>
+        <td style="background: #AEF1AE">
+          immutable.this.List.canBuildFrom[dotty.tools.dotc.ast.tpd.Assign]
+        </td>
+      </tr><tr>
+        <td>
+          221
+        </td>
+        <td>
+          63114
+        </td>
+        <td>
+          8294
+          -
+          8426
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          scala.collection.immutable.List.map
+        </td>
+        <td style="background: #AEF1AE">
+          accessors.map[dotty.tools.dotc.ast.tpd.Assign, List[dotty.tools.dotc.ast.tpd.Assign]](((accessor: dotty.tools.dotc.core.Symbols.Symbol) =&gt; ast.tpd.Assign(ast.tpd.ref(acc)(ctx), ast.tpd.TreeOps[dotty.tools.dotc.ast.tpd.Tree](ast.tpd.ref(core.Symbols.defn(ctx).staticsMethod(core.Decorators.PreNamedString(&quot;mix&quot;)))(ctx)).appliedTo(ast.tpd.ref(acc)(ctx), hashImpl(accessor)(ctx))(ctx))(ctx)))(immutable.this.List.canBuildFrom[dotty.tools.dotc.ast.tpd.Assign])
+        </td>
+      </tr><tr>
+        <td>
+          222
+        </td>
+        <td>
+          63112
+        </td>
+        <td>
+          8338
+          -
+          8426
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.tpd.Assign
+        </td>
+        <td style="background: #AEF1AE">
+          ast.tpd.Assign(ast.tpd.ref(acc)(ctx), ast.tpd.TreeOps[dotty.tools.dotc.ast.tpd.Tree](ast.tpd.ref(core.Symbols.defn(ctx).staticsMethod(core.Decorators.PreNamedString(&quot;mix&quot;)))(ctx)).appliedTo(ast.tpd.ref(acc)(ctx), hashImpl(accessor)(ctx))(ctx))(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          223
+        </td>
+        <td>
+          63115
+        </td>
+        <td>
+          8448
+          -
+          8542
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.tpd.TreeOps.appliedTo
+        </td>
+        <td style="background: #AEF1AE">
+          ast.tpd.TreeOps[dotty.tools.dotc.ast.tpd.Tree](ast.tpd.ref(core.Symbols.defn(ctx).staticsMethod(core.Decorators.PreNamedString(&quot;finalizeHash&quot;)))(ctx)).appliedTo(ast.tpd.ref(acc)(ctx), ast.tpd.Literal(core.Constants.Constant.apply(accessors.size))(ctx))(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          224
+        </td>
+        <td>
+          63116
+        </td>
+        <td>
+          8551
+          -
+          8581
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.tpd.Block
+        </td>
+        <td style="background: #AEF1AE">
+          ast.tpd.Block({
+  &lt;synthetic&gt; &lt;artifact&gt; val x$7: dotty.tools.dotc.ast.tpd.ValDef = accDef;
+  mixes.::[dotty.tools.dotc.ast.Trees.Tree[dotty.tools.dotc.core.Types.Type] with Serializable](x$7)
+}, finish)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          225
+        </td>
+        <td>
+          63120
+        </td>
+        <td>
+          8595
+          -
+          8736
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          {
+  val hash: Int = scala.runtime.Statics.finalizeHash(seed, 0);
+  ast.tpd.Literal(core.Constants.Constant.apply(hash))(ctx)
+}
+        </td>
+      </tr><tr>
+        <td>
+          227
+        </td>
+        <td>
+          63118
+        </td>
+        <td>
+          8653
+          -
+          8696
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.runtime.Statics.finalizeHash
+        </td>
+        <td style="background: #AEF1AE">
+          scala.runtime.Statics.finalizeHash(seed, 0)
+        </td>
+      </tr><tr>
+        <td>
+          228
+        </td>
+        <td>
+          63119
+        </td>
+        <td>
+          8705
+          -
+          8728
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.tpd.Literal
+        </td>
+        <td style="background: #AEF1AE">
+          ast.tpd.Literal(core.Constants.Constant.apply(hash))(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          234
+        </td>
+        <td>
+          63121
+        </td>
+        <td>
+          8876
+          -
+          8921
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.Definitions.scalaClassName
+        </td>
+        <td style="background: #AEF1AE">
+          core.Symbols.defn(ctx).scalaClassName(core.Symbols.toDenot(sym)(ctx).info(ctx).finalResultType(ctx))(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          235
+        </td>
+        <td>
+          63122
+        </td>
+        <td>
+          8984
+          -
+          9004
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.tpd.Literal
+        </td>
+        <td style="background: #F0ADAD">
+          ast.tpd.Literal(core.Constants.Constant.apply(0))(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          236
+        </td>
+        <td>
+          63123
+        </td>
+        <td>
+          9059
+          -
+          9121
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.tpd.If
+        </td>
+        <td style="background: #AEF1AE">
+          ast.tpd.If(ast.tpd.ref(sym)(ctx), ast.tpd.Literal(core.Constants.Constant.apply(1231))(ctx), ast.tpd.Literal(core.Constants.Constant.apply(1237))(ctx))(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          237
+        </td>
+        <td>
+          63124
+        </td>
+        <td>
+          9176
+          -
+          9184
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.tpd.ref
+        </td>
+        <td style="background: #AEF1AE">
+          ast.tpd.ref(sym)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          238
+        </td>
+        <td>
+          63125
+        </td>
+        <td>
+          9239
+          -
+          9265
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.tpd.TreeOps.select
+        </td>
+        <td style="background: #AEF1AE">
+          ast.tpd.TreeOps[dotty.tools.dotc.ast.tpd.Tree](ast.tpd.ref(sym)(ctx)).select(core.StdNames.nme.toInt)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          239
+        </td>
+        <td>
+          63126
+        </td>
+        <td>
+          9320
+          -
+          9375
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.tpd.TreeOps.appliedTo
+        </td>
+        <td style="background: #AEF1AE">
+          ast.tpd.TreeOps[dotty.tools.dotc.ast.tpd.Tree](ast.tpd.ref(core.Symbols.defn(ctx).staticsMethod(core.Decorators.PreNamedString(&quot;longHash&quot;)))(ctx)).appliedTo(ast.tpd.ref(sym)(ctx))(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          240
+        </td>
+        <td>
+          63127
+        </td>
+        <td>
+          9430
+          -
+          9487
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.tpd.TreeOps.appliedTo
+        </td>
+        <td style="background: #AEF1AE">
+          ast.tpd.TreeOps[dotty.tools.dotc.ast.tpd.Tree](ast.tpd.ref(core.Symbols.defn(ctx).staticsMethod(core.Decorators.PreNamedString(&quot;doubleHash&quot;)))(ctx)).appliedTo(ast.tpd.ref(sym)(ctx))(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          241
+        </td>
+        <td>
+          63128
+        </td>
+        <td>
+          9542
+          -
+          9598
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.tpd.TreeOps.appliedTo
+        </td>
+        <td style="background: #AEF1AE">
+          ast.tpd.TreeOps[dotty.tools.dotc.ast.tpd.Tree](ast.tpd.ref(core.Symbols.defn(ctx).staticsMethod(core.Decorators.PreNamedString(&quot;floatHash&quot;)))(ctx)).appliedTo(ast.tpd.ref(sym)(ctx))(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          242
+        </td>
+        <td>
+          63129
+        </td>
+        <td>
+          9653
+          -
+          9707
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.tpd.TreeOps.appliedTo
+        </td>
+        <td style="background: #AEF1AE">
+          ast.tpd.TreeOps[dotty.tools.dotc.ast.tpd.Tree](ast.tpd.ref(core.Symbols.defn(ctx).staticsMethod(core.Decorators.PreNamedString(&quot;anyHash&quot;)))(ctx)).appliedTo(ast.tpd.ref(sym)(ctx))(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          257
+        </td>
+        <td>
+          63130
+        </td>
+        <td>
+          9969
+          -
+          9995
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.tpd.TreeOps.isInstance
+        </td>
+        <td style="background: #AEF1AE">
+          ast.tpd.TreeOps[dotty.tools.dotc.ast.tpd.Tree](that).isInstance(clazzType)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          259
+        </td>
+        <td>
+          63131
+        </td>
+        <td>
+          10029
+          -
+          10050
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.transform.SyntheticMethods.syntheticDefIfMissing
+        </td>
+        <td style="background: #AEF1AE">
+          syntheticDefIfMissing(sym)
+        </td>
+      </tr><tr>
+        <td>
+          259
+        </td>
+        <td>
+          63133
+        </td>
+        <td>
+          10001
+          -
+          10050
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          scala.collection.immutable.List.flatMap
+        </td>
+        <td style="background: #AEF1AE">
+          symbolsToSynthesize.flatMap[dotty.tools.dotc.ast.tpd.Tree, List[dotty.tools.dotc.ast.tpd.Tree]]({
+  ((sym: dotty.tools.dotc.core.Symbols.Symbol) =&gt; syntheticDefIfMissing(sym))
+})(immutable.this.List.canBuildFrom[dotty.tools.dotc.ast.tpd.Tree])
+        </td>
+      </tr><tr>
+        <td>
+          259
+        </td>
+        <td>
+          63132
+        </td>
+        <td>
+          10021
+          -
+          10021
+        </td>
+        <td>
+          TypeApply
+        </td>
+        <td>
+          scala.collection.immutable.List.canBuildFrom
+        </td>
+        <td style="background: #AEF1AE">
+          immutable.this.List.canBuildFrom[dotty.tools.dotc.ast.tpd.Tree]
+        </td>
+      </tr><tr>
+        <td>
+          263
+        </td>
+        <td>
+          63134
+        </td>
+        <td>
+          10131
+          -
+          10140
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Contexts.Context.owner
+        </td>
+        <td style="background: #AEF1AE">
+          ctx.owner
+        </td>
+      </tr><tr>
+        <td>
+          263
+        </td>
+        <td>
+          63137
+        </td>
+        <td>
+          10131
+          -
+          10183
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Boolean.||
+        </td>
+        <td style="background: #AEF1AE">
+          core.Symbols.toDenot(ctx.owner)(ctx).is(core.Flags.Case)(ctx).||(ValueClasses.isDerivedValueClass(core.Symbols.toDenot(ctx.owner)(ctx))(ctx))
+        </td>
+      </tr><tr>
+        <td>
+          263
+        </td>
+        <td>
+          63136
+        </td>
+        <td>
+          10153
+          -
+          10183
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.transform.ValueClasses.isDerivedValueClass
+        </td>
+        <td style="background: #AEF1AE">
+          ValueClasses.isDerivedValueClass(core.Symbols.toDenot(ctx.owner)(ctx))(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          263
+        </td>
+        <td>
+          63135
+        </td>
+        <td>
+          10144
+          -
+          10148
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Flags.Case
+        </td>
+        <td style="background: #AEF1AE">
+          core.Flags.Case
+        </td>
+      </tr><tr>
+        <td>
+          264
+        </td>
+        <td>
+          63140
+        </td>
+        <td>
+          10217
+          -
+          10265
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          scala.collection.immutable.List.++
+        </td>
+        <td style="background: #AEF1AE">
+          impl.body(ctx).++[dotty.tools.dotc.ast.Trees.Tree[dotty.tools.dotc.core.Types.Type], dotty.tools.dotc.ast.Trees.LazyTreeList](SyntheticMethods.this.syntheticMethods(ctx.owner.asClass)(ctx))(immutable.this.List.canBuildFrom[dotty.tools.dotc.ast.Trees.Tree[dotty.tools.dotc.core.Types.Type]])
+        </td>
+      </tr><tr>
+        <td>
+          264
+        </td>
+        <td>
+          63143
+        </td>
+        <td>
+          10203
+          -
+          10203
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Trees.Instance.TreeCopier.Template$default$4
+        </td>
+        <td style="background: #AEF1AE">
+          ast.tpd.cpy.Template$default$4(x$8)
+        </td>
+      </tr><tr>
+        <td>
+          264
+        </td>
+        <td>
+          63145
+        </td>
+        <td>
+          10191
+          -
+          10266
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          {
+  &lt;artifact&gt; val x$8: dotty.tools.dotc.ast.tpd.Template = impl;
+  &lt;artifact&gt; val x$9: dotty.tools.dotc.ast.Trees.LazyTreeList = impl.body(ctx).++[dotty.tools.dotc.ast.Trees.Tree[dotty.tools.dotc.core.Types.Type], dotty.tools.dotc.ast.Trees.LazyTreeList](SyntheticMethods.this.syntheticMethods(ctx.owner.asClass)(ctx))(immutable.this.List.canBuildFrom[dotty.tools.dotc.ast.Trees.Tree[dotty.tools.dotc.core.Types.Type]]);
+  &lt;artifact&gt; val x$10: dotty.tools.dotc.ast.tpd.DefDef = ast.tpd.cpy.Template$default$2(x$8);
+  &lt;artifact&gt; val x$11: List[dotty.tools.dotc.ast.tpd.Tree] = ast.tpd.cpy.Template$default$3(x$8);
+  &lt;artifact&gt; val x$12: dotty.tools.dotc.ast.tpd.ValDef = ast.tpd.cpy.Template$default$4(x$8);
+  ast.tpd.cpy.Template(x$8)(x$10, x$11, x$12, x$9)
+}
+        </td>
+      </tr><tr>
+        <td>
+          264
+        </td>
+        <td>
+          63139
+        </td>
+        <td>
+          10227
+          -
+          10227
+        </td>
+        <td>
+          TypeApply
+        </td>
+        <td>
+          scala.collection.immutable.List.canBuildFrom
+        </td>
+        <td style="background: #AEF1AE">
+          immutable.this.List.canBuildFrom[dotty.tools.dotc.ast.Trees.Tree[dotty.tools.dotc.core.Types.Type]]
+        </td>
+      </tr><tr>
+        <td>
+          264
+        </td>
+        <td>
+          63142
+        </td>
+        <td>
+          10203
+          -
+          10203
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Trees.Instance.TreeCopier.Template$default$3
+        </td>
+        <td style="background: #AEF1AE">
+          ast.tpd.cpy.Template$default$3(x$8)
+        </td>
+      </tr><tr>
+        <td>
+          264
+        </td>
+        <td>
+          63141
+        </td>
+        <td>
+          10203
+          -
+          10203
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Trees.Instance.TreeCopier.Template$default$2
+        </td>
+        <td style="background: #AEF1AE">
+          ast.tpd.cpy.Template$default$2(x$8)
+        </td>
+      </tr><tr>
+        <td>
+          264
+        </td>
+        <td>
+          63144
+        </td>
+        <td>
+          10191
+          -
+          10266
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Trees.Instance.TreeCopier.Template
+        </td>
+        <td style="background: #AEF1AE">
+          ast.tpd.cpy.Template(x$8)(x$10, x$11, x$12, x$9)
+        </td>
+      </tr><tr>
+        <td>
+          264
+        </td>
+        <td>
+          63138
+        </td>
+        <td>
+          10230
+          -
+          10265
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.transform.SyntheticMethods.syntheticMethods
+        </td>
+        <td style="background: #AEF1AE">
+          SyntheticMethods.this.syntheticMethods(ctx.owner.asClass)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          266
+        </td>
+        <td>
+          63146
+        </td>
+        <td>
+          10282
+          -
+          10286
+        </td>
+        <td>
+          Ident
+        </td>
+        <td>
+          dotty.tools.dotc.transform.SyntheticMethods.impl
+        </td>
+        <td style="background: #AEF1AE">
+          impl
+        </td>
+      </tr>
+    </table>
+          </div>
+        </div>
+      </body>
+    </html>

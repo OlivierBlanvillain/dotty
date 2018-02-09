@@ -1,0 +1,1949 @@
+<html>
+      <head>
+        <meta http-equiv="Content-Type" content="text/html; charset=utf-8"/>
+        <title id="title">
+          dotty/tools/repl/AmmoniteReader.scala.html
+        </title>
+        <script src="https://ajax.googleapis.com/ajax/libs/jquery/1.10.2/jquery.min.js"></script><link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/jquery.tablesorter/2.20.1/css/theme.default.min.css" type="text/css"/><script src="https://cdnjs.cloudflare.com/ajax/libs/jquery.tablesorter/2.20.1/js/jquery.tablesorter.min.js"></script><link rel="stylesheet" href="https://netdna.bootstrapcdn.com/bootstrap/3.0.3/css/bootstrap.min.css" type="text/css"/><script src="https://netdna.bootstrapcdn.com/bootstrap/3.0.3/js/bootstrap.min.js"></script><script type="text/javascript">
+        $(document).ready(function() {$(".tablesorter").tablesorter();});
+      </script>
+        <style>
+          table.codegrid { font-family: monospace; font-size: 12px; width: auto!important; }table.statementlist { width: auto!important; font-size: 13px; } table.codegrid td { padding: 0!important; border: 0!important } table td.linenumber { width: 40px!important; } 
+        </style>
+      </head>
+      <body style="font-family: monospace;">
+        <ul class="nav nav-tabs">
+          <li>
+            <a href="#codegrid" data-toggle="tab">Codegrid</a>
+          </li>
+          <li>
+            <a href="#statementlist" data-toggle="tab">Statement List</a>
+          </li>
+        </ul>
+        <div class="tab-content">
+          <div class="tab-pane active" id="codegrid">
+            <pre style='font-size: 12pt; font-family: courier;'>1 <span style=''>package dotty.tools
+</span>2 <span style=''>package repl
+</span>3 <span style=''>
+</span>4 <span style=''>import java.io.{
+</span>5 <span style=''>  InputStream, InputStreamReader, OutputStream, OutputStreamWriter
+</span>6 <span style=''>}
+</span>7 <span style=''>
+</span>8 <span style=''>import dotc.core.Contexts.Context
+</span>9 <span style=''>import dotc.printing.SyntaxHighlighting
+</span>10 <span style=''>import dotc.printing.Highlighting
+</span>11 <span style=''>import dotc.interactive.InteractiveDriver
+</span>12 <span style=''>
+</span>13 <span style=''>import terminal._
+</span>14 <span style=''>import terminal.filters._
+</span>15 <span style=''>import GUILikeFilters._
+</span>16 <span style=''>import LazyList._
+</span>17 <span style=''>import AmmoniteReader._
+</span>18 <span style=''>
+</span>19 <span style=''>/** Adaptation of the Ammonite shell emulator to fit the Dotty REPL
+</span>20 <span style=''> *
+</span>21 <span style=''> *  Credit for the code in the `terminal` goes to Li Haoyi
+</span>22 <span style=''> *  who wrote most of it as part of Ammonite.
+</span>23 <span style=''> *
+</span>24 <span style=''> *  @param history is a list of the previous input with the latest entry as head
+</span>25 <span style=''> *  @param complete takes a function from cursor point and input string to
+</span>26 <span style=''> *                  `Completions`
+</span>27 <span style=''> */
+</span>28 <span style=''>private[repl] class AmmoniteReader(out: OutputStream,
+</span>29 <span style=''>                                   history: History,
+</span>30 <span style=''>                                   complete: (Int, String) =&gt; Completions)
+</span>31 <span style=''>                                  (implicit ctx: Context) {
+</span>32 <span style=''>
+</span>33 <span style=''>  private[this] val reader = </span><span style='background: #F0ADAD'>new InputStreamReader(System.in)</span><span style=''>
+</span>34 <span style=''>  private[this] val writer = </span><span style='background: #F0ADAD'>new OutputStreamWriter(out)</span><span style=''>
+</span>35 <span style=''>
+</span>36 <span style=''>  private[this] val cutPasteFilter  = </span><span style='background: #F0ADAD'>ReadlineFilters.CutPasteFilter()</span><span style=''>
+</span>37 <span style=''>  private[this] val selectionFilter = </span><span style='background: #F0ADAD'>GUILikeFilters.SelectionFilter(indent = 2)</span><span style=''>
+</span>38 <span style=''>  private[this] val multilineFilter = </span><span style='background: #F0ADAD'>Filter.partial(&quot;multilineFilter&quot;) {
+</span>39 <span style=''></span><span style='background: #F0ADAD'>    case TermState(lb ~: rest, b, c, d) if (lb == 10 || lb == 13) =&gt;
+</span>40 <span style=''></span><span style='background: #F0ADAD'>      val source = b.mkString
+</span>41 <span style=''></span><span style='background: #F0ADAD'>
+</span>42 <span style=''></span><span style='background: #F0ADAD'>      if (ParseResult.isIncomplete(source))
+</span>43 <span style=''></span><span style='background: #F0ADAD'>        BasicFilters.injectNewLine(b, c, rest, indent = 2)
+</span>44 <span style=''></span><span style='background: #F0ADAD'>      else
+</span>45 <span style=''></span><span style='background: #F0ADAD'>        Result(source) // short-circuit the filters
+</span>46 <span style=''></span><span style='background: #F0ADAD'>  }</span><span style=''>
+</span>47 <span style=''>
+</span>48 <span style=''>  /** Blockingly read line from `System.in`
+</span>49 <span style=''>   *
+</span>50 <span style=''>   *  This entry point into Ammonite handles everything to do with terminal
+</span>51 <span style=''>   *  emulation. This includes:
+</span>52 <span style=''>   *
+</span>53 <span style=''>   *  - Multiline support
+</span>54 <span style=''>   *  - Copy-pasting
+</span>55 <span style=''>   *  - History
+</span>56 <span style=''>   *  - Syntax highlighting
+</span>57 <span style=''>   *
+</span>58 <span style=''>   *  To facilitate this, filters are used. The terminal emulation, however,
+</span>59 <span style=''>   *  does not render output - simply input.
+</span>60 <span style=''>   */
+</span>61 <span style=''>  def prompt: ParseResult = {
+</span>62 <span style=''>    val historyFilter = </span><span style='background: #F0ADAD'>new HistoryFilter(
+</span>63 <span style=''></span><span style='background: #F0ADAD'>      () =&gt; history.toVector,
+</span>64 <span style=''></span><span style='background: #F0ADAD'>      Console.BLUE,
+</span>65 <span style=''></span><span style='background: #F0ADAD'>      AnsiNav.resetForegroundColor
+</span>66 <span style=''></span><span style='background: #F0ADAD'>    )</span><span style=''>
+</span>67 <span style=''>
+</span>68 <span style=''>    val autocompleteFilter: Filter = </span><span style='background: #F0ADAD'>Filter.action(&quot;autocompleteFilter&quot;)(SpecialKeys.Tab :: Nil) {
+</span>69 <span style=''></span><span style='background: #F0ADAD'>      case TermState(rest, b, c, _) =&gt;
+</span>70 <span style=''></span><span style='background: #F0ADAD'>        val Completions(newCursor, completions, details) = complete(c, b.mkString)
+</span>71 <span style=''></span><span style='background: #F0ADAD'>        lazy val prefixDetails = FrontEndUtils.findPrefix(details)
+</span>72 <span style=''></span><span style='background: #F0ADAD'>        val details2 = details.map { det =&gt;
+</span>73 <span style=''></span><span style='background: #F0ADAD'>          val (left, right) = det.splitAt(prefixDetails.length)
+</span>74 <span style=''></span><span style='background: #F0ADAD'>          (Highlighting.Green(left) + Highlighting.Cyan(right)).toString
+</span>75 <span style=''></span><span style='background: #F0ADAD'>        }
+</span>76 <span style=''></span><span style='background: #F0ADAD'>
+</span>77 <span style=''></span><span style='background: #F0ADAD'>        lazy val prefixComp = FrontEndUtils.findPrefix(completions)
+</span>78 <span style=''></span><span style='background: #F0ADAD'>        val completions2: Seq[String] = for(comp &lt;- completions) yield {
+</span>79 <span style=''></span><span style='background: #F0ADAD'>          val (left, right) = comp.splitAt(prefixComp.length)
+</span>80 <span style=''></span><span style='background: #F0ADAD'>          (Highlighting.Green(left).toString ++ right)
+</span>81 <span style=''></span><span style='background: #F0ADAD'>        }
+</span>82 <span style=''></span><span style='background: #F0ADAD'>
+</span>83 <span style=''></span><span style='background: #F0ADAD'>        val stdout = FrontEndUtils.printCompletions(completions2, details2).mkString
+</span>84 <span style=''></span><span style='background: #F0ADAD'>
+</span>85 <span style=''></span><span style='background: #F0ADAD'>        if (details.nonEmpty || completions.isEmpty)
+</span>86 <span style=''></span><span style='background: #F0ADAD'>          Printing(TermState(rest, b, c), stdout)
+</span>87 <span style=''></span><span style='background: #F0ADAD'>        else {
+</span>88 <span style=''></span><span style='background: #F0ADAD'>          val newBuffer = b.take(newCursor) ++ prefixComp ++ b.drop(c)
+</span>89 <span style=''></span><span style='background: #F0ADAD'>          Printing(TermState(rest, newBuffer, newCursor + prefixComp.length), stdout)
+</span>90 <span style=''></span><span style='background: #F0ADAD'>        }
+</span>91 <span style=''></span><span style='background: #F0ADAD'>    }</span><span style=''>
+</span>92 <span style=''>
+</span>93 <span style=''>    val allFilters = </span><span style='background: #F0ADAD'>Filter.merge(
+</span>94 <span style=''></span><span style='background: #F0ADAD'>      UndoFilter(),
+</span>95 <span style=''></span><span style='background: #F0ADAD'>      historyFilter,
+</span>96 <span style=''></span><span style='background: #F0ADAD'>      selectionFilter,
+</span>97 <span style=''></span><span style='background: #F0ADAD'>      GUILikeFilters.altFilter,
+</span>98 <span style=''></span><span style='background: #F0ADAD'>      GUILikeFilters.fnFilter,
+</span>99 <span style=''></span><span style='background: #F0ADAD'>      ReadlineFilters.navFilter,
+</span>100 <span style=''></span><span style='background: #F0ADAD'>      cutPasteFilter,
+</span>101 <span style=''></span><span style='background: #F0ADAD'>      autocompleteFilter,
+</span>102 <span style=''></span><span style='background: #F0ADAD'>      multilineFilter,
+</span>103 <span style=''></span><span style='background: #F0ADAD'>      BasicFilters.all
+</span>104 <span style=''></span><span style='background: #F0ADAD'>    )</span><span style=''>
+</span>105 <span style=''>
+</span>106 <span style=''>    def displayTransform(buffer: Vector[Char], cursor: Int): (Ansi.Str, Int) = {
+</span>107 <span style=''>      val coloredBuffer =
+</span>108 <span style=''>        </span><span style='background: #F0ADAD'>SyntaxHighlighting(buffer)</span><span style=''>
+</span>109 <span style=''>
+</span>110 <span style=''>      val ansiBuffer = </span><span style='background: #F0ADAD'>Ansi.Str.parse(coloredBuffer.toVector)</span><span style=''>
+</span>111 <span style=''>      val (newBuffer, cursorOffset) = SelectionFilter.mangleBuffer(
+</span>112 <span style=''>        selectionFilter, ansiBuffer, cursor, Ansi.Reversed.On
+</span>113 <span style=''>      )
+</span>114 <span style=''>      val newNewBuffer = </span><span style='background: #F0ADAD'>HistoryFilter.mangleBuffer(
+</span>115 <span style=''></span><span style='background: #F0ADAD'>        historyFilter, newBuffer, cursor,
+</span>116 <span style=''></span><span style='background: #F0ADAD'>        Ansi.Color.Green
+</span>117 <span style=''></span><span style='background: #F0ADAD'>      )</span><span style=''>
+</span>118 <span style=''>
+</span>119 <span style=''>      </span><span style='background: #F0ADAD'>(newNewBuffer, cursorOffset)</span><span style=''>
+</span>120 <span style=''>    }
+</span>121 <span style=''>
+</span>122 <span style=''>    val prompt = </span><span style='background: #F0ADAD'>Console.BLUE + &quot;scala&gt; &quot; + Console.RESET</span><span style=''>
+</span>123 <span style=''>
+</span>124 <span style=''>    </span><span style='background: #F0ADAD'>Terminal
+</span>125 <span style=''></span><span style='background: #F0ADAD'>      .readLine(prompt, reader, writer, allFilters, displayTransform)
+</span>126 <span style=''></span><span style='background: #F0ADAD'>      .map {
+</span>127 <span style=''></span><span style='background: #F0ADAD'>        case Result(source) =&gt; ParseResult(source)
+</span>128 <span style=''></span><span style='background: #F0ADAD'>        case Interrupt =&gt; SigKill
+</span>129 <span style=''></span><span style='background: #F0ADAD'>      }
+</span>130 <span style=''></span><span style='background: #F0ADAD'>      .getOrElse(Quit)</span><span style=''>
+</span>131 <span style=''>  }
+</span>132 <span style=''>}
+</span>133 <span style=''>
+</span>134 <span style=''>object AmmoniteReader {
+</span>135 <span style=''>  type History = List[String]
+</span>136 <span style=''>
+</span>137 <span style=''>  def apply(out: OutputStream,
+</span>138 <span style=''>            history: History,
+</span>139 <span style=''>            complete: (Int, String) =&gt; Completions)
+</span>140 <span style=''>           (implicit ctx: Context) =
+</span>141 <span style=''>    </span><span style='background: #F0ADAD'>new AmmoniteReader(out, history, complete)</span><span style=''>
+</span>142 <span style=''>}
+</span></pre>
+          </div>
+          <div class="tab-pane" id="statementlist">
+            <table cellspacing="0" cellpadding="0" class="table statementlist">
+      <tr>
+        <th>Line</th>
+        <th>Stmt Id</th>
+        <th>Pos</th>
+        <th>Tree</th>
+        <th>Symbol</th>
+        <th>Code</th>
+      </tr><tr>
+        <td>
+          33
+        </td>
+        <td>
+          80413
+        </td>
+        <td>
+          1028
+          -
+          1060
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.io.InputStreamReader.&lt;init&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          new java.io.InputStreamReader(java.lang.System.in)
+        </td>
+      </tr><tr>
+        <td>
+          33
+        </td>
+        <td>
+          80412
+        </td>
+        <td>
+          1050
+          -
+          1059
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          java.lang.System.in
+        </td>
+        <td style="background: #F0ADAD">
+          java.lang.System.in
+        </td>
+      </tr><tr>
+        <td>
+          34
+        </td>
+        <td>
+          80415
+        </td>
+        <td>
+          1090
+          -
+          1117
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.io.OutputStreamWriter.&lt;init&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          new java.io.OutputStreamWriter(AmmoniteReader.this.out)
+        </td>
+      </tr><tr>
+        <td>
+          34
+        </td>
+        <td>
+          80414
+        </td>
+        <td>
+          1113
+          -
+          1116
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.repl.AmmoniteReader.out
+        </td>
+        <td style="background: #F0ADAD">
+          AmmoniteReader.this.out
+        </td>
+      </tr><tr>
+        <td>
+          36
+        </td>
+        <td>
+          80416
+        </td>
+        <td>
+          1157
+          -
+          1189
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.repl.terminal.filters.ReadlineFilters.CutPasteFilter.apply
+        </td>
+        <td style="background: #F0ADAD">
+          terminal.filters.ReadlineFilters.CutPasteFilter.apply()
+        </td>
+      </tr><tr>
+        <td>
+          37
+        </td>
+        <td>
+          80417
+        </td>
+        <td>
+          1228
+          -
+          1270
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.repl.terminal.filters.GUILikeFilters.SelectionFilter.apply
+        </td>
+        <td style="background: #F0ADAD">
+          terminal.filters.GUILikeFilters.SelectionFilter.apply(2)
+        </td>
+      </tr><tr>
+        <td>
+          38
+        </td>
+        <td>
+          80429
+        </td>
+        <td>
+          1343
+          -
+          1343
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.repl.AmmoniteReader.$anonfun.&lt;init&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          new $anonfun()
+        </td>
+      </tr><tr>
+        <td>
+          38
+        </td>
+        <td>
+          80418
+        </td>
+        <td>
+          1324
+          -
+          1341
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          &quot;multilineFilter&quot;
+        </td>
+      </tr><tr>
+        <td>
+          38
+        </td>
+        <td>
+          80430
+        </td>
+        <td>
+          1309
+          -
+          1614
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.repl.terminal.Filter.partial
+        </td>
+        <td style="background: #F0ADAD">
+          terminal.Filter.partial(&quot;multilineFilter&quot;)(({
+  @SerialVersionUID(value = 0) final &lt;synthetic&gt; class $anonfun extends scala.runtime.AbstractPartialFunction[dotty.tools.repl.terminal.TermInfo,dotty.tools.repl.terminal.TermAction] with Serializable {
+    def &lt;init&gt;(): &lt;$anon: dotty.tools.repl.terminal.TermInfo =&gt; dotty.tools.repl.terminal.TermAction&gt; = {
+      $anonfun.super.&lt;init&gt;();
+      ()
+    };
+    final override def applyOrElse[A1 &lt;: dotty.tools.repl.terminal.TermInfo, B1 &gt;: dotty.tools.repl.terminal.TermAction](x1: A1, default: A1 =&gt; B1): B1 = ((x1.asInstanceOf[dotty.tools.repl.terminal.TermInfo]: dotty.tools.repl.terminal.TermInfo): dotty.tools.repl.terminal.TermInfo @unchecked) match {
+      case terminal.TermState.unapply(&lt;unapply-selector&gt;) &lt;unapply&gt; (terminal.LazyList.~:.unapply[Int](&lt;unapply-selector&gt;) &lt;unapply&gt; ((lb @ _), (rest @ _)), (b @ _), (c @ _), (d @ _)) if lb.==(10).||(lb.==(13)) =&gt; {
+        val source: String = b.mkString;
+        if (ParseResult.isIncomplete(source)(AmmoniteReader.this.ctx))
+          terminal.filters.BasicFilters.injectNewLine(b, c, rest, 2)
+        else
+          terminal.Result.apply(source)
+      }
+      case (defaultCase$ @ _) =&gt; default.apply(x1)
+    };
+    final def isDefinedAt(x1: dotty.tools.repl.terminal.TermInfo): Boolean = ((x1.asInstanceOf[dotty.tools.repl.terminal.TermInfo]: dotty.tools.repl.terminal.TermInfo): dotty.tools.repl.terminal.TermInfo @unchecked) match {
+      case terminal.TermState.unapply(&lt;unapply-selector&gt;) &lt;unapply&gt; (terminal.LazyList.~:.unapply[Int](&lt;unapply-selector&gt;) &lt;unapply&gt; ((lb @ _), (rest @ _)), (b @ _), (c @ _), (d @ _)) if lb.==(10).||(lb.==(13)) =&gt; true
+      case (defaultCase$ @ _) =&gt; false
+    }
+  };
+  new $anonfun()
+}: PartialFunction[dotty.tools.repl.terminal.TermInfo,dotty.tools.repl.terminal.TermAction]))
+        </td>
+      </tr><tr>
+        <td>
+          39
+        </td>
+        <td>
+          80420
+        </td>
+        <td>
+          1401
+          -
+          1409
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Int.==
+        </td>
+        <td style="background: #F0ADAD">
+          lb.==(13)
+        </td>
+      </tr><tr>
+        <td>
+          39
+        </td>
+        <td>
+          80419
+        </td>
+        <td>
+          1395
+          -
+          1397
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          10
+        </td>
+      </tr><tr>
+        <td>
+          39
+        </td>
+        <td>
+          80421
+        </td>
+        <td>
+          1389
+          -
+          1409
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Boolean.||
+        </td>
+        <td style="background: #F0ADAD">
+          lb.==(10).||(lb.==(13))
+        </td>
+      </tr><tr>
+        <td>
+          40
+        </td>
+        <td>
+          80422
+        </td>
+        <td>
+          1433
+          -
+          1443
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.collection.TraversableOnce.mkString
+        </td>
+        <td style="background: #F0ADAD">
+          b.mkString
+        </td>
+      </tr><tr>
+        <td>
+          42
+        </td>
+        <td>
+          80424
+        </td>
+        <td>
+          1455
+          -
+          1487
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.repl.ParseResult.isIncomplete
+        </td>
+        <td style="background: #F0ADAD">
+          ParseResult.isIncomplete(source)(AmmoniteReader.this.ctx)
+        </td>
+      </tr><tr>
+        <td>
+          42
+        </td>
+        <td>
+          80423
+        </td>
+        <td>
+          1479
+          -
+          1479
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.repl.AmmoniteReader.ctx
+        </td>
+        <td style="background: #F0ADAD">
+          AmmoniteReader.this.ctx
+        </td>
+      </tr><tr>
+        <td>
+          43
+        </td>
+        <td>
+          80426
+        </td>
+        <td>
+          1497
+          -
+          1547
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          dotty.tools.repl.terminal.filters.BasicFilters.injectNewLine
+        </td>
+        <td style="background: #F0ADAD">
+          terminal.filters.BasicFilters.injectNewLine(b, c, rest, 2)
+        </td>
+      </tr><tr>
+        <td>
+          43
+        </td>
+        <td>
+          80425
+        </td>
+        <td>
+          1497
+          -
+          1547
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.repl.terminal.filters.BasicFilters.injectNewLine
+        </td>
+        <td style="background: #F0ADAD">
+          terminal.filters.BasicFilters.injectNewLine(b, c, rest, 2)
+        </td>
+      </tr><tr>
+        <td>
+          45
+        </td>
+        <td>
+          80428
+        </td>
+        <td>
+          1567
+          -
+          1581
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          dotty.tools.repl.terminal.Result.apply
+        </td>
+        <td style="background: #F0ADAD">
+          terminal.Result.apply(source)
+        </td>
+      </tr><tr>
+        <td>
+          45
+        </td>
+        <td>
+          80427
+        </td>
+        <td>
+          1567
+          -
+          1581
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.repl.terminal.Result.apply
+        </td>
+        <td style="background: #F0ADAD">
+          terminal.Result.apply(source)
+        </td>
+      </tr><tr>
+        <td>
+          62
+        </td>
+        <td>
+          80434
+        </td>
+        <td>
+          2056
+          -
+          2165
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.repl.terminal.filters.HistoryFilter.&lt;init&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          new terminal.filters.HistoryFilter((() =&gt; AmmoniteReader.this.history.toVector), &quot;\u001B[34m&quot;, terminal.AnsiNav.resetForegroundColor)
+        </td>
+      </tr><tr>
+        <td>
+          63
+        </td>
+        <td>
+          80431
+        </td>
+        <td>
+          2087
+          -
+          2103
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.collection.TraversableOnce.toVector
+        </td>
+        <td style="background: #F0ADAD">
+          AmmoniteReader.this.history.toVector
+        </td>
+      </tr><tr>
+        <td>
+          64
+        </td>
+        <td>
+          80432
+        </td>
+        <td>
+          2111
+          -
+          2123
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          &quot;\u001B[34m&quot;
+        </td>
+      </tr><tr>
+        <td>
+          65
+        </td>
+        <td>
+          80433
+        </td>
+        <td>
+          2131
+          -
+          2159
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.repl.terminal.AnsiNav.resetForegroundColor
+        </td>
+        <td style="background: #F0ADAD">
+          terminal.AnsiNav.resetForegroundColor
+        </td>
+      </tr><tr>
+        <td>
+          68
+        </td>
+        <td>
+          80435
+        </td>
+        <td>
+          2218
+          -
+          2238
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          &quot;autocompleteFilter&quot;
+        </td>
+      </tr><tr>
+        <td>
+          68
+        </td>
+        <td>
+          80437
+        </td>
+        <td>
+          2217
+          -
+          2217
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.repl.terminal.Filter.action$default$3
+        </td>
+        <td style="background: #F0ADAD">
+          terminal.Filter.action$default$3(x$6)
+        </td>
+      </tr><tr>
+        <td>
+          68
+        </td>
+        <td>
+          80472
+        </td>
+        <td>
+          2204
+          -
+          3292
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.repl.terminal.Filter.action
+        </td>
+        <td style="background: #F0ADAD">
+          terminal.Filter.action(x$6)(x$7, x$8)(x$9)
+        </td>
+      </tr><tr>
+        <td>
+          68
+        </td>
+        <td>
+          80436
+        </td>
+        <td>
+          2256
+          -
+          2262
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.immutable.List.::
+        </td>
+        <td style="background: #F0ADAD">
+          scala.collection.immutable.Nil.::[String](x$1)
+        </td>
+      </tr><tr>
+        <td>
+          70
+        </td>
+        <td>
+          80438
+        </td>
+        <td>
+          2329
+          -
+          2329
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.Tuple3._1
+        </td>
+        <td style="background: #F0ADAD">
+          x$2._1
+        </td>
+      </tr><tr>
+        <td>
+          70
+        </td>
+        <td>
+          80440
+        </td>
+        <td>
+          2353
+          -
+          2353
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.Tuple3._3
+        </td>
+        <td style="background: #F0ADAD">
+          x$2._3
+        </td>
+      </tr><tr>
+        <td>
+          70
+        </td>
+        <td>
+          80439
+        </td>
+        <td>
+          2340
+          -
+          2340
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.Tuple3._2
+        </td>
+        <td style="background: #F0ADAD">
+          x$2._2
+        </td>
+      </tr><tr>
+        <td>
+          72
+        </td>
+        <td>
+          80444
+        </td>
+        <td>
+          2490
+          -
+          2490
+        </td>
+        <td>
+          TypeApply
+        </td>
+        <td>
+          scala.collection.immutable.List.canBuildFrom
+        </td>
+        <td style="background: #F0ADAD">
+          immutable.this.List.canBuildFrom[String]
+        </td>
+      </tr><tr>
+        <td>
+          72
+        </td>
+        <td>
+          80445
+        </td>
+        <td>
+          2478
+          -
+          2645
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          scala.collection.immutable.List.map
+        </td>
+        <td style="background: #F0ADAD">
+          details.map[String, List[String]](((det: String) =&gt; {
+  &lt;synthetic&gt; &lt;artifact&gt; private[this] val x$3: (String, String) = (scala.Predef.augmentString(det).splitAt(prefixDetails.length()): (String, String) @unchecked) match {
+    case (_1: String, _2: String)(String, String)((left @ _), (right @ _)) =&gt; scala.Tuple2.apply[String, String](left, right)
+  };
+  val left: String = x$3._1;
+  val right: String = x$3._2;
+  dotc.printing.Highlighting.Green.apply(left).+(dotc.printing.Highlighting.Cyan.apply(right))(AmmoniteReader.this.ctx).toString()
+}))(immutable.this.List.canBuildFrom[String])
+        </td>
+      </tr><tr>
+        <td>
+          73
+        </td>
+        <td>
+          80442
+        </td>
+        <td>
+          2520
+          -
+          2520
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.Tuple2._2
+        </td>
+        <td style="background: #F0ADAD">
+          x$3._2
+        </td>
+      </tr><tr>
+        <td>
+          73
+        </td>
+        <td>
+          80441
+        </td>
+        <td>
+          2514
+          -
+          2514
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.Tuple2._1
+        </td>
+        <td style="background: #F0ADAD">
+          x$3._1
+        </td>
+      </tr><tr>
+        <td>
+          74
+        </td>
+        <td>
+          80443
+        </td>
+        <td>
+          2574
+          -
+          2635
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.printing.Highlighting.HighlightBuffer.toString
+        </td>
+        <td style="background: #F0ADAD">
+          dotc.printing.Highlighting.Green.apply(left).+(dotc.printing.Highlighting.Cyan.apply(right))(AmmoniteReader.this.ctx).toString()
+        </td>
+      </tr><tr>
+        <td>
+          78
+        </td>
+        <td>
+          80453
+        </td>
+        <td>
+          2755
+          -
+          2914
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          scala.collection.immutable.List.map
+        </td>
+        <td style="background: #F0ADAD">
+          completions.map[String, Seq[String]](((comp: String) =&gt; {
+  &lt;synthetic&gt; &lt;artifact&gt; private[this] val x$4: (String, String) = (scala.Predef.augmentString(comp).splitAt(prefixComp.length()): (String, String) @unchecked) match {
+    case (_1: String, _2: String)(String, String)((left @ _), (right @ _)) =&gt; scala.Tuple2.apply[String, String](left, right)
+  };
+  val left: String = x$4._1;
+  val right: String = x$4._2;
+  scala.Predef.augmentString(dotc.printing.Highlighting.Green.apply(left).toString()).++[Char, String](scala.Predef.augmentString(right))(scala.Predef.StringCanBuildFrom)
+}))(immutable.this.List.canBuildFrom[String])
+        </td>
+      </tr><tr>
+        <td>
+          78
+        </td>
+        <td>
+          80452
+        </td>
+        <td>
+          2764
+          -
+          2764
+        </td>
+        <td>
+          TypeApply
+        </td>
+        <td>
+          scala.collection.immutable.List.canBuildFrom
+        </td>
+        <td style="background: #F0ADAD">
+          immutable.this.List.canBuildFrom[String]
+        </td>
+      </tr><tr>
+        <td>
+          79
+        </td>
+        <td>
+          80447
+        </td>
+        <td>
+          2809
+          -
+          2809
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.Tuple2._2
+        </td>
+        <td style="background: #F0ADAD">
+          x$4._2
+        </td>
+      </tr><tr>
+        <td>
+          79
+        </td>
+        <td>
+          80446
+        </td>
+        <td>
+          2803
+          -
+          2803
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.Tuple2._1
+        </td>
+        <td style="background: #F0ADAD">
+          x$4._1
+        </td>
+      </tr><tr>
+        <td>
+          80
+        </td>
+        <td>
+          80449
+        </td>
+        <td>
+          2898
+          -
+          2903
+        </td>
+        <td>
+          ApplyImplicitView
+        </td>
+        <td>
+          scala.Predef.augmentString
+        </td>
+        <td style="background: #F0ADAD">
+          scala.Predef.augmentString(right)
+        </td>
+      </tr><tr>
+        <td>
+          80
+        </td>
+        <td>
+          80448
+        </td>
+        <td>
+          2861
+          -
+          2894
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.printing.Highlighting.Highlight.toString
+        </td>
+        <td style="background: #F0ADAD">
+          dotc.printing.Highlighting.Green.apply(left).toString()
+        </td>
+      </tr><tr>
+        <td>
+          80
+        </td>
+        <td>
+          80451
+        </td>
+        <td>
+          2861
+          -
+          2903
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          scala.collection.TraversableLike.++
+        </td>
+        <td style="background: #F0ADAD">
+          scala.Predef.augmentString(dotc.printing.Highlighting.Green.apply(left).toString()).++[Char, String](scala.Predef.augmentString(right))(scala.Predef.StringCanBuildFrom)
+        </td>
+      </tr><tr>
+        <td>
+          80
+        </td>
+        <td>
+          80450
+        </td>
+        <td>
+          2895
+          -
+          2895
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.Predef.StringCanBuildFrom
+        </td>
+        <td style="background: #F0ADAD">
+          scala.Predef.StringCanBuildFrom
+        </td>
+      </tr><tr>
+        <td>
+          83
+        </td>
+        <td>
+          80454
+        </td>
+        <td>
+          2937
+          -
+          3000
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.collection.TraversableOnce.mkString
+        </td>
+        <td style="background: #F0ADAD">
+          terminal.FrontEndUtils.printCompletions(completions2, details2).mkString
+        </td>
+      </tr><tr>
+        <td>
+          85
+        </td>
+        <td>
+          80456
+        </td>
+        <td>
+          3014
+          -
+          3053
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Boolean.||
+        </td>
+        <td style="background: #F0ADAD">
+          details.nonEmpty.||(completions.isEmpty)
+        </td>
+      </tr><tr>
+        <td>
+          85
+        </td>
+        <td>
+          80455
+        </td>
+        <td>
+          3034
+          -
+          3053
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.collection.SeqLike.isEmpty
+        </td>
+        <td style="background: #F0ADAD">
+          completions.isEmpty
+        </td>
+      </tr><tr>
+        <td>
+          86
+        </td>
+        <td>
+          80458
+        </td>
+        <td>
+          3074
+          -
+          3095
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.repl.terminal.TermState.apply
+        </td>
+        <td style="background: #F0ADAD">
+          terminal.TermState.apply(rest, b, c, terminal.TermState.apply$default$4)
+        </td>
+      </tr><tr>
+        <td>
+          86
+        </td>
+        <td>
+          80460
+        </td>
+        <td>
+          3065
+          -
+          3104
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          dotty.tools.repl.terminal.Printing.apply
+        </td>
+        <td style="background: #F0ADAD">
+          terminal.Printing.apply(terminal.TermState.apply(rest, b, c, terminal.TermState.apply$default$4), stdout)
+        </td>
+      </tr><tr>
+        <td>
+          86
+        </td>
+        <td>
+          80457
+        </td>
+        <td>
+          3074
+          -
+          3074
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.repl.terminal.TermState.apply$default$4
+        </td>
+        <td style="background: #F0ADAD">
+          terminal.TermState.apply$default$4
+        </td>
+      </tr><tr>
+        <td>
+          86
+        </td>
+        <td>
+          80459
+        </td>
+        <td>
+          3065
+          -
+          3104
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.repl.terminal.Printing.apply
+        </td>
+        <td style="background: #F0ADAD">
+          terminal.Printing.apply(terminal.TermState.apply(rest, b, c, terminal.TermState.apply$default$4), stdout)
+        </td>
+      </tr><tr>
+        <td>
+          87
+        </td>
+        <td>
+          80471
+        </td>
+        <td>
+          3118
+          -
+          3286
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          {
+  val newBuffer: scala.collection.immutable.Vector[Char] = b.take(newCursor).++[Char, scala.collection.immutable.Vector[Char]](scala.Predef.augmentString(prefixComp))(immutable.this.Vector.canBuildFrom[Char]).++[Char, scala.collection.immutable.Vector[Char]](b.drop(c))(immutable.this.Vector.canBuildFrom[Char]);
+  terminal.Printing.apply(terminal.TermState.apply(rest, newBuffer, newCursor.+(prefixComp.length()), terminal.TermState.apply$default$4), stdout)
+}
+        </td>
+      </tr><tr>
+        <td>
+          88
+        </td>
+        <td>
+          80462
+        </td>
+        <td>
+          3164
+          -
+          3164
+        </td>
+        <td>
+          TypeApply
+        </td>
+        <td>
+          scala.collection.immutable.Vector.canBuildFrom
+        </td>
+        <td style="background: #F0ADAD">
+          immutable.this.Vector.canBuildFrom[Char]
+        </td>
+      </tr><tr>
+        <td>
+          88
+        </td>
+        <td>
+          80465
+        </td>
+        <td>
+          3146
+          -
+          3190
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          scala.collection.immutable.Vector.++
+        </td>
+        <td style="background: #F0ADAD">
+          b.take(newCursor).++[Char, scala.collection.immutable.Vector[Char]](scala.Predef.augmentString(prefixComp))(immutable.this.Vector.canBuildFrom[Char]).++[Char, scala.collection.immutable.Vector[Char]](b.drop(c))(immutable.this.Vector.canBuildFrom[Char])
+        </td>
+      </tr><tr>
+        <td>
+          88
+        </td>
+        <td>
+          80464
+        </td>
+        <td>
+          3178
+          -
+          3178
+        </td>
+        <td>
+          TypeApply
+        </td>
+        <td>
+          scala.collection.immutable.Vector.canBuildFrom
+        </td>
+        <td style="background: #F0ADAD">
+          immutable.this.Vector.canBuildFrom[Char]
+        </td>
+      </tr><tr>
+        <td>
+          88
+        </td>
+        <td>
+          80461
+        </td>
+        <td>
+          3167
+          -
+          3177
+        </td>
+        <td>
+          ApplyImplicitView
+        </td>
+        <td>
+          scala.Predef.augmentString
+        </td>
+        <td style="background: #F0ADAD">
+          scala.Predef.augmentString(prefixComp)
+        </td>
+      </tr><tr>
+        <td>
+          88
+        </td>
+        <td>
+          80463
+        </td>
+        <td>
+          3181
+          -
+          3190
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.immutable.Vector.drop
+        </td>
+        <td style="background: #F0ADAD">
+          b.drop(c)
+        </td>
+      </tr><tr>
+        <td>
+          89
+        </td>
+        <td>
+          80467
+        </td>
+        <td>
+          3237
+          -
+          3266
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Int.+
+        </td>
+        <td style="background: #F0ADAD">
+          newCursor.+(prefixComp.length())
+        </td>
+      </tr><tr>
+        <td>
+          89
+        </td>
+        <td>
+          80470
+        </td>
+        <td>
+          3201
+          -
+          3276
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.repl.terminal.Printing.apply
+        </td>
+        <td style="background: #F0ADAD">
+          terminal.Printing.apply(terminal.TermState.apply(rest, newBuffer, newCursor.+(prefixComp.length()), terminal.TermState.apply$default$4), stdout)
+        </td>
+      </tr><tr>
+        <td>
+          89
+        </td>
+        <td>
+          80469
+        </td>
+        <td>
+          3210
+          -
+          3267
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.repl.terminal.TermState.apply
+        </td>
+        <td style="background: #F0ADAD">
+          terminal.TermState.apply(rest, newBuffer, newCursor.+(prefixComp.length()), terminal.TermState.apply$default$4)
+        </td>
+      </tr><tr>
+        <td>
+          89
+        </td>
+        <td>
+          80466
+        </td>
+        <td>
+          3249
+          -
+          3266
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.String.length
+        </td>
+        <td style="background: #F0ADAD">
+          prefixComp.length()
+        </td>
+      </tr><tr>
+        <td>
+          89
+        </td>
+        <td>
+          80468
+        </td>
+        <td>
+          3210
+          -
+          3210
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.repl.terminal.TermState.apply$default$4
+        </td>
+        <td style="background: #F0ADAD">
+          terminal.TermState.apply$default$4
+        </td>
+      </tr><tr>
+        <td>
+          93
+        </td>
+        <td>
+          80481
+        </td>
+        <td>
+          3315
+          -
+          3588
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.repl.terminal.Filter.merge
+        </td>
+        <td style="background: #F0ADAD">
+          terminal.Filter.merge(terminal.filters.UndoFilter.apply(terminal.filters.UndoFilter.apply$default$1), historyFilter, AmmoniteReader.this.selectionFilter, terminal.filters.GUILikeFilters.altFilter, terminal.filters.GUILikeFilters.fnFilter, terminal.filters.ReadlineFilters.navFilter, AmmoniteReader.this.cutPasteFilter, autocompleteFilter, AmmoniteReader.this.multilineFilter, terminal.filters.BasicFilters.all)
+        </td>
+      </tr><tr>
+        <td>
+          94
+        </td>
+        <td>
+          80473
+        </td>
+        <td>
+          3335
+          -
+          3335
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.repl.terminal.filters.UndoFilter.apply$default$1
+        </td>
+        <td style="background: #F0ADAD">
+          terminal.filters.UndoFilter.apply$default$1
+        </td>
+      </tr><tr>
+        <td>
+          94
+        </td>
+        <td>
+          80474
+        </td>
+        <td>
+          3335
+          -
+          3347
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.repl.terminal.filters.UndoFilter.apply
+        </td>
+        <td style="background: #F0ADAD">
+          terminal.filters.UndoFilter.apply(terminal.filters.UndoFilter.apply$default$1)
+        </td>
+      </tr><tr>
+        <td>
+          96
+        </td>
+        <td>
+          80475
+        </td>
+        <td>
+          3376
+          -
+          3391
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.repl.AmmoniteReader.selectionFilter
+        </td>
+        <td style="background: #F0ADAD">
+          AmmoniteReader.this.selectionFilter
+        </td>
+      </tr><tr>
+        <td>
+          97
+        </td>
+        <td>
+          80476
+        </td>
+        <td>
+          3399
+          -
+          3423
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.repl.terminal.filters.GUILikeFilters.altFilter
+        </td>
+        <td style="background: #F0ADAD">
+          terminal.filters.GUILikeFilters.altFilter
+        </td>
+      </tr><tr>
+        <td>
+          98
+        </td>
+        <td>
+          80477
+        </td>
+        <td>
+          3431
+          -
+          3454
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.repl.terminal.filters.GUILikeFilters.fnFilter
+        </td>
+        <td style="background: #F0ADAD">
+          terminal.filters.GUILikeFilters.fnFilter
+        </td>
+      </tr><tr>
+        <td>
+          100
+        </td>
+        <td>
+          80478
+        </td>
+        <td>
+          3495
+          -
+          3509
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.repl.AmmoniteReader.cutPasteFilter
+        </td>
+        <td style="background: #F0ADAD">
+          AmmoniteReader.this.cutPasteFilter
+        </td>
+      </tr><tr>
+        <td>
+          102
+        </td>
+        <td>
+          80479
+        </td>
+        <td>
+          3543
+          -
+          3558
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.repl.AmmoniteReader.multilineFilter
+        </td>
+        <td style="background: #F0ADAD">
+          AmmoniteReader.this.multilineFilter
+        </td>
+      </tr><tr>
+        <td>
+          103
+        </td>
+        <td>
+          80480
+        </td>
+        <td>
+          3566
+          -
+          3582
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.repl.terminal.filters.BasicFilters.all
+        </td>
+        <td style="background: #F0ADAD">
+          terminal.filters.BasicFilters.all
+        </td>
+      </tr><tr>
+        <td>
+          108
+        </td>
+        <td>
+          80482
+        </td>
+        <td>
+          3705
+          -
+          3731
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.printing.SyntaxHighlighting.apply
+        </td>
+        <td style="background: #F0ADAD">
+          dotc.printing.SyntaxHighlighting.apply(buffer)
+        </td>
+      </tr><tr>
+        <td>
+          110
+        </td>
+        <td>
+          80485
+        </td>
+        <td>
+          3756
+          -
+          3794
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.repl.terminal.Ansi.Str.parse
+        </td>
+        <td style="background: #F0ADAD">
+          terminal.Ansi.Str.parse(scala.Predef.SeqCharSequence(coloredBuffer.toVector))
+        </td>
+      </tr><tr>
+        <td>
+          110
+        </td>
+        <td>
+          80484
+        </td>
+        <td>
+          3771
+          -
+          3793
+        </td>
+        <td>
+          ApplyImplicitView
+        </td>
+        <td>
+          scala.Predef.SeqCharSequence
+        </td>
+        <td style="background: #F0ADAD">
+          scala.Predef.SeqCharSequence(coloredBuffer.toVector)
+        </td>
+      </tr><tr>
+        <td>
+          110
+        </td>
+        <td>
+          80483
+        </td>
+        <td>
+          3771
+          -
+          3793
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.collection.TraversableOnce.toVector
+        </td>
+        <td style="background: #F0ADAD">
+          coloredBuffer.toVector
+        </td>
+      </tr><tr>
+        <td>
+          111
+        </td>
+        <td>
+          80487
+        </td>
+        <td>
+          3817
+          -
+          3817
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.Tuple2._2
+        </td>
+        <td style="background: #F0ADAD">
+          x$5._2
+        </td>
+      </tr><tr>
+        <td>
+          111
+        </td>
+        <td>
+          80486
+        </td>
+        <td>
+          3806
+          -
+          3806
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.Tuple2._1
+        </td>
+        <td style="background: #F0ADAD">
+          x$5._1
+        </td>
+      </tr><tr>
+        <td>
+          114
+        </td>
+        <td>
+          80489
+        </td>
+        <td>
+          3958
+          -
+          4060
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.repl.terminal.filters.HistoryFilter.mangleBuffer
+        </td>
+        <td style="background: #F0ADAD">
+          terminal.filters.HistoryFilter.mangleBuffer(historyFilter, newBuffer, cursor, terminal.Ansi.Color.Green)
+        </td>
+      </tr><tr>
+        <td>
+          116
+        </td>
+        <td>
+          80488
+        </td>
+        <td>
+          4036
+          -
+          4052
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.repl.terminal.Ansi.Color.Green
+        </td>
+        <td style="background: #F0ADAD">
+          terminal.Ansi.Color.Green
+        </td>
+      </tr><tr>
+        <td>
+          119
+        </td>
+        <td>
+          80490
+        </td>
+        <td>
+          4068
+          -
+          4096
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Tuple2.apply
+        </td>
+        <td style="background: #F0ADAD">
+          scala.Tuple2.apply[dotty.tools.repl.terminal.Ansi.Str, Int](newNewBuffer, cursorOffset)
+        </td>
+      </tr><tr>
+        <td>
+          122
+        </td>
+        <td>
+          80491
+        </td>
+        <td>
+          4121
+          -
+          4161
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          &quot;\u001B[34mscala&gt; \u001B[0m&quot;
+        </td>
+      </tr><tr>
+        <td>
+          130
+        </td>
+        <td>
+          80492
+        </td>
+        <td>
+          4167
+          -
+          4374
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Option.getOrElse
+        </td>
+        <td style="background: #F0ADAD">
+          terminal.Terminal.readLine(terminal.this.Prompt.construct(prompt), AmmoniteReader.this.reader, AmmoniteReader.this.writer, allFilters, {
+  ((buffer: Vector[Char], cursor: Int) =&gt; displayTransform(buffer, cursor))
+}).map[dotty.tools.repl.ParseResult](((x0$2: dotty.tools.repl.terminal.TermAction) =&gt; x0$2 match {
+  case (s: String)dotty.tools.repl.terminal.Result((source @ _)) =&gt; ParseResult.apply(source)(AmmoniteReader.this.ctx)
+  case terminal.Interrupt =&gt; SigKill
+})).getOrElse[dotty.tools.repl.ParseResult](Quit)
+        </td>
+      </tr><tr>
+        <td>
+          141
+        </td>
+        <td>
+          80493
+        </td>
+        <td>
+          4591
+          -
+          4633
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.repl.AmmoniteReader.&lt;init&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          new AmmoniteReader(out, history, complete)(ctx)
+        </td>
+      </tr>
+    </table>
+          </div>
+        </div>
+      </body>
+    </html>

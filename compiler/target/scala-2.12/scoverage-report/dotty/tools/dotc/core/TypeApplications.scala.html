@@ -1,0 +1,6221 @@
+<html>
+      <head>
+        <meta http-equiv="Content-Type" content="text/html; charset=utf-8"/>
+        <title id="title">
+          dotty/tools/dotc/core/TypeApplications.scala.html
+        </title>
+        <script src="https://ajax.googleapis.com/ajax/libs/jquery/1.10.2/jquery.min.js"></script><link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/jquery.tablesorter/2.20.1/css/theme.default.min.css" type="text/css"/><script src="https://cdnjs.cloudflare.com/ajax/libs/jquery.tablesorter/2.20.1/js/jquery.tablesorter.min.js"></script><link rel="stylesheet" href="https://netdna.bootstrapcdn.com/bootstrap/3.0.3/css/bootstrap.min.css" type="text/css"/><script src="https://netdna.bootstrapcdn.com/bootstrap/3.0.3/js/bootstrap.min.js"></script><script type="text/javascript">
+        $(document).ready(function() {$(".tablesorter").tablesorter();});
+      </script>
+        <style>
+          table.codegrid { font-family: monospace; font-size: 12px; width: auto!important; }table.statementlist { width: auto!important; font-size: 13px; } table.codegrid td { padding: 0!important; border: 0!important } table td.linenumber { width: 40px!important; } 
+        </style>
+      </head>
+      <body style="font-family: monospace;">
+        <ul class="nav nav-tabs">
+          <li>
+            <a href="#codegrid" data-toggle="tab">Codegrid</a>
+          </li>
+          <li>
+            <a href="#statementlist" data-toggle="tab">Statement List</a>
+          </li>
+        </ul>
+        <div class="tab-content">
+          <div class="tab-pane active" id="codegrid">
+            <pre style='font-size: 12pt; font-family: courier;'>1 <span style=''>package dotty.tools
+</span>2 <span style=''>package dotc
+</span>3 <span style=''>package core
+</span>4 <span style=''>
+</span>5 <span style=''>import Types._
+</span>6 <span style=''>import Contexts._
+</span>7 <span style=''>import Symbols._
+</span>8 <span style=''>import SymDenotations.{LazyType, TypeParamsCompleter}
+</span>9 <span style=''>import Decorators._
+</span>10 <span style=''>import util.Stats._
+</span>11 <span style=''>import util.common._
+</span>12 <span style=''>import Names._
+</span>13 <span style=''>import NameOps._
+</span>14 <span style=''>import NameKinds._
+</span>15 <span style=''>import Flags._
+</span>16 <span style=''>import StdNames.tpnme
+</span>17 <span style=''>import util.Positions.Position
+</span>18 <span style=''>import config.Printers.{core, typr}
+</span>19 <span style=''>import collection.mutable
+</span>20 <span style=''>import dotty.tools.dotc.config.Config
+</span>21 <span style=''>import java.util.NoSuchElementException
+</span>22 <span style=''>
+</span>23 <span style=''>object TypeApplications {
+</span>24 <span style=''>
+</span>25 <span style=''>  type TypeParamInfo = ParamInfo.Of[TypeName]
+</span>26 <span style=''>
+</span>27 <span style=''>  /** Assert type is not a TypeBounds instance and return it unchanged */
+</span>28 <span style=''>  def noBounds(tp: Type) = tp match {
+</span>29 <span style=''>    case tp: TypeBounds =&gt; </span><span style='background: #F0ADAD'>throw new AssertionError(&quot;no TypeBounds allowed&quot;)</span><span style=''>
+</span>30 <span style=''>    case _ =&gt; tp
+</span>31 <span style=''>  }
+</span>32 <span style=''>
+</span>33 <span style=''>  /** Does variance `v1` conform to variance `v2`?
+</span>34 <span style=''>   *  This is the case if the variances are the same or `sym` is nonvariant.
+</span>35 <span style=''>   */
+</span>36 <span style=''>  def varianceConforms(v1: Int, v2: Int): Boolean =
+</span>37 <span style=''>    </span><span style='background: #AEF1AE'>v1 == v2 || v2 == 0</span><span style=''>
+</span>38 <span style=''>
+</span>39 <span style=''>  /** Does the variance of type parameter `tparam1` conform to the variance of type parameter `tparam2`?
+</span>40 <span style=''>   */
+</span>41 <span style=''>  def varianceConforms(tparam1: TypeParamInfo, tparam2: TypeParamInfo)(implicit ctx: Context): Boolean =
+</span>42 <span style=''>    </span><span style='background: #AEF1AE'>varianceConforms(tparam1.paramVariance, tparam2.paramVariance)</span><span style=''>
+</span>43 <span style=''>
+</span>44 <span style=''>  /** Do the variances of type parameters `tparams1` conform to the variances
+</span>45 <span style=''>   *  of corresponding type parameters `tparams2`?
+</span>46 <span style=''>   *  This is only the case of `tparams1` and `tparams2` have the same length.
+</span>47 <span style=''>   */
+</span>48 <span style=''>  def variancesConform(tparams1: List[TypeParamInfo], tparams2: List[TypeParamInfo])(implicit ctx: Context): Boolean =
+</span>49 <span style=''>    </span><span style='background: #AEF1AE'>tparams1.corresponds(tparams2)(varianceConforms)</span><span style=''>
+</span>50 <span style=''>
+</span>51 <span style=''>  /** Extractor for
+</span>52 <span style=''>   *
+</span>53 <span style=''>   *    [v1 X1: B1, ..., vn Xn: Bn] -&gt; C[X1, ..., Xn]
+</span>54 <span style=''>   *
+</span>55 <span style=''>   *  where v1, ..., vn and B1, ..., Bn are the variances and bounds of the type parameters
+</span>56 <span style=''>   *  of the class C.
+</span>57 <span style=''>   *
+</span>58 <span style=''>   *  @param tycon     C
+</span>59 <span style=''>   */
+</span>60 <span style=''>  object EtaExpansion {
+</span>61 <span style=''>    def apply(tycon: Type)(implicit ctx: Context) = {
+</span>62 <span style=''>      </span><span style='background: #AEF1AE'>assert(tycon.typeParams.nonEmpty, tycon)</span><span style=''>
+</span>63 <span style=''>      </span><span style='background: #AEF1AE'>tycon.EtaExpand(tycon.typeParamSymbols)</span><span style=''>
+</span>64 <span style=''>    }
+</span>65 <span style=''>
+</span>66 <span style=''>    def unapply(tp: Type)(implicit ctx: Context): Option[TypeRef] = tp match {
+</span>67 <span style=''>      case tp @ HKTypeLambda(tparams, AppliedType(fn: TypeRef, args)) if (</span><span style='background: #AEF1AE'>args == tparams.map(_.paramRef)</span><span style=''>) =&gt; </span><span style='background: #AEF1AE'>Some(fn)</span><span style=''>
+</span>68 <span style=''>      case _ =&gt; </span><span style='background: #AEF1AE'>None</span><span style=''>
+</span>69 <span style=''>    }
+</span>70 <span style=''>  }
+</span>71 <span style=''>
+</span>72 <span style=''>   /** Adapt all arguments to possible higher-kinded type parameters using etaExpandIfHK
+</span>73 <span style=''>   */
+</span>74 <span style=''>  def EtaExpandIfHK(tparams: List[TypeParamInfo], args: List[Type])(implicit ctx: Context): List[Type] =
+</span>75 <span style=''>    if (</span><span style='background: #AEF1AE'>tparams.isEmpty</span><span style=''>) </span><span style='background: #AEF1AE'>args</span><span style=''>
+</span>76 <span style=''>    else </span><span style='background: #AEF1AE'>args.zipWithConserve(tparams)((arg, tparam) =&gt; arg.EtaExpandIfHK(tparam.paramInfoOrCompleter))</span><span style=''>
+</span>77 <span style=''>
+</span>78 <span style=''>  /** A type map that tries to reduce (part of) the result type of the type lambda `tycon`
+</span>79 <span style=''>   *  with the given `args`(some of which are wildcard arguments represented by type bounds).
+</span>80 <span style=''>   *  Non-wildcard arguments are substituted everywhere as usual. A wildcard argument
+</span>81 <span style=''>   *  `&gt;: L &lt;: H` is substituted for a type lambda parameter `X` only under certain conditions.
+</span>82 <span style=''>   *
+</span>83 <span style=''>   *  1. If Mode.AllowLambdaWildcardApply is set:
+</span>84 <span style=''>   *  The wildcard argument is substituted only if `X` appears in a toplevel application of the form
+</span>85 <span style=''>   *
+</span>86 <span style=''>   *        C[..., X, ...]
+</span>87 <span style=''>   *
+</span>88 <span style=''>   *  and there are no other occurrences of `X` in the reduced type. In that case
+</span>89 <span style=''>   *  the refinement above is replaced by
+</span>90 <span style=''>   *
+</span>91 <span style=''>   *        C[..., _ &gt;: L &lt;: H, ...]
+</span>92 <span style=''>   *
+</span>93 <span style=''>   *  The `allReplaced` field indicates whether all occurrences of type lambda parameters
+</span>94 <span style=''>   *  in the reduced type have been replaced with arguments.
+</span>95 <span style=''>   *
+</span>96 <span style=''>   *  2. If Mode.AllowLambdaWildcardApply is not set:
+</span>97 <span style=''>   *  All `X` arguments are replaced by:
+</span>98 <span style=''>   *
+</span>99 <span style=''>   *        _ &gt;: L &lt;: H
+</span>100 <span style=''>   *
+</span>101 <span style=''>   *  Any other occurrence of `X` in `tycon` is replaced by `U`, if the
+</span>102 <span style=''>   *  occurrence of `X` in `tycon` is covariant, or nonvariant, or by `L`,
+</span>103 <span style=''>   *  if the occurrence is contravariant.
+</span>104 <span style=''>   *
+</span>105 <span style=''>   *  The idea is that the `AllowLambdaWildcardApply` mode is used to check whether
+</span>106 <span style=''>   *  a type can be soundly reduced, and to give an error or warning if that
+</span>107 <span style=''>   *  is not the case. By contrast, the default mode, with `AllowLambdaWildcardApply`
+</span>108 <span style=''>   *  not set, reduces all applications even if this yields a different type, so
+</span>109 <span style=''>   *  its postcondition is that no type parameters of `tycon` appear in the
+</span>110 <span style=''>   *  result type. Using this mode, we can guarantee that `appliedTo` will never
+</span>111 <span style=''>   *  produce a higher-kinded application with a type lambda as type constructor.
+</span>112 <span style=''>   */
+</span>113 <span style=''>  class Reducer(tycon: TypeLambda, args: List[Type])(implicit ctx: Context) extends TypeMap {
+</span>114 <span style=''>    private[this] var available = (</span><span style='background: #AEF1AE'>0 until args.length).toSet</span><span style=''>
+</span>115 <span style=''>    var allReplaced = </span><span style='background: #AEF1AE'>true</span><span style=''>
+</span>116 <span style=''>    def hasWildcardArg(p: TypeParamRef) =
+</span>117 <span style=''>      </span><span style='background: #AEF1AE'>p.binder == tycon &amp;&amp; args(p.paramNum).isInstanceOf[TypeBounds]</span><span style=''>
+</span>118 <span style=''>    def canReduceWildcard(p: TypeParamRef) =
+</span>119 <span style=''>      </span><span style='background: #AEF1AE'>!ctx.mode.is(Mode.AllowLambdaWildcardApply) || available.contains(p.paramNum)</span><span style=''>
+</span>120 <span style=''>    def atNestedLevel(op: =&gt; Type): Type = {
+</span>121 <span style=''>      val saved = </span><span style='background: #AEF1AE'>available</span><span style=''>
+</span>122 <span style=''>      available = </span><span style='background: #AEF1AE'>Set()</span><span style=''>
+</span>123 <span style=''>      try </span><span style='background: #AEF1AE'>op</span><span style=''>
+</span>124 <span style=''>      finally </span><span style='background: #AEF1AE'>available = saved</span><span style=''>
+</span>125 <span style=''>    }
+</span>126 <span style=''>
+</span>127 <span style=''>    // If this is a reference to a reducable type parameter corresponding to a
+</span>128 <span style=''>    // wildcard argument, return the wildcard argument, otherwise apply recursively.
+</span>129 <span style=''>    def applyArg(arg: Type): Type = arg match {
+</span>130 <span style=''>      case p: TypeParamRef if </span><span style='background: #AEF1AE'>hasWildcardArg(p) &amp;&amp; canReduceWildcard(p)</span><span style=''> =&gt;
+</span>131 <span style=''>        </span><span style='background: #AEF1AE'>available -= p.paramNum</span><span style=''>
+</span>132 <span style=''>        </span><span style='background: #AEF1AE'>args(p.paramNum)</span><span style=''>
+</span>133 <span style=''>      case _ =&gt;
+</span>134 <span style=''>        </span><span style='background: #AEF1AE'>atNestedLevel(apply(arg))</span><span style=''>
+</span>135 <span style=''>    }
+</span>136 <span style=''>
+</span>137 <span style=''>    def apply(t: Type) = t match {
+</span>138 <span style=''>      case t @ AppliedType(tycon, args1) if </span><span style='background: #AEF1AE'>tycon.typeSymbol.isClass</span><span style=''> =&gt;
+</span>139 <span style=''>        </span><span style='background: #AEF1AE'>t.derivedAppliedType(apply(tycon), args1.mapConserve(applyArg))</span><span style=''>
+</span>140 <span style=''>      case p: TypeParamRef if </span><span style='background: #AEF1AE'>p.binder == tycon</span><span style=''> =&gt;
+</span>141 <span style=''>        </span><span style='background: #AEF1AE'>args(p.paramNum)</span><span style=''> match {
+</span>142 <span style=''>          case TypeBounds(lo, hi) =&gt;
+</span>143 <span style=''>            if (</span><span style='background: #AEF1AE'>ctx.mode.is(Mode.AllowLambdaWildcardApply)</span><span style=''>) </span><span style='background: #AEF1AE'>{ allReplaced = false; p }</span><span style=''>
+</span>144 <span style=''>            else </span><span style='background: #AEF1AE'>if (variance &lt; 0) </span><span style='background: #F0ADAD'>lo</span><span style='background: #AEF1AE'>
+</span>145 <span style=''></span><span style='background: #AEF1AE'>            else hi</span><span style=''>
+</span>146 <span style=''>          case arg =&gt;
+</span>147 <span style=''>            arg
+</span>148 <span style=''>        }
+</span>149 <span style=''>      case _: TypeBounds | _: AppliedType =&gt;
+</span>150 <span style=''>        </span><span style='background: #AEF1AE'>atNestedLevel(mapOver(t))</span><span style=''>
+</span>151 <span style=''>      case _ =&gt;
+</span>152 <span style=''>        </span><span style='background: #AEF1AE'>mapOver(t)</span><span style=''>
+</span>153 <span style=''>    }
+</span>154 <span style=''>  }
+</span>155 <span style=''>}
+</span>156 <span style=''>
+</span>157 <span style=''>import TypeApplications._
+</span>158 <span style=''>
+</span>159 <span style=''>/** A decorator that provides methods for modeling type application */
+</span>160 <span style=''>class TypeApplications(val self: Type) extends AnyVal {
+</span>161 <span style=''>
+</span>162 <span style=''>  /** The type parameters of this type are:
+</span>163 <span style=''>   *  For a ClassInfo type, the type parameters of its class.
+</span>164 <span style=''>   *  For a typeref referring to a class, the type parameters of the class.
+</span>165 <span style=''>   *  For a typeref referring to a Lambda class, the type parameters of
+</span>166 <span style=''>   *    its right hand side or upper bound.
+</span>167 <span style=''>   *  For a refinement type, the type parameters of its parent, dropping
+</span>168 <span style=''>   *  any type parameter that is-rebound by the refinement.
+</span>169 <span style=''>   */
+</span>170 <span style=''>  final def typeParams(implicit ctx: Context): List[TypeParamInfo] = /*&gt;|&gt;*/ </span><span style='background: #AEF1AE'>track(&quot;typeParams&quot;) /*&lt;|&lt;*/ {
+</span>171 <span style=''></span><span style='background: #AEF1AE'>    self match {
+</span>172 <span style=''></span><span style='background: #AEF1AE'>      case self: TypeRef =&gt;
+</span>173 <span style=''></span><span style='background: #AEF1AE'>        val tsym = self.symbol
+</span>174 <span style=''></span><span style='background: #AEF1AE'>        if (tsym.isClass) tsym.typeParams
+</span>175 <span style=''></span><span style='background: #AEF1AE'>        else if (!tsym.exists) self.info.typeParams
+</span>176 <span style=''></span><span style='background: #AEF1AE'>        else tsym.infoOrCompleter match {
+</span>177 <span style=''></span><span style='background: #AEF1AE'>          case info: LazyType =&gt; info.completerTypeParams(tsym)
+</span>178 <span style=''></span><span style='background: #AEF1AE'>          case info =&gt; info.typeParams
+</span>179 <span style=''></span><span style='background: #AEF1AE'>        }
+</span>180 <span style=''></span><span style='background: #AEF1AE'>      case self: AppliedType =&gt;
+</span>181 <span style=''></span><span style='background: #AEF1AE'>        if (self.tycon.typeSymbol.isClass) Nil
+</span>182 <span style=''></span><span style='background: #AEF1AE'>        else self.superType.typeParams
+</span>183 <span style=''></span><span style='background: #AEF1AE'>      case self: ClassInfo =&gt;
+</span>184 <span style=''></span><span style='background: #AEF1AE'>        self.cls.typeParams
+</span>185 <span style=''></span><span style='background: #AEF1AE'>      case self: HKTypeLambda =&gt;
+</span>186 <span style=''></span><span style='background: #AEF1AE'>        self.typeParams
+</span>187 <span style=''></span><span style='background: #AEF1AE'>      case _: SingletonType | _: RefinedType | _: RecType =&gt;
+</span>188 <span style=''></span><span style='background: #AEF1AE'>        Nil
+</span>189 <span style=''></span><span style='background: #AEF1AE'>      case self: WildcardType =&gt;
+</span>190 <span style=''></span><span style='background: #AEF1AE'>        self.optBounds.typeParams
+</span>191 <span style=''></span><span style='background: #AEF1AE'>      case self: TypeProxy =&gt;
+</span>192 <span style=''></span><span style='background: #AEF1AE'>        self.superType.typeParams
+</span>193 <span style=''></span><span style='background: #AEF1AE'>      case _ =&gt;
+</span>194 <span style=''></span><span style='background: #AEF1AE'>        Nil
+</span>195 <span style=''></span><span style='background: #AEF1AE'>    }
+</span>196 <span style=''></span><span style='background: #AEF1AE'>  }</span><span style=''>
+</span>197 <span style=''>
+</span>198 <span style=''>  /** If `self` is a higher-kinded type, its type parameters, otherwise Nil */
+</span>199 <span style=''>  final def hkTypeParams(implicit ctx: Context): List[TypeParamInfo] =
+</span>200 <span style=''>    if (</span><span style='background: #AEF1AE'>isHK</span><span style=''>) </span><span style='background: #AEF1AE'>typeParams</span><span style=''> else </span><span style='background: #AEF1AE'>Nil</span><span style=''>
+</span>201 <span style=''>
+</span>202 <span style=''>  /** If `self` is a generic class, its type parameter symbols, otherwise Nil */
+</span>203 <span style=''>  final def typeParamSymbols(implicit ctx: Context): List[TypeSymbol] = </span><span style='background: #AEF1AE'>typeParams</span><span style=''> match {
+</span>204 <span style=''>    case (_: Symbol) :: _ =&gt;
+</span>205 <span style=''>      </span><span style='background: #AEF1AE'>assert(typeParams.forall(_.isInstanceOf[Symbol]))</span><span style=''>
+</span>206 <span style=''>      </span><span style='background: #AEF1AE'>typeParams.asInstanceOf[List[TypeSymbol]]</span><span style=''>
+</span>207 <span style=''>    case _ =&gt; </span><span style='background: #AEF1AE'>Nil</span><span style=''>
+</span>208 <span style=''>  }
+</span>209 <span style=''>
+</span>210 <span style=''>  /** Is self type higher-kinded (i.e. of kind != &quot;*&quot;)? */
+</span>211 <span style=''>  def isHK(implicit ctx: Context): Boolean = </span><span style='background: #AEF1AE'>hkResult.exists</span><span style=''>
+</span>212 <span style=''>
+</span>213 <span style=''>  /** If self type is higher-kinded, its result type, otherwise NoType */
+</span>214 <span style=''>  def hkResult(implicit ctx: Context): Type = </span><span style='background: #AEF1AE'>self.dealias</span><span style=''> match {
+</span>215 <span style=''>    case self: TypeRef =&gt; </span><span style='background: #AEF1AE'>self.info.hkResult</span><span style=''>
+</span>216 <span style=''>    case self: AppliedType =&gt;
+</span>217 <span style=''>      if (</span><span style='background: #AEF1AE'>self.tycon.typeSymbol.isClass</span><span style=''>) </span><span style='background: #AEF1AE'>NoType</span><span style=''> else </span><span style='background: #AEF1AE'>self.superType.hkResult</span><span style=''>
+</span>218 <span style=''>    case self: HKTypeLambda =&gt; </span><span style='background: #AEF1AE'>self.resultType</span><span style=''>
+</span>219 <span style=''>    case _: SingletonType | _: RefinedType | _: RecType =&gt; </span><span style='background: #AEF1AE'>NoType</span><span style=''>
+</span>220 <span style=''>    case self: WildcardType =&gt; </span><span style='background: #F0ADAD'>self.optBounds.hkResult</span><span style=''>
+</span>221 <span style=''>    case self: TypeVar =&gt;
+</span>222 <span style=''>      // Using `origin` instead of `underlying`, as is done for typeParams,
+</span>223 <span style=''>      // avoids having to set ephemeral in some cases.
+</span>224 <span style=''>      </span><span style='background: #AEF1AE'>self.origin.hkResult</span><span style=''>
+</span>225 <span style=''>    case self: TypeProxy =&gt; </span><span style='background: #AEF1AE'>self.superType.hkResult</span><span style=''>
+</span>226 <span style=''>    case _ =&gt; </span><span style='background: #AEF1AE'>NoType</span><span style=''>
+</span>227 <span style=''>  }
+</span>228 <span style=''>
+</span>229 <span style=''>  /** Do self and other have the same kinds (not counting bounds and variances) */
+</span>230 <span style=''>  def hasSameKindAs(other: Type)(implicit ctx: Context): Boolean = {
+</span>231 <span style=''>    // println(i&quot;check kind $self $other&quot;) // DEBUG
+</span>232 <span style=''>    val selfResult = </span><span style='background: #AEF1AE'>self.hkResult</span><span style=''>
+</span>233 <span style=''>    val otherResult = </span><span style='background: #AEF1AE'>other.hkResult</span><span style=''>
+</span>234 <span style=''>    if (</span><span style='background: #AEF1AE'>selfResult.exists</span><span style=''>)
+</span>235 <span style=''>      </span><span style='background: #AEF1AE'>otherResult.exists &amp;&amp;
+</span>236 <span style=''></span><span style='background: #AEF1AE'>      selfResult.hasSameKindAs(otherResult) &amp;&amp;
+</span>237 <span style=''></span><span style='background: #AEF1AE'>      self.typeParams.corresponds(other.typeParams)((sparam, oparam) =&gt;
+</span>238 <span style=''></span><span style='background: #AEF1AE'>        sparam.paramInfo.hasSameKindAs(oparam.paramInfo))</span><span style=''>
+</span>239 <span style=''>    else </span><span style='background: #AEF1AE'>!otherResult.exists</span><span style=''>
+</span>240 <span style=''>  }
+</span>241 <span style=''>
+</span>242 <span style=''>  /** Dealias type if it can be done without forcing the TypeRef's info */
+</span>243 <span style=''>  def safeDealias(implicit ctx: Context): Type = </span><span style='background: #AEF1AE'>self</span><span style=''> match {
+</span>244 <span style=''>    case self: TypeRef if </span><span style='background: #AEF1AE'>self.denot.exists &amp;&amp; self.symbol.isAliasType</span><span style=''> =&gt;
+</span>245 <span style=''>      </span><span style='background: #AEF1AE'>self.superType.stripTypeVar.safeDealias</span><span style=''>
+</span>246 <span style=''>    case _ =&gt;
+</span>247 <span style=''>      </span><span style='background: #AEF1AE'>self</span><span style=''>
+</span>248 <span style=''>  }
+</span>249 <span style=''>
+</span>250 <span style=''>  /** Convert a type constructor `TC` which has type parameters `X1, ..., Xn`
+</span>251 <span style=''>   *  to `[X1, ..., Xn] -&gt; TC[X1, ..., Xn]`.
+</span>252 <span style=''>   */
+</span>253 <span style=''>  def EtaExpand(tparams: List[TypeSymbol])(implicit ctx: Context): Type = {
+</span>254 <span style=''>    val tparamsToUse = if (</span><span style='background: #AEF1AE'>variancesConform(typeParams, tparams)</span><span style=''>) </span><span style='background: #AEF1AE'>tparams</span><span style=''> else </span><span style='background: #F0ADAD'>typeParamSymbols</span><span style=''>
+</span>255 <span style=''>    </span><span style='background: #AEF1AE'>HKTypeLambda.fromParams(tparamsToUse, self.appliedTo(tparams.map(_.typeRef)))</span><span style=''>
+</span>256 <span style=''>      //.ensuring(res =&gt; res.EtaReduce =:= self, s&quot;res = $res, core = ${res.EtaReduce}, self = $self, hc = ${res.hashCode}&quot;)
+</span>257 <span style=''>  }
+</span>258 <span style=''>
+</span>259 <span style=''>  /** If self is not higher-kinded, eta expand it. */
+</span>260 <span style=''>  def ensureHK(implicit ctx: Context): Type =
+</span>261 <span style=''>    if (</span><span style='background: #AEF1AE'>isHK</span><span style=''>) </span><span style='background: #AEF1AE'>self</span><span style=''> else </span><span style='background: #AEF1AE'>EtaExpansion(self)</span><span style=''>
+</span>262 <span style=''>
+</span>263 <span style=''>  /** Eta expand if `self` is a (non-lambda) class reference and `bound` is a higher-kinded type */
+</span>264 <span style=''>  def EtaExpandIfHK(bound: Type)(implicit ctx: Context): Type = {
+</span>265 <span style=''>    val hkParams = </span><span style='background: #AEF1AE'>bound.hkTypeParams</span><span style=''>
+</span>266 <span style=''>    if (</span><span style='background: #AEF1AE'>hkParams.isEmpty</span><span style=''>) </span><span style='background: #AEF1AE'>self</span><span style=''>
+</span>267 <span style=''>    else </span><span style='background: #AEF1AE'>self match {
+</span>268 <span style=''></span><span style='background: #AEF1AE'>      case self: TypeRef if self.symbol.isClass &amp;&amp; </span><span style='background: #F0ADAD'>self.typeParams.length == hkParams.length</span><span style='background: #AEF1AE'> =&gt;
+</span>269 <span style=''></span><span style='background: #AEF1AE'>        </span><span style='background: #F0ADAD'>EtaExpansion(self)</span><span style='background: #AEF1AE'>
+</span>270 <span style=''></span><span style='background: #AEF1AE'>      case _ =&gt; self
+</span>271 <span style=''></span><span style='background: #AEF1AE'>    }</span><span style=''>
+</span>272 <span style=''>  }
+</span>273 <span style=''>
+</span>274 <span style=''>  /** If argument A and type parameter P are higher-kinded, adapt the variances
+</span>275 <span style=''>   *  of A to those of P, ensuring that the variances of the type lambda A
+</span>276 <span style=''>   *  agree with the variances of corresponding higher-kinded type parameters of P. Example:
+</span>277 <span style=''>   *
+</span>278 <span style=''>   *     class GenericCompanion[+CC[X]]
+</span>279 <span style=''>   *     GenericCompanion[List]
+</span>280 <span style=''>   *
+</span>281 <span style=''>   *  with adaptHkVariances, the argument `List` will expand to
+</span>282 <span style=''>   *
+</span>283 <span style=''>   *     [X] =&gt; List[X]
+</span>284 <span style=''>   *
+</span>285 <span style=''>   *  instead of
+</span>286 <span style=''>   *
+</span>287 <span style=''>   *     [+X] =&gt; List[X]
+</span>288 <span style=''>   *
+</span>289 <span style=''>   *  even though `List` is covariant. This adaptation is necessary to ignore conflicting
+</span>290 <span style=''>   *  variances in overriding members that have types of hk-type parameters such as
+</span>291 <span style=''>   *  `GenericCompanion[GenTraversable]` or `GenericCompanion[ListBuffer]`.
+</span>292 <span style=''>   *  When checking overriding, we need to validate the subtype relationship
+</span>293 <span style=''>   *
+</span>294 <span style=''>   *      GenericCompanion[[X] -&gt; ListBuffer[X]] &lt;: GenericCompanion[[+X] -&gt; GenTraversable[X]]
+</span>295 <span style=''>   *
+</span>296 <span style=''>   *   Without adaptation, this would be false, and hence an overriding error would
+</span>297 <span style=''>   *   result. But with adaptation, the rhs argument will be adapted to
+</span>298 <span style=''>   *
+</span>299 <span style=''>   *     [X] -&gt; GenTraversable[X]
+</span>300 <span style=''>   *
+</span>301 <span style=''>   *   which makes the subtype test succeed. The crucial point here is that, since
+</span>302 <span style=''>   *   GenericCompanion only expects a non-variant CC, the fact that GenTraversable
+</span>303 <span style=''>   *   is covariant is irrelevant, so can be ignored.
+</span>304 <span style=''>   */
+</span>305 <span style=''>  def adaptHkVariances(bound: Type)(implicit ctx: Context): Type = {
+</span>306 <span style=''>    val hkParams = </span><span style='background: #AEF1AE'>bound.hkTypeParams</span><span style=''>
+</span>307 <span style=''>    if (</span><span style='background: #AEF1AE'>hkParams.isEmpty</span><span style=''>) </span><span style='background: #AEF1AE'>self</span><span style=''>
+</span>308 <span style=''>    else </span><span style='background: #AEF1AE'>{
+</span>309 <span style=''></span><span style='background: #AEF1AE'>      def adaptArg(arg: Type): Type = arg match {
+</span>310 <span style=''></span><span style='background: #AEF1AE'>        case arg @ HKTypeLambda(tparams, body) if
+</span>311 <span style=''></span><span style='background: #AEF1AE'>             !tparams.corresponds(hkParams)(_.paramVariance == _.paramVariance) &amp;&amp;
+</span>312 <span style=''></span><span style='background: #AEF1AE'>             tparams.corresponds(hkParams)(varianceConforms) =&gt;
+</span>313 <span style=''></span><span style='background: #AEF1AE'>          HKTypeLambda(
+</span>314 <span style=''></span><span style='background: #AEF1AE'>            (tparams, hkParams).zipped.map((tparam, hkparam) =&gt;
+</span>315 <span style=''></span><span style='background: #AEF1AE'>              tparam.paramName.withVariance(hkparam.paramVariance)))(
+</span>316 <span style=''></span><span style='background: #AEF1AE'>            tl =&gt; arg.paramInfos.map(_.subst(arg, tl).bounds),
+</span>317 <span style=''></span><span style='background: #AEF1AE'>            tl =&gt; arg.resultType.subst(arg, tl)
+</span>318 <span style=''></span><span style='background: #AEF1AE'>          )
+</span>319 <span style=''></span><span style='background: #AEF1AE'>        case arg @ TypeAlias(alias) =&gt;
+</span>320 <span style=''></span><span style='background: #AEF1AE'>          </span><span style='background: #F0ADAD'>arg.derivedTypeAlias(adaptArg(alias))</span><span style='background: #AEF1AE'>
+</span>321 <span style=''></span><span style='background: #AEF1AE'>        case arg @ TypeBounds(lo, hi) =&gt;
+</span>322 <span style=''></span><span style='background: #AEF1AE'>          </span><span style='background: #F0ADAD'>arg.derivedTypeBounds(adaptArg(lo), adaptArg(hi))</span><span style='background: #AEF1AE'>
+</span>323 <span style=''></span><span style='background: #AEF1AE'>        case _ =&gt;
+</span>324 <span style=''></span><span style='background: #AEF1AE'>          arg
+</span>325 <span style=''></span><span style='background: #AEF1AE'>      }
+</span>326 <span style=''></span><span style='background: #AEF1AE'>      adaptArg(self)
+</span>327 <span style=''></span><span style='background: #AEF1AE'>    }</span><span style=''>
+</span>328 <span style=''>  }
+</span>329 <span style=''>
+</span>330 <span style=''>  /** The type representing
+</span>331 <span style=''>   *
+</span>332 <span style=''>   *     T[U1, ..., Un]
+</span>333 <span style=''>   *
+</span>334 <span style=''>   *  where
+</span>335 <span style=''>   *  @param  self   = `T`
+</span>336 <span style=''>   *  @param  args   = `U1,...,Un`
+</span>337 <span style=''>   */
+</span>338 <span style=''>  final def appliedTo(args: List[Type])(implicit ctx: Context): Type = /*&gt;|&gt;*/ </span><span style='background: #AEF1AE'>track(&quot;appliedTo&quot;) /*&lt;|&lt;*/ {
+</span>339 <span style=''></span><span style='background: #AEF1AE'>    val typParams = self.typeParams
+</span>340 <span style=''></span><span style='background: #AEF1AE'>    val stripped = self.stripTypeVar
+</span>341 <span style=''></span><span style='background: #AEF1AE'>    val dealiased = stripped.safeDealias
+</span>342 <span style=''></span><span style='background: #AEF1AE'>    if (args.isEmpty || ctx.erasedTypes) self
+</span>343 <span style=''></span><span style='background: #AEF1AE'>    else dealiased match {
+</span>344 <span style=''></span><span style='background: #AEF1AE'>      case dealiased: HKTypeLambda =&gt;
+</span>345 <span style=''></span><span style='background: #AEF1AE'>        def tryReduce =
+</span>346 <span style=''></span><span style='background: #AEF1AE'>          if (!args.exists(_.isInstanceOf[TypeBounds])) {
+</span>347 <span style=''></span><span style='background: #AEF1AE'>            val followAlias = Config.simplifyApplications &amp;&amp; {
+</span>348 <span style=''></span><span style='background: #AEF1AE'>              dealiased.resType match {
+</span>349 <span style=''></span><span style='background: #AEF1AE'>                case AppliedType(tyconBody, dealiasedArgs) =&gt;
+</span>350 <span style=''></span><span style='background: #AEF1AE'>                  // Reduction should not affect type inference when it's
+</span>351 <span style=''></span><span style='background: #AEF1AE'>                  // just eta-reduction (ignoring variance annotations).
+</span>352 <span style=''></span><span style='background: #AEF1AE'>                  // See i2201*.scala for examples where more aggressive
+</span>353 <span style=''></span><span style='background: #AEF1AE'>                  // reduction would break type inference.
+</span>354 <span style=''></span><span style='background: #AEF1AE'>                  dealiased.paramRefs == dealiasedArgs
+</span>355 <span style=''></span><span style='background: #AEF1AE'>                case _ =&gt; false
+</span>356 <span style=''></span><span style='background: #AEF1AE'>              }
+</span>357 <span style=''></span><span style='background: #AEF1AE'>            }
+</span>358 <span style=''></span><span style='background: #AEF1AE'>            if ((dealiased eq stripped) || followAlias) dealiased.instantiate(args)
+</span>359 <span style=''></span><span style='background: #AEF1AE'>            else AppliedType(self, args)
+</span>360 <span style=''></span><span style='background: #AEF1AE'>          }
+</span>361 <span style=''></span><span style='background: #AEF1AE'>          else dealiased.resType match {
+</span>362 <span style=''></span><span style='background: #AEF1AE'>            case AppliedType(tycon, args1) if tycon.safeDealias ne tycon =&gt;
+</span>363 <span style=''></span><span style='background: #AEF1AE'>              // In this case we should always dealias since we cannot handle
+</span>364 <span style=''></span><span style='background: #AEF1AE'>              // higher-kinded applications to wildcard arguments.
+</span>365 <span style=''></span><span style='background: #AEF1AE'>              dealiased
+</span>366 <span style=''></span><span style='background: #AEF1AE'>                .derivedLambdaType(resType = tycon.safeDealias.appliedTo(args1))
+</span>367 <span style=''></span><span style='background: #AEF1AE'>                .appliedTo(args)
+</span>368 <span style=''></span><span style='background: #AEF1AE'>            case _ =&gt;
+</span>369 <span style=''></span><span style='background: #AEF1AE'>              val reducer = new Reducer(dealiased, args)
+</span>370 <span style=''></span><span style='background: #AEF1AE'>              val reduced = reducer(dealiased.resType)
+</span>371 <span style=''></span><span style='background: #AEF1AE'>              if (reducer.allReplaced) reduced
+</span>372 <span style=''></span><span style='background: #AEF1AE'>              else AppliedType(dealiased, args)
+</span>373 <span style=''></span><span style='background: #AEF1AE'>          }
+</span>374 <span style=''></span><span style='background: #AEF1AE'>        tryReduce
+</span>375 <span style=''></span><span style='background: #AEF1AE'>      case dealiased: PolyType =&gt;
+</span>376 <span style=''></span><span style='background: #AEF1AE'>        dealiased.instantiate(args)
+</span>377 <span style=''></span><span style='background: #AEF1AE'>      case dealiased: AndOrType =&gt;
+</span>378 <span style=''></span><span style='background: #AEF1AE'>        </span><span style='background: #F0ADAD'>dealiased.derivedAndOrType(dealiased.tp1.appliedTo(args), dealiased.tp2.appliedTo(args))</span><span style='background: #AEF1AE'>
+</span>379 <span style=''></span><span style='background: #AEF1AE'>      case dealiased: TypeAlias =&gt;
+</span>380 <span style=''></span><span style='background: #AEF1AE'>        </span><span style='background: #F0ADAD'>dealiased.derivedTypeAlias(dealiased.alias.appliedTo(args))</span><span style='background: #AEF1AE'>
+</span>381 <span style=''></span><span style='background: #AEF1AE'>      case dealiased: TypeBounds =&gt;
+</span>382 <span style=''></span><span style='background: #AEF1AE'>        dealiased.derivedTypeBounds(dealiased.lo.appliedTo(args), dealiased.hi.appliedTo(args))
+</span>383 <span style=''></span><span style='background: #AEF1AE'>      case dealiased: LazyRef =&gt;
+</span>384 <span style=''></span><span style='background: #AEF1AE'>        LazyRef(c =&gt; dealiased.ref(c).appliedTo(args))
+</span>385 <span style=''></span><span style='background: #AEF1AE'>      case dealiased: WildcardType =&gt;
+</span>386 <span style=''></span><span style='background: #AEF1AE'>        WildcardType(dealiased.optBounds.appliedTo(args).bounds)
+</span>387 <span style=''></span><span style='background: #AEF1AE'>      case dealiased: TypeRef if dealiased.symbol == defn.NothingClass =&gt;
+</span>388 <span style=''></span><span style='background: #AEF1AE'>        dealiased
+</span>389 <span style=''></span><span style='background: #AEF1AE'>      case dealiased =&gt;
+</span>390 <span style=''></span><span style='background: #AEF1AE'>        AppliedType(self, args)
+</span>391 <span style=''></span><span style='background: #AEF1AE'>    }
+</span>392 <span style=''></span><span style='background: #AEF1AE'>  }</span><span style=''>
+</span>393 <span style=''>
+</span>394 <span style=''>  final def appliedTo(arg: Type)(implicit ctx: Context): Type = </span><span style='background: #AEF1AE'>appliedTo(arg :: Nil)</span><span style=''>
+</span>395 <span style=''>  final def appliedTo(arg1: Type, arg2: Type)(implicit ctx: Context): Type = </span><span style='background: #AEF1AE'>appliedTo(arg1 :: arg2 :: Nil)</span><span style=''>
+</span>396 <span style=''>
+</span>397 <span style=''>  final def applyIfParameterized(args: List[Type])(implicit ctx: Context): Type =
+</span>398 <span style=''>    if (</span><span style='background: #AEF1AE'>typeParams.nonEmpty</span><span style=''>) </span><span style='background: #AEF1AE'>appliedTo(args)</span><span style=''> else </span><span style='background: #AEF1AE'>self</span><span style=''>
+</span>399 <span style=''>
+</span>400 <span style=''>  /** A cycle-safe version of `appliedTo` where computing type parameters do not force
+</span>401 <span style=''>   *  the typeconstructor. Instead, if the type constructor is completing, we make
+</span>402 <span style=''>   *  up hk type parameters matching the arguments. This is needed when unpickling
+</span>403 <span style=''>   *  Scala2 files such as `scala.collection.generic.Mapfactory`.
+</span>404 <span style=''>   */
+</span>405 <span style=''>  final def safeAppliedTo(args: List[Type])(implicit ctx: Context) = </span><span style='background: #AEF1AE'>self</span><span style=''> match {
+</span>406 <span style=''>    case self: TypeRef if </span><span style='background: #AEF1AE'>!self.symbol.isClass &amp;&amp; self.symbol.isCompleting</span><span style=''> =&gt;
+</span>407 <span style=''>      </span><span style='background: #AEF1AE'>AppliedType(self, args)</span><span style=''>
+</span>408 <span style=''>    case _ =&gt;
+</span>409 <span style=''>      </span><span style='background: #AEF1AE'>appliedTo(args)</span><span style=''>
+</span>410 <span style=''>  }
+</span>411 <span style=''>
+</span>412 <span style=''>  /** Turns non-bounds types to type aliases */
+</span>413 <span style=''>  final def toBounds(implicit ctx: Context): TypeBounds = </span><span style='background: #AEF1AE'>self</span><span style=''> match {
+</span>414 <span style=''>    case self: TypeBounds =&gt; self // this can happen for wildcard args
+</span>415 <span style=''>    case _ =&gt; </span><span style='background: #AEF1AE'>TypeAlias(self)</span><span style=''>
+</span>416 <span style=''>  }
+</span>417 <span style=''>
+</span>418 <span style=''>  /** Translate a type of the form From[T] to To[T], keep other types as they are.
+</span>419 <span style=''>   *  `from` and `to` must be static classes, both with one type parameter, and the same variance.
+</span>420 <span style=''>   *  Do the same for by name types =&gt; From[T] and =&gt; To[T]
+</span>421 <span style=''>   */
+</span>422 <span style=''>  def translateParameterized(from: ClassSymbol, to: ClassSymbol)(implicit ctx: Context): Type = </span><span style='background: #AEF1AE'>self</span><span style=''> match {
+</span>423 <span style=''>    case self @ ExprType(tp) =&gt;
+</span>424 <span style=''>      </span><span style='background: #AEF1AE'>self.derivedExprType(tp.translateParameterized(from, to))</span><span style=''>
+</span>425 <span style=''>    case _ =&gt;
+</span>426 <span style=''>      if (</span><span style='background: #AEF1AE'>self.derivesFrom(from)</span><span style=''>) </span><span style='background: #AEF1AE'>to.typeRef.appliedTo(self.baseType(from).argInfos)</span><span style=''>
+</span>427 <span style=''>      else </span><span style='background: #AEF1AE'>self</span><span style=''>
+</span>428 <span style=''>  }
+</span>429 <span style=''>
+</span>430 <span style=''>  /** If this is repeated parameter type, its underlying Seq type,
+</span>431 <span style=''>   *  or, if isJava is true, Array type, else the type itself.
+</span>432 <span style=''>   */
+</span>433 <span style=''>  def underlyingIfRepeated(isJava: Boolean)(implicit ctx: Context): Type =
+</span>434 <span style=''>    if (</span><span style='background: #AEF1AE'>self.isRepeatedParam</span><span style=''>) </span><span style='background: #AEF1AE'>{
+</span>435 <span style=''></span><span style='background: #AEF1AE'>      val seqClass = if (isJava) defn.ArrayClass else defn.SeqClass
+</span>436 <span style=''></span><span style='background: #AEF1AE'>      translateParameterized(defn.RepeatedParamClass, seqClass)
+</span>437 <span style=''></span><span style='background: #AEF1AE'>    }</span><span style=''>
+</span>438 <span style=''>    else </span><span style='background: #AEF1AE'>self</span><span style=''>
+</span>439 <span style=''>
+</span>440 <span style=''>  /** If this is an encoding of a (partially) applied type, return its arguments,
+</span>441 <span style=''>   *  otherwise return Nil.
+</span>442 <span style=''>   *  Existential types in arguments are returned as TypeBounds instances.
+</span>443 <span style=''>   */
+</span>444 <span style=''>  final def argInfos(implicit ctx: Context): List[Type] = </span><span style='background: #AEF1AE'>self</span><span style=''> match {
+</span>445 <span style=''>    case AppliedType(tycon, args) =&gt; args
+</span>446 <span style=''>    case _ =&gt; </span><span style='background: #AEF1AE'>Nil</span><span style=''>
+</span>447 <span style=''>  }
+</span>448 <span style=''>
+</span>449 <span style=''>  /** Argument types where existential types in arguments are disallowed */
+</span>450 <span style=''>  def argTypes(implicit ctx: Context) = </span><span style='background: #AEF1AE'>argInfos mapConserve noBounds</span><span style=''>
+</span>451 <span style=''>
+</span>452 <span style=''>  /** Argument types where existential types in arguments are approximated by their lower bound */
+</span>453 <span style=''>  def argTypesLo(implicit ctx: Context) = </span><span style='background: #AEF1AE'>argInfos.mapConserve(_.loBound)</span><span style=''>
+</span>454 <span style=''>
+</span>455 <span style=''>  /** Argument types where existential types in arguments are approximated by their upper bound  */
+</span>456 <span style=''>  def argTypesHi(implicit ctx: Context) = </span><span style='background: #AEF1AE'>argInfos.mapConserve(_.hiBound)</span><span style=''>
+</span>457 <span style=''>
+</span>458 <span style=''>  /** If this is the image of a type argument; recover the type argument,
+</span>459 <span style=''>   *  otherwise NoType.
+</span>460 <span style=''>   */
+</span>461 <span style=''>  final def argInfo(implicit ctx: Context): Type = </span><span style='background: #F0ADAD'>self</span><span style=''> match {
+</span>462 <span style=''>    case self: TypeAlias =&gt; </span><span style='background: #F0ADAD'>self.alias</span><span style=''>
+</span>463 <span style=''>    case self: TypeBounds =&gt; self
+</span>464 <span style=''>    case _ =&gt; </span><span style='background: #F0ADAD'>NoType</span><span style=''>
+</span>465 <span style=''>  }
+</span>466 <span style=''>
+</span>467 <span style=''>  /** If this is a type alias, its underlying type, otherwise the type itself */
+</span>468 <span style=''>  def dropAlias(implicit ctx: Context): Type = </span><span style='background: #F0ADAD'>self</span><span style=''> match {
+</span>469 <span style=''>    case TypeAlias(alias) =&gt; alias
+</span>470 <span style=''>    case _ =&gt; </span><span style='background: #F0ADAD'>self</span><span style=''>
+</span>471 <span style=''>  }
+</span>472 <span style=''>
+</span>473 <span style=''>  /** The element type of a sequence or array */
+</span>474 <span style=''>  def elemType(implicit ctx: Context): Type = </span><span style='background: #AEF1AE'>self</span><span style=''> match {
+</span>475 <span style=''>    case defn.ArrayOf(elemtp) =&gt; elemtp
+</span>476 <span style=''>    case JavaArrayType(elemtp) =&gt; elemtp
+</span>477 <span style=''>    case _ =&gt; </span><span style='background: #AEF1AE'>self.baseType(defn.SeqClass).argInfos.headOption.getOrElse(NoType)</span><span style=''>
+</span>478 <span style=''>  }
+</span>479 <span style=''>}
+</span></pre>
+          </div>
+          <div class="tab-pane" id="statementlist">
+            <table cellspacing="0" cellpadding="0" class="table statementlist">
+      <tr>
+        <th>Line</th>
+        <th>Stmt Id</th>
+        <th>Pos</th>
+        <th>Tree</th>
+        <th>Symbol</th>
+        <th>Code</th>
+      </tr><tr>
+        <td>
+          29
+        </td>
+        <td>
+          23524
+        </td>
+        <td>
+          685
+          -
+          734
+        </td>
+        <td>
+          Throw
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          throw new java.lang.AssertionError(&quot;no TypeBounds allowed&quot;)
+        </td>
+      </tr><tr>
+        <td>
+          37
+        </td>
+        <td>
+          23526
+        </td>
+        <td>
+          947
+          -
+          966
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Boolean.||
+        </td>
+        <td style="background: #AEF1AE">
+          v1.==(v2).||(v2.==(0))
+        </td>
+      </tr><tr>
+        <td>
+          37
+        </td>
+        <td>
+          23525
+        </td>
+        <td>
+          959
+          -
+          966
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Int.==
+        </td>
+        <td style="background: #AEF1AE">
+          v2.==(0)
+        </td>
+      </tr><tr>
+        <td>
+          42
+        </td>
+        <td>
+          23529
+        </td>
+        <td>
+          1188
+          -
+          1250
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.core.TypeApplications.varianceConforms
+        </td>
+        <td style="background: #AEF1AE">
+          TypeApplications.this.varianceConforms(tparam1.paramVariance(ctx), tparam2.paramVariance(ctx))
+        </td>
+      </tr><tr>
+        <td>
+          42
+        </td>
+        <td>
+          23528
+        </td>
+        <td>
+          1228
+          -
+          1249
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.ParamInfo.paramVariance
+        </td>
+        <td style="background: #AEF1AE">
+          tparam2.paramVariance(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          42
+        </td>
+        <td>
+          23527
+        </td>
+        <td>
+          1205
+          -
+          1226
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.ParamInfo.paramVariance
+        </td>
+        <td style="background: #AEF1AE">
+          tparam1.paramVariance(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          49
+        </td>
+        <td>
+          23531
+        </td>
+        <td>
+          1589
+          -
+          1637
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.LinearSeqLike.corresponds
+        </td>
+        <td style="background: #AEF1AE">
+          tparams1.corresponds[dotty.tools.dotc.core.TypeApplications.TypeParamInfo](tparams2)({
+  ((tparam1: dotty.tools.dotc.core.TypeApplications.TypeParamInfo, tparam2: dotty.tools.dotc.core.TypeApplications.TypeParamInfo) =&gt; TypeApplications.this.varianceConforms(tparam1, tparam2)(ctx))
+})
+        </td>
+      </tr><tr>
+        <td>
+          49
+        </td>
+        <td>
+          23530
+        </td>
+        <td>
+          1620
+          -
+          1636
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.TypeApplications.varianceConforms
+        </td>
+        <td style="background: #AEF1AE">
+          TypeApplications.this.varianceConforms(tparam1, tparam2)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          62
+        </td>
+        <td>
+          23532
+        </td>
+        <td>
+          1964
+          -
+          1989
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.collection.TraversableOnce.nonEmpty
+        </td>
+        <td style="background: #AEF1AE">
+          Types.decorateTypeApplications(tycon).typeParams(ctx).nonEmpty
+        </td>
+      </tr><tr>
+        <td>
+          62
+        </td>
+        <td>
+          23533
+        </td>
+        <td>
+          1957
+          -
+          1997
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Predef.assert
+        </td>
+        <td style="background: #AEF1AE">
+          scala.Predef.assert(Types.decorateTypeApplications(tycon).typeParams(ctx).nonEmpty, tycon)
+        </td>
+      </tr><tr>
+        <td>
+          63
+        </td>
+        <td>
+          23534
+        </td>
+        <td>
+          2004
+          -
+          2043
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.TypeApplications.EtaExpand
+        </td>
+        <td style="background: #AEF1AE">
+          Types.decorateTypeApplications(tycon).EtaExpand(Types.decorateTypeApplications(tycon).typeParamSymbols(ctx))(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          67
+        </td>
+        <td>
+          23535
+        </td>
+        <td>
+          2224
+          -
+          2234
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.Types.LambdaParam.paramRef
+        </td>
+        <td style="background: #AEF1AE">
+          x$1.paramRef(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          67
+        </td>
+        <td>
+          23538
+        </td>
+        <td>
+          2204
+          -
+          2235
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.Object.==
+        </td>
+        <td style="background: #AEF1AE">
+          args.==(tparams.map[dotty.tools.dotc.core.Types.Type, Any](((x$1: dotty.tools.dotc.core.Types.LambdaParam) =&gt; x$1.paramRef(ctx)))(immutable.this.List.canBuildFrom[dotty.tools.dotc.core.Types.Type]))
+        </td>
+      </tr><tr>
+        <td>
+          67
+        </td>
+        <td>
+          23537
+        </td>
+        <td>
+          2212
+          -
+          2235
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          scala.collection.immutable.List.map
+        </td>
+        <td style="background: #AEF1AE">
+          tparams.map[dotty.tools.dotc.core.Types.Type, Any](((x$1: dotty.tools.dotc.core.Types.LambdaParam) =&gt; x$1.paramRef(ctx)))(immutable.this.List.canBuildFrom[dotty.tools.dotc.core.Types.Type])
+        </td>
+      </tr><tr>
+        <td>
+          67
+        </td>
+        <td>
+          23536
+        </td>
+        <td>
+          2223
+          -
+          2223
+        </td>
+        <td>
+          TypeApply
+        </td>
+        <td>
+          scala.collection.immutable.List.canBuildFrom
+        </td>
+        <td style="background: #AEF1AE">
+          immutable.this.List.canBuildFrom[dotty.tools.dotc.core.Types.Type]
+        </td>
+      </tr><tr>
+        <td>
+          67
+        </td>
+        <td>
+          23539
+        </td>
+        <td>
+          2240
+          -
+          2248
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Some.apply
+        </td>
+        <td style="background: #AEF1AE">
+          scala.Some.apply[dotty.tools.dotc.core.Types.TypeRef](fn)
+        </td>
+      </tr><tr>
+        <td>
+          68
+        </td>
+        <td>
+          23540
+        </td>
+        <td>
+          2265
+          -
+          2269
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.None
+        </td>
+        <td style="background: #AEF1AE">
+          scala.None
+        </td>
+      </tr><tr>
+        <td>
+          75
+        </td>
+        <td>
+          23541
+        </td>
+        <td>
+          2489
+          -
+          2504
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.collection.SeqLike.isEmpty
+        </td>
+        <td style="background: #AEF1AE">
+          tparams.isEmpty
+        </td>
+      </tr><tr>
+        <td>
+          75
+        </td>
+        <td>
+          23542
+        </td>
+        <td>
+          2506
+          -
+          2510
+        </td>
+        <td>
+          Ident
+        </td>
+        <td>
+          dotty.tools.dotc.core.TypeApplications.args
+        </td>
+        <td style="background: #AEF1AE">
+          args
+        </td>
+      </tr><tr>
+        <td>
+          76
+        </td>
+        <td>
+          23544
+        </td>
+        <td>
+          2520
+          -
+          2614
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.core.Decorators.ListDecorator.zipWithConserve
+        </td>
+        <td style="background: #AEF1AE">
+          Decorators.ListDecorator[dotty.tools.dotc.core.Types.Type](args).zipWithConserve[dotty.tools.dotc.core.TypeApplications.TypeParamInfo](tparams)(((arg: dotty.tools.dotc.core.Types.Type, tparam: dotty.tools.dotc.core.TypeApplications.TypeParamInfo) =&gt; Types.decorateTypeApplications(arg).EtaExpandIfHK(tparam.paramInfoOrCompleter(ctx))(ctx)))
+        </td>
+      </tr><tr>
+        <td>
+          76
+        </td>
+        <td>
+          23543
+        </td>
+        <td>
+          2567
+          -
+          2613
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.TypeApplications.EtaExpandIfHK
+        </td>
+        <td style="background: #AEF1AE">
+          Types.decorateTypeApplications(arg).EtaExpandIfHK(tparam.paramInfoOrCompleter(ctx))(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          76
+        </td>
+        <td>
+          23545
+        </td>
+        <td>
+          2520
+          -
+          2614
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          dotty.tools.dotc.core.Decorators.ListDecorator.zipWithConserve
+        </td>
+        <td style="background: #AEF1AE">
+          Decorators.ListDecorator[dotty.tools.dotc.core.Types.Type](args).zipWithConserve[dotty.tools.dotc.core.TypeApplications.TypeParamInfo](tparams)(((arg: dotty.tools.dotc.core.Types.Type, tparam: dotty.tools.dotc.core.TypeApplications.TypeParamInfo) =&gt; Types.decorateTypeApplications(arg).EtaExpandIfHK(tparam.paramInfoOrCompleter(ctx))(ctx)))
+        </td>
+      </tr><tr>
+        <td>
+          114
+        </td>
+        <td>
+          23547
+        </td>
+        <td>
+          4536
+          -
+          4547
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.collection.LinearSeqOptimized.length
+        </td>
+        <td style="background: #AEF1AE">
+          Reducer.this.args.length
+        </td>
+      </tr><tr>
+        <td>
+          114
+        </td>
+        <td>
+          23546
+        </td>
+        <td>
+          4528
+          -
+          4529
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          0
+        </td>
+      </tr><tr>
+        <td>
+          114
+        </td>
+        <td>
+          23548
+        </td>
+        <td>
+          4528
+          -
+          4554
+        </td>
+        <td>
+          TypeApply
+        </td>
+        <td>
+          scala.collection.TraversableOnce.toSet
+        </td>
+        <td style="background: #AEF1AE">
+          scala.Predef.intWrapper(0).until(Reducer.this.args.length).toSet[Int]
+        </td>
+      </tr><tr>
+        <td>
+          115
+        </td>
+        <td>
+          23549
+        </td>
+        <td>
+          4577
+          -
+          4581
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          true
+        </td>
+      </tr><tr>
+        <td>
+          117
+        </td>
+        <td>
+          23550
+        </td>
+        <td>
+          4642
+          -
+          4647
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.TypeApplications.Reducer.tycon
+        </td>
+        <td style="background: #AEF1AE">
+          Reducer.this.tycon
+        </td>
+      </tr><tr>
+        <td>
+          117
+        </td>
+        <td>
+          23553
+        </td>
+        <td>
+          4630
+          -
+          4692
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Boolean.&amp;&amp;
+        </td>
+        <td style="background: #AEF1AE">
+          p.binder.==(Reducer.this.tycon).&amp;&amp;(Reducer.this.args.apply(p.paramNum).isInstanceOf[dotty.tools.dotc.core.Types.TypeBounds])
+        </td>
+      </tr><tr>
+        <td>
+          117
+        </td>
+        <td>
+          23552
+        </td>
+        <td>
+          4651
+          -
+          4692
+        </td>
+        <td>
+          TypeApply
+        </td>
+        <td>
+          scala.Any.isInstanceOf
+        </td>
+        <td style="background: #AEF1AE">
+          Reducer.this.args.apply(p.paramNum).isInstanceOf[dotty.tools.dotc.core.Types.TypeBounds]
+        </td>
+      </tr><tr>
+        <td>
+          117
+        </td>
+        <td>
+          23551
+        </td>
+        <td>
+          4656
+          -
+          4666
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Types.TypeParamRef.paramNum
+        </td>
+        <td style="background: #AEF1AE">
+          p.paramNum
+        </td>
+      </tr><tr>
+        <td>
+          119
+        </td>
+        <td>
+          23556
+        </td>
+        <td>
+          4791
+          -
+          4821
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.SetLike.contains
+        </td>
+        <td style="background: #AEF1AE">
+          Reducer.this.available.contains(p.paramNum)
+        </td>
+      </tr><tr>
+        <td>
+          119
+        </td>
+        <td>
+          23555
+        </td>
+        <td>
+          4810
+          -
+          4820
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Types.TypeParamRef.paramNum
+        </td>
+        <td style="background: #AEF1AE">
+          p.paramNum
+        </td>
+      </tr><tr>
+        <td>
+          119
+        </td>
+        <td>
+          23554
+        </td>
+        <td>
+          4757
+          -
+          4786
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Mode.AllowLambdaWildcardApply
+        </td>
+        <td style="background: #AEF1AE">
+          Mode.AllowLambdaWildcardApply
+        </td>
+      </tr><tr>
+        <td>
+          119
+        </td>
+        <td>
+          23557
+        </td>
+        <td>
+          4744
+          -
+          4821
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Boolean.||
+        </td>
+        <td style="background: #AEF1AE">
+          Reducer.this.ctx.mode.is(Mode.AllowLambdaWildcardApply).unary_!.||(Reducer.this.available.contains(p.paramNum))
+        </td>
+      </tr><tr>
+        <td>
+          121
+        </td>
+        <td>
+          23558
+        </td>
+        <td>
+          4885
+          -
+          4894
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.TypeApplications.Reducer.available
+        </td>
+        <td style="background: #AEF1AE">
+          Reducer.this.available
+        </td>
+      </tr><tr>
+        <td>
+          122
+        </td>
+        <td>
+          23559
+        </td>
+        <td>
+          4913
+          -
+          4918
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.generic.GenericCompanion.apply
+        </td>
+        <td style="background: #AEF1AE">
+          scala.Predef.Set.apply[Int]()
+        </td>
+      </tr><tr>
+        <td>
+          123
+        </td>
+        <td>
+          23560
+        </td>
+        <td>
+          4929
+          -
+          4931
+        </td>
+        <td>
+          Ident
+        </td>
+        <td>
+          dotty.tools.dotc.core.TypeApplications.Reducer.op
+        </td>
+        <td style="background: #AEF1AE">
+          op
+        </td>
+      </tr><tr>
+        <td>
+          124
+        </td>
+        <td>
+          23561
+        </td>
+        <td>
+          4946
+          -
+          4963
+        </td>
+        <td>
+          Assign
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          Reducer.this.available = saved
+        </td>
+      </tr><tr>
+        <td>
+          130
+        </td>
+        <td>
+          23562
+        </td>
+        <td>
+          5234
+          -
+          5254
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.core.TypeApplications.Reducer.canReduceWildcard
+        </td>
+        <td style="background: #AEF1AE">
+          Reducer.this.canReduceWildcard(p)
+        </td>
+      </tr><tr>
+        <td>
+          130
+        </td>
+        <td>
+          23563
+        </td>
+        <td>
+          5213
+          -
+          5254
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Boolean.&amp;&amp;
+        </td>
+        <td style="background: #AEF1AE">
+          Reducer.this.hasWildcardArg(p).&amp;&amp;(Reducer.this.canReduceWildcard(p))
+        </td>
+      </tr><tr>
+        <td>
+          131
+        </td>
+        <td>
+          23565
+        </td>
+        <td>
+          5266
+          -
+          5289
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.SetLike.-
+        </td>
+        <td style="background: #AEF1AE">
+          Reducer.this.available.-(p.paramNum)
+        </td>
+      </tr><tr>
+        <td>
+          131
+        </td>
+        <td>
+          23564
+        </td>
+        <td>
+          5279
+          -
+          5289
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Types.TypeParamRef.paramNum
+        </td>
+        <td style="background: #AEF1AE">
+          p.paramNum
+        </td>
+      </tr><tr>
+        <td>
+          132
+        </td>
+        <td>
+          23567
+        </td>
+        <td>
+          5298
+          -
+          5314
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.LinearSeqOptimized.apply
+        </td>
+        <td style="background: #AEF1AE">
+          Reducer.this.args.apply(p.paramNum)
+        </td>
+      </tr><tr>
+        <td>
+          132
+        </td>
+        <td>
+          23566
+        </td>
+        <td>
+          5303
+          -
+          5313
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Types.TypeParamRef.paramNum
+        </td>
+        <td style="background: #AEF1AE">
+          p.paramNum
+        </td>
+      </tr><tr>
+        <td>
+          134
+        </td>
+        <td>
+          23568
+        </td>
+        <td>
+          5353
+          -
+          5363
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.core.TypeApplications.Reducer.apply
+        </td>
+        <td style="background: #AEF1AE">
+          Reducer.this.apply(arg)
+        </td>
+      </tr><tr>
+        <td>
+          134
+        </td>
+        <td>
+          23569
+        </td>
+        <td>
+          5339
+          -
+          5364
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.core.TypeApplications.Reducer.atNestedLevel
+        </td>
+        <td style="background: #AEF1AE">
+          Reducer.this.atNestedLevel(Reducer.this.apply(arg))
+        </td>
+      </tr><tr>
+        <td>
+          138
+        </td>
+        <td>
+          23571
+        </td>
+        <td>
+          5451
+          -
+          5475
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Symbols.Symbol.isClass
+        </td>
+        <td style="background: #AEF1AE">
+          tycon.typeSymbol(Reducer.this.ctx).isClass
+        </td>
+      </tr><tr>
+        <td>
+          138
+        </td>
+        <td>
+          23570
+        </td>
+        <td>
+          5457
+          -
+          5457
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.TypeApplications.Reducer.ctx
+        </td>
+        <td style="background: #AEF1AE">
+          Reducer.this.ctx
+        </td>
+      </tr><tr>
+        <td>
+          139
+        </td>
+        <td>
+          23574
+        </td>
+        <td>
+          5522
+          -
+          5549
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.immutable.List.mapConserve
+        </td>
+        <td style="background: #AEF1AE">
+          args1.mapConserve[dotty.tools.dotc.core.Types.Type]({
+  ((arg: dotty.tools.dotc.core.Types.Type) =&gt; Reducer.this.applyArg(arg))
+})
+        </td>
+      </tr><tr>
+        <td>
+          139
+        </td>
+        <td>
+          23573
+        </td>
+        <td>
+          5540
+          -
+          5548
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.core.TypeApplications.Reducer.applyArg
+        </td>
+        <td style="background: #AEF1AE">
+          Reducer.this.applyArg(arg)
+        </td>
+      </tr><tr>
+        <td>
+          139
+        </td>
+        <td>
+          23576
+        </td>
+        <td>
+          5487
+          -
+          5550
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.Types.AppliedType.derivedAppliedType
+        </td>
+        <td style="background: #AEF1AE">
+          t.derivedAppliedType(Reducer.this.apply(tycon), args1.mapConserve[dotty.tools.dotc.core.Types.Type]({
+  ((arg: dotty.tools.dotc.core.Types.Type) =&gt; Reducer.this.applyArg(arg))
+}))(Reducer.this.ctx)
+        </td>
+      </tr><tr>
+        <td>
+          139
+        </td>
+        <td>
+          23572
+        </td>
+        <td>
+          5508
+          -
+          5520
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.core.TypeApplications.Reducer.apply
+        </td>
+        <td style="background: #AEF1AE">
+          Reducer.this.apply(tycon)
+        </td>
+      </tr><tr>
+        <td>
+          139
+        </td>
+        <td>
+          23575
+        </td>
+        <td>
+          5507
+          -
+          5507
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.TypeApplications.Reducer.ctx
+        </td>
+        <td style="background: #AEF1AE">
+          Reducer.this.ctx
+        </td>
+      </tr><tr>
+        <td>
+          140
+        </td>
+        <td>
+          23577
+        </td>
+        <td>
+          5593
+          -
+          5598
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.TypeApplications.Reducer.tycon
+        </td>
+        <td style="background: #AEF1AE">
+          Reducer.this.tycon
+        </td>
+      </tr><tr>
+        <td>
+          140
+        </td>
+        <td>
+          23578
+        </td>
+        <td>
+          5581
+          -
+          5598
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.Object.==
+        </td>
+        <td style="background: #AEF1AE">
+          p.binder.==(Reducer.this.tycon)
+        </td>
+      </tr><tr>
+        <td>
+          141
+        </td>
+        <td>
+          23580
+        </td>
+        <td>
+          5610
+          -
+          5626
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.LinearSeqOptimized.apply
+        </td>
+        <td style="background: #AEF1AE">
+          Reducer.this.args.apply(p.paramNum)
+        </td>
+      </tr><tr>
+        <td>
+          141
+        </td>
+        <td>
+          23579
+        </td>
+        <td>
+          5615
+          -
+          5625
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Types.TypeParamRef.paramNum
+        </td>
+        <td style="background: #AEF1AE">
+          p.paramNum
+        </td>
+      </tr><tr>
+        <td>
+          143
+        </td>
+        <td>
+          23583
+        </td>
+        <td>
+          5734
+          -
+          5753
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.core.TypeApplications.Reducer.allReplaced_=
+        </td>
+        <td style="background: #AEF1AE">
+          Reducer.this.allReplaced_=(false)
+        </td>
+      </tr><tr>
+        <td>
+          143
+        </td>
+        <td>
+          23582
+        </td>
+        <td>
+          5688
+          -
+          5730
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.core.Mode.is
+        </td>
+        <td style="background: #AEF1AE">
+          Reducer.this.ctx.mode.is(Mode.AllowLambdaWildcardApply)
+        </td>
+      </tr><tr>
+        <td>
+          143
+        </td>
+        <td>
+          23581
+        </td>
+        <td>
+          5700
+          -
+          5729
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Mode.AllowLambdaWildcardApply
+        </td>
+        <td style="background: #AEF1AE">
+          Mode.AllowLambdaWildcardApply
+        </td>
+      </tr><tr>
+        <td>
+          143
+        </td>
+        <td>
+          23584
+        </td>
+        <td>
+          5732
+          -
+          5758
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          {
+  Reducer.this.allReplaced_=(false);
+  p
+}
+        </td>
+      </tr><tr>
+        <td>
+          144
+        </td>
+        <td>
+          23586
+        </td>
+        <td>
+          5794
+          -
+          5796
+        </td>
+        <td>
+          Ident
+        </td>
+        <td>
+          dotty.tools.dotc.core.TypeApplications.Reducer.lo
+        </td>
+        <td style="background: #F0ADAD">
+          lo
+        </td>
+      </tr><tr>
+        <td>
+          144
+        </td>
+        <td>
+          23585
+        </td>
+        <td>
+          5780
+          -
+          5792
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Int.&lt;
+        </td>
+        <td style="background: #AEF1AE">
+          Reducer.this.variance.&lt;(0)
+        </td>
+      </tr><tr>
+        <td>
+          144
+        </td>
+        <td>
+          23588
+        </td>
+        <td>
+          5776
+          -
+          5816
+        </td>
+        <td>
+          If
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          if (Reducer.this.variance.&lt;(0))
+  lo
+else
+  hi
+        </td>
+      </tr><tr>
+        <td>
+          145
+        </td>
+        <td>
+          23587
+        </td>
+        <td>
+          5814
+          -
+          5816
+        </td>
+        <td>
+          Ident
+        </td>
+        <td>
+          dotty.tools.dotc.core.TypeApplications.Reducer.hi
+        </td>
+        <td style="background: #AEF1AE">
+          hi
+        </td>
+      </tr><tr>
+        <td>
+          150
+        </td>
+        <td>
+          23589
+        </td>
+        <td>
+          5932
+          -
+          5942
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.core.Types.TypeMap.mapOver
+        </td>
+        <td style="background: #AEF1AE">
+          Reducer.this.mapOver(t)
+        </td>
+      </tr><tr>
+        <td>
+          150
+        </td>
+        <td>
+          23590
+        </td>
+        <td>
+          5918
+          -
+          5943
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.core.TypeApplications.Reducer.atNestedLevel
+        </td>
+        <td style="background: #AEF1AE">
+          Reducer.this.atNestedLevel(Reducer.this.mapOver(t))
+        </td>
+      </tr><tr>
+        <td>
+          152
+        </td>
+        <td>
+          23591
+        </td>
+        <td>
+          5968
+          -
+          5978
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.core.Types.TypeMap.mapOver
+        </td>
+        <td style="background: #AEF1AE">
+          Reducer.this.mapOver(t)
+        </td>
+      </tr><tr>
+        <td>
+          170
+        </td>
+        <td>
+          23616
+        </td>
+        <td>
+          6661
+          -
+          7490
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.util.Stats.track
+        </td>
+        <td style="background: #AEF1AE">
+          util.Stats.track[List[dotty.tools.dotc.core.TypeApplications.TypeParamInfo]](&quot;typeParams&quot;)(TypeApplications.this.self match {
+  case (self @ (_: dotty.tools.dotc.core.Types.TypeRef)) =&gt; {
+    val tsym: dotty.tools.dotc.core.Symbols.Symbol = self.symbol(ctx);
+    if (tsym.isClass)
+      Symbols.toDenot(tsym)(ctx).typeParams(ctx)
+    else
+      if (Symbols.toDenot(tsym)(ctx).exists.unary_!)
+        Types.decorateTypeApplications(self.info(ctx)).typeParams(ctx)
+      else
+        Symbols.toDenot(tsym)(ctx).infoOrCompleter match {
+          case (info @ (_: dotty.tools.dotc.core.SymDenotations.LazyType)) =&gt; info.completerTypeParams(tsym)(ctx)
+          case (info @ _) =&gt; Types.decorateTypeApplications(info).typeParams(ctx)
+        }
+  }
+  case (self @ (_: dotty.tools.dotc.core.Types.AppliedType)) =&gt; if (self.tycon.typeSymbol(ctx).isClass)
+    scala.collection.immutable.Nil
+  else
+    Types.decorateTypeApplications(self.superType(ctx)).typeParams(ctx)
+  case (self @ (_: dotty.tools.dotc.core.Types.ClassInfo)) =&gt; Symbols.toClassDenot(self.cls)(ctx).typeParams(ctx)
+  case (self @ (_: dotty.tools.dotc.core.Types.HKTypeLambda)) =&gt; self.typeParams
+  case ((_: dotty.tools.dotc.core.Types.SingletonType)| (_: dotty.tools.dotc.core.Types.RefinedType)| (_: dotty.tools.dotc.core.Types.RecType)) =&gt; scala.collection.immutable.Nil
+  case (self @ (_: dotty.tools.dotc.core.Types.WildcardType)) =&gt; Types.decorateTypeApplications(self.optBounds).typeParams(ctx)
+  case (self @ (_: dotty.tools.dotc.core.Types.TypeProxy)) =&gt; Types.decorateTypeApplications(self.superType(ctx)).typeParams(ctx)
+  case _ =&gt; scala.collection.immutable.Nil
+})
+        </td>
+      </tr><tr>
+        <td>
+          170
+        </td>
+        <td>
+          23592
+        </td>
+        <td>
+          6667
+          -
+          6679
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          &quot;typeParams&quot;
+        </td>
+      </tr><tr>
+        <td>
+          171
+        </td>
+        <td>
+          23593
+        </td>
+        <td>
+          6695
+          -
+          6699
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.TypeApplications.self
+        </td>
+        <td style="background: #AEF1AE">
+          TypeApplications.this.self
+        </td>
+      </tr><tr>
+        <td>
+          173
+        </td>
+        <td>
+          23594
+        </td>
+        <td>
+          6755
+          -
+          6766
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.Types.NamedType.symbol
+        </td>
+        <td style="background: #AEF1AE">
+          self.symbol(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          174
+        </td>
+        <td>
+          23595
+        </td>
+        <td>
+          6779
+          -
+          6791
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Symbols.Symbol.isClass
+        </td>
+        <td style="background: #AEF1AE">
+          tsym.isClass
+        </td>
+      </tr><tr>
+        <td>
+          174
+        </td>
+        <td>
+          23597
+        </td>
+        <td>
+          6793
+          -
+          6808
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          dotty.tools.dotc.core.SymDenotations.SymDenotation.typeParams
+        </td>
+        <td style="background: #AEF1AE">
+          Symbols.toDenot(tsym)(ctx).typeParams(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          174
+        </td>
+        <td>
+          23596
+        </td>
+        <td>
+          6793
+          -
+          6808
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.SymDenotations.SymDenotation.typeParams
+        </td>
+        <td style="background: #AEF1AE">
+          Symbols.toDenot(tsym)(ctx).typeParams(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          175
+        </td>
+        <td>
+          23598
+        </td>
+        <td>
+          6826
+          -
+          6838
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.Boolean.unary_!
+        </td>
+        <td style="background: #AEF1AE">
+          Symbols.toDenot(tsym)(ctx).exists.unary_!
+        </td>
+      </tr><tr>
+        <td>
+          175
+        </td>
+        <td>
+          23600
+        </td>
+        <td>
+          6840
+          -
+          6860
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          dotty.tools.dotc.core.TypeApplications.typeParams
+        </td>
+        <td style="background: #AEF1AE">
+          Types.decorateTypeApplications(self.info(ctx)).typeParams(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          175
+        </td>
+        <td>
+          23605
+        </td>
+        <td>
+          6822
+          -
+          7015
+        </td>
+        <td>
+          If
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          if (Symbols.toDenot(tsym)(ctx).exists.unary_!)
+  Types.decorateTypeApplications(self.info(ctx)).typeParams(ctx)
+else
+  Symbols.toDenot(tsym)(ctx).infoOrCompleter match {
+    case (info @ (_: dotty.tools.dotc.core.SymDenotations.LazyType)) =&gt; info.completerTypeParams(tsym)(ctx)
+    case (info @ _) =&gt; Types.decorateTypeApplications(info).typeParams(ctx)
+  }
+        </td>
+      </tr><tr>
+        <td>
+          175
+        </td>
+        <td>
+          23599
+        </td>
+        <td>
+          6840
+          -
+          6860
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.TypeApplications.typeParams
+        </td>
+        <td style="background: #AEF1AE">
+          Types.decorateTypeApplications(self.info(ctx)).typeParams(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          176
+        </td>
+        <td>
+          23601
+        </td>
+        <td>
+          6874
+          -
+          6894
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.SymDenotations.SymDenotation.infoOrCompleter
+        </td>
+        <td style="background: #AEF1AE">
+          Symbols.toDenot(tsym)(ctx).infoOrCompleter
+        </td>
+      </tr><tr>
+        <td>
+          176
+        </td>
+        <td>
+          23604
+        </td>
+        <td>
+          6874
+          -
+          7015
+        </td>
+        <td>
+          Match
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          Symbols.toDenot(tsym)(ctx).infoOrCompleter match {
+  case (info @ (_: dotty.tools.dotc.core.SymDenotations.LazyType)) =&gt; info.completerTypeParams(tsym)(ctx)
+  case (info @ _) =&gt; Types.decorateTypeApplications(info).typeParams(ctx)
+}
+        </td>
+      </tr><tr>
+        <td>
+          177
+        </td>
+        <td>
+          23602
+        </td>
+        <td>
+          6936
+          -
+          6966
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.SymDenotations.LazyType.completerTypeParams
+        </td>
+        <td style="background: #AEF1AE">
+          info.completerTypeParams(tsym)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          178
+        </td>
+        <td>
+          23603
+        </td>
+        <td>
+          6990
+          -
+          7005
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.TypeApplications.typeParams
+        </td>
+        <td style="background: #AEF1AE">
+          Types.decorateTypeApplications(info).typeParams(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          181
+        </td>
+        <td>
+          23607
+        </td>
+        <td>
+          7091
+          -
+          7094
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.collection.immutable.Nil
+        </td>
+        <td style="background: #AEF1AE">
+          scala.collection.immutable.Nil
+        </td>
+      </tr><tr>
+        <td>
+          181
+        </td>
+        <td>
+          23606
+        </td>
+        <td>
+          7060
+          -
+          7089
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Symbols.Symbol.isClass
+        </td>
+        <td style="background: #AEF1AE">
+          self.tycon.typeSymbol(ctx).isClass
+        </td>
+      </tr><tr>
+        <td>
+          181
+        </td>
+        <td>
+          23608
+        </td>
+        <td>
+          7091
+          -
+          7094
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          scala.collection.immutable.Nil
+        </td>
+        <td style="background: #AEF1AE">
+          scala.collection.immutable.Nil
+        </td>
+      </tr><tr>
+        <td>
+          182
+        </td>
+        <td>
+          23610
+        </td>
+        <td>
+          7108
+          -
+          7133
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          dotty.tools.dotc.core.TypeApplications.typeParams
+        </td>
+        <td style="background: #AEF1AE">
+          Types.decorateTypeApplications(self.superType(ctx)).typeParams(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          182
+        </td>
+        <td>
+          23609
+        </td>
+        <td>
+          7108
+          -
+          7133
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.TypeApplications.typeParams
+        </td>
+        <td style="background: #AEF1AE">
+          Types.decorateTypeApplications(self.superType(ctx)).typeParams(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          184
+        </td>
+        <td>
+          23611
+        </td>
+        <td>
+          7172
+          -
+          7191
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.SymDenotations.ClassDenotation.typeParams
+        </td>
+        <td style="background: #AEF1AE">
+          Symbols.toClassDenot(self.cls)(ctx).typeParams(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          188
+        </td>
+        <td>
+          23612
+        </td>
+        <td>
+          7318
+          -
+          7321
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.collection.immutable.Nil
+        </td>
+        <td style="background: #AEF1AE">
+          scala.collection.immutable.Nil
+        </td>
+      </tr><tr>
+        <td>
+          190
+        </td>
+        <td>
+          23613
+        </td>
+        <td>
+          7363
+          -
+          7388
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.TypeApplications.typeParams
+        </td>
+        <td style="background: #AEF1AE">
+          Types.decorateTypeApplications(self.optBounds).typeParams(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          192
+        </td>
+        <td>
+          23614
+        </td>
+        <td>
+          7427
+          -
+          7452
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.TypeApplications.typeParams
+        </td>
+        <td style="background: #AEF1AE">
+          Types.decorateTypeApplications(self.superType(ctx)).typeParams(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          194
+        </td>
+        <td>
+          23615
+        </td>
+        <td>
+          7477
+          -
+          7480
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.collection.immutable.Nil
+        </td>
+        <td style="background: #AEF1AE">
+          scala.collection.immutable.Nil
+        </td>
+      </tr><tr>
+        <td>
+          200
+        </td>
+        <td>
+          23619
+        </td>
+        <td>
+          7656
+          -
+          7666
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          dotty.tools.dotc.core.TypeApplications.typeParams
+        </td>
+        <td style="background: #AEF1AE">
+          TypeApplications.this.typeParams(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          200
+        </td>
+        <td>
+          23618
+        </td>
+        <td>
+          7656
+          -
+          7666
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.TypeApplications.typeParams
+        </td>
+        <td style="background: #AEF1AE">
+          TypeApplications.this.typeParams(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          200
+        </td>
+        <td>
+          23621
+        </td>
+        <td>
+          7672
+          -
+          7675
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          scala.collection.immutable.Nil
+        </td>
+        <td style="background: #AEF1AE">
+          scala.collection.immutable.Nil
+        </td>
+      </tr><tr>
+        <td>
+          200
+        </td>
+        <td>
+          23617
+        </td>
+        <td>
+          7650
+          -
+          7654
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.TypeApplications.isHK
+        </td>
+        <td style="background: #AEF1AE">
+          TypeApplications.this.isHK(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          200
+        </td>
+        <td>
+          23620
+        </td>
+        <td>
+          7672
+          -
+          7675
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.collection.immutable.Nil
+        </td>
+        <td style="background: #AEF1AE">
+          scala.collection.immutable.Nil
+        </td>
+      </tr><tr>
+        <td>
+          203
+        </td>
+        <td>
+          23622
+        </td>
+        <td>
+          7830
+          -
+          7840
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.TypeApplications.typeParams
+        </td>
+        <td style="background: #AEF1AE">
+          TypeApplications.this.typeParams(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          205
+        </td>
+        <td>
+          23625
+        </td>
+        <td>
+          7884
+          -
+          7933
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Predef.assert
+        </td>
+        <td style="background: #AEF1AE">
+          scala.Predef.assert(TypeApplications.this.typeParams(ctx).forall(((x$2: dotty.tools.dotc.core.TypeApplications.TypeParamInfo) =&gt; x$2.isInstanceOf[dotty.tools.dotc.core.Symbols.Symbol])))
+        </td>
+      </tr><tr>
+        <td>
+          205
+        </td>
+        <td>
+          23624
+        </td>
+        <td>
+          7891
+          -
+          7932
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.LinearSeqOptimized.forall
+        </td>
+        <td style="background: #AEF1AE">
+          TypeApplications.this.typeParams(ctx).forall(((x$2: dotty.tools.dotc.core.TypeApplications.TypeParamInfo) =&gt; x$2.isInstanceOf[dotty.tools.dotc.core.Symbols.Symbol]))
+        </td>
+      </tr><tr>
+        <td>
+          205
+        </td>
+        <td>
+          23623
+        </td>
+        <td>
+          7909
+          -
+          7931
+        </td>
+        <td>
+          TypeApply
+        </td>
+        <td>
+          scala.Any.isInstanceOf
+        </td>
+        <td style="background: #AEF1AE">
+          x$2.isInstanceOf[dotty.tools.dotc.core.Symbols.Symbol]
+        </td>
+      </tr><tr>
+        <td>
+          206
+        </td>
+        <td>
+          23626
+        </td>
+        <td>
+          7940
+          -
+          7981
+        </td>
+        <td>
+          TypeApply
+        </td>
+        <td>
+          scala.Any.asInstanceOf
+        </td>
+        <td style="background: #AEF1AE">
+          TypeApplications.this.typeParams(ctx).asInstanceOf[List[dotty.tools.dotc.core.Symbols.TypeSymbol]]
+        </td>
+      </tr><tr>
+        <td>
+          207
+        </td>
+        <td>
+          23627
+        </td>
+        <td>
+          7996
+          -
+          7999
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.collection.immutable.Nil
+        </td>
+        <td style="background: #AEF1AE">
+          scala.collection.immutable.Nil
+        </td>
+      </tr><tr>
+        <td>
+          211
+        </td>
+        <td>
+          23628
+        </td>
+        <td>
+          8109
+          -
+          8124
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Types.Type.exists
+        </td>
+        <td style="background: #AEF1AE">
+          TypeApplications.this.hkResult(ctx).exists
+        </td>
+      </tr><tr>
+        <td>
+          214
+        </td>
+        <td>
+          23629
+        </td>
+        <td>
+          8246
+          -
+          8258
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.Types.Type.dealias
+        </td>
+        <td style="background: #AEF1AE">
+          TypeApplications.this.self.dealias(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          215
+        </td>
+        <td>
+          23630
+        </td>
+        <td>
+          8293
+          -
+          8311
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.TypeApplications.hkResult
+        </td>
+        <td style="background: #AEF1AE">
+          Types.decorateTypeApplications(self.info(ctx)).hkResult(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          217
+        </td>
+        <td>
+          23631
+        </td>
+        <td>
+          8352
+          -
+          8381
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Symbols.Symbol.isClass
+        </td>
+        <td style="background: #AEF1AE">
+          self.tycon.typeSymbol(ctx).isClass
+        </td>
+      </tr><tr>
+        <td>
+          217
+        </td>
+        <td>
+          23634
+        </td>
+        <td>
+          8395
+          -
+          8418
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.TypeApplications.hkResult
+        </td>
+        <td style="background: #AEF1AE">
+          Types.decorateTypeApplications(self.superType(ctx)).hkResult(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          217
+        </td>
+        <td>
+          23633
+        </td>
+        <td>
+          8383
+          -
+          8389
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          dotty.tools.dotc.core.Types.NoType
+        </td>
+        <td style="background: #AEF1AE">
+          Types.NoType
+        </td>
+      </tr><tr>
+        <td>
+          217
+        </td>
+        <td>
+          23632
+        </td>
+        <td>
+          8383
+          -
+          8389
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Types.NoType
+        </td>
+        <td style="background: #AEF1AE">
+          Types.NoType
+        </td>
+      </tr><tr>
+        <td>
+          217
+        </td>
+        <td>
+          23635
+        </td>
+        <td>
+          8395
+          -
+          8418
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          dotty.tools.dotc.core.TypeApplications.hkResult
+        </td>
+        <td style="background: #AEF1AE">
+          Types.decorateTypeApplications(self.superType(ctx)).hkResult(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          218
+        </td>
+        <td>
+          23636
+        </td>
+        <td>
+          8450
+          -
+          8465
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.Types.LambdaType.resultType
+        </td>
+        <td style="background: #AEF1AE">
+          self.resultType(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          219
+        </td>
+        <td>
+          23637
+        </td>
+        <td>
+          8525
+          -
+          8531
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Types.NoType
+        </td>
+        <td style="background: #AEF1AE">
+          Types.NoType
+        </td>
+      </tr><tr>
+        <td>
+          220
+        </td>
+        <td>
+          23638
+        </td>
+        <td>
+          8563
+          -
+          8586
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.TypeApplications.hkResult
+        </td>
+        <td style="background: #F0ADAD">
+          Types.decorateTypeApplications(self.optBounds).hkResult(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          224
+        </td>
+        <td>
+          23639
+        </td>
+        <td>
+          8750
+          -
+          8770
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.TypeApplications.hkResult
+        </td>
+        <td style="background: #AEF1AE">
+          Types.decorateTypeApplications(self.origin).hkResult(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          225
+        </td>
+        <td>
+          23640
+        </td>
+        <td>
+          8799
+          -
+          8822
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.TypeApplications.hkResult
+        </td>
+        <td style="background: #AEF1AE">
+          Types.decorateTypeApplications(self.superType(ctx)).hkResult(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          226
+        </td>
+        <td>
+          23641
+        </td>
+        <td>
+          8837
+          -
+          8843
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Types.NoType
+        </td>
+        <td style="background: #AEF1AE">
+          Types.NoType
+        </td>
+      </tr><tr>
+        <td>
+          232
+        </td>
+        <td>
+          23642
+        </td>
+        <td>
+          9074
+          -
+          9087
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.TypeApplications.hkResult
+        </td>
+        <td style="background: #AEF1AE">
+          Types.decorateTypeApplications(TypeApplications.this.self).hkResult(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          233
+        </td>
+        <td>
+          23643
+        </td>
+        <td>
+          9110
+          -
+          9124
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.TypeApplications.hkResult
+        </td>
+        <td style="background: #AEF1AE">
+          Types.decorateTypeApplications(other).hkResult(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          234
+        </td>
+        <td>
+          23644
+        </td>
+        <td>
+          9133
+          -
+          9150
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Types.Type.exists
+        </td>
+        <td style="background: #AEF1AE">
+          selfResult.exists
+        </td>
+      </tr><tr>
+        <td>
+          236
+        </td>
+        <td>
+          23651
+        </td>
+        <td>
+          9158
+          -
+          9356
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          scala.Boolean.&amp;&amp;
+        </td>
+        <td style="background: #AEF1AE">
+          otherResult.exists.&amp;&amp;(Types.decorateTypeApplications(selfResult).hasSameKindAs(otherResult)(ctx)).&amp;&amp;(Types.decorateTypeApplications(TypeApplications.this.self).typeParams(ctx).corresponds[dotty.tools.dotc.core.TypeApplications.TypeParamInfo](Types.decorateTypeApplications(other).typeParams(ctx))(((sparam: dotty.tools.dotc.core.TypeApplications.TypeParamInfo, oparam: dotty.tools.dotc.core.TypeApplications.TypeParamInfo) =&gt; Types.decorateTypeApplications(sparam.paramInfo(ctx)).hasSameKindAs(oparam.paramInfo(ctx))(ctx))))
+        </td>
+      </tr><tr>
+        <td>
+          236
+        </td>
+        <td>
+          23645
+        </td>
+        <td>
+          9186
+          -
+          9223
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.TypeApplications.hasSameKindAs
+        </td>
+        <td style="background: #AEF1AE">
+          Types.decorateTypeApplications(selfResult).hasSameKindAs(otherResult)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          236
+        </td>
+        <td>
+          23650
+        </td>
+        <td>
+          9158
+          -
+          9356
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Boolean.&amp;&amp;
+        </td>
+        <td style="background: #AEF1AE">
+          otherResult.exists.&amp;&amp;(Types.decorateTypeApplications(selfResult).hasSameKindAs(otherResult)(ctx)).&amp;&amp;(Types.decorateTypeApplications(TypeApplications.this.self).typeParams(ctx).corresponds[dotty.tools.dotc.core.TypeApplications.TypeParamInfo](Types.decorateTypeApplications(other).typeParams(ctx))(((sparam: dotty.tools.dotc.core.TypeApplications.TypeParamInfo, oparam: dotty.tools.dotc.core.TypeApplications.TypeParamInfo) =&gt; Types.decorateTypeApplications(sparam.paramInfo(ctx)).hasSameKindAs(oparam.paramInfo(ctx))(ctx))))
+        </td>
+      </tr><tr>
+        <td>
+          237
+        </td>
+        <td>
+          23646
+        </td>
+        <td>
+          9233
+          -
+          9237
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.TypeApplications.self
+        </td>
+        <td style="background: #AEF1AE">
+          TypeApplications.this.self
+        </td>
+      </tr><tr>
+        <td>
+          237
+        </td>
+        <td>
+          23649
+        </td>
+        <td>
+          9233
+          -
+          9356
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.LinearSeqLike.corresponds
+        </td>
+        <td style="background: #AEF1AE">
+          Types.decorateTypeApplications(TypeApplications.this.self).typeParams(ctx).corresponds[dotty.tools.dotc.core.TypeApplications.TypeParamInfo](Types.decorateTypeApplications(other).typeParams(ctx))(((sparam: dotty.tools.dotc.core.TypeApplications.TypeParamInfo, oparam: dotty.tools.dotc.core.TypeApplications.TypeParamInfo) =&gt; Types.decorateTypeApplications(sparam.paramInfo(ctx)).hasSameKindAs(oparam.paramInfo(ctx))(ctx)))
+        </td>
+      </tr><tr>
+        <td>
+          237
+        </td>
+        <td>
+          23647
+        </td>
+        <td>
+          9261
+          -
+          9277
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.TypeApplications.typeParams
+        </td>
+        <td style="background: #AEF1AE">
+          Types.decorateTypeApplications(other).typeParams(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          238
+        </td>
+        <td>
+          23648
+        </td>
+        <td>
+          9307
+          -
+          9355
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.TypeApplications.hasSameKindAs
+        </td>
+        <td style="background: #AEF1AE">
+          Types.decorateTypeApplications(sparam.paramInfo(ctx)).hasSameKindAs(oparam.paramInfo(ctx))(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          239
+        </td>
+        <td>
+          23652
+        </td>
+        <td>
+          9366
+          -
+          9385
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.Boolean.unary_!
+        </td>
+        <td style="background: #AEF1AE">
+          otherResult.exists.unary_!
+        </td>
+      </tr><tr>
+        <td>
+          239
+        </td>
+        <td>
+          23653
+        </td>
+        <td>
+          9366
+          -
+          9385
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          scala.Boolean.unary_!
+        </td>
+        <td style="background: #AEF1AE">
+          otherResult.exists.unary_!
+        </td>
+      </tr><tr>
+        <td>
+          243
+        </td>
+        <td>
+          23654
+        </td>
+        <td>
+          9515
+          -
+          9519
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.TypeApplications.self
+        </td>
+        <td style="background: #AEF1AE">
+          TypeApplications.this.self
+        </td>
+      </tr><tr>
+        <td>
+          244
+        </td>
+        <td>
+          23655
+        </td>
+        <td>
+          9575
+          -
+          9598
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.SymDenotations.SymDenotation.isAliasType
+        </td>
+        <td style="background: #AEF1AE">
+          Symbols.toDenot(self.symbol(ctx))(ctx).isAliasType(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          244
+        </td>
+        <td>
+          23656
+        </td>
+        <td>
+          9554
+          -
+          9598
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Boolean.&amp;&amp;
+        </td>
+        <td style="background: #AEF1AE">
+          self.denot(ctx).exists.&amp;&amp;(Symbols.toDenot(self.symbol(ctx))(ctx).isAliasType(ctx))
+        </td>
+      </tr><tr>
+        <td>
+          245
+        </td>
+        <td>
+          23657
+        </td>
+        <td>
+          9608
+          -
+          9647
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.TypeApplications.safeDealias
+        </td>
+        <td style="background: #AEF1AE">
+          Types.decorateTypeApplications(self.superType(ctx).stripTypeVar(ctx)).safeDealias(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          247
+        </td>
+        <td>
+          23658
+        </td>
+        <td>
+          9668
+          -
+          9672
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.TypeApplications.self
+        </td>
+        <td style="background: #AEF1AE">
+          TypeApplications.this.self
+        </td>
+      </tr><tr>
+        <td>
+          254
+        </td>
+        <td>
+          23661
+        </td>
+        <td>
+          9962
+          -
+          9978
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.TypeApplications.typeParamSymbols
+        </td>
+        <td style="background: #F0ADAD">
+          TypeApplications.this.typeParamSymbols(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          254
+        </td>
+        <td>
+          23660
+        </td>
+        <td>
+          9949
+          -
+          9956
+        </td>
+        <td>
+          Ident
+        </td>
+        <td>
+          dotty.tools.dotc.core.TypeApplications.tparams
+        </td>
+        <td style="background: #AEF1AE">
+          tparams
+        </td>
+      </tr><tr>
+        <td>
+          254
+        </td>
+        <td>
+          23659
+        </td>
+        <td>
+          9910
+          -
+          9947
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.TypeApplications.variancesConform
+        </td>
+        <td style="background: #AEF1AE">
+          TypeApplications.variancesConform(TypeApplications.this.typeParams(ctx), tparams)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          254
+        </td>
+        <td>
+          23662
+        </td>
+        <td>
+          9962
+          -
+          9978
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          dotty.tools.dotc.core.TypeApplications.typeParamSymbols
+        </td>
+        <td style="background: #F0ADAD">
+          TypeApplications.this.typeParamSymbols(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          255
+        </td>
+        <td>
+          23663
+        </td>
+        <td>
+          9983
+          -
+          10060
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.Types.HKTypeLambda.fromParams
+        </td>
+        <td style="background: #AEF1AE">
+          Types.HKTypeLambda.fromParams[dotty.tools.dotc.core.Symbols.TypeSymbol](tparamsToUse, Types.decorateTypeApplications(TypeApplications.this.self).appliedTo(tparams.map[dotty.tools.dotc.core.Types.TypeRef, List[dotty.tools.dotc.core.Types.TypeRef]](((x$3: dotty.tools.dotc.core.Symbols.TypeSymbol) =&gt; Symbols.toDenot(x$3)(ctx).typeRef(ctx)))(immutable.this.List.canBuildFrom[dotty.tools.dotc.core.Types.TypeRef]))(ctx))(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          261
+        </td>
+        <td>
+          23664
+        </td>
+        <td>
+          10299
+          -
+          10303
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.TypeApplications.isHK
+        </td>
+        <td style="background: #AEF1AE">
+          TypeApplications.this.isHK(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          261
+        </td>
+        <td>
+          23667
+        </td>
+        <td>
+          10315
+          -
+          10333
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.TypeApplications.EtaExpansion.apply
+        </td>
+        <td style="background: #AEF1AE">
+          TypeApplications.EtaExpansion.apply(TypeApplications.this.self)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          261
+        </td>
+        <td>
+          23666
+        </td>
+        <td>
+          10305
+          -
+          10309
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          dotty.tools.dotc.core.TypeApplications.self
+        </td>
+        <td style="background: #AEF1AE">
+          TypeApplications.this.self
+        </td>
+      </tr><tr>
+        <td>
+          261
+        </td>
+        <td>
+          23665
+        </td>
+        <td>
+          10305
+          -
+          10309
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.TypeApplications.self
+        </td>
+        <td style="background: #AEF1AE">
+          TypeApplications.this.self
+        </td>
+      </tr><tr>
+        <td>
+          261
+        </td>
+        <td>
+          23668
+        </td>
+        <td>
+          10315
+          -
+          10333
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          dotty.tools.dotc.core.TypeApplications.EtaExpansion.apply
+        </td>
+        <td style="background: #AEF1AE">
+          TypeApplications.EtaExpansion.apply(TypeApplications.this.self)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          265
+        </td>
+        <td>
+          23669
+        </td>
+        <td>
+          10520
+          -
+          10538
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.TypeApplications.hkTypeParams
+        </td>
+        <td style="background: #AEF1AE">
+          Types.decorateTypeApplications(bound).hkTypeParams(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          266
+        </td>
+        <td>
+          23670
+        </td>
+        <td>
+          10547
+          -
+          10563
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.collection.SeqLike.isEmpty
+        </td>
+        <td style="background: #AEF1AE">
+          hkParams.isEmpty
+        </td>
+      </tr><tr>
+        <td>
+          266
+        </td>
+        <td>
+          23672
+        </td>
+        <td>
+          10565
+          -
+          10569
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          dotty.tools.dotc.core.TypeApplications.self
+        </td>
+        <td style="background: #AEF1AE">
+          TypeApplications.this.self
+        </td>
+      </tr><tr>
+        <td>
+          266
+        </td>
+        <td>
+          23671
+        </td>
+        <td>
+          10565
+          -
+          10569
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.TypeApplications.self
+        </td>
+        <td style="background: #AEF1AE">
+          TypeApplications.this.self
+        </td>
+      </tr><tr>
+        <td>
+          267
+        </td>
+        <td>
+          23679
+        </td>
+        <td>
+          10579
+          -
+          10741
+        </td>
+        <td>
+          Match
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          TypeApplications.this.self match {
+  case (self @ (_: dotty.tools.dotc.core.Types.TypeRef)) if self.symbol(ctx).isClass.&amp;&amp;(Types.decorateTypeApplications(self).typeParams(ctx).length.==(hkParams.length)) =&gt; TypeApplications.EtaExpansion.apply(self)(ctx)
+  case _ =&gt; TypeApplications.this.self
+}
+        </td>
+      </tr><tr>
+        <td>
+          267
+        </td>
+        <td>
+          23673
+        </td>
+        <td>
+          10579
+          -
+          10583
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.TypeApplications.self
+        </td>
+        <td style="background: #AEF1AE">
+          TypeApplications.this.self
+        </td>
+      </tr><tr>
+        <td>
+          268
+        </td>
+        <td>
+          23676
+        </td>
+        <td>
+          10620
+          -
+          10684
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Boolean.&amp;&amp;
+        </td>
+        <td style="background: #AEF1AE">
+          self.symbol(ctx).isClass.&amp;&amp;(Types.decorateTypeApplications(self).typeParams(ctx).length.==(hkParams.length))
+        </td>
+      </tr><tr>
+        <td>
+          268
+        </td>
+        <td>
+          23675
+        </td>
+        <td>
+          10643
+          -
+          10684
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Int.==
+        </td>
+        <td style="background: #F0ADAD">
+          Types.decorateTypeApplications(self).typeParams(ctx).length.==(hkParams.length)
+        </td>
+      </tr><tr>
+        <td>
+          268
+        </td>
+        <td>
+          23674
+        </td>
+        <td>
+          10669
+          -
+          10684
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.collection.LinearSeqOptimized.length
+        </td>
+        <td style="background: #F0ADAD">
+          hkParams.length
+        </td>
+      </tr><tr>
+        <td>
+          269
+        </td>
+        <td>
+          23677
+        </td>
+        <td>
+          10696
+          -
+          10714
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.TypeApplications.EtaExpansion.apply
+        </td>
+        <td style="background: #F0ADAD">
+          TypeApplications.EtaExpansion.apply(self)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          270
+        </td>
+        <td>
+          23678
+        </td>
+        <td>
+          10731
+          -
+          10735
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.TypeApplications.self
+        </td>
+        <td style="background: #AEF1AE">
+          TypeApplications.this.self
+        </td>
+      </tr><tr>
+        <td>
+          306
+        </td>
+        <td>
+          23680
+        </td>
+        <td>
+          12175
+          -
+          12193
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.TypeApplications.hkTypeParams
+        </td>
+        <td style="background: #AEF1AE">
+          Types.decorateTypeApplications(bound).hkTypeParams(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          307
+        </td>
+        <td>
+          23682
+        </td>
+        <td>
+          12220
+          -
+          12224
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.TypeApplications.self
+        </td>
+        <td style="background: #AEF1AE">
+          TypeApplications.this.self
+        </td>
+      </tr><tr>
+        <td>
+          307
+        </td>
+        <td>
+          23681
+        </td>
+        <td>
+          12202
+          -
+          12218
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.collection.SeqLike.isEmpty
+        </td>
+        <td style="background: #AEF1AE">
+          hkParams.isEmpty
+        </td>
+      </tr><tr>
+        <td>
+          307
+        </td>
+        <td>
+          23683
+        </td>
+        <td>
+          12220
+          -
+          12224
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          dotty.tools.dotc.core.TypeApplications.self
+        </td>
+        <td style="background: #AEF1AE">
+          TypeApplications.this.self
+        </td>
+      </tr><tr>
+        <td>
+          308
+        </td>
+        <td>
+          23694
+        </td>
+        <td>
+          12234
+          -
+          13018
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          {
+  def adaptArg(arg: dotty.tools.dotc.core.Types.Type): dotty.tools.dotc.core.Types.Type = arg match {
+    case (arg @ Types.HKTypeLambda.unapply(&lt;unapply-selector&gt;) &lt;unapply&gt; ((tparams @ _), (body @ _))) if tparams.corresponds[dotty.tools.dotc.core.TypeApplications.TypeParamInfo](hkParams)(((x$4: dotty.tools.dotc.core.Types.LambdaParam, x$5: dotty.tools.dotc.core.TypeApplications.TypeParamInfo) =&gt; x$4.paramVariance(ctx).==(x$5.paramVariance(ctx)))).unary_!.&amp;&amp;(tparams.corresponds[dotty.tools.dotc.core.TypeApplications.TypeParamInfo](hkParams)({
+      ((tparam1: dotty.tools.dotc.core.TypeApplications.TypeParamInfo, tparam2: dotty.tools.dotc.core.TypeApplications.TypeParamInfo) =&gt; TypeApplications.varianceConforms(tparam1, tparam2)(ctx))
+    })) =&gt; Types.HKTypeLambda.apply(scala.Predef.tuple2ToZippedOps[List[dotty.tools.dotc.core.Types.LambdaParam], List[dotty.tools.dotc.core.TypeApplications.TypeParamInfo]](scala.Tuple2.apply[List[dotty.tools.dotc.core.Types.LambdaParam], List[dotty.tools.dotc.core.TypeApplications.TypeParamInfo]](tparams, hkParams)).zipped[dotty.tools.dotc.core.Types.LambdaParam, List[dotty.tools.dotc.core.Types.LambdaParam], dotty.tools.dotc.core.TypeApplications.TypeParamInfo, List[dotty.tools.dotc.core.TypeApplications.TypeParamInfo]](scala.Predef.$conforms[List[dotty.tools.dotc.core.Types.LambdaParam]], scala.Predef.$conforms[List[dotty.tools.dotc.core.TypeApplications.TypeParamInfo]]).map[dotty.tools.dotc.core.Names.TypeName, List[dotty.tools.dotc.core.Names.TypeName]](((tparam: dotty.tools.dotc.core.Types.LambdaParam, hkparam: dotty.tools.dotc.core.TypeApplications.TypeParamInfo) =&gt; NameOps.NameDecorator[tparam.tl.ThisName](tparam.paramName(ctx)).withVariance(hkparam.paramVariance(ctx))))(immutable.this.List.canBuildFrom[dotty.tools.dotc.core.Names.TypeName]))(((tl: dotty.tools.dotc.core.Types.HKTypeLambda) =&gt; arg.paramInfos.map[dotty.tools.dotc.core.Types.TypeBounds, List[dotty.tools.dotc.core.Types.TypeBounds]](((x$6: dotty.tools.dotc.core.Types.TypeBounds) =&gt; x$6.subst(arg, tl)(ctx).bounds(ctx)))(immutable.this.List.canBuildFrom[dotty.tools.dotc.core.Types.TypeBounds])), ((tl: dotty.tools.dotc.core.Types.HKTypeLambda) =&gt; arg.resultType(ctx).subst(arg, tl)(ctx)))(ctx)
+    case (arg @ Types.TypeAlias.unapply(&lt;unapply-selector&gt;) &lt;unapply&gt; ((alias @ _))) =&gt; arg.derivedTypeAlias(adaptArg(alias))(ctx)
+    case (arg @ (lo: dotty.tools.dotc.core.Types.Type, hi: dotty.tools.dotc.core.Types.Type)dotty.tools.dotc.core.Types.TypeBounds((lo @ _), (hi @ _))) =&gt; arg.derivedTypeBounds(adaptArg(lo), adaptArg(hi))(ctx)
+    case _ =&gt; arg
+  };
+  adaptArg(TypeApplications.this.self)
+}
+        </td>
+      </tr><tr>
+        <td>
+          311
+        </td>
+        <td>
+          23688
+        </td>
+        <td>
+          12349
+          -
+          12479
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Boolean.&amp;&amp;
+        </td>
+        <td style="background: #AEF1AE">
+          tparams.corresponds[dotty.tools.dotc.core.TypeApplications.TypeParamInfo](hkParams)(((x$4: dotty.tools.dotc.core.Types.LambdaParam, x$5: dotty.tools.dotc.core.TypeApplications.TypeParamInfo) =&gt; x$4.paramVariance(ctx).==(x$5.paramVariance(ctx)))).unary_!.&amp;&amp;(tparams.corresponds[dotty.tools.dotc.core.TypeApplications.TypeParamInfo](hkParams)({
+  ((tparam1: dotty.tools.dotc.core.TypeApplications.TypeParamInfo, tparam2: dotty.tools.dotc.core.TypeApplications.TypeParamInfo) =&gt; TypeApplications.varianceConforms(tparam1, tparam2)(ctx))
+}))
+        </td>
+      </tr><tr>
+        <td>
+          311
+        </td>
+        <td>
+          23685
+        </td>
+        <td>
+          12380
+          -
+          12414
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Int.==
+        </td>
+        <td style="background: #AEF1AE">
+          x$4.paramVariance(ctx).==(x$5.paramVariance(ctx))
+        </td>
+      </tr><tr>
+        <td>
+          311
+        </td>
+        <td>
+          23684
+        </td>
+        <td>
+          12399
+          -
+          12414
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.ParamInfo.paramVariance
+        </td>
+        <td style="background: #AEF1AE">
+          x$5.paramVariance(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          312
+        </td>
+        <td>
+          23687
+        </td>
+        <td>
+          12432
+          -
+          12479
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.LinearSeqLike.corresponds
+        </td>
+        <td style="background: #AEF1AE">
+          tparams.corresponds[dotty.tools.dotc.core.TypeApplications.TypeParamInfo](hkParams)({
+  ((tparam1: dotty.tools.dotc.core.TypeApplications.TypeParamInfo, tparam2: dotty.tools.dotc.core.TypeApplications.TypeParamInfo) =&gt; TypeApplications.varianceConforms(tparam1, tparam2)(ctx))
+})
+        </td>
+      </tr><tr>
+        <td>
+          312
+        </td>
+        <td>
+          23686
+        </td>
+        <td>
+          12462
+          -
+          12478
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.TypeApplications.varianceConforms
+        </td>
+        <td style="background: #AEF1AE">
+          TypeApplications.varianceConforms(tparam1, tparam2)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          315
+        </td>
+        <td>
+          23689
+        </td>
+        <td>
+          12493
+          -
+          12763
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.Types.HKTypeLambda.apply
+        </td>
+        <td style="background: #AEF1AE">
+          Types.HKTypeLambda.apply(scala.Predef.tuple2ToZippedOps[List[dotty.tools.dotc.core.Types.LambdaParam], List[dotty.tools.dotc.core.TypeApplications.TypeParamInfo]](scala.Tuple2.apply[List[dotty.tools.dotc.core.Types.LambdaParam], List[dotty.tools.dotc.core.TypeApplications.TypeParamInfo]](tparams, hkParams)).zipped[dotty.tools.dotc.core.Types.LambdaParam, List[dotty.tools.dotc.core.Types.LambdaParam], dotty.tools.dotc.core.TypeApplications.TypeParamInfo, List[dotty.tools.dotc.core.TypeApplications.TypeParamInfo]](scala.Predef.$conforms[List[dotty.tools.dotc.core.Types.LambdaParam]], scala.Predef.$conforms[List[dotty.tools.dotc.core.TypeApplications.TypeParamInfo]]).map[dotty.tools.dotc.core.Names.TypeName, List[dotty.tools.dotc.core.Names.TypeName]](((tparam: dotty.tools.dotc.core.Types.LambdaParam, hkparam: dotty.tools.dotc.core.TypeApplications.TypeParamInfo) =&gt; NameOps.NameDecorator[tparam.tl.ThisName](tparam.paramName(ctx)).withVariance(hkparam.paramVariance(ctx))))(immutable.this.List.canBuildFrom[dotty.tools.dotc.core.Names.TypeName]))(((tl: dotty.tools.dotc.core.Types.HKTypeLambda) =&gt; arg.paramInfos.map[dotty.tools.dotc.core.Types.TypeBounds, List[dotty.tools.dotc.core.Types.TypeBounds]](((x$6: dotty.tools.dotc.core.Types.TypeBounds) =&gt; x$6.subst(arg, tl)(ctx).bounds(ctx)))(immutable.this.List.canBuildFrom[dotty.tools.dotc.core.Types.TypeBounds])), ((tl: dotty.tools.dotc.core.Types.HKTypeLambda) =&gt; arg.resultType(ctx).subst(arg, tl)(ctx)))(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          320
+        </td>
+        <td>
+          23690
+        </td>
+        <td>
+          12813
+          -
+          12850
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.Types.TypeAlias.derivedTypeAlias
+        </td>
+        <td style="background: #F0ADAD">
+          arg.derivedTypeAlias(adaptArg(alias))(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          322
+        </td>
+        <td>
+          23691
+        </td>
+        <td>
+          12902
+          -
+          12951
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.Types.TypeBounds.derivedTypeBounds
+        </td>
+        <td style="background: #F0ADAD">
+          arg.derivedTypeBounds(adaptArg(lo), adaptArg(hi))(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          326
+        </td>
+        <td>
+          23693
+        </td>
+        <td>
+          12998
+          -
+          13012
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.core.TypeApplications.adaptArg
+        </td>
+        <td style="background: #AEF1AE">
+          adaptArg(TypeApplications.this.self)
+        </td>
+      </tr><tr>
+        <td>
+          326
+        </td>
+        <td>
+          23692
+        </td>
+        <td>
+          13007
+          -
+          13011
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.TypeApplications.self
+        </td>
+        <td style="background: #AEF1AE">
+          TypeApplications.this.self
+        </td>
+      </tr><tr>
+        <td>
+          338
+        </td>
+        <td>
+          23737
+        </td>
+        <td>
+          13245
+          -
+          15723
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.util.Stats.track
+        </td>
+        <td style="background: #AEF1AE">
+          util.Stats.track[dotty.tools.dotc.core.Types.Type](&quot;appliedTo&quot;)({
+  val typParams: List[dotty.tools.dotc.core.TypeApplications.TypeParamInfo] = Types.decorateTypeApplications(TypeApplications.this.self).typeParams(ctx);
+  val stripped: dotty.tools.dotc.core.Types.Type = TypeApplications.this.self.stripTypeVar(ctx);
+  val dealiased: dotty.tools.dotc.core.Types.Type = Types.decorateTypeApplications(stripped).safeDealias(ctx);
+  if (args.isEmpty.||(ctx.erasedTypes))
+    TypeApplications.this.self
+  else
+    dealiased match {
+      case (dealiased @ (_: dotty.tools.dotc.core.Types.HKTypeLambda)) =&gt; {
+        def tryReduce: dotty.tools.dotc.core.Types.Type = if (args.exists(((x$7: dotty.tools.dotc.core.Types.Type) =&gt; x$7.isInstanceOf[dotty.tools.dotc.core.Types.TypeBounds])).unary_!)
+          {
+            val followAlias: Boolean = true.&amp;&amp;(dealiased.resType match {
+              case (tycon: dotty.tools.dotc.core.Types.Type, args: List[dotty.tools.dotc.core.Types.Type])dotty.tools.dotc.core.Types.AppliedType((tyconBody @ _), (dealiasedArgs @ _)) =&gt; dealiased.paramRefs.==(dealiasedArgs)
+              case _ =&gt; false
+            });
+            if (dealiased.eq(stripped).||(followAlias))
+              dealiased.instantiate(args)(ctx)
+            else
+              Types.AppliedType.apply(TypeApplications.this.self, args)(ctx)
+          }
+        else
+          dealiased.resType match {
+            case (tycon: dotty.tools.dotc.core.Types.Type, args: List[dotty.tools.dotc.core.Types.Type])dotty.tools.dotc.core.Types.AppliedType((tycon @ _), (args1 @ _)) if Types.decorateTypeApplications(tycon).safeDealias(ctx).ne(tycon) =&gt; Types.decorateTypeApplications({
+  &lt;artifact&gt; val x$13: dotty.tools.dotc.core.Types.Type = Types.decorateTypeApplications(Types.decorateTypeApplications(tycon).safeDealias(ctx)).appliedTo(args1)(ctx);
+  &lt;artifact&gt; val x$14: List[dealiased.ThisName] = dealiased.derivedLambdaType$default$1;
+  &lt;artifact&gt; val x$15: List[dealiased.PInfo] = dealiased.derivedLambdaType$default$2;
+  dealiased.derivedLambdaType(x$14, x$15, x$13)(ctx)
+}).appliedTo(args)(ctx)
+            case _ =&gt; {
+              val reducer: dotty.tools.dotc.core.TypeApplications.Reducer = new TypeApplications.Reducer(dealiased, args)(ctx);
+              val reduced: dotty.tools.dotc.core.Types.Type = reducer.apply(dealiased.resType);
+              if (reducer.allReplaced)
+                reduced
+              else
+                Types.AppliedType.apply(dealiased, args)(ctx)
+            }
+          };
+        tryReduce
+      }
+      case (dealiased @ (_: dotty.tools.dotc.core.Types.PolyType)) =&gt; dealiased.instantiate(args)(ctx)
+      case (dealiased @ (_: dotty.tools.dotc.core.Types.AndOrType)) =&gt; dealiased.derivedAndOrType(Types.decorateTypeApplications(dealiased.tp1).appliedTo(args)(ctx), Types.decorateTypeApplications(dealiased.tp2).appliedTo(args)(ctx))(ctx)
+      case (dealiased @ (_: dotty.tools.dotc.core.Types.TypeAlias)) =&gt; dealiased.derivedTypeAlias(Types.decorateTypeApplications(dealiased.alias).appliedTo(args)(ctx))(ctx)
+      case (dealiased @ (_: dotty.tools.dotc.core.Types.TypeBounds)) =&gt; dealiased.derivedTypeBounds(Types.decorateTypeApplications(dealiased.lo).appliedTo(args)(ctx), Types.decorateTypeApplications(dealiased.hi).appliedTo(args)(ctx))(ctx)
+      case (dealiased @ (_: dotty.tools.dotc.core.Types.LazyRef)) =&gt; Types.LazyRef.apply(((c: dotty.tools.dotc.core.Contexts.Context) =&gt; Types.decorateTypeApplications(dealiased.ref(c)).appliedTo(args)(ctx)))
+      case (dealiased @ (_: dotty.tools.dotc.core.Types.WildcardType)) =&gt; Types.WildcardType.apply(Types.decorateTypeApplications(dealiased.optBounds).appliedTo(args)(ctx).bounds(ctx))(ctx)
+      case (dealiased @ (_: dotty.tools.dotc.core.Types.TypeRef)) if dealiased.symbol(ctx).==(Symbols.defn(ctx).NothingClass) =&gt; dealiased
+      case (dealiased @ _) =&gt; Types.AppliedType.apply(TypeApplications.this.self, args)(ctx)
+    }
+})
+        </td>
+      </tr><tr>
+        <td>
+          338
+        </td>
+        <td>
+          23695
+        </td>
+        <td>
+          13251
+          -
+          13262
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          &quot;appliedTo&quot;
+        </td>
+      </tr><tr>
+        <td>
+          339
+        </td>
+        <td>
+          23696
+        </td>
+        <td>
+          13294
+          -
+          13309
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.TypeApplications.typeParams
+        </td>
+        <td style="background: #AEF1AE">
+          Types.decorateTypeApplications(TypeApplications.this.self).typeParams(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          340
+        </td>
+        <td>
+          23697
+        </td>
+        <td>
+          13329
+          -
+          13346
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.Types.Type.stripTypeVar
+        </td>
+        <td style="background: #AEF1AE">
+          TypeApplications.this.self.stripTypeVar(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          341
+        </td>
+        <td>
+          23698
+        </td>
+        <td>
+          13367
+          -
+          13387
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.TypeApplications.safeDealias
+        </td>
+        <td style="background: #AEF1AE">
+          Types.decorateTypeApplications(stripped).safeDealias(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          342
+        </td>
+        <td>
+          23700
+        </td>
+        <td>
+          13396
+          -
+          13427
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Boolean.||
+        </td>
+        <td style="background: #AEF1AE">
+          args.isEmpty.||(ctx.erasedTypes)
+        </td>
+      </tr><tr>
+        <td>
+          342
+        </td>
+        <td>
+          23702
+        </td>
+        <td>
+          13429
+          -
+          13433
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          dotty.tools.dotc.core.TypeApplications.self
+        </td>
+        <td style="background: #AEF1AE">
+          TypeApplications.this.self
+        </td>
+      </tr><tr>
+        <td>
+          342
+        </td>
+        <td>
+          23699
+        </td>
+        <td>
+          13412
+          -
+          13427
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Contexts.Context.erasedTypes
+        </td>
+        <td style="background: #AEF1AE">
+          ctx.erasedTypes
+        </td>
+      </tr><tr>
+        <td>
+          342
+        </td>
+        <td>
+          23701
+        </td>
+        <td>
+          13429
+          -
+          13433
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.TypeApplications.self
+        </td>
+        <td style="background: #AEF1AE">
+          TypeApplications.this.self
+        </td>
+      </tr><tr>
+        <td>
+          343
+        </td>
+        <td>
+          23736
+        </td>
+        <td>
+          13443
+          -
+          15719
+        </td>
+        <td>
+          Match
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          dealiased match {
+  case (dealiased @ (_: dotty.tools.dotc.core.Types.HKTypeLambda)) =&gt; {
+    def tryReduce: dotty.tools.dotc.core.Types.Type = if (args.exists(((x$7: dotty.tools.dotc.core.Types.Type) =&gt; x$7.isInstanceOf[dotty.tools.dotc.core.Types.TypeBounds])).unary_!)
+      {
+        val followAlias: Boolean = true.&amp;&amp;(dealiased.resType match {
+          case (tycon: dotty.tools.dotc.core.Types.Type, args: List[dotty.tools.dotc.core.Types.Type])dotty.tools.dotc.core.Types.AppliedType((tyconBody @ _), (dealiasedArgs @ _)) =&gt; dealiased.paramRefs.==(dealiasedArgs)
+          case _ =&gt; false
+        });
+        if (dealiased.eq(stripped).||(followAlias))
+          dealiased.instantiate(args)(ctx)
+        else
+          Types.AppliedType.apply(TypeApplications.this.self, args)(ctx)
+      }
+    else
+      dealiased.resType match {
+        case (tycon: dotty.tools.dotc.core.Types.Type, args: List[dotty.tools.dotc.core.Types.Type])dotty.tools.dotc.core.Types.AppliedType((tycon @ _), (args1 @ _)) if Types.decorateTypeApplications(tycon).safeDealias(ctx).ne(tycon) =&gt; Types.decorateTypeApplications({
+  &lt;artifact&gt; val x$13: dotty.tools.dotc.core.Types.Type = Types.decorateTypeApplications(Types.decorateTypeApplications(tycon).safeDealias(ctx)).appliedTo(args1)(ctx);
+  &lt;artifact&gt; val x$14: List[dealiased.ThisName] = dealiased.derivedLambdaType$default$1;
+  &lt;artifact&gt; val x$15: List[dealiased.PInfo] = dealiased.derivedLambdaType$default$2;
+  dealiased.derivedLambdaType(x$14, x$15, x$13)(ctx)
+}).appliedTo(args)(ctx)
+        case _ =&gt; {
+          val reducer: dotty.tools.dotc.core.TypeApplications.Reducer = new TypeApplications.Reducer(dealiased, args)(ctx);
+          val reduced: dotty.tools.dotc.core.Types.Type = reducer.apply(dealiased.resType);
+          if (reducer.allReplaced)
+            reduced
+          else
+            Types.AppliedType.apply(dealiased, args)(ctx)
+        }
+      };
+    tryReduce
+  }
+  case (dealiased @ (_: dotty.tools.dotc.core.Types.PolyType)) =&gt; dealiased.instantiate(args)(ctx)
+  case (dealiased @ (_: dotty.tools.dotc.core.Types.AndOrType)) =&gt; dealiased.derivedAndOrType(Types.decorateTypeApplications(dealiased.tp1).appliedTo(args)(ctx), Types.decorateTypeApplications(dealiased.tp2).appliedTo(args)(ctx))(ctx)
+  case (dealiased @ (_: dotty.tools.dotc.core.Types.TypeAlias)) =&gt; dealiased.derivedTypeAlias(Types.decorateTypeApplications(dealiased.alias).appliedTo(args)(ctx))(ctx)
+  case (dealiased @ (_: dotty.tools.dotc.core.Types.TypeBounds)) =&gt; dealiased.derivedTypeBounds(Types.decorateTypeApplications(dealiased.lo).appliedTo(args)(ctx), Types.decorateTypeApplications(dealiased.hi).appliedTo(args)(ctx))(ctx)
+  case (dealiased @ (_: dotty.tools.dotc.core.Types.LazyRef)) =&gt; Types.LazyRef.apply(((c: dotty.tools.dotc.core.Contexts.Context) =&gt; Types.decorateTypeApplications(dealiased.ref(c)).appliedTo(args)(ctx)))
+  case (dealiased @ (_: dotty.tools.dotc.core.Types.WildcardType)) =&gt; Types.WildcardType.apply(Types.decorateTypeApplications(dealiased.optBounds).appliedTo(args)(ctx).bounds(ctx))(ctx)
+  case (dealiased @ (_: dotty.tools.dotc.core.Types.TypeRef)) if dealiased.symbol(ctx).==(Symbols.defn(ctx).NothingClass) =&gt; dealiased
+  case (dealiased @ _) =&gt; Types.AppliedType.apply(TypeApplications.this.self, args)(ctx)
+}
+        </td>
+      </tr><tr>
+        <td>
+          346
+        </td>
+        <td>
+          23715
+        </td>
+        <td>
+          13579
+          -
+          14278
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          {
+  val followAlias: Boolean = true.&amp;&amp;(dealiased.resType match {
+    case (tycon: dotty.tools.dotc.core.Types.Type, args: List[dotty.tools.dotc.core.Types.Type])dotty.tools.dotc.core.Types.AppliedType((tyconBody @ _), (dealiasedArgs @ _)) =&gt; dealiased.paramRefs.==(dealiasedArgs)
+    case _ =&gt; false
+  });
+  if (dealiased.eq(stripped).||(followAlias))
+    dealiased.instantiate(args)(ctx)
+  else
+    Types.AppliedType.apply(TypeApplications.this.self, args)(ctx)
+}
+        </td>
+      </tr><tr>
+        <td>
+          346
+        </td>
+        <td>
+          23703
+        </td>
+        <td>
+          13550
+          -
+          13576
+        </td>
+        <td>
+          TypeApply
+        </td>
+        <td>
+          scala.Any.isInstanceOf
+        </td>
+        <td style="background: #AEF1AE">
+          x$7.isInstanceOf[dotty.tools.dotc.core.Types.TypeBounds]
+        </td>
+      </tr><tr>
+        <td>
+          346
+        </td>
+        <td>
+          23704
+        </td>
+        <td>
+          13537
+          -
+          13577
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.Boolean.unary_!
+        </td>
+        <td style="background: #AEF1AE">
+          args.exists(((x$7: dotty.tools.dotc.core.Types.Type) =&gt; x$7.isInstanceOf[dotty.tools.dotc.core.Types.TypeBounds])).unary_!
+        </td>
+      </tr><tr>
+        <td>
+          347
+        </td>
+        <td>
+          23709
+        </td>
+        <td>
+          13611
+          -
+          14127
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Boolean.&amp;&amp;
+        </td>
+        <td style="background: #AEF1AE">
+          true.&amp;&amp;(dealiased.resType match {
+  case (tycon: dotty.tools.dotc.core.Types.Type, args: List[dotty.tools.dotc.core.Types.Type])dotty.tools.dotc.core.Types.AppliedType((tyconBody @ _), (dealiasedArgs @ _)) =&gt; dealiased.paramRefs.==(dealiasedArgs)
+  case _ =&gt; false
+})
+        </td>
+      </tr><tr>
+        <td>
+          347
+        </td>
+        <td>
+          23705
+        </td>
+        <td>
+          13611
+          -
+          13638
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          true
+        </td>
+      </tr><tr>
+        <td>
+          348
+        </td>
+        <td>
+          23706
+        </td>
+        <td>
+          13658
+          -
+          13675
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Types.HKTypeLambda.resType
+        </td>
+        <td style="background: #AEF1AE">
+          dealiased.resType
+        </td>
+      </tr><tr>
+        <td>
+          354
+        </td>
+        <td>
+          23707
+        </td>
+        <td>
+          14043
+          -
+          14079
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.Object.==
+        </td>
+        <td style="background: #AEF1AE">
+          dealiased.paramRefs.==(dealiasedArgs)
+        </td>
+      </tr><tr>
+        <td>
+          355
+        </td>
+        <td>
+          23708
+        </td>
+        <td>
+          14106
+          -
+          14111
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          false
+        </td>
+      </tr><tr>
+        <td>
+          358
+        </td>
+        <td>
+          23711
+        </td>
+        <td>
+          14198
+          -
+          14225
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.Types.LambdaType.instantiate
+        </td>
+        <td style="background: #AEF1AE">
+          dealiased.instantiate(args)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          358
+        </td>
+        <td>
+          23710
+        </td>
+        <td>
+          14158
+          -
+          14196
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Boolean.||
+        </td>
+        <td style="background: #AEF1AE">
+          dealiased.eq(stripped).||(followAlias)
+        </td>
+      </tr><tr>
+        <td>
+          358
+        </td>
+        <td>
+          23712
+        </td>
+        <td>
+          14198
+          -
+          14225
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          dotty.tools.dotc.core.Types.LambdaType.instantiate
+        </td>
+        <td style="background: #AEF1AE">
+          dealiased.instantiate(args)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          359
+        </td>
+        <td>
+          23714
+        </td>
+        <td>
+          14243
+          -
+          14266
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          dotty.tools.dotc.core.Types.AppliedType.apply
+        </td>
+        <td style="background: #AEF1AE">
+          Types.AppliedType.apply(TypeApplications.this.self, args)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          359
+        </td>
+        <td>
+          23713
+        </td>
+        <td>
+          14243
+          -
+          14266
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.Types.AppliedType.apply
+        </td>
+        <td style="background: #AEF1AE">
+          Types.AppliedType.apply(TypeApplications.this.self, args)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          361
+        </td>
+        <td>
+          23726
+        </td>
+        <td>
+          14294
+          -
+          14919
+        </td>
+        <td>
+          Match
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          dealiased.resType match {
+  case (tycon: dotty.tools.dotc.core.Types.Type, args: List[dotty.tools.dotc.core.Types.Type])dotty.tools.dotc.core.Types.AppliedType((tycon @ _), (args1 @ _)) if Types.decorateTypeApplications(tycon).safeDealias(ctx).ne(tycon) =&gt; Types.decorateTypeApplications({
+  &lt;artifact&gt; val x$13: dotty.tools.dotc.core.Types.Type = Types.decorateTypeApplications(Types.decorateTypeApplications(tycon).safeDealias(ctx)).appliedTo(args1)(ctx);
+  &lt;artifact&gt; val x$14: List[dealiased.ThisName] = dealiased.derivedLambdaType$default$1;
+  &lt;artifact&gt; val x$15: List[dealiased.PInfo] = dealiased.derivedLambdaType$default$2;
+  dealiased.derivedLambdaType(x$14, x$15, x$13)(ctx)
+}).appliedTo(args)(ctx)
+  case _ =&gt; {
+    val reducer: dotty.tools.dotc.core.TypeApplications.Reducer = new TypeApplications.Reducer(dealiased, args)(ctx);
+    val reduced: dotty.tools.dotc.core.Types.Type = reducer.apply(dealiased.resType);
+    if (reducer.allReplaced)
+      reduced
+    else
+      Types.AppliedType.apply(dealiased, args)(ctx)
+  }
+}
+        </td>
+      </tr><tr>
+        <td>
+          361
+        </td>
+        <td>
+          23716
+        </td>
+        <td>
+          14294
+          -
+          14311
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Types.HKTypeLambda.resType
+        </td>
+        <td style="background: #AEF1AE">
+          dealiased.resType
+        </td>
+      </tr><tr>
+        <td>
+          362
+        </td>
+        <td>
+          23717
+        </td>
+        <td>
+          14366
+          -
+          14392
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.Object.ne
+        </td>
+        <td style="background: #AEF1AE">
+          Types.decorateTypeApplications(tycon).safeDealias(ctx).ne(tycon)
+        </td>
+      </tr><tr>
+        <td>
+          367
+        </td>
+        <td>
+          23718
+        </td>
+        <td>
+          14555
+          -
+          14678
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.TypeApplications.appliedTo
+        </td>
+        <td style="background: #AEF1AE">
+          Types.decorateTypeApplications({
+  &lt;artifact&gt; val x$13: dotty.tools.dotc.core.Types.Type = Types.decorateTypeApplications(Types.decorateTypeApplications(tycon).safeDealias(ctx)).appliedTo(args1)(ctx);
+  &lt;artifact&gt; val x$14: List[dealiased.ThisName] = dealiased.derivedLambdaType$default$1;
+  &lt;artifact&gt; val x$15: List[dealiased.PInfo] = dealiased.derivedLambdaType$default$2;
+  dealiased.derivedLambdaType(x$14, x$15, x$13)(ctx)
+}).appliedTo(args)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          369
+        </td>
+        <td>
+          23719
+        </td>
+        <td>
+          14729
+          -
+          14757
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.TypeApplications.Reducer.&lt;init&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          new TypeApplications.Reducer(dealiased, args)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          370
+        </td>
+        <td>
+          23720
+        </td>
+        <td>
+          14794
+          -
+          14811
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Types.HKTypeLambda.resType
+        </td>
+        <td style="background: #AEF1AE">
+          dealiased.resType
+        </td>
+      </tr><tr>
+        <td>
+          370
+        </td>
+        <td>
+          23721
+        </td>
+        <td>
+          14786
+          -
+          14812
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.core.TypeApplications.Reducer.apply
+        </td>
+        <td style="background: #AEF1AE">
+          reducer.apply(dealiased.resType)
+        </td>
+      </tr><tr>
+        <td>
+          371
+        </td>
+        <td>
+          23723
+        </td>
+        <td>
+          14852
+          -
+          14859
+        </td>
+        <td>
+          Ident
+        </td>
+        <td>
+          dotty.tools.dotc.core.TypeApplications.reduced
+        </td>
+        <td style="background: #AEF1AE">
+          reduced
+        </td>
+      </tr><tr>
+        <td>
+          371
+        </td>
+        <td>
+          23722
+        </td>
+        <td>
+          14831
+          -
+          14850
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.TypeApplications.Reducer.allReplaced
+        </td>
+        <td style="background: #AEF1AE">
+          reducer.allReplaced
+        </td>
+      </tr><tr>
+        <td>
+          372
+        </td>
+        <td>
+          23724
+        </td>
+        <td>
+          14879
+          -
+          14907
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.Types.AppliedType.apply
+        </td>
+        <td style="background: #AEF1AE">
+          Types.AppliedType.apply(dealiased, args)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          372
+        </td>
+        <td>
+          23725
+        </td>
+        <td>
+          14879
+          -
+          14907
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          dotty.tools.dotc.core.Types.AppliedType.apply
+        </td>
+        <td style="background: #AEF1AE">
+          Types.AppliedType.apply(dealiased, args)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          376
+        </td>
+        <td>
+          23727
+        </td>
+        <td>
+          14980
+          -
+          15007
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.Types.LambdaType.instantiate
+        </td>
+        <td style="background: #AEF1AE">
+          dealiased.instantiate(args)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          378
+        </td>
+        <td>
+          23728
+        </td>
+        <td>
+          15051
+          -
+          15139
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.Types.AndOrType.derivedAndOrType
+        </td>
+        <td style="background: #F0ADAD">
+          dealiased.derivedAndOrType(Types.decorateTypeApplications(dealiased.tp1).appliedTo(args)(ctx), Types.decorateTypeApplications(dealiased.tp2).appliedTo(args)(ctx))(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          380
+        </td>
+        <td>
+          23729
+        </td>
+        <td>
+          15183
+          -
+          15242
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.Types.TypeAlias.derivedTypeAlias
+        </td>
+        <td style="background: #F0ADAD">
+          dealiased.derivedTypeAlias(Types.decorateTypeApplications(dealiased.alias).appliedTo(args)(ctx))(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          382
+        </td>
+        <td>
+          23730
+        </td>
+        <td>
+          15287
+          -
+          15374
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.Types.TypeBounds.derivedTypeBounds
+        </td>
+        <td style="background: #AEF1AE">
+          dealiased.derivedTypeBounds(Types.decorateTypeApplications(dealiased.lo).appliedTo(args)(ctx), Types.decorateTypeApplications(dealiased.hi).appliedTo(args)(ctx))(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          384
+        </td>
+        <td>
+          23732
+        </td>
+        <td>
+          15416
+          -
+          15462
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.core.Types.LazyRef.apply
+        </td>
+        <td style="background: #AEF1AE">
+          Types.LazyRef.apply(((c: dotty.tools.dotc.core.Contexts.Context) =&gt; Types.decorateTypeApplications(dealiased.ref(c)).appliedTo(args)(ctx)))
+        </td>
+      </tr><tr>
+        <td>
+          384
+        </td>
+        <td>
+          23731
+        </td>
+        <td>
+          15429
+          -
+          15461
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.TypeApplications.appliedTo
+        </td>
+        <td style="background: #AEF1AE">
+          Types.decorateTypeApplications(dealiased.ref(c)).appliedTo(args)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          386
+        </td>
+        <td>
+          23733
+        </td>
+        <td>
+          15509
+          -
+          15565
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.Types.WildcardType.apply
+        </td>
+        <td style="background: #AEF1AE">
+          Types.WildcardType.apply(Types.decorateTypeApplications(dealiased.optBounds).appliedTo(args)(ctx).bounds(ctx))(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          387
+        </td>
+        <td>
+          23734
+        </td>
+        <td>
+          15599
+          -
+          15636
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.Object.==
+        </td>
+        <td style="background: #AEF1AE">
+          dealiased.symbol(ctx).==(Symbols.defn(ctx).NothingClass)
+        </td>
+      </tr><tr>
+        <td>
+          390
+        </td>
+        <td>
+          23735
+        </td>
+        <td>
+          15690
+          -
+          15713
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.Types.AppliedType.apply
+        </td>
+        <td style="background: #AEF1AE">
+          Types.AppliedType.apply(TypeApplications.this.self, args)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          394
+        </td>
+        <td>
+          23738
+        </td>
+        <td>
+          15789
+          -
+          15810
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.TypeApplications.appliedTo
+        </td>
+        <td style="background: #AEF1AE">
+          TypeApplications.this.appliedTo({
+  &lt;synthetic&gt; &lt;artifact&gt; val x$8: dotty.tools.dotc.core.Types.Type = arg;
+  scala.collection.immutable.Nil.::[dotty.tools.dotc.core.Types.Type](x$8)
+})(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          395
+        </td>
+        <td>
+          23739
+        </td>
+        <td>
+          15888
+          -
+          15918
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.TypeApplications.appliedTo
+        </td>
+        <td style="background: #AEF1AE">
+          TypeApplications.this.appliedTo({
+  &lt;synthetic&gt; &lt;artifact&gt; val x$10: dotty.tools.dotc.core.Types.Type = arg1;
+  {
+  &lt;synthetic&gt; &lt;artifact&gt; val x$9: dotty.tools.dotc.core.Types.Type = arg2;
+  scala.collection.immutable.Nil.::[dotty.tools.dotc.core.Types.Type](x$9)
+}.::[dotty.tools.dotc.core.Types.Type](x$10)
+})(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          398
+        </td>
+        <td>
+          23742
+        </td>
+        <td>
+          16031
+          -
+          16046
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          dotty.tools.dotc.core.TypeApplications.appliedTo
+        </td>
+        <td style="background: #AEF1AE">
+          TypeApplications.this.appliedTo(args)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          398
+        </td>
+        <td>
+          23744
+        </td>
+        <td>
+          16052
+          -
+          16056
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          dotty.tools.dotc.core.TypeApplications.self
+        </td>
+        <td style="background: #AEF1AE">
+          TypeApplications.this.self
+        </td>
+      </tr><tr>
+        <td>
+          398
+        </td>
+        <td>
+          23741
+        </td>
+        <td>
+          16031
+          -
+          16046
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.TypeApplications.appliedTo
+        </td>
+        <td style="background: #AEF1AE">
+          TypeApplications.this.appliedTo(args)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          398
+        </td>
+        <td>
+          23743
+        </td>
+        <td>
+          16052
+          -
+          16056
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.TypeApplications.self
+        </td>
+        <td style="background: #AEF1AE">
+          TypeApplications.this.self
+        </td>
+      </tr><tr>
+        <td>
+          398
+        </td>
+        <td>
+          23740
+        </td>
+        <td>
+          16010
+          -
+          16029
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.collection.TraversableOnce.nonEmpty
+        </td>
+        <td style="background: #AEF1AE">
+          TypeApplications.this.typeParams(ctx).nonEmpty
+        </td>
+      </tr><tr>
+        <td>
+          405
+        </td>
+        <td>
+          23745
+        </td>
+        <td>
+          16452
+          -
+          16456
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.TypeApplications.self
+        </td>
+        <td style="background: #AEF1AE">
+          TypeApplications.this.self
+        </td>
+      </tr><tr>
+        <td>
+          406
+        </td>
+        <td>
+          23747
+        </td>
+        <td>
+          16515
+          -
+          16539
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.SymDenotations.SymDenotation.isCompleting
+        </td>
+        <td style="background: #AEF1AE">
+          Symbols.toDenot(self.symbol(ctx))(ctx).isCompleting
+        </td>
+      </tr><tr>
+        <td>
+          406
+        </td>
+        <td>
+          23746
+        </td>
+        <td>
+          16515
+          -
+          16526
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.Types.NamedType.symbol
+        </td>
+        <td style="background: #AEF1AE">
+          self.symbol(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          406
+        </td>
+        <td>
+          23748
+        </td>
+        <td>
+          16491
+          -
+          16539
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Boolean.&amp;&amp;
+        </td>
+        <td style="background: #AEF1AE">
+          self.symbol(ctx).isClass.unary_!.&amp;&amp;(Symbols.toDenot(self.symbol(ctx))(ctx).isCompleting)
+        </td>
+      </tr><tr>
+        <td>
+          407
+        </td>
+        <td>
+          23749
+        </td>
+        <td>
+          16549
+          -
+          16572
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.Types.AppliedType.apply
+        </td>
+        <td style="background: #AEF1AE">
+          Types.AppliedType.apply(self, args)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          409
+        </td>
+        <td>
+          23750
+        </td>
+        <td>
+          16593
+          -
+          16608
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.TypeApplications.appliedTo
+        </td>
+        <td style="background: #AEF1AE">
+          TypeApplications.this.appliedTo(args)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          413
+        </td>
+        <td>
+          23751
+        </td>
+        <td>
+          16720
+          -
+          16724
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.TypeApplications.self
+        </td>
+        <td style="background: #AEF1AE">
+          TypeApplications.this.self
+        </td>
+      </tr><tr>
+        <td>
+          415
+        </td>
+        <td>
+          23752
+        </td>
+        <td>
+          16818
+          -
+          16833
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.Types.TypeAlias.apply
+        </td>
+        <td style="background: #AEF1AE">
+          Types.TypeAlias.apply(TypeApplications.this.self)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          422
+        </td>
+        <td>
+          23753
+        </td>
+        <td>
+          17183
+          -
+          17187
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.TypeApplications.self
+        </td>
+        <td style="background: #AEF1AE">
+          TypeApplications.this.self
+        </td>
+      </tr><tr>
+        <td>
+          424
+        </td>
+        <td>
+          23754
+        </td>
+        <td>
+          17234
+          -
+          17291
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.Types.ExprType.derivedExprType
+        </td>
+        <td style="background: #AEF1AE">
+          self.derivedExprType(Types.decorateTypeApplications(tp).translateParameterized(from, to)(ctx))(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          426
+        </td>
+        <td>
+          23756
+        </td>
+        <td>
+          17340
+          -
+          17390
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.TypeApplications.appliedTo
+        </td>
+        <td style="background: #AEF1AE">
+          Types.decorateTypeApplications(Symbols.toClassDenot(to)(ctx).typeRef(ctx)).appliedTo(Types.decorateTypeApplications(TypeApplications.this.self.baseType(from)(ctx)).argInfos(ctx))(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          426
+        </td>
+        <td>
+          23755
+        </td>
+        <td>
+          17316
+          -
+          17338
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.Types.Type.derivesFrom
+        </td>
+        <td style="background: #AEF1AE">
+          TypeApplications.this.self.derivesFrom(from)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          426
+        </td>
+        <td>
+          23757
+        </td>
+        <td>
+          17340
+          -
+          17390
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          dotty.tools.dotc.core.TypeApplications.appliedTo
+        </td>
+        <td style="background: #AEF1AE">
+          Types.decorateTypeApplications(Symbols.toClassDenot(to)(ctx).typeRef(ctx)).appliedTo(Types.decorateTypeApplications(TypeApplications.this.self.baseType(from)(ctx)).argInfos(ctx))(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          427
+        </td>
+        <td>
+          23759
+        </td>
+        <td>
+          17402
+          -
+          17406
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          dotty.tools.dotc.core.TypeApplications.self
+        </td>
+        <td style="background: #AEF1AE">
+          TypeApplications.this.self
+        </td>
+      </tr><tr>
+        <td>
+          427
+        </td>
+        <td>
+          23758
+        </td>
+        <td>
+          17402
+          -
+          17406
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.TypeApplications.self
+        </td>
+        <td style="background: #AEF1AE">
+          TypeApplications.this.self
+        </td>
+      </tr><tr>
+        <td>
+          434
+        </td>
+        <td>
+          23760
+        </td>
+        <td>
+          17631
+          -
+          17651
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.Types.Type.isRepeatedParam
+        </td>
+        <td style="background: #AEF1AE">
+          TypeApplications.this.self.isRepeatedParam(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          434
+        </td>
+        <td>
+          23766
+        </td>
+        <td>
+          17653
+          -
+          17792
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          {
+  val seqClass: dotty.tools.dotc.core.Symbols.ClassSymbol = if (isJava)
+    Symbols.defn(ctx).ArrayClass(ctx)
+  else
+    Symbols.defn(ctx).SeqClass(ctx);
+  TypeApplications.this.translateParameterized(Symbols.defn(ctx).RepeatedParamClass, seqClass)(ctx)
+}
+        </td>
+      </tr><tr>
+        <td>
+          435
+        </td>
+        <td>
+          23763
+        </td>
+        <td>
+          17709
+          -
+          17722
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.Definitions.SeqClass
+        </td>
+        <td style="background: #AEF1AE">
+          Symbols.defn(ctx).SeqClass(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          435
+        </td>
+        <td>
+          23762
+        </td>
+        <td>
+          17688
+          -
+          17703
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          dotty.tools.dotc.core.Definitions.ArrayClass
+        </td>
+        <td style="background: #AEF1AE">
+          Symbols.defn(ctx).ArrayClass(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          435
+        </td>
+        <td>
+          23761
+        </td>
+        <td>
+          17688
+          -
+          17703
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.Definitions.ArrayClass
+        </td>
+        <td style="background: #AEF1AE">
+          Symbols.defn(ctx).ArrayClass(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          435
+        </td>
+        <td>
+          23764
+        </td>
+        <td>
+          17709
+          -
+          17722
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          dotty.tools.dotc.core.Definitions.SeqClass
+        </td>
+        <td style="background: #AEF1AE">
+          Symbols.defn(ctx).SeqClass(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          436
+        </td>
+        <td>
+          23765
+        </td>
+        <td>
+          17729
+          -
+          17786
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.TypeApplications.translateParameterized
+        </td>
+        <td style="background: #AEF1AE">
+          TypeApplications.this.translateParameterized(Symbols.defn(ctx).RepeatedParamClass, seqClass)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          438
+        </td>
+        <td>
+          23768
+        </td>
+        <td>
+          17802
+          -
+          17806
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          dotty.tools.dotc.core.TypeApplications.self
+        </td>
+        <td style="background: #AEF1AE">
+          TypeApplications.this.self
+        </td>
+      </tr><tr>
+        <td>
+          438
+        </td>
+        <td>
+          23767
+        </td>
+        <td>
+          17802
+          -
+          17806
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.TypeApplications.self
+        </td>
+        <td style="background: #AEF1AE">
+          TypeApplications.this.self
+        </td>
+      </tr><tr>
+        <td>
+          444
+        </td>
+        <td>
+          23769
+        </td>
+        <td>
+          18057
+          -
+          18061
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.TypeApplications.self
+        </td>
+        <td style="background: #AEF1AE">
+          TypeApplications.this.self
+        </td>
+      </tr><tr>
+        <td>
+          446
+        </td>
+        <td>
+          23770
+        </td>
+        <td>
+          18126
+          -
+          18129
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.collection.immutable.Nil
+        </td>
+        <td style="background: #AEF1AE">
+          scala.collection.immutable.Nil
+        </td>
+      </tr><tr>
+        <td>
+          450
+        </td>
+        <td>
+          23771
+        </td>
+        <td>
+          18272
+          -
+          18280
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.core.TypeApplications.noBounds
+        </td>
+        <td style="background: #AEF1AE">
+          TypeApplications.noBounds(tp)
+        </td>
+      </tr><tr>
+        <td>
+          450
+        </td>
+        <td>
+          23772
+        </td>
+        <td>
+          18251
+          -
+          18280
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.immutable.List.mapConserve
+        </td>
+        <td style="background: #AEF1AE">
+          TypeApplications.this.argInfos(ctx).mapConserve[dotty.tools.dotc.core.Types.Type]({
+  ((tp: dotty.tools.dotc.core.Types.Type) =&gt; TypeApplications.noBounds(tp))
+})
+        </td>
+      </tr><tr>
+        <td>
+          453
+        </td>
+        <td>
+          23774
+        </td>
+        <td>
+          18423
+          -
+          18454
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.immutable.List.mapConserve
+        </td>
+        <td style="background: #AEF1AE">
+          TypeApplications.this.argInfos(ctx).mapConserve[dotty.tools.dotc.core.Types.Type](((x$11: dotty.tools.dotc.core.Types.Type) =&gt; x$11.loBound))
+        </td>
+      </tr><tr>
+        <td>
+          453
+        </td>
+        <td>
+          23773
+        </td>
+        <td>
+          18444
+          -
+          18453
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Types.Type.loBound
+        </td>
+        <td style="background: #AEF1AE">
+          x$11.loBound
+        </td>
+      </tr><tr>
+        <td>
+          456
+        </td>
+        <td>
+          23776
+        </td>
+        <td>
+          18598
+          -
+          18629
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.immutable.List.mapConserve
+        </td>
+        <td style="background: #AEF1AE">
+          TypeApplications.this.argInfos(ctx).mapConserve[dotty.tools.dotc.core.Types.Type](((x$12: dotty.tools.dotc.core.Types.Type) =&gt; x$12.hiBound))
+        </td>
+      </tr><tr>
+        <td>
+          456
+        </td>
+        <td>
+          23775
+        </td>
+        <td>
+          18619
+          -
+          18628
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Types.Type.hiBound
+        </td>
+        <td style="background: #AEF1AE">
+          x$12.hiBound
+        </td>
+      </tr><tr>
+        <td>
+          461
+        </td>
+        <td>
+          23777
+        </td>
+        <td>
+          18786
+          -
+          18790
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.TypeApplications.self
+        </td>
+        <td style="background: #F0ADAD">
+          TypeApplications.this.self
+        </td>
+      </tr><tr>
+        <td>
+          462
+        </td>
+        <td>
+          23778
+        </td>
+        <td>
+          18827
+          -
+          18837
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Types.TypeAlias.alias
+        </td>
+        <td style="background: #F0ADAD">
+          self.alias
+        </td>
+      </tr><tr>
+        <td>
+          464
+        </td>
+        <td>
+          23779
+        </td>
+        <td>
+          18886
+          -
+          18892
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Types.NoType
+        </td>
+        <td style="background: #F0ADAD">
+          Types.NoType
+        </td>
+      </tr><tr>
+        <td>
+          468
+        </td>
+        <td>
+          23780
+        </td>
+        <td>
+          19026
+          -
+          19030
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.TypeApplications.self
+        </td>
+        <td style="background: #F0ADAD">
+          TypeApplications.this.self
+        </td>
+      </tr><tr>
+        <td>
+          470
+        </td>
+        <td>
+          23781
+        </td>
+        <td>
+          19088
+          -
+          19092
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.TypeApplications.self
+        </td>
+        <td style="background: #F0ADAD">
+          TypeApplications.this.self
+        </td>
+      </tr><tr>
+        <td>
+          474
+        </td>
+        <td>
+          23782
+        </td>
+        <td>
+          19193
+          -
+          19197
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.TypeApplications.self
+        </td>
+        <td style="background: #AEF1AE">
+          TypeApplications.this.self
+        </td>
+      </tr><tr>
+        <td>
+          477
+        </td>
+        <td>
+          23783
+        </td>
+        <td>
+          19301
+          -
+          19329
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.Types.Type.baseType
+        </td>
+        <td style="background: #AEF1AE">
+          TypeApplications.this.self.baseType(Symbols.defn(ctx).SeqClass(ctx))(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          477
+        </td>
+        <td>
+          23785
+        </td>
+        <td>
+          19301
+          -
+          19367
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Option.getOrElse
+        </td>
+        <td style="background: #AEF1AE">
+          Types.decorateTypeApplications(TypeApplications.this.self.baseType(Symbols.defn(ctx).SeqClass(ctx))(ctx)).argInfos(ctx).headOption.getOrElse[dotty.tools.dotc.core.Types.Type](Types.NoType)
+        </td>
+      </tr><tr>
+        <td>
+          477
+        </td>
+        <td>
+          23784
+        </td>
+        <td>
+          19360
+          -
+          19366
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Types.NoType
+        </td>
+        <td style="background: #AEF1AE">
+          Types.NoType
+        </td>
+      </tr>
+    </table>
+          </div>
+        </div>
+      </body>
+    </html>

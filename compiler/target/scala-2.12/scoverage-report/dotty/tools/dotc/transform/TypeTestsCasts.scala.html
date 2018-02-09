@@ -1,0 +1,335 @@
+<html>
+      <head>
+        <meta http-equiv="Content-Type" content="text/html; charset=utf-8"/>
+        <title id="title">
+          dotty/tools/dotc/transform/TypeTestsCasts.scala.html
+        </title>
+        <script src="https://ajax.googleapis.com/ajax/libs/jquery/1.10.2/jquery.min.js"></script><link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/jquery.tablesorter/2.20.1/css/theme.default.min.css" type="text/css"/><script src="https://cdnjs.cloudflare.com/ajax/libs/jquery.tablesorter/2.20.1/js/jquery.tablesorter.min.js"></script><link rel="stylesheet" href="https://netdna.bootstrapcdn.com/bootstrap/3.0.3/css/bootstrap.min.css" type="text/css"/><script src="https://netdna.bootstrapcdn.com/bootstrap/3.0.3/js/bootstrap.min.js"></script><script type="text/javascript">
+        $(document).ready(function() {$(".tablesorter").tablesorter();});
+      </script>
+        <style>
+          table.codegrid { font-family: monospace; font-size: 12px; width: auto!important; }table.statementlist { width: auto!important; font-size: 13px; } table.codegrid td { padding: 0!important; border: 0!important } table td.linenumber { width: 40px!important; } 
+        </style>
+      </head>
+      <body style="font-family: monospace;">
+        <ul class="nav nav-tabs">
+          <li>
+            <a href="#codegrid" data-toggle="tab">Codegrid</a>
+          </li>
+          <li>
+            <a href="#statementlist" data-toggle="tab">Statement List</a>
+          </li>
+        </ul>
+        <div class="tab-content">
+          <div class="tab-pane active" id="codegrid">
+            <pre style='font-size: 12pt; font-family: courier;'>1 <span style=''>package dotty.tools.dotc
+</span>2 <span style=''>package transform
+</span>3 <span style=''>
+</span>4 <span style=''>import core._
+</span>5 <span style=''>import Contexts._, Symbols._, Types._, Constants._, StdNames._, Decorators._
+</span>6 <span style=''>import ast.Trees._
+</span>7 <span style=''>import Erasure.Boxing._
+</span>8 <span style=''>import TypeErasure._
+</span>9 <span style=''>import ValueClasses._
+</span>10 <span style=''>import SymUtils._
+</span>11 <span style=''>import core.Flags._
+</span>12 <span style=''>import util.Positions._
+</span>13 <span style=''>import reporting.trace
+</span>14 <span style=''>
+</span>15 <span style=''>
+</span>16 <span style=''>/** This transform normalizes type tests and type casts,
+</span>17 <span style=''> *  also replacing type tests with singleton argument type with reference equality check
+</span>18 <span style=''> *  Any remaining type tests
+</span>19 <span style=''> *   - use the object methods $isInstanceOf and $asInstanceOf
+</span>20 <span style=''> *   - have a reference type as receiver
+</span>21 <span style=''> *   - can be translated directly to machine instructions
+</span>22 <span style=''> *
+</span>23 <span style=''> *
+</span>24 <span style=''> * Unfortunately this phase ended up being not Y-checkable unless types are erased. A cast to an ConstantType(3) or x.type
+</span>25 <span style=''> * cannot be rewritten before erasure.
+</span>26 <span style=''> */
+</span>27 <span style=''>object TypeTestsCasts {
+</span>28 <span style=''>  import ast.tpd._
+</span>29 <span style=''>
+</span>30 <span style=''>  def interceptTypeApply(tree: TypeApply)(implicit ctx: Context): Tree = </span><span style='background: #AEF1AE'>trace(s&quot;transforming ${tree.show}&quot;, show = true) {
+</span>31 <span style=''></span><span style='background: #AEF1AE'>    tree.fun match {
+</span>32 <span style=''></span><span style='background: #AEF1AE'>      case fun @ Select(expr, selector) =&gt;
+</span>33 <span style=''></span><span style='background: #AEF1AE'>        val sym = tree.symbol
+</span>34 <span style=''></span><span style='background: #AEF1AE'>
+</span>35 <span style=''></span><span style='background: #AEF1AE'>        def isPrimitive(tp: Type) = tp.classSymbol.isPrimitiveValueClass
+</span>36 <span style=''></span><span style='background: #AEF1AE'>
+</span>37 <span style=''></span><span style='background: #AEF1AE'>        def derivedTree(expr1: Tree, sym: Symbol, tp: Type) =
+</span>38 <span style=''></span><span style='background: #AEF1AE'>          cpy.TypeApply(tree)(expr1.select(sym).withPos(expr.pos), List(TypeTree(tp)))
+</span>39 <span style=''></span><span style='background: #AEF1AE'>
+</span>40 <span style=''></span><span style='background: #AEF1AE'>        def foundCls = expr.tpe.widen.classSymbol
+</span>41 <span style=''></span><span style='background: #AEF1AE'>        // println(i&quot;ta $tree, found = $foundCls&quot;)
+</span>42 <span style=''></span><span style='background: #AEF1AE'>
+</span>43 <span style=''></span><span style='background: #AEF1AE'>        def inMatch =
+</span>44 <span style=''></span><span style='background: #AEF1AE'>          fun.symbol == defn.Any_typeTest ||  // new scheme
+</span>45 <span style=''></span><span style='background: #AEF1AE'>          expr.symbol.is(Case)                // old scheme
+</span>46 <span style=''></span><span style='background: #AEF1AE'>
+</span>47 <span style=''></span><span style='background: #AEF1AE'>        def transformIsInstanceOf(expr:Tree, testType: Type, flagUnrelated: Boolean): Tree = {
+</span>48 <span style=''></span><span style='background: #AEF1AE'>          def testCls = testType.classSymbol
+</span>49 <span style=''></span><span style='background: #AEF1AE'>
+</span>50 <span style=''></span><span style='background: #AEF1AE'>          def unreachable(why: =&gt; String) =
+</span>51 <span style=''></span><span style='background: #AEF1AE'>            if (flagUnrelated)
+</span>52 <span style=''></span><span style='background: #AEF1AE'>              if (inMatch) ctx.error(em&quot;this case is unreachable since $why&quot;, expr.pos)
+</span>53 <span style=''></span><span style='background: #AEF1AE'>              else ctx.warning(em&quot;this will always yield false since $why&quot;, expr.pos)
+</span>54 <span style=''></span><span style='background: #AEF1AE'>
+</span>55 <span style=''></span><span style='background: #AEF1AE'>          /** Are `foundCls` and `testCls` classes that allow checks
+</span>56 <span style=''></span><span style='background: #AEF1AE'>           *  whether a test would be always false?
+</span>57 <span style=''></span><span style='background: #AEF1AE'>           */
+</span>58 <span style=''></span><span style='background: #AEF1AE'>          def isCheckable =
+</span>59 <span style=''></span><span style='background: #AEF1AE'>            foundCls.isClass &amp;&amp; testCls.isClass &amp;&amp;
+</span>60 <span style=''></span><span style='background: #AEF1AE'>            !(testCls.isPrimitiveValueClass &amp;&amp; !foundCls.isPrimitiveValueClass) &amp;&amp;
+</span>61 <span style=''></span><span style='background: #AEF1AE'>               // if `test` is primitive but `found` is not, we might have a case like
+</span>62 <span style=''></span><span style='background: #AEF1AE'>               // found = java.lang.Integer, test = Int, which could be true
+</span>63 <span style=''></span><span style='background: #AEF1AE'>               // (not sure why that is so, but scalac behaves the same way)
+</span>64 <span style=''></span><span style='background: #AEF1AE'>            !isDerivedValueClass(foundCls) &amp;&amp; !isDerivedValueClass(testCls)
+</span>65 <span style=''></span><span style='background: #AEF1AE'>               // we don't have the logic to handle derived value classes
+</span>66 <span style=''></span><span style='background: #AEF1AE'>
+</span>67 <span style=''></span><span style='background: #AEF1AE'>          /** Check whether a runtime test that a value of `foundCls` can be a `testCls`
+</span>68 <span style=''></span><span style='background: #AEF1AE'>           *  can be true in some cases. Issure a warning or an error if that's not the case.
+</span>69 <span style=''></span><span style='background: #AEF1AE'>           */
+</span>70 <span style=''></span><span style='background: #AEF1AE'>          def checkSensical: Boolean =
+</span>71 <span style=''></span><span style='background: #AEF1AE'>            if (!isCheckable) true
+</span>72 <span style=''></span><span style='background: #AEF1AE'>            else if (foundCls.isPrimitiveValueClass &amp;&amp; !testCls.isPrimitiveValueClass) {
+</span>73 <span style=''></span><span style='background: #AEF1AE'>                ctx.error(&quot;cannot test if value types are references&quot;, tree.pos)
+</span>74 <span style=''></span><span style='background: #AEF1AE'>                false
+</span>75 <span style=''></span><span style='background: #AEF1AE'>              }
+</span>76 <span style=''></span><span style='background: #AEF1AE'>            else if (!foundCls.derivesFrom(testCls)) {
+</span>77 <span style=''></span><span style='background: #AEF1AE'>              if (foundCls.is(Final)) {
+</span>78 <span style=''></span><span style='background: #AEF1AE'>                unreachable(i&quot;$foundCls is not a subclass of $testCls&quot;)
+</span>79 <span style=''></span><span style='background: #AEF1AE'>                false
+</span>80 <span style=''></span><span style='background: #AEF1AE'>              }
+</span>81 <span style=''></span><span style='background: #AEF1AE'>              else if (!testCls.derivesFrom(foundCls) &amp;&amp;
+</span>82 <span style=''></span><span style='background: #AEF1AE'>                       (testCls.is(Final) ||
+</span>83 <span style=''></span><span style='background: #AEF1AE'>                        !testCls.is(Trait) &amp;&amp; !foundCls.is(Trait))) {
+</span>84 <span style=''></span><span style='background: #AEF1AE'>                unreachable(i&quot;$foundCls and $testCls are unrelated&quot;)
+</span>85 <span style=''></span><span style='background: #AEF1AE'>                false
+</span>86 <span style=''></span><span style='background: #AEF1AE'>              }
+</span>87 <span style=''></span><span style='background: #AEF1AE'>              else true
+</span>88 <span style=''></span><span style='background: #AEF1AE'>            }
+</span>89 <span style=''></span><span style='background: #AEF1AE'>            else true
+</span>90 <span style=''></span><span style='background: #AEF1AE'>
+</span>91 <span style=''></span><span style='background: #AEF1AE'>          if (expr.tpe &lt;:&lt; testType)
+</span>92 <span style=''></span><span style='background: #AEF1AE'>            if (expr.tpe.isNotNull) {
+</span>93 <span style=''></span><span style='background: #AEF1AE'>              ctx.warning(
+</span>94 <span style=''></span><span style='background: #AEF1AE'>                em&quot;this will always yield true, since `$foundCls` is a subclass of `$testCls`&quot;,
+</span>95 <span style=''></span><span style='background: #AEF1AE'>                expr.pos)
+</span>96 <span style=''></span><span style='background: #AEF1AE'>              constant(expr, Literal(Constant(true)))
+</span>97 <span style=''></span><span style='background: #AEF1AE'>            }
+</span>98 <span style=''></span><span style='background: #AEF1AE'>            else expr.testNotNull
+</span>99 <span style=''></span><span style='background: #AEF1AE'>          else if (!checkSensical)
+</span>100 <span style=''></span><span style='background: #AEF1AE'>            constant(expr, Literal(Constant(false)))
+</span>101 <span style=''></span><span style='background: #AEF1AE'>          else if (testCls.isPrimitiveValueClass)
+</span>102 <span style=''></span><span style='background: #AEF1AE'>            if (foundCls.isPrimitiveValueClass)
+</span>103 <span style=''></span><span style='background: #AEF1AE'>              constant(expr, Literal(Constant(foundCls == testCls)))
+</span>104 <span style=''></span><span style='background: #AEF1AE'>            else
+</span>105 <span style=''></span><span style='background: #AEF1AE'>              transformIsInstanceOf(expr, defn.boxedType(testCls.typeRef), flagUnrelated)
+</span>106 <span style=''></span><span style='background: #AEF1AE'>          else
+</span>107 <span style=''></span><span style='background: #AEF1AE'>            derivedTree(expr, defn.Any_isInstanceOf, testType)
+</span>108 <span style=''></span><span style='background: #AEF1AE'>        }
+</span>109 <span style=''></span><span style='background: #AEF1AE'>
+</span>110 <span style=''></span><span style='background: #AEF1AE'>        def transformAsInstanceOf(testType: Type): Tree = {
+</span>111 <span style=''></span><span style='background: #AEF1AE'>          def testCls = testType.widen.classSymbol
+</span>112 <span style=''></span><span style='background: #AEF1AE'>          if (expr.tpe &lt;:&lt; testType)
+</span>113 <span style=''></span><span style='background: #AEF1AE'>            Typed(expr, tree.args.head)
+</span>114 <span style=''></span><span style='background: #AEF1AE'>          else if (foundCls.isPrimitiveValueClass) {
+</span>115 <span style=''></span><span style='background: #AEF1AE'>            if (testCls.isPrimitiveValueClass) primitiveConversion(expr, testCls)
+</span>116 <span style=''></span><span style='background: #AEF1AE'>            else derivedTree(box(expr), defn.Any_asInstanceOf, testType)
+</span>117 <span style=''></span><span style='background: #AEF1AE'>          }
+</span>118 <span style=''></span><span style='background: #AEF1AE'>          else if (testCls.isPrimitiveValueClass)
+</span>119 <span style=''></span><span style='background: #AEF1AE'>            unbox(expr.ensureConforms(defn.ObjectType), testType)
+</span>120 <span style=''></span><span style='background: #AEF1AE'>          else if (isDerivedValueClass(testCls)) {
+</span>121 <span style=''></span><span style='background: #AEF1AE'>            expr // adaptToType in Erasure will do the necessary type adaptation
+</span>122 <span style=''></span><span style='background: #AEF1AE'>          }
+</span>123 <span style=''></span><span style='background: #AEF1AE'>          else
+</span>124 <span style=''></span><span style='background: #AEF1AE'>            derivedTree(expr, defn.Any_asInstanceOf, testType)
+</span>125 <span style=''></span><span style='background: #AEF1AE'>        }
+</span>126 <span style=''></span><span style='background: #AEF1AE'>
+</span>127 <span style=''></span><span style='background: #AEF1AE'>        /** Transform isInstanceOf OrType
+</span>128 <span style=''></span><span style='background: #AEF1AE'>         *
+</span>129 <span style=''></span><span style='background: #AEF1AE'>         *    expr.isInstanceOf[A | B]  ~~&gt;  expr.isInstanceOf[A] | expr.isInstanceOf[B]
+</span>130 <span style=''></span><span style='background: #AEF1AE'>         *    expr.isInstanceOf[A &amp; B]  ~~&gt;  expr.isInstanceOf[A] &amp; expr.isInstanceOf[B]
+</span>131 <span style=''></span><span style='background: #AEF1AE'>         *
+</span>132 <span style=''></span><span style='background: #AEF1AE'>         *  The transform happens before erasure of `testType`, thus cannot be merged
+</span>133 <span style=''></span><span style='background: #AEF1AE'>         *  with `transformIsInstanceOf`, which depends on erased type of `testType`.
+</span>134 <span style=''></span><span style='background: #AEF1AE'>         */
+</span>135 <span style=''></span><span style='background: #AEF1AE'>        def transformTypeTest(expr: Tree, testType: Type, flagUnrelated: Boolean): Tree = testType.dealias match {
+</span>136 <span style=''></span><span style='background: #AEF1AE'>          case _: SingletonType =&gt;
+</span>137 <span style=''></span><span style='background: #AEF1AE'>            expr.isInstance(testType).withPos(tree.pos)
+</span>138 <span style=''></span><span style='background: #AEF1AE'>          case OrType(tp1, tp2) =&gt;
+</span>139 <span style=''></span><span style='background: #AEF1AE'>            evalOnce(expr) { e =&gt;
+</span>140 <span style=''></span><span style='background: #AEF1AE'>              transformTypeTest(e, tp1, flagUnrelated = false)
+</span>141 <span style=''></span><span style='background: #AEF1AE'>                .or(transformTypeTest(e, tp2, flagUnrelated = false))
+</span>142 <span style=''></span><span style='background: #AEF1AE'>            }
+</span>143 <span style=''></span><span style='background: #AEF1AE'>          case AndType(tp1, tp2) =&gt;
+</span>144 <span style=''></span><span style='background: #AEF1AE'>            evalOnce(expr) { e =&gt;
+</span>145 <span style=''></span><span style='background: #AEF1AE'>              transformTypeTest(e, tp1, flagUnrelated)
+</span>146 <span style=''></span><span style='background: #AEF1AE'>                .and(transformTypeTest(e, tp2, flagUnrelated))
+</span>147 <span style=''></span><span style='background: #AEF1AE'>            }
+</span>148 <span style=''></span><span style='background: #AEF1AE'>          case defn.MultiArrayOf(elem, ndims) if isUnboundedGeneric(elem) =&gt;
+</span>149 <span style=''></span><span style='background: #AEF1AE'>            def isArrayTest(arg: Tree) =
+</span>150 <span style=''></span><span style='background: #AEF1AE'>              ref(defn.runtimeMethodRef(nme.isArray)).appliedTo(arg, Literal(Constant(ndims)))
+</span>151 <span style=''></span><span style='background: #AEF1AE'>            if (ndims == 1) isArrayTest(expr)
+</span>152 <span style=''></span><span style='background: #AEF1AE'>            else evalOnce(expr) { e =&gt;
+</span>153 <span style=''></span><span style='background: #AEF1AE'>              derivedTree(e, defn.Any_isInstanceOf, e.tpe)
+</span>154 <span style=''></span><span style='background: #AEF1AE'>                .and(isArrayTest(e))
+</span>155 <span style=''></span><span style='background: #AEF1AE'>            }
+</span>156 <span style=''></span><span style='background: #AEF1AE'>          case _ =&gt;
+</span>157 <span style=''></span><span style='background: #AEF1AE'>            transformIsInstanceOf(expr, erasure(testType), flagUnrelated)
+</span>158 <span style=''></span><span style='background: #AEF1AE'>        }
+</span>159 <span style=''></span><span style='background: #AEF1AE'>
+</span>160 <span style=''></span><span style='background: #AEF1AE'>        if (sym.isTypeTest)
+</span>161 <span style=''></span><span style='background: #AEF1AE'>          transformTypeTest(expr, tree.args.head.tpe, flagUnrelated = true)
+</span>162 <span style=''></span><span style='background: #AEF1AE'>        else if (sym eq defn.Any_asInstanceOf)
+</span>163 <span style=''></span><span style='background: #AEF1AE'>          transformAsInstanceOf(erasure(tree.args.head.tpe))
+</span>164 <span style=''></span><span style='background: #AEF1AE'>        else tree
+</span>165 <span style=''></span><span style='background: #AEF1AE'>
+</span>166 <span style=''></span><span style='background: #AEF1AE'>      case _ =&gt;
+</span>167 <span style=''></span><span style='background: #AEF1AE'>        tree
+</span>168 <span style=''></span><span style='background: #AEF1AE'>    }
+</span>169 <span style=''></span><span style='background: #AEF1AE'>  }</span><span style=''>
+</span>170 <span style=''>}
+</span></pre>
+          </div>
+          <div class="tab-pane" id="statementlist">
+            <table cellspacing="0" cellpadding="0" class="table statementlist">
+      <tr>
+        <th>Line</th>
+        <th>Stmt Id</th>
+        <th>Pos</th>
+        <th>Tree</th>
+        <th>Symbol</th>
+        <th>Code</th>
+      </tr><tr>
+        <td>
+          30
+        </td>
+        <td>
+          63905
+        </td>
+        <td>
+          933
+          -
+          7018
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.reporting.trace.apply
+        </td>
+        <td style="background: #AEF1AE">
+          reporting.trace.apply[dotty.tools.dotc.ast.tpd.Tree](scala.StringContext.apply(&quot;transforming &quot;, &quot;&quot;).s(tree.show(ctx)), true)(tree.fun match {
+  case (fun @ (qualifier: dotty.tools.dotc.ast.Trees.Tree[dotty.tools.dotc.core.Types.Type], name: dotty.tools.dotc.core.Names.Name)dotty.tools.dotc.ast.Trees.Select[dotty.tools.dotc.core.Types.Type]((expr @ _), (selector @ _))) =&gt; {
+    val sym: dotty.tools.dotc.core.Symbols.Symbol = tree.symbol(ctx);
+    def isPrimitive(tp: dotty.tools.dotc.core.Types.Type): Boolean = core.Symbols.toDenot(tp.classSymbol(ctx))(ctx).isPrimitiveValueClass(ctx);
+    def derivedTree(expr1: dotty.tools.dotc.ast.tpd.Tree, sym: dotty.tools.dotc.core.Symbols.Symbol, tp: dotty.tools.dotc.core.Types.Type): dotty.tools.dotc.ast.tpd.TypeApply = ast.tpd.cpy.TypeApply(tree)(ast.tpd.TreeOps[dotty.tools.dotc.ast.tpd.Tree](expr1).select(sym)(ctx).withPos(expr.pos), scala.collection.immutable.List.apply[dotty.tools.dotc.ast.tpd.TypeTree](ast.tpd.TypeTree(tp)(ctx)))(ctx);
+    def foundCls: dotty.tools.dotc.core.Symbols.Symbol = expr.tpe.widen(ctx).classSymbol(ctx);
+    def inMatch: Boolean = fun.symbol(ctx).==(core.Symbols.defn(ctx).Any_typeTest).||(core.Symbols.toDenot(expr.symbol(ctx))(ctx).is(core.Flags.Case)(ctx));
+    def transformIsInstanceOf(expr: dotty.tools.dotc.ast.tpd.Tree, testType: dotty.tools.dotc.core.Types.Type, flagUnrelated: Boolean): dotty.tools.dotc.ast.tpd.Tree = {
+      def testCls: dotty.tools.dotc.core.Symbols.Symbol = testType.classSymbol(ctx);
+      def unreachable(why: =&gt; String): Unit = if (flagUnrelated)
+        if (inMatch)
+          ctx.error(diagnostic.this.Message.toNoExplanation(core.Decorators.StringInterpolators(scala.StringContext.apply(&quot;this case is unreachable since &quot;, &quot;&quot;)).em(why)(ctx)), core.Decorators.sourcePos(expr.pos)(ctx))
+        else
+          ctx.warning(diagnostic.this.Message.toNoExplanation(core.Decorators.StringInterpolators(scala.StringContext.apply(&quot;this will always yield false since &quot;, &quot;&quot;)).em(why)(ctx)), core.Decorators.sourcePos(expr.pos)(ctx))
+      else
+        ();
+      def isCheckable: Boolean = foundCls.isClass.&amp;&amp;(testCls.isClass).&amp;&amp;(core.Symbols.toDenot(testCls)(ctx).isPrimitiveValueClass(ctx).&amp;&amp;(core.Symbols.toDenot(foundCls)(ctx).isPrimitiveValueClass(ctx).unary_!).unary_!).&amp;&amp;(ValueClasses.isDerivedValueClass(core.Symbols.toDenot(foundCls)(ctx))(ctx).unary_!).&amp;&amp;(ValueClasses.isDerivedValueClass(core.Symbols.toDenot(testCls)(ctx))(ctx).unary_!);
+      def checkSensical: Boolean = if (isCheckable.unary_!)
+        true
+      else
+        if (core.Symbols.toDenot(foundCls)(ctx).isPrimitiveValueClass(ctx).&amp;&amp;(core.Symbols.toDenot(testCls)(ctx).isPrimitiveValueClass(ctx).unary_!))
+          {
+            ctx.error(diagnostic.this.Message.toNoExplanation(&quot;cannot test if value types are references&quot;), core.Decorators.sourcePos(tree.pos)(ctx));
+            false
+          }
+        else
+          if (core.Symbols.toDenot(foundCls)(ctx).derivesFrom(testCls)(ctx).unary_!)
+            if (core.Symbols.toDenot(foundCls)(ctx).is(core.Flags.Final)(ctx))
+              {
+                unreachable(core.Decorators.StringInterpolators(scala.StringContext.apply(&quot;&quot;, &quot; is not a subclass of &quot;, &quot;&quot;)).i(foundCls, testCls)(ctx));
+                false
+              }
+            else
+              if (core.Symbols.toDenot(testCls)(ctx).derivesFrom(foundCls)(ctx).unary_!.&amp;&amp;(core.Symbols.toDenot(testCls)(ctx).is(core.Flags.Final)(ctx).||(core.Symbols.toDenot(testCls)(ctx).is(core.Flags.Trait)(ctx).unary_!.&amp;&amp;(core.Symbols.toDenot(foundCls)(ctx).is(core.Flags.Trait)(ctx).unary_!))))
+                {
+                  unreachable(core.Decorators.StringInterpolators(scala.StringContext.apply(&quot;&quot;, &quot; and &quot;, &quot; are unrelated&quot;)).i(foundCls, testCls)(ctx));
+                  false
+                }
+              else
+                true
+          else
+            true;
+      if (expr.tpe.&lt;:&lt;(testType)(ctx))
+        if (expr.tpe.isNotNull(ctx))
+          {
+            ctx.warning(diagnostic.this.Message.toNoExplanation(core.Decorators.StringInterpolators(scala.StringContext.apply(&quot;this will always yield true, since `&quot;, &quot;` is a subclass of `&quot;, &quot;`&quot;)).em(foundCls, testCls)(ctx)), core.Decorators.sourcePos(expr.pos)(ctx));
+            Erasure.Boxing.constant(expr, ast.tpd.Literal(core.Constants.Constant.apply(true))(ctx))(ctx)
+          }
+        else
+          ast.tpd.TreeOps[dotty.tools.dotc.ast.tpd.Tree](expr).testNotNull(ctx)
+      else
+        if (checkSensical.unary_!)
+          Erasure.Boxing.constant(expr, ast.tpd.Literal(core.Constants.Constant.apply(false))(ctx))(ctx)
+        else
+          if (core.Symbols.toDenot(testCls)(ctx).isPrimitiveValueClass(ctx))
+            if (core.Symbols.toDenot(foundCls)(ctx).isPrimitiveValueClass(ctx))
+              Erasure.Boxing.constant(expr, ast.tpd.Literal(core.Constants.Constant.apply(foundCls.==(testCls)))(ctx))(ctx)
+            else
+              transformIsInstanceOf(expr, core.Symbols.defn(ctx).boxedType(core.Symbols.toDenot(testCls)(ctx).typeRef(ctx))(ctx), flagUnrelated)
+          else
+            derivedTree(expr, core.Symbols.defn(ctx).Any_isInstanceOf, testType)
+    };
+    def transformAsInstanceOf(testType: dotty.tools.dotc.core.Types.Type): dotty.tools.dotc.ast.tpd.Tree = {
+      def testCls: dotty.tools.dotc.core.Symbols.Symbol = testType.widen(ctx).classSymbol(ctx);
+      if (expr.tpe.&lt;:&lt;(testType)(ctx))
+        ast.tpd.Typed(expr, tree.args.head)(ctx)
+      else
+        if (core.Symbols.toDenot(foundCls)(ctx).isPrimitiveValueClass(ctx))
+          if (core.Symbols.toDenot(testCls)(ctx).isPrimitiveValueClass(ctx))
+            ast.tpd.primitiveConversion(expr, testCls)(ctx)
+          else
+            derivedTree(Erasure.Boxing.box(expr, Erasure.Boxing.box$default$2)(ctx), core.Symbols.defn(ctx).Any_asInstanceOf, testType)
+        else
+          if (core.Symbols.toDenot(testCls)(ctx).isPrimitiveValueClass(ctx))
+            Erasure.Boxing.unbox(ast.tpd.TreeOps[dotty.tools.dotc.ast.Trees.Tree[dotty.tools.dotc.core.Types.Type]](expr).ensureConforms(core.Symbols.defn(ctx).ObjectType)(ctx), testType)(ctx)
+          else
+            if (ValueClasses.isDerivedValueClass(core.Symbols.toDenot(testCls)(ctx))(ctx))
+              expr
+            else
+              derivedTree(expr, core.Symbols.defn(ctx).Any_asInstanceOf, testType)
+    };
+    def transformTypeTest(expr: dotty.tools.dotc.ast.tpd.Tree, testType: dotty.tools.dotc.core.Types.Type, flagUnrelated: Boolean): dotty.tools.dotc.ast.tpd.Tree = testType.dealias(ctx) match {
+      case (_: dotty.tools.dotc.core.Types.SingletonType) =&gt; ast.tpd.TreeOps[dotty.tools.dotc.ast.tpd.Tree](expr).isInstance(testType)(ctx).withPos(tree.pos)
+      case (tp1: dotty.tools.dotc.core.Types.Type, tp2: dotty.tools.dotc.core.Types.Type)dotty.tools.dotc.core.Types.OrType((tp1 @ _), (tp2 @ _)) =&gt; ast.tpd.evalOnce(expr)(((e: dotty.tools.dotc.ast.tpd.Tree) =&gt; ast.tpd.TreeOps[dotty.tools.dotc.ast.tpd.Tree](transformTypeTest(e, tp1, false)).or(transformTypeTest(e, tp2, false))(ctx)))(ctx)
+      case (tp1: dotty.tools.dotc.core.Types.Type, tp2: dotty.tools.dotc.core.Types.Type)dotty.tools.dotc.core.Types.AndType((tp1 @ _), (tp2 @ _)) =&gt; ast.tpd.evalOnce(expr)(((e: dotty.tools.dotc.ast.tpd.Tree) =&gt; ast.tpd.TreeOps[dotty.tools.dotc.ast.tpd.Tree](transformTypeTest(e, tp1, flagUnrelated)).and(transformTypeTest(e, tp2, flagUnrelated))(ctx)))(ctx)
+      case core.Symbols.defn(ctx).MultiArrayOf.unapply(&lt;unapply-selector&gt;)(ctx) &lt;unapply&gt; ((elem @ _), (ndims @ _)) if core.TypeErasure.isUnboundedGeneric(elem)(ctx) =&gt; {
+        def isArrayTest(arg: dotty.tools.dotc.ast.tpd.Tree): dotty.tools.dotc.ast.tpd.Tree = ast.tpd.TreeOps[dotty.tools.dotc.ast.tpd.Tree](ast.tpd.ref(core.Symbols.defn(ctx).runtimeMethodRef(core.StdNames.nme.isArray))(ctx)).appliedTo(arg, ast.tpd.Literal(core.Constants.Constant.apply(ndims))(ctx))(ctx);
+        if (ndims.==(1))
+          isArrayTest(expr)
+        else
+          ast.tpd.evalOnce(expr)(((e: dotty.tools.dotc.ast.tpd.Tree) =&gt; ast.tpd.TreeOps[dotty.tools.dotc.ast.tpd.TypeApply](derivedTree(e, core.Symbols.defn(ctx).Any_isInstanceOf, e.tpe)).and(isArrayTest(e))(ctx)))(ctx)
+      }
+      case _ =&gt; transformIsInstanceOf(expr, core.TypeErasure.erasure(testType)(ctx), flagUnrelated)
+    };
+    if (SymUtils.decorateSymbol(sym).isTypeTest(ctx))
+      transformTypeTest(expr, tree.args.head.tpe, true)
+    else
+      if (sym.eq(core.Symbols.defn(ctx).Any_asInstanceOf))
+        transformAsInstanceOf(core.TypeErasure.erasure(tree.args.head.tpe)(ctx))
+      else
+        tree
+  }
+  case _ =&gt; tree
+})(ctx)
+        </td>
+      </tr>
+    </table>
+          </div>
+        </div>
+      </body>
+    </html>

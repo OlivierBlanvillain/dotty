@@ -1,0 +1,2953 @@
+<html>
+      <head>
+        <meta http-equiv="Content-Type" content="text/html; charset=utf-8"/>
+        <title id="title">
+          dotty/tools/dotc/reporting/MessageRendering.scala.html
+        </title>
+        <script src="https://ajax.googleapis.com/ajax/libs/jquery/1.10.2/jquery.min.js"></script><link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/jquery.tablesorter/2.20.1/css/theme.default.min.css" type="text/css"/><script src="https://cdnjs.cloudflare.com/ajax/libs/jquery.tablesorter/2.20.1/js/jquery.tablesorter.min.js"></script><link rel="stylesheet" href="https://netdna.bootstrapcdn.com/bootstrap/3.0.3/css/bootstrap.min.css" type="text/css"/><script src="https://netdna.bootstrapcdn.com/bootstrap/3.0.3/js/bootstrap.min.js"></script><script type="text/javascript">
+        $(document).ready(function() {$(".tablesorter").tablesorter();});
+      </script>
+        <style>
+          table.codegrid { font-family: monospace; font-size: 12px; width: auto!important; }table.statementlist { width: auto!important; font-size: 13px; } table.codegrid td { padding: 0!important; border: 0!important } table td.linenumber { width: 40px!important; } 
+        </style>
+      </head>
+      <body style="font-family: monospace;">
+        <ul class="nav nav-tabs">
+          <li>
+            <a href="#codegrid" data-toggle="tab">Codegrid</a>
+          </li>
+          <li>
+            <a href="#statementlist" data-toggle="tab">Statement List</a>
+          </li>
+        </ul>
+        <div class="tab-content">
+          <div class="tab-pane active" id="codegrid">
+            <pre style='font-size: 12pt; font-family: courier;'>1 <span style=''>package dotty.tools
+</span>2 <span style=''>package dotc
+</span>3 <span style=''>package reporting
+</span>4 <span style=''>
+</span>5 <span style=''>import core.Contexts.Context
+</span>6 <span style=''>import core.Decorators._
+</span>7 <span style=''>import printing.Highlighting.{Blue, Red}
+</span>8 <span style=''>import printing.SyntaxHighlighting
+</span>9 <span style=''>import diagnostic.{ErrorMessageID, Message, MessageContainer, NoExplanation}
+</span>10 <span style=''>import diagnostic.messages._
+</span>11 <span style=''>import util.SourcePosition
+</span>12 <span style=''>import util.Chars.{ LF, CR, FF, SU }
+</span>13 <span style=''>import scala.annotation.switch
+</span>14 <span style=''>
+</span>15 <span style=''>import scala.collection.mutable
+</span>16 <span style=''>
+</span>17 <span style=''>trait MessageRendering {
+</span>18 <span style=''>  /** Remove ANSI coloring from `str`, useful for getting real length of
+</span>19 <span style=''>    * strings
+</span>20 <span style=''>    *
+</span>21 <span style=''>    * @return string stripped of ANSI escape codes
+</span>22 <span style=''>    */
+</span>23 <span style=''>  def stripColor(str: String): String =
+</span>24 <span style=''>    </span><span style='background: #AEF1AE'>str.replaceAll(&quot;\u001b\\[.*?m&quot;, &quot;&quot;)</span><span style=''>
+</span>25 <span style=''>
+</span>26 <span style=''>  /** When inlining a method call, if there's an error we'd like to get the
+</span>27 <span style=''>    * outer context and the `pos` at which the call was inlined.
+</span>28 <span style=''>    *
+</span>29 <span style=''>    * @return a list of strings with inline locations
+</span>30 <span style=''>    */
+</span>31 <span style=''>  def outer(pos: SourcePosition, prefix: String)(implicit ctx: Context): List[String] =
+</span>32 <span style=''>    if (</span><span style='background: #AEF1AE'>pos.outer.exists</span><span style=''>) {
+</span>33 <span style=''>       </span><span style='background: #AEF1AE'>s&quot;$prefix| This location is in code that was inlined at ${pos.outer}&quot; ::
+</span>34 <span style=''></span><span style='background: #AEF1AE'>       outer(pos.outer, prefix)</span><span style=''>
+</span>35 <span style=''>    } else </span><span style='background: #AEF1AE'>Nil</span><span style=''>
+</span>36 <span style=''>
+</span>37 <span style=''>  /** Get the sourcelines before and after the position, as well as the offset
+</span>38 <span style=''>    * for rendering line numbers
+</span>39 <span style=''>    *
+</span>40 <span style=''>    * @return (lines before error, lines after error, line numbers offset)
+</span>41 <span style=''>    */
+</span>42 <span style=''>  def sourceLines(pos: SourcePosition)(implicit ctx: Context): (List[String], List[String], Int) = {
+</span>43 <span style=''>    var maxLen = </span><span style='background: #AEF1AE'>Int.MinValue</span><span style=''>
+</span>44 <span style=''>    def render(offsetAndLine: (Int, String)): String = {
+</span>45 <span style=''>      val (offset, line) = offsetAndLine
+</span>46 <span style=''>      val lineNbr = </span><span style='background: #AEF1AE'>pos.source.offsetToLine(offset)</span><span style=''>
+</span>47 <span style=''>      val prefix = </span><span style='background: #AEF1AE'>s&quot;${lineNbr + 1} |&quot;</span><span style=''>
+</span>48 <span style=''>      maxLen = </span><span style='background: #AEF1AE'>math.max(maxLen, prefix.length)</span><span style=''>
+</span>49 <span style=''>      val lnum = </span><span style='background: #AEF1AE'>Red(&quot; &quot; * math.max(0, maxLen - prefix.length) + prefix).show</span><span style=''>
+</span>50 <span style=''>      </span><span style='background: #AEF1AE'>lnum + line.stripLineEnd</span><span style=''>
+</span>51 <span style=''>    }
+</span>52 <span style=''>
+</span>53 <span style=''>    def linesFrom(arr: Array[Char]): List[String] = {
+</span>54 <span style=''>      def pred(c: Char) = (c: @switch) match {
+</span>55 <span style=''>        case LF | CR | FF | SU =&gt; </span><span style='background: #AEF1AE'>true</span><span style=''>
+</span>56 <span style=''>        case _ =&gt; </span><span style='background: #AEF1AE'>false</span><span style=''>
+</span>57 <span style=''>      }
+</span>58 <span style=''>      val (line, rest0) = arr.span(!pred(_))
+</span>59 <span style=''>      val (_, rest) = </span><span style='background: #AEF1AE'>rest0.span(pred)</span><span style=''>
+</span>60 <span style=''>      new String(line) </span><span style='background: #AEF1AE'>:: { if (rest.isEmpty) Nil else linesFrom(rest)</span><span style=''> }
+</span>61 <span style=''>    }
+</span>62 <span style=''>
+</span>63 <span style=''>    val syntax =
+</span>64 <span style=''>      if (</span><span style='background: #AEF1AE'>ctx.settings.color.value != &quot;never&quot;</span><span style=''>)
+</span>65 <span style=''>        </span><span style='background: #AEF1AE'>SyntaxHighlighting(pos.linesSlice).toArray</span><span style=''>
+</span>66 <span style=''>      else </span><span style='background: #AEF1AE'>pos.linesSlice</span><span style=''>
+</span>67 <span style=''>    val lines = </span><span style='background: #AEF1AE'>linesFrom(syntax)</span><span style=''>
+</span>68 <span style=''>    val (before, after) = pos.beforeAndAfterPoint
+</span>69 <span style=''>
+</span>70 <span style=''>    </span><span style='background: #AEF1AE'>(
+</span>71 <span style=''></span><span style='background: #AEF1AE'>      before.zip(lines).map(render),
+</span>72 <span style=''></span><span style='background: #AEF1AE'>      after.zip(lines.drop(before.length)).map(render),
+</span>73 <span style=''></span><span style='background: #AEF1AE'>      maxLen
+</span>74 <span style=''></span><span style='background: #AEF1AE'>    )</span><span style=''>
+</span>75 <span style=''>  }
+</span>76 <span style=''>
+</span>77 <span style=''>  /** The column markers aligned under the error */
+</span>78 <span style=''>  def columnMarker(pos: SourcePosition, offset: Int)(implicit ctx: Context): String = {
+</span>79 <span style=''>    val prefix = </span><span style='background: #AEF1AE'>&quot; &quot; * (offset - 1)</span><span style=''>
+</span>80 <span style=''>    val padding = </span><span style='background: #AEF1AE'>pos.startColumnPadding</span><span style=''>
+</span>81 <span style=''>    val carets = </span><span style='background: #AEF1AE'>Red {
+</span>82 <span style=''></span><span style='background: #AEF1AE'>      if (pos.startLine == pos.endLine)
+</span>83 <span style=''></span><span style='background: #AEF1AE'>        &quot;^&quot; * math.max(1, pos.endColumn - pos.startColumn)
+</span>84 <span style=''></span><span style='background: #AEF1AE'>      else &quot;^&quot;
+</span>85 <span style=''></span><span style='background: #AEF1AE'>    }</span><span style=''>
+</span>86 <span style=''>    </span><span style='background: #AEF1AE'>s&quot;$prefix|$padding${carets.show}&quot;</span><span style=''>
+</span>87 <span style=''>  }
+</span>88 <span style=''>
+</span>89 <span style=''>  /** The error message (`msg`) aligned under `pos`
+</span>90 <span style=''>    *
+</span>91 <span style=''>    * @return aligned error message
+</span>92 <span style=''>    */
+</span>93 <span style=''>  def errorMsg(pos: SourcePosition, msg: String, offset: Int)(implicit ctx: Context): String = {
+</span>94 <span style=''>    val padding = </span><span style='background: #AEF1AE'>msg.lines.foldLeft(pos.startColumnPadding) { (pad, line) =&gt;
+</span>95 <span style=''></span><span style='background: #AEF1AE'>      val lineLength = stripColor(line).length
+</span>96 <span style=''></span><span style='background: #AEF1AE'>      val maxPad = math.max(0, ctx.settings.pageWidth.value - offset - lineLength) - offset
+</span>97 <span style=''></span><span style='background: #AEF1AE'>
+</span>98 <span style=''></span><span style='background: #AEF1AE'>      if (maxPad &lt; pad.length) &quot; &quot; * maxPad
+</span>99 <span style=''></span><span style='background: #AEF1AE'>      else pad
+</span>100 <span style=''></span><span style='background: #AEF1AE'>    }</span><span style=''>
+</span>101 <span style=''>
+</span>102 <span style=''>    </span><span style='background: #AEF1AE'>msg.lines
+</span>103 <span style=''></span><span style='background: #AEF1AE'>      .map { line =&gt; &quot; &quot; * (offset - 1) + &quot;|&quot; + padding + line}
+</span>104 <span style=''></span><span style='background: #AEF1AE'>      .mkString(sys.props(&quot;line.separator&quot;))</span><span style=''>
+</span>105 <span style=''>  }
+</span>106 <span style=''>
+</span>107 <span style=''>  /** The separator between errors containing the source file and error type
+</span>108 <span style=''>    *
+</span>109 <span style=''>    * @return separator containing error location and kind
+</span>110 <span style=''>    */
+</span>111 <span style=''>  def posStr(pos: SourcePosition, diagnosticLevel: String, message: Message)(implicit ctx: Context): String =
+</span>112 <span style=''>    if (</span><span style='background: #AEF1AE'>pos.exists</span><span style=''>) </span><span style='background: #AEF1AE'>Blue({
+</span>113 <span style=''></span><span style='background: #AEF1AE'>      val file = s&quot;${pos.source.file.toString}:${pos.line + 1}:${pos.column}&quot;
+</span>114 <span style=''></span><span style='background: #AEF1AE'>      val errId =
+</span>115 <span style=''></span><span style='background: #AEF1AE'>        if (message.errorId ne ErrorMessageID.NoExplanationID) {
+</span>116 <span style=''></span><span style='background: #AEF1AE'>          val errorNumber = message.errorId.errorNumber()
+</span>117 <span style=''></span><span style='background: #AEF1AE'>          s&quot;[E${&quot;0&quot; * (3 - errorNumber.toString.length) + errorNumber}] &quot;
+</span>118 <span style=''></span><span style='background: #AEF1AE'>        } else &quot;&quot;
+</span>119 <span style=''></span><span style='background: #AEF1AE'>      val kind =
+</span>120 <span style=''></span><span style='background: #AEF1AE'>        if (message.kind == &quot;&quot;) diagnosticLevel
+</span>121 <span style=''></span><span style='background: #AEF1AE'>        else s&quot;${message.kind} $diagnosticLevel&quot;
+</span>122 <span style=''></span><span style='background: #AEF1AE'>      val prefix = s&quot;-- ${errId}${kind}: $file &quot;
+</span>123 <span style=''></span><span style='background: #AEF1AE'>
+</span>124 <span style=''></span><span style='background: #AEF1AE'>      prefix +
+</span>125 <span style=''></span><span style='background: #AEF1AE'>        (&quot;-&quot; * math.max(ctx.settings.pageWidth.value - stripColor(prefix).length, 0))
+</span>126 <span style=''></span><span style='background: #AEF1AE'>    }).show</span><span style=''> else </span><span style='background: #AEF1AE'>&quot;&quot;</span><span style=''>
+</span>127 <span style=''>
+</span>128 <span style=''>  /** Explanation rendered under &quot;Explanation&quot; header */
+</span>129 <span style=''>  def explanation(m: Message)(implicit ctx: Context): String = {
+</span>130 <span style=''>    val sb = </span><span style='background: #F0ADAD'>new StringBuilder(
+</span>131 <span style=''></span><span style='background: #F0ADAD'>      hl&quot;&quot;&quot;|
+</span>132 <span style=''></span><span style='background: #F0ADAD'>           |${Blue(&quot;Explanation&quot;)}
+</span>133 <span style=''></span><span style='background: #F0ADAD'>           |${Blue(&quot;===========&quot;)}&quot;&quot;&quot;
+</span>134 <span style=''></span><span style='background: #F0ADAD'>    )</span><span style=''>
+</span>135 <span style=''>    </span><span style='background: #F0ADAD'>sb.append('\n').append(m.explanation)</span><span style=''>
+</span>136 <span style=''>    if (</span><span style='background: #F0ADAD'>m.explanation.lastOption != Some('\n')</span><span style=''>) </span><span style='background: #F0ADAD'>sb.append('\n')</span><span style=''>
+</span>137 <span style=''>    </span><span style='background: #F0ADAD'>sb.toString</span><span style=''>
+</span>138 <span style=''>  }
+</span>139 <span style=''>
+</span>140 <span style=''>  /** The whole message rendered from `msg` */
+</span>141 <span style=''>  def messageAndPos(msg: Message, pos: SourcePosition, diagnosticLevel: String)(implicit ctx: Context): String = {
+</span>142 <span style=''>    val sb = </span><span style='background: #AEF1AE'>mutable.StringBuilder.newBuilder</span><span style=''>
+</span>143 <span style=''>    val posString = </span><span style='background: #AEF1AE'>posStr(pos, diagnosticLevel, msg)</span><span style=''>
+</span>144 <span style=''>    if (</span><span style='background: #AEF1AE'>posString.nonEmpty</span><span style=''>) </span><span style='background: #AEF1AE'>sb.append(posString).append('\n')</span><span style=''>
+</span>145 <span style=''>    if (</span><span style='background: #AEF1AE'>pos.exists</span><span style=''>) </span><span style='background: #AEF1AE'>{
+</span>146 <span style=''></span><span style='background: #AEF1AE'>      val (srcBefore, srcAfter, offset) = sourceLines(pos)
+</span>147 <span style=''></span><span style='background: #AEF1AE'>      val marker = columnMarker(pos, offset)
+</span>148 <span style=''></span><span style='background: #AEF1AE'>      val err = errorMsg(pos, msg.msg, offset)
+</span>149 <span style=''></span><span style='background: #AEF1AE'>      sb.append((srcBefore ::: marker :: err :: outer(pos, &quot; &quot; * (offset - 1)) ::: srcAfter).mkString(&quot;\n&quot;))
+</span>150 <span style=''></span><span style='background: #AEF1AE'>    }</span><span style=''> else </span><span style='background: #AEF1AE'>sb.append(msg.msg)</span><span style=''>
+</span>151 <span style=''>    </span><span style='background: #AEF1AE'>sb.toString</span><span style=''>
+</span>152 <span style=''>  }
+</span>153 <span style=''>
+</span>154 <span style=''>  def diagnosticLevel(cont: MessageContainer): String =
+</span>155 <span style=''>    cont match {
+</span>156 <span style=''>      case m: Error =&gt; </span><span style='background: #AEF1AE'>&quot;Error&quot;</span><span style=''>
+</span>157 <span style=''>      case m: FeatureWarning =&gt; </span><span style='background: #AEF1AE'>&quot;Feature Warning&quot;</span><span style=''>
+</span>158 <span style=''>      case m: DeprecationWarning =&gt; </span><span style='background: #AEF1AE'>&quot;Deprecation Warning&quot;</span><span style=''>
+</span>159 <span style=''>      case m: UncheckedWarning =&gt; </span><span style='background: #F0ADAD'>&quot;Unchecked Warning&quot;</span><span style=''>
+</span>160 <span style=''>      case m: MigrationWarning =&gt; </span><span style='background: #AEF1AE'>&quot;Migration Warning&quot;</span><span style=''>
+</span>161 <span style=''>      case m: Warning =&gt; </span><span style='background: #AEF1AE'>&quot;Warning&quot;</span><span style=''>
+</span>162 <span style=''>      case m: Info =&gt; </span><span style='background: #AEF1AE'>&quot;Info&quot;</span><span style=''>
+</span>163 <span style=''>    }
+</span>164 <span style=''>}
+</span></pre>
+          </div>
+          <div class="tab-pane" id="statementlist">
+            <table cellspacing="0" cellpadding="0" class="table statementlist">
+      <tr>
+        <th>Line</th>
+        <th>Stmt Id</th>
+        <th>Pos</th>
+        <th>Tree</th>
+        <th>Symbol</th>
+        <th>Code</th>
+      </tr><tr>
+        <td>
+          24
+        </td>
+        <td>
+          49104
+        </td>
+        <td>
+          637
+          -
+          672
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.String.replaceAll
+        </td>
+        <td style="background: #AEF1AE">
+          str.replaceAll(&quot;\u001B\\[.*?m&quot;, &quot;&quot;)
+        </td>
+      </tr><tr>
+        <td>
+          32
+        </td>
+        <td>
+          49105
+        </td>
+        <td>
+          978
+          -
+          994
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.util.SourcePosition.exists
+        </td>
+        <td style="background: #AEF1AE">
+          pos.outer.exists
+        </td>
+      </tr><tr>
+        <td>
+          33
+        </td>
+        <td>
+          49107
+        </td>
+        <td>
+          1005
+          -
+          1109
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          {
+  &lt;synthetic&gt; &lt;artifact&gt; val x$1: String = scala.StringContext.apply(&quot;&quot;, &quot;| This location is in code that was inlined at &quot;, &quot;&quot;).s(prefix, pos.outer);
+  MessageRendering.this.outer(pos.outer, prefix)(ctx).::[String](x$1)
+}
+        </td>
+      </tr><tr>
+        <td>
+          33
+        </td>
+        <td>
+          49106
+        </td>
+        <td>
+          1075
+          -
+          1109
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.immutable.List.::
+        </td>
+        <td style="background: #AEF1AE">
+          MessageRendering.this.outer(pos.outer, prefix)(ctx).::[String](x$1)
+        </td>
+      </tr><tr>
+        <td>
+          35
+        </td>
+        <td>
+          49108
+        </td>
+        <td>
+          1121
+          -
+          1124
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.collection.immutable.Nil
+        </td>
+        <td style="background: #AEF1AE">
+          scala.collection.immutable.Nil
+        </td>
+      </tr><tr>
+        <td>
+          35
+        </td>
+        <td>
+          49109
+        </td>
+        <td>
+          1121
+          -
+          1124
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          scala.collection.immutable.Nil
+        </td>
+        <td style="background: #AEF1AE">
+          scala.collection.immutable.Nil
+        </td>
+      </tr><tr>
+        <td>
+          43
+        </td>
+        <td>
+          49110
+        </td>
+        <td>
+          1444
+          -
+          1456
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          -2147483648
+        </td>
+      </tr><tr>
+        <td>
+          45
+        </td>
+        <td>
+          49111
+        </td>
+        <td>
+          1525
+          -
+          1525
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.Tuple2._1
+        </td>
+        <td style="background: #AEF1AE">
+          x$2._1
+        </td>
+      </tr><tr>
+        <td>
+          45
+        </td>
+        <td>
+          49112
+        </td>
+        <td>
+          1533
+          -
+          1533
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.Tuple2._2
+        </td>
+        <td style="background: #AEF1AE">
+          x$2._2
+        </td>
+      </tr><tr>
+        <td>
+          46
+        </td>
+        <td>
+          49113
+        </td>
+        <td>
+          1575
+          -
+          1606
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.util.SourceFile.offsetToLine
+        </td>
+        <td style="background: #AEF1AE">
+          pos.source.offsetToLine(offset)
+        </td>
+      </tr><tr>
+        <td>
+          47
+        </td>
+        <td>
+          49117
+        </td>
+        <td>
+          1626
+          -
+          1645
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.StringContext.s
+        </td>
+        <td style="background: #AEF1AE">
+          scala.StringContext.apply(&quot;&quot;, &quot; |&quot;).s(lineNbr.+(1))
+        </td>
+      </tr><tr>
+        <td>
+          47
+        </td>
+        <td>
+          49114
+        </td>
+        <td>
+          1628
+          -
+          1629
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          &quot;&quot;
+        </td>
+      </tr><tr>
+        <td>
+          47
+        </td>
+        <td>
+          49116
+        </td>
+        <td>
+          1630
+          -
+          1641
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Int.+
+        </td>
+        <td style="background: #AEF1AE">
+          lineNbr.+(1)
+        </td>
+      </tr><tr>
+        <td>
+          47
+        </td>
+        <td>
+          49115
+        </td>
+        <td>
+          1642
+          -
+          1645
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          &quot; |&quot;
+        </td>
+      </tr><tr>
+        <td>
+          48
+        </td>
+        <td>
+          49119
+        </td>
+        <td>
+          1661
+          -
+          1692
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.math.max
+        </td>
+        <td style="background: #AEF1AE">
+          scala.math.`package`.max(maxLen, prefix.length())
+        </td>
+      </tr><tr>
+        <td>
+          48
+        </td>
+        <td>
+          49118
+        </td>
+        <td>
+          1678
+          -
+          1691
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.String.length
+        </td>
+        <td style="background: #AEF1AE">
+          prefix.length()
+        </td>
+      </tr><tr>
+        <td>
+          49
+        </td>
+        <td>
+          49120
+        </td>
+        <td>
+          1710
+          -
+          1770
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.printing.Highlighting.Highlight.show
+        </td>
+        <td style="background: #AEF1AE">
+          printing.Highlighting.Red.apply(scala.Predef.augmentString(&quot; &quot;).*(scala.math.`package`.max(0, maxLen.-(prefix.length()))).+(prefix)).show(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          50
+        </td>
+        <td>
+          49122
+        </td>
+        <td>
+          1777
+          -
+          1801
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.String.+
+        </td>
+        <td style="background: #AEF1AE">
+          lnum.+(scala.Predef.augmentString(line).stripLineEnd)
+        </td>
+      </tr><tr>
+        <td>
+          50
+        </td>
+        <td>
+          49121
+        </td>
+        <td>
+          1784
+          -
+          1801
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.collection.immutable.StringLike.stripLineEnd
+        </td>
+        <td style="background: #AEF1AE">
+          scala.Predef.augmentString(line).stripLineEnd
+        </td>
+      </tr><tr>
+        <td>
+          55
+        </td>
+        <td>
+          49123
+        </td>
+        <td>
+          1944
+          -
+          1948
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          true
+        </td>
+      </tr><tr>
+        <td>
+          56
+        </td>
+        <td>
+          49124
+        </td>
+        <td>
+          1967
+          -
+          1972
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          false
+        </td>
+      </tr><tr>
+        <td>
+          58
+        </td>
+        <td>
+          49126
+        </td>
+        <td>
+          1998
+          -
+          1998
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.Tuple2._2
+        </td>
+        <td style="background: #AEF1AE">
+          x$4._2
+        </td>
+      </tr><tr>
+        <td>
+          58
+        </td>
+        <td>
+          49125
+        </td>
+        <td>
+          1992
+          -
+          1992
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.Tuple2._1
+        </td>
+        <td style="background: #AEF1AE">
+          x$4._1
+        </td>
+      </tr><tr>
+        <td>
+          59
+        </td>
+        <td>
+          49128
+        </td>
+        <td>
+          2048
+          -
+          2064
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.IndexedSeqOptimized.span
+        </td>
+        <td style="background: #AEF1AE">
+          scala.Predef.charArrayOps(rest0).span({
+  ((c: Char) =&gt; pred(c))
+})
+        </td>
+      </tr><tr>
+        <td>
+          59
+        </td>
+        <td>
+          49127
+        </td>
+        <td>
+          2059
+          -
+          2063
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.reporting.MessageRendering.pred
+        </td>
+        <td style="background: #AEF1AE">
+          pred(c)
+        </td>
+      </tr><tr>
+        <td>
+          60
+        </td>
+        <td>
+          49129
+        </td>
+        <td>
+          2088
+          -
+          2135
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.immutable.List.::
+        </td>
+        <td style="background: #AEF1AE">
+          if (scala.Predef.charArrayOps(rest).isEmpty)
+  scala.collection.immutable.Nil
+else
+  linesFrom(rest).::[String](x$5)
+        </td>
+      </tr><tr>
+        <td>
+          64
+        </td>
+        <td>
+          49130
+        </td>
+        <td>
+          2172
+          -
+          2207
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.Object.!=
+        </td>
+        <td style="background: #AEF1AE">
+          Settings.this.Setting.SettingDecorator[String](Contexts.this.Context.toBase(ctx).settings.color).value(ctx).!=(&quot;never&quot;)
+        </td>
+      </tr><tr>
+        <td>
+          65
+        </td>
+        <td>
+          49132
+        </td>
+        <td>
+          2236
+          -
+          2250
+        </td>
+        <td>
+          ApplyImplicitView
+        </td>
+        <td>
+          scala.LowPriorityImplicits.wrapCharArray
+        </td>
+        <td style="background: #AEF1AE">
+          scala.Predef.wrapCharArray(pos.linesSlice)
+        </td>
+      </tr><tr>
+        <td>
+          65
+        </td>
+        <td>
+          49131
+        </td>
+        <td>
+          2236
+          -
+          2250
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.util.SourcePosition.linesSlice
+        </td>
+        <td style="background: #AEF1AE">
+          pos.linesSlice
+        </td>
+      </tr><tr>
+        <td>
+          65
+        </td>
+        <td>
+          49134
+        </td>
+        <td>
+          2217
+          -
+          2259
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          scala.collection.TraversableOnce.toArray
+        </td>
+        <td style="background: #AEF1AE">
+          printing.SyntaxHighlighting.apply(scala.Predef.wrapCharArray(pos.linesSlice)).toArray[Char]((ClassTag.Char: scala.reflect.ClassTag[Char]))
+        </td>
+      </tr><tr>
+        <td>
+          65
+        </td>
+        <td>
+          49133
+        </td>
+        <td>
+          2217
+          -
+          2259
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          scala.collection.TraversableOnce.toArray
+        </td>
+        <td style="background: #AEF1AE">
+          printing.SyntaxHighlighting.apply(scala.Predef.wrapCharArray(pos.linesSlice)).toArray[Char]((ClassTag.Char: scala.reflect.ClassTag[Char]))
+        </td>
+      </tr><tr>
+        <td>
+          66
+        </td>
+        <td>
+          49135
+        </td>
+        <td>
+          2271
+          -
+          2285
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.util.SourcePosition.linesSlice
+        </td>
+        <td style="background: #AEF1AE">
+          pos.linesSlice
+        </td>
+      </tr><tr>
+        <td>
+          66
+        </td>
+        <td>
+          49136
+        </td>
+        <td>
+          2271
+          -
+          2285
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          dotty.tools.dotc.util.SourcePosition.linesSlice
+        </td>
+        <td style="background: #AEF1AE">
+          pos.linesSlice
+        </td>
+      </tr><tr>
+        <td>
+          67
+        </td>
+        <td>
+          49137
+        </td>
+        <td>
+          2302
+          -
+          2319
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.reporting.MessageRendering.linesFrom
+        </td>
+        <td style="background: #AEF1AE">
+          linesFrom(syntax)
+        </td>
+      </tr><tr>
+        <td>
+          68
+        </td>
+        <td>
+          49138
+        </td>
+        <td>
+          2329
+          -
+          2329
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.Tuple2._1
+        </td>
+        <td style="background: #AEF1AE">
+          x$6._1
+        </td>
+      </tr><tr>
+        <td>
+          68
+        </td>
+        <td>
+          49139
+        </td>
+        <td>
+          2337
+          -
+          2337
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.Tuple2._2
+        </td>
+        <td style="background: #AEF1AE">
+          x$6._2
+        </td>
+      </tr><tr>
+        <td>
+          70
+        </td>
+        <td>
+          49150
+        </td>
+        <td>
+          2375
+          -
+          2488
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Tuple3.apply
+        </td>
+        <td style="background: #AEF1AE">
+          scala.Tuple3.apply[List[String], List[String], Int](before.zip[Int, String, List[(Int, String)]](lines)(immutable.this.List.canBuildFrom[(Int, String)]).map[String, List[String]]({
+  ((offsetAndLine: (Int, String)) =&gt; render(offsetAndLine))
+})(immutable.this.List.canBuildFrom[String]), after.zip[Int, String, List[(Int, String)]](lines.drop(before.length))(immutable.this.List.canBuildFrom[(Int, String)]).map[String, List[String]]({
+  ((offsetAndLine: (Int, String)) =&gt; render(offsetAndLine))
+})(immutable.this.List.canBuildFrom[String]), maxLen)
+        </td>
+      </tr><tr>
+        <td>
+          71
+        </td>
+        <td>
+          49141
+        </td>
+        <td>
+          2405
+          -
+          2411
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.reporting.MessageRendering.render
+        </td>
+        <td style="background: #AEF1AE">
+          render(offsetAndLine)
+        </td>
+      </tr><tr>
+        <td>
+          71
+        </td>
+        <td>
+          49140
+        </td>
+        <td>
+          2393
+          -
+          2393
+        </td>
+        <td>
+          TypeApply
+        </td>
+        <td>
+          scala.collection.immutable.List.canBuildFrom
+        </td>
+        <td style="background: #AEF1AE">
+          immutable.this.List.canBuildFrom[(Int, String)]
+        </td>
+      </tr><tr>
+        <td>
+          71
+        </td>
+        <td>
+          49143
+        </td>
+        <td>
+          2383
+          -
+          2412
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          scala.collection.immutable.List.map
+        </td>
+        <td style="background: #AEF1AE">
+          before.zip[Int, String, List[(Int, String)]](lines)(immutable.this.List.canBuildFrom[(Int, String)]).map[String, List[String]]({
+  ((offsetAndLine: (Int, String)) =&gt; render(offsetAndLine))
+})(immutable.this.List.canBuildFrom[String])
+        </td>
+      </tr><tr>
+        <td>
+          71
+        </td>
+        <td>
+          49142
+        </td>
+        <td>
+          2404
+          -
+          2404
+        </td>
+        <td>
+          TypeApply
+        </td>
+        <td>
+          scala.collection.immutable.List.canBuildFrom
+        </td>
+        <td style="background: #AEF1AE">
+          immutable.this.List.canBuildFrom[String]
+        </td>
+      </tr><tr>
+        <td>
+          72
+        </td>
+        <td>
+          49144
+        </td>
+        <td>
+          2441
+          -
+          2454
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.collection.LinearSeqOptimized.length
+        </td>
+        <td style="background: #AEF1AE">
+          before.length
+        </td>
+      </tr><tr>
+        <td>
+          72
+        </td>
+        <td>
+          49147
+        </td>
+        <td>
+          2461
+          -
+          2467
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.reporting.MessageRendering.render
+        </td>
+        <td style="background: #AEF1AE">
+          render(offsetAndLine)
+        </td>
+      </tr><tr>
+        <td>
+          72
+        </td>
+        <td>
+          49149
+        </td>
+        <td>
+          2420
+          -
+          2468
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          scala.collection.immutable.List.map
+        </td>
+        <td style="background: #AEF1AE">
+          after.zip[Int, String, List[(Int, String)]](lines.drop(before.length))(immutable.this.List.canBuildFrom[(Int, String)]).map[String, List[String]]({
+  ((offsetAndLine: (Int, String)) =&gt; render(offsetAndLine))
+})(immutable.this.List.canBuildFrom[String])
+        </td>
+      </tr><tr>
+        <td>
+          72
+        </td>
+        <td>
+          49146
+        </td>
+        <td>
+          2429
+          -
+          2429
+        </td>
+        <td>
+          TypeApply
+        </td>
+        <td>
+          scala.collection.immutable.List.canBuildFrom
+        </td>
+        <td style="background: #AEF1AE">
+          immutable.this.List.canBuildFrom[(Int, String)]
+        </td>
+      </tr><tr>
+        <td>
+          72
+        </td>
+        <td>
+          49145
+        </td>
+        <td>
+          2430
+          -
+          2455
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.immutable.List.drop
+        </td>
+        <td style="background: #AEF1AE">
+          lines.drop(before.length)
+        </td>
+      </tr><tr>
+        <td>
+          72
+        </td>
+        <td>
+          49148
+        </td>
+        <td>
+          2460
+          -
+          2460
+        </td>
+        <td>
+          TypeApply
+        </td>
+        <td>
+          scala.collection.immutable.List.canBuildFrom
+        </td>
+        <td style="background: #AEF1AE">
+          immutable.this.List.canBuildFrom[String]
+        </td>
+      </tr><tr>
+        <td>
+          79
+        </td>
+        <td>
+          49153
+        </td>
+        <td>
+          2651
+          -
+          2669
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.immutable.StringLike.*
+        </td>
+        <td style="background: #AEF1AE">
+          scala.Predef.augmentString(&quot; &quot;).*(offset.-(1))
+        </td>
+      </tr><tr>
+        <td>
+          79
+        </td>
+        <td>
+          49152
+        </td>
+        <td>
+          2658
+          -
+          2668
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Int.-
+        </td>
+        <td style="background: #AEF1AE">
+          offset.-(1)
+        </td>
+      </tr><tr>
+        <td>
+          79
+        </td>
+        <td>
+          49151
+        </td>
+        <td>
+          2651
+          -
+          2654
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          &quot; &quot;
+        </td>
+      </tr><tr>
+        <td>
+          80
+        </td>
+        <td>
+          49154
+        </td>
+        <td>
+          2688
+          -
+          2710
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.util.SourcePosition.startColumnPadding
+        </td>
+        <td style="background: #AEF1AE">
+          pos.startColumnPadding
+        </td>
+      </tr><tr>
+        <td>
+          81
+        </td>
+        <td>
+          49166
+        </td>
+        <td>
+          2728
+          -
+          2853
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.printing.Highlighting.Red.apply
+        </td>
+        <td style="background: #AEF1AE">
+          printing.Highlighting.Red.apply(if (pos.startLine().==(pos.endLine()))
+  scala.Predef.augmentString(&quot;^&quot;).*(scala.math.`package`.max(1, pos.endColumn().-(pos.startColumn())))
+else
+  &quot;^&quot;)
+        </td>
+      </tr><tr>
+        <td>
+          82
+        </td>
+        <td>
+          49156
+        </td>
+        <td>
+          2744
+          -
+          2772
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Int.==
+        </td>
+        <td style="background: #AEF1AE">
+          pos.startLine().==(pos.endLine())
+        </td>
+      </tr><tr>
+        <td>
+          82
+        </td>
+        <td>
+          49155
+        </td>
+        <td>
+          2761
+          -
+          2772
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.util.SourcePosition.endLine
+        </td>
+        <td style="background: #AEF1AE">
+          pos.endLine()
+        </td>
+      </tr><tr>
+        <td>
+          83
+        </td>
+        <td>
+          49159
+        </td>
+        <td>
+          2816
+          -
+          2831
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.util.SourcePosition.startColumn
+        </td>
+        <td style="background: #AEF1AE">
+          pos.startColumn()
+        </td>
+      </tr><tr>
+        <td>
+          83
+        </td>
+        <td>
+          49162
+        </td>
+        <td>
+          2782
+          -
+          2832
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.immutable.StringLike.*
+        </td>
+        <td style="background: #AEF1AE">
+          scala.Predef.augmentString(&quot;^&quot;).*(scala.math.`package`.max(1, pos.endColumn().-(pos.startColumn())))
+        </td>
+      </tr><tr>
+        <td>
+          83
+        </td>
+        <td>
+          49158
+        </td>
+        <td>
+          2797
+          -
+          2798
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          1
+        </td>
+      </tr><tr>
+        <td>
+          83
+        </td>
+        <td>
+          49161
+        </td>
+        <td>
+          2788
+          -
+          2832
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.math.max
+        </td>
+        <td style="background: #AEF1AE">
+          scala.math.`package`.max(1, pos.endColumn().-(pos.startColumn()))
+        </td>
+      </tr><tr>
+        <td>
+          83
+        </td>
+        <td>
+          49163
+        </td>
+        <td>
+          2782
+          -
+          2832
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          scala.collection.immutable.StringLike.*
+        </td>
+        <td style="background: #AEF1AE">
+          scala.Predef.augmentString(&quot;^&quot;).*(scala.math.`package`.max(1, pos.endColumn().-(pos.startColumn())))
+        </td>
+      </tr><tr>
+        <td>
+          83
+        </td>
+        <td>
+          49157
+        </td>
+        <td>
+          2782
+          -
+          2785
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          &quot;^&quot;
+        </td>
+      </tr><tr>
+        <td>
+          83
+        </td>
+        <td>
+          49160
+        </td>
+        <td>
+          2800
+          -
+          2831
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Int.-
+        </td>
+        <td style="background: #AEF1AE">
+          pos.endColumn().-(pos.startColumn())
+        </td>
+      </tr><tr>
+        <td>
+          84
+        </td>
+        <td>
+          49165
+        </td>
+        <td>
+          2844
+          -
+          2847
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          &quot;^&quot;
+        </td>
+      </tr><tr>
+        <td>
+          84
+        </td>
+        <td>
+          49164
+        </td>
+        <td>
+          2844
+          -
+          2847
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          &quot;^&quot;
+        </td>
+      </tr><tr>
+        <td>
+          86
+        </td>
+        <td>
+          49168
+        </td>
+        <td>
+          2867
+          -
+          2869
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          &quot;|&quot;
+        </td>
+      </tr><tr>
+        <td>
+          86
+        </td>
+        <td>
+          49171
+        </td>
+        <td>
+          2878
+          -
+          2889
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.printing.Highlighting.Highlight.show
+        </td>
+        <td style="background: #AEF1AE">
+          carets.show(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          86
+        </td>
+        <td>
+          49167
+        </td>
+        <td>
+          2860
+          -
+          2861
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          &quot;&quot;
+        </td>
+      </tr><tr>
+        <td>
+          86
+        </td>
+        <td>
+          49170
+        </td>
+        <td>
+          2890
+          -
+          2891
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          &quot;&quot;
+        </td>
+      </tr><tr>
+        <td>
+          86
+        </td>
+        <td>
+          49172
+        </td>
+        <td>
+          2858
+          -
+          2891
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.StringContext.s
+        </td>
+        <td style="background: #AEF1AE">
+          scala.StringContext.apply(&quot;&quot;, &quot;|&quot;, &quot;&quot;, &quot;&quot;).s(prefix, padding, carets.show(ctx))
+        </td>
+      </tr><tr>
+        <td>
+          86
+        </td>
+        <td>
+          49169
+        </td>
+        <td>
+          2876
+          -
+          2877
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          &quot;&quot;
+        </td>
+      </tr><tr>
+        <td>
+          94
+        </td>
+        <td>
+          49173
+        </td>
+        <td>
+          3132
+          -
+          3154
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.util.SourcePosition.startColumnPadding
+        </td>
+        <td style="background: #AEF1AE">
+          pos.startColumnPadding
+        </td>
+      </tr><tr>
+        <td>
+          94
+        </td>
+        <td>
+          49181
+        </td>
+        <td>
+          3113
+          -
+          3377
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.TraversableOnce.foldLeft
+        </td>
+        <td style="background: #AEF1AE">
+          scala.Predef.augmentString(msg).lines.foldLeft[String](pos.startColumnPadding)(((pad: String, line: String) =&gt; {
+  val lineLength: Int = MessageRendering.this.stripColor(line).length();
+  val maxPad: Int = scala.math.`package`.max(0, Settings.this.Setting.SettingDecorator[Int](Contexts.this.Context.toBase(ctx).settings.pageWidth).value(ctx).-(offset).-(lineLength)).-(offset);
+  if (maxPad.&lt;(pad.length()))
+    scala.Predef.augmentString(&quot; &quot;).*(maxPad)
+  else
+    pad
+}))
+        </td>
+      </tr><tr>
+        <td>
+          95
+        </td>
+        <td>
+          49174
+        </td>
+        <td>
+          3196
+          -
+          3219
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.String.length
+        </td>
+        <td style="background: #AEF1AE">
+          MessageRendering.this.stripColor(line).length()
+        </td>
+      </tr><tr>
+        <td>
+          96
+        </td>
+        <td>
+          49175
+        </td>
+        <td>
+          3239
+          -
+          3311
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Int.-
+        </td>
+        <td style="background: #AEF1AE">
+          scala.math.`package`.max(0, Settings.this.Setting.SettingDecorator[Int](Contexts.this.Context.toBase(ctx).settings.pageWidth).value(ctx).-(offset).-(lineLength)).-(offset)
+        </td>
+      </tr><tr>
+        <td>
+          98
+        </td>
+        <td>
+          49177
+        </td>
+        <td>
+          3323
+          -
+          3342
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Int.&lt;
+        </td>
+        <td style="background: #AEF1AE">
+          maxPad.&lt;(pad.length())
+        </td>
+      </tr><tr>
+        <td>
+          98
+        </td>
+        <td>
+          49176
+        </td>
+        <td>
+          3332
+          -
+          3342
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.String.length
+        </td>
+        <td style="background: #AEF1AE">
+          pad.length()
+        </td>
+      </tr><tr>
+        <td>
+          98
+        </td>
+        <td>
+          49179
+        </td>
+        <td>
+          3344
+          -
+          3356
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          scala.collection.immutable.StringLike.*
+        </td>
+        <td style="background: #AEF1AE">
+          scala.Predef.augmentString(&quot; &quot;).*(maxPad)
+        </td>
+      </tr><tr>
+        <td>
+          98
+        </td>
+        <td>
+          49178
+        </td>
+        <td>
+          3344
+          -
+          3356
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.immutable.StringLike.*
+        </td>
+        <td style="background: #AEF1AE">
+          scala.Predef.augmentString(&quot; &quot;).*(maxPad)
+        </td>
+      </tr><tr>
+        <td>
+          99
+        </td>
+        <td>
+          49180
+        </td>
+        <td>
+          3368
+          -
+          3371
+        </td>
+        <td>
+          Ident
+        </td>
+        <td>
+          dotty.tools.dotc.reporting.MessageRendering.pad
+        </td>
+        <td style="background: #AEF1AE">
+          pad
+        </td>
+      </tr><tr>
+        <td>
+          103
+        </td>
+        <td>
+          49182
+        </td>
+        <td>
+          3414
+          -
+          3455
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.String.+
+        </td>
+        <td style="background: #AEF1AE">
+          scala.Predef.augmentString(&quot; &quot;).*(offset.-(1)).+(&quot;|&quot;).+(padding).+(line)
+        </td>
+      </tr><tr>
+        <td>
+          104
+        </td>
+        <td>
+          49183
+        </td>
+        <td>
+          3473
+          -
+          3500
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.MapLike.apply
+        </td>
+        <td style="background: #AEF1AE">
+          scala.sys.`package`.props.apply(&quot;line.separator&quot;)
+        </td>
+      </tr><tr>
+        <td>
+          104
+        </td>
+        <td>
+          49184
+        </td>
+        <td>
+          3383
+          -
+          3501
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.TraversableOnce.mkString
+        </td>
+        <td style="background: #AEF1AE">
+          scala.Predef.augmentString(msg).lines.map[String](((line: String) =&gt; scala.Predef.augmentString(&quot; &quot;).*(offset.-(1)).+(&quot;|&quot;).+(padding).+(line))).mkString(scala.sys.`package`.props.apply(&quot;line.separator&quot;))
+        </td>
+      </tr><tr>
+        <td>
+          112
+        </td>
+        <td>
+          49185
+        </td>
+        <td>
+          3774
+          -
+          3784
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.util.SourcePosition.exists
+        </td>
+        <td style="background: #AEF1AE">
+          pos.exists
+        </td>
+      </tr><tr>
+        <td>
+          126
+        </td>
+        <td>
+          49186
+        </td>
+        <td>
+          3786
+          -
+          4380
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.printing.Highlighting.Highlight.show
+        </td>
+        <td style="background: #AEF1AE">
+          printing.Highlighting.Blue.apply({
+  val file: String = scala.StringContext.apply(&quot;&quot;, &quot;:&quot;, &quot;:&quot;, &quot;&quot;).s(pos.source.file.toString(), pos.line().+(1), pos.column());
+  val errId: String = if (message.errorId.ne(NoExplanationID))
+    {
+      val errorNumber: Int = message.errorId.errorNumber();
+      scala.StringContext.apply(&quot;[E&quot;, &quot;] &quot;).s(scala.Predef.augmentString(&quot;0&quot;).*(3.-(errorNumber.toString().length())).+(errorNumber))
+    }
+  else
+    &quot;&quot;;
+  val kind: String = if (message.kind.==(&quot;&quot;))
+    diagnosticLevel
+  else
+    scala.StringContext.apply(&quot;&quot;, &quot; &quot;, &quot;&quot;).s(message.kind, diagnosticLevel);
+  val prefix: String = scala.StringContext.apply(&quot;-- &quot;, &quot;&quot;, &quot;: &quot;, &quot; &quot;).s(errId, kind, file);
+  prefix.+(scala.Predef.augmentString(&quot;-&quot;).*(scala.math.`package`.max(Settings.this.Setting.SettingDecorator[Int](Contexts.this.Context.toBase(ctx).settings.pageWidth).value(ctx).-(MessageRendering.this.stripColor(prefix).length()), 0)))
+}).show(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          126
+        </td>
+        <td>
+          49189
+        </td>
+        <td>
+          4386
+          -
+          4388
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          &quot;&quot;
+        </td>
+      </tr><tr>
+        <td>
+          126
+        </td>
+        <td>
+          49188
+        </td>
+        <td>
+          4386
+          -
+          4388
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          &quot;&quot;
+        </td>
+      </tr><tr>
+        <td>
+          126
+        </td>
+        <td>
+          49187
+        </td>
+        <td>
+          3786
+          -
+          4380
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          dotty.tools.dotc.printing.Highlighting.Highlight.show
+        </td>
+        <td style="background: #AEF1AE">
+          printing.Highlighting.Blue.apply({
+  val file: String = scala.StringContext.apply(&quot;&quot;, &quot;:&quot;, &quot;:&quot;, &quot;&quot;).s(pos.source.file.toString(), pos.line().+(1), pos.column());
+  val errId: String = if (message.errorId.ne(NoExplanationID))
+    {
+      val errorNumber: Int = message.errorId.errorNumber();
+      scala.StringContext.apply(&quot;[E&quot;, &quot;] &quot;).s(scala.Predef.augmentString(&quot;0&quot;).*(3.-(errorNumber.toString().length())).+(errorNumber))
+    }
+  else
+    &quot;&quot;;
+  val kind: String = if (message.kind.==(&quot;&quot;))
+    diagnosticLevel
+  else
+    scala.StringContext.apply(&quot;&quot;, &quot; &quot;, &quot;&quot;).s(message.kind, diagnosticLevel);
+  val prefix: String = scala.StringContext.apply(&quot;-- &quot;, &quot;&quot;, &quot;: &quot;, &quot; &quot;).s(errId, kind, file);
+  prefix.+(scala.Predef.augmentString(&quot;-&quot;).*(scala.math.`package`.max(Settings.this.Setting.SettingDecorator[Int](Contexts.this.Context.toBase(ctx).settings.pageWidth).value(ctx).-(MessageRendering.this.stripColor(prefix).length()), 0)))
+}).show(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          130
+        </td>
+        <td>
+          49191
+        </td>
+        <td>
+          4525
+          -
+          4635
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.mutable.StringBuilder.&lt;init&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          new scala.`package`.StringBuilder(core.Decorators.StringInterpolators(scala.StringContext.apply(&quot;|\n           |&quot;, &quot;\n           |&quot;, &quot;&quot;)).hl(printing.Highlighting.Blue.apply(&quot;Explanation&quot;), printing.Highlighting.Blue.apply(&quot;===========&quot;))(ctx))
+        </td>
+      </tr><tr>
+        <td>
+          131
+        </td>
+        <td>
+          49190
+        </td>
+        <td>
+          4550
+          -
+          4629
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.Decorators.StringInterpolators.hl
+        </td>
+        <td style="background: #F0ADAD">
+          core.Decorators.StringInterpolators(scala.StringContext.apply(&quot;|\n           |&quot;, &quot;\n           |&quot;, &quot;&quot;)).hl(printing.Highlighting.Blue.apply(&quot;Explanation&quot;), printing.Highlighting.Blue.apply(&quot;===========&quot;))(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          135
+        </td>
+        <td>
+          49192
+        </td>
+        <td>
+          4650
+          -
+          4654
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          '\n'
+        </td>
+      </tr><tr>
+        <td>
+          135
+        </td>
+        <td>
+          49194
+        </td>
+        <td>
+          4640
+          -
+          4677
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.mutable.StringBuilder.append
+        </td>
+        <td style="background: #F0ADAD">
+          sb.append('\n').append(m.explanation)
+        </td>
+      </tr><tr>
+        <td>
+          135
+        </td>
+        <td>
+          49193
+        </td>
+        <td>
+          4663
+          -
+          4676
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.reporting.diagnostic.Message.explanation
+        </td>
+        <td style="background: #F0ADAD">
+          m.explanation
+        </td>
+      </tr><tr>
+        <td>
+          136
+        </td>
+        <td>
+          49195
+        </td>
+        <td>
+          4686
+          -
+          4699
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.reporting.diagnostic.Message.explanation
+        </td>
+        <td style="background: #F0ADAD">
+          m.explanation
+        </td>
+      </tr><tr>
+        <td>
+          136
+        </td>
+        <td>
+          49198
+        </td>
+        <td>
+          4726
+          -
+          4741
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.mutable.StringBuilder.append
+        </td>
+        <td style="background: #F0ADAD">
+          sb.append('\n')
+        </td>
+      </tr><tr>
+        <td>
+          136
+        </td>
+        <td>
+          49200
+        </td>
+        <td>
+          4682
+          -
+          4682
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          ()
+        </td>
+      </tr><tr>
+        <td>
+          136
+        </td>
+        <td>
+          49197
+        </td>
+        <td>
+          4686
+          -
+          4724
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.Object.!=
+        </td>
+        <td style="background: #F0ADAD">
+          scala.Predef.augmentString(m.explanation).lastOption.!=(scala.Some.apply[Char]('\n'))
+        </td>
+      </tr><tr>
+        <td>
+          136
+        </td>
+        <td>
+          49196
+        </td>
+        <td>
+          4714
+          -
+          4724
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Some.apply
+        </td>
+        <td style="background: #F0ADAD">
+          scala.Some.apply[Char]('\n')
+        </td>
+      </tr><tr>
+        <td>
+          136
+        </td>
+        <td>
+          49199
+        </td>
+        <td>
+          4726
+          -
+          4741
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          scala.collection.mutable.StringBuilder.append
+        </td>
+        <td style="background: #F0ADAD">
+          sb.append('\n')
+        </td>
+      </tr><tr>
+        <td>
+          136
+        </td>
+        <td>
+          49201
+        </td>
+        <td>
+          4682
+          -
+          4682
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          ()
+        </td>
+      </tr><tr>
+        <td>
+          137
+        </td>
+        <td>
+          49202
+        </td>
+        <td>
+          4746
+          -
+          4757
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.mutable.StringBuilder.toString
+        </td>
+        <td style="background: #F0ADAD">
+          sb.toString()
+        </td>
+      </tr><tr>
+        <td>
+          142
+        </td>
+        <td>
+          49203
+        </td>
+        <td>
+          4938
+          -
+          4970
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.collection.mutable.StringBuilder.newBuilder
+        </td>
+        <td style="background: #AEF1AE">
+          scala.collection.mutable.StringBuilder.newBuilder
+        </td>
+      </tr><tr>
+        <td>
+          143
+        </td>
+        <td>
+          49204
+        </td>
+        <td>
+          4991
+          -
+          5024
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.reporting.MessageRendering.posStr
+        </td>
+        <td style="background: #AEF1AE">
+          MessageRendering.this.posStr(pos, diagnosticLevel, msg)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          144
+        </td>
+        <td>
+          49207
+        </td>
+        <td>
+          5053
+          -
+          5086
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          scala.collection.mutable.StringBuilder.append
+        </td>
+        <td style="background: #AEF1AE">
+          sb.append(posString).append('\n')
+        </td>
+      </tr><tr>
+        <td>
+          144
+        </td>
+        <td>
+          49209
+        </td>
+        <td>
+          5029
+          -
+          5029
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          ()
+        </td>
+      </tr><tr>
+        <td>
+          144
+        </td>
+        <td>
+          49206
+        </td>
+        <td>
+          5053
+          -
+          5086
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.mutable.StringBuilder.append
+        </td>
+        <td style="background: #AEF1AE">
+          sb.append(posString).append('\n')
+        </td>
+      </tr><tr>
+        <td>
+          144
+        </td>
+        <td>
+          49205
+        </td>
+        <td>
+          5033
+          -
+          5051
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.collection.TraversableOnce.nonEmpty
+        </td>
+        <td style="background: #AEF1AE">
+          scala.Predef.augmentString(posString).nonEmpty
+        </td>
+      </tr><tr>
+        <td>
+          144
+        </td>
+        <td>
+          49208
+        </td>
+        <td>
+          5029
+          -
+          5029
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          ()
+        </td>
+      </tr><tr>
+        <td>
+          145
+        </td>
+        <td>
+          49218
+        </td>
+        <td>
+          5107
+          -
+          5374
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          {
+  &lt;synthetic&gt; &lt;artifact&gt; private[this] val x$7: (List[String], List[String], Int) = (MessageRendering.this.sourceLines(pos)(ctx): (List[String], List[String], Int) @unchecked) match {
+    case (_1: List[String], _2: List[String], _3: Int)(List[String], List[String], Int)((srcBefore @ _), (srcAfter @ _), (offset @ _)) =&gt; scala.Tuple3.apply[List[String], List[String], Int](srcBefore, srcAfter, offset)
+  };
+  val srcBefore: List[String] = x$7._1;
+  val srcAfter: List[String] = x$7._2;
+  val offset: Int = x$7._3;
+  val marker: String = MessageRendering.this.columnMarker(pos, offset)(ctx);
+  val err: String = MessageRendering.this.errorMsg(pos, msg.msg, offset)(ctx);
+  sb.append({
+  &lt;synthetic&gt; &lt;artifact&gt; val x$11: List[String] = srcBefore;
+  {
+  &lt;synthetic&gt; &lt;artifact&gt; val x$10: String = marker;
+  {
+  &lt;synthetic&gt; &lt;artifact&gt; val x$9: String = err;
+  {
+  &lt;synthetic&gt; &lt;artifact&gt; val x$8: List[String] = MessageRendering.this.outer(pos, scala.Predef.augmentString(&quot; &quot;).*(offset.-(1)))(ctx);
+  srcAfter.:::[String](x$8)
+}.::[String](x$9)
+}.::[String](x$10)
+}.:::[String](x$11)
+}.mkString(&quot;\n&quot;))
+}
+        </td>
+      </tr><tr>
+        <td>
+          145
+        </td>
+        <td>
+          49210
+        </td>
+        <td>
+          5095
+          -
+          5105
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.util.SourcePosition.exists
+        </td>
+        <td style="background: #AEF1AE">
+          pos.exists
+        </td>
+      </tr><tr>
+        <td>
+          146
+        </td>
+        <td>
+          49213
+        </td>
+        <td>
+          5141
+          -
+          5141
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.Tuple3._3
+        </td>
+        <td style="background: #AEF1AE">
+          x$7._3
+        </td>
+      </tr><tr>
+        <td>
+          146
+        </td>
+        <td>
+          49212
+        </td>
+        <td>
+          5131
+          -
+          5131
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.Tuple3._2
+        </td>
+        <td style="background: #AEF1AE">
+          x$7._2
+        </td>
+      </tr><tr>
+        <td>
+          146
+        </td>
+        <td>
+          49211
+        </td>
+        <td>
+          5120
+          -
+          5120
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.Tuple3._1
+        </td>
+        <td style="background: #AEF1AE">
+          x$7._1
+        </td>
+      </tr><tr>
+        <td>
+          147
+        </td>
+        <td>
+          49214
+        </td>
+        <td>
+          5187
+          -
+          5212
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.reporting.MessageRendering.columnMarker
+        </td>
+        <td style="background: #AEF1AE">
+          MessageRendering.this.columnMarker(pos, offset)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          148
+        </td>
+        <td>
+          49215
+        </td>
+        <td>
+          5229
+          -
+          5259
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.reporting.MessageRendering.errorMsg
+        </td>
+        <td style="background: #AEF1AE">
+          MessageRendering.this.errorMsg(pos, msg.msg, offset)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          149
+        </td>
+        <td>
+          49216
+        </td>
+        <td>
+          5277
+          -
+          5367
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.TraversableOnce.mkString
+        </td>
+        <td style="background: #AEF1AE">
+          {
+  &lt;synthetic&gt; &lt;artifact&gt; val x$11: List[String] = srcBefore;
+  {
+  &lt;synthetic&gt; &lt;artifact&gt; val x$10: String = marker;
+  {
+  &lt;synthetic&gt; &lt;artifact&gt; val x$9: String = err;
+  {
+  &lt;synthetic&gt; &lt;artifact&gt; val x$8: List[String] = MessageRendering.this.outer(pos, scala.Predef.augmentString(&quot; &quot;).*(offset.-(1)))(ctx);
+  srcAfter.:::[String](x$8)
+}.::[String](x$9)
+}.::[String](x$10)
+}.:::[String](x$11)
+}.mkString(&quot;\n&quot;)
+        </td>
+      </tr><tr>
+        <td>
+          149
+        </td>
+        <td>
+          49217
+        </td>
+        <td>
+          5266
+          -
+          5368
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.mutable.StringBuilder.append
+        </td>
+        <td style="background: #AEF1AE">
+          sb.append({
+  &lt;synthetic&gt; &lt;artifact&gt; val x$11: List[String] = srcBefore;
+  {
+  &lt;synthetic&gt; &lt;artifact&gt; val x$10: String = marker;
+  {
+  &lt;synthetic&gt; &lt;artifact&gt; val x$9: String = err;
+  {
+  &lt;synthetic&gt; &lt;artifact&gt; val x$8: List[String] = MessageRendering.this.outer(pos, scala.Predef.augmentString(&quot; &quot;).*(offset.-(1)))(ctx);
+  srcAfter.:::[String](x$8)
+}.::[String](x$9)
+}.::[String](x$10)
+}.:::[String](x$11)
+}.mkString(&quot;\n&quot;))
+        </td>
+      </tr><tr>
+        <td>
+          150
+        </td>
+        <td>
+          49221
+        </td>
+        <td>
+          5380
+          -
+          5398
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          scala.collection.mutable.StringBuilder.append
+        </td>
+        <td style="background: #AEF1AE">
+          sb.append(msg.msg)
+        </td>
+      </tr><tr>
+        <td>
+          150
+        </td>
+        <td>
+          49220
+        </td>
+        <td>
+          5380
+          -
+          5398
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.mutable.StringBuilder.append
+        </td>
+        <td style="background: #AEF1AE">
+          sb.append(msg.msg)
+        </td>
+      </tr><tr>
+        <td>
+          150
+        </td>
+        <td>
+          49219
+        </td>
+        <td>
+          5390
+          -
+          5397
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.reporting.diagnostic.Message.msg
+        </td>
+        <td style="background: #AEF1AE">
+          msg.msg
+        </td>
+      </tr><tr>
+        <td>
+          151
+        </td>
+        <td>
+          49222
+        </td>
+        <td>
+          5403
+          -
+          5414
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.mutable.StringBuilder.toString
+        </td>
+        <td style="background: #AEF1AE">
+          sb.toString()
+        </td>
+      </tr><tr>
+        <td>
+          156
+        </td>
+        <td>
+          49223
+        </td>
+        <td>
+          5516
+          -
+          5523
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          &quot;Error&quot;
+        </td>
+      </tr><tr>
+        <td>
+          157
+        </td>
+        <td>
+          49224
+        </td>
+        <td>
+          5556
+          -
+          5573
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          &quot;Feature Warning&quot;
+        </td>
+      </tr><tr>
+        <td>
+          158
+        </td>
+        <td>
+          49225
+        </td>
+        <td>
+          5610
+          -
+          5631
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          &quot;Deprecation Warning&quot;
+        </td>
+      </tr><tr>
+        <td>
+          159
+        </td>
+        <td>
+          49226
+        </td>
+        <td>
+          5666
+          -
+          5685
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          &quot;Unchecked Warning&quot;
+        </td>
+      </tr><tr>
+        <td>
+          160
+        </td>
+        <td>
+          49227
+        </td>
+        <td>
+          5720
+          -
+          5739
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          &quot;Migration Warning&quot;
+        </td>
+      </tr><tr>
+        <td>
+          161
+        </td>
+        <td>
+          49228
+        </td>
+        <td>
+          5765
+          -
+          5774
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          &quot;Warning&quot;
+        </td>
+      </tr><tr>
+        <td>
+          162
+        </td>
+        <td>
+          49229
+        </td>
+        <td>
+          5797
+          -
+          5803
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          &quot;Info&quot;
+        </td>
+      </tr>
+    </table>
+          </div>
+        </div>
+      </body>
+    </html>

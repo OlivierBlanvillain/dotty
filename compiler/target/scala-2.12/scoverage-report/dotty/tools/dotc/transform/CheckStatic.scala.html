@@ -1,0 +1,2170 @@
+<html>
+      <head>
+        <meta http-equiv="Content-Type" content="text/html; charset=utf-8"/>
+        <title id="title">
+          dotty/tools/dotc/transform/CheckStatic.scala.html
+        </title>
+        <script src="https://ajax.googleapis.com/ajax/libs/jquery/1.10.2/jquery.min.js"></script><link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/jquery.tablesorter/2.20.1/css/theme.default.min.css" type="text/css"/><script src="https://cdnjs.cloudflare.com/ajax/libs/jquery.tablesorter/2.20.1/js/jquery.tablesorter.min.js"></script><link rel="stylesheet" href="https://netdna.bootstrapcdn.com/bootstrap/3.0.3/css/bootstrap.min.css" type="text/css"/><script src="https://netdna.bootstrapcdn.com/bootstrap/3.0.3/js/bootstrap.min.js"></script><script type="text/javascript">
+        $(document).ready(function() {$(".tablesorter").tablesorter();});
+      </script>
+        <style>
+          table.codegrid { font-family: monospace; font-size: 12px; width: auto!important; }table.statementlist { width: auto!important; font-size: 13px; } table.codegrid td { padding: 0!important; border: 0!important } table td.linenumber { width: 40px!important; } 
+        </style>
+      </head>
+      <body style="font-family: monospace;">
+        <ul class="nav nav-tabs">
+          <li>
+            <a href="#codegrid" data-toggle="tab">Codegrid</a>
+          </li>
+          <li>
+            <a href="#statementlist" data-toggle="tab">Statement List</a>
+          </li>
+        </ul>
+        <div class="tab-content">
+          <div class="tab-pane active" id="codegrid">
+            <pre style='font-size: 12pt; font-family: courier;'>1 <span style=''>package dotty.tools.dotc
+</span>2 <span style=''>package transform
+</span>3 <span style=''>
+</span>4 <span style=''>import core._
+</span>5 <span style=''>import Names._
+</span>6 <span style=''>import StdNames.nme
+</span>7 <span style=''>import Types._
+</span>8 <span style=''>import dotty.tools.dotc.transform.MegaPhase._
+</span>9 <span style=''>import ast.Trees._
+</span>10 <span style=''>import Flags._
+</span>11 <span style=''>import Contexts.Context
+</span>12 <span style=''>import Symbols._
+</span>13 <span style=''>import Constants._
+</span>14 <span style=''>import Denotations._
+</span>15 <span style=''>import SymDenotations._
+</span>16 <span style=''>import Decorators.StringInterpolators
+</span>17 <span style=''>import dotty.tools.dotc.ast.tpd
+</span>18 <span style=''>import dotty.tools.dotc.core.Annotations.ConcreteAnnotation
+</span>19 <span style=''>import scala.collection.mutable
+</span>20 <span style=''>import DenotTransformers._
+</span>21 <span style=''>import Names.Name
+</span>22 <span style=''>import NameOps._
+</span>23 <span style=''>import Decorators._
+</span>24 <span style=''>import TypeUtils._
+</span>25 <span style=''>import reporting.diagnostic.messages.{MissingCompanionForStatic, StaticFieldsOnlyAllowedInObjects}
+</span>26 <span style=''>
+</span>27 <span style=''>/** A transformer that check that requirements of Static fields\methods are implemented:
+</span>28 <span style=''>  *  1. Only objects can have members annotated with `@static`
+</span>29 <span style=''>  *  2. The fields annotated with `@static` should preceed any non-`@static` fields.
+</span>30 <span style=''>  *     This ensures that we do not introduce surprises for users in initialization order.
+</span>31 <span style=''>  *  3. If a member `foo` of an `object C` is annotated with `@static`,
+</span>32 <span style=''>  *     the companion class `C` is not allowed to define term members with name `foo`.
+</span>33 <span style=''>  *  4. If a member `foo` of an `object C` is annotated with `@static`, the companion class `C`
+</span>34 <span style=''>  *     is not allowed to inherit classes that define a term member with name `foo`.
+</span>35 <span style=''>  *  5. Only `@static` methods and vals are supported in companions of traits.
+</span>36 <span style=''>  *     Java8 supports those, but not vars, and JavaScript does not have interfaces at all.
+</span>37 <span style=''>  *  6. `@static` Lazy vals are currently unsupported.
+</span>38 <span style=''>  */
+</span>39 <span style=''>class CheckStatic extends MiniPhase {
+</span>40 <span style=''>  import ast.tpd._
+</span>41 <span style=''>
+</span>42 <span style=''>  override def phaseName = </span><span style='background: #AEF1AE'>&quot;checkStatic&quot;</span><span style=''>
+</span>43 <span style=''>
+</span>44 <span style=''>  override def transformTemplate(tree: tpd.Template)(implicit ctx: Context): tpd.Tree = {
+</span>45 <span style=''>    val defns = </span><span style='background: #AEF1AE'>tree.body.collect{case t: ValOrDefDef =&gt; t}</span><span style=''>
+</span>46 <span style=''>    var hadNonStaticField = </span><span style='background: #AEF1AE'>false</span><span style=''>
+</span>47 <span style=''>    </span><span style='background: #AEF1AE'>for(defn &lt;- defns) {
+</span>48 <span style=''></span><span style='background: #AEF1AE'>      if (defn.symbol.hasAnnotation(ctx.definitions.ScalaStaticAnnot)) {
+</span>49 <span style=''></span><span style='background: #AEF1AE'>        if(!ctx.owner.is(Module)) {
+</span>50 <span style=''></span><span style='background: #AEF1AE'>          ctx.error(StaticFieldsOnlyAllowedInObjects(defn.symbol), defn.pos)
+</span>51 <span style=''></span><span style='background: #AEF1AE'>        }
+</span>52 <span style=''></span><span style='background: #AEF1AE'>
+</span>53 <span style=''></span><span style='background: #AEF1AE'>        if (defn.isInstanceOf[ValDef] &amp;&amp; hadNonStaticField) {
+</span>54 <span style=''></span><span style='background: #AEF1AE'>          </span><span style='background: #F0ADAD'>ctx.error(&quot;@static fields should preceed non-static ones&quot;, defn.pos)</span><span style='background: #AEF1AE'>
+</span>55 <span style=''></span><span style='background: #AEF1AE'>        }
+</span>56 <span style=''></span><span style='background: #AEF1AE'>
+</span>57 <span style=''></span><span style='background: #AEF1AE'>        val companion = ctx.owner.companionClass
+</span>58 <span style=''></span><span style='background: #AEF1AE'>        def clashes = companion.asClass.membersNamed(defn.name)
+</span>59 <span style=''></span><span style='background: #AEF1AE'>
+</span>60 <span style=''></span><span style='background: #AEF1AE'>        if (!companion.exists) {
+</span>61 <span style=''></span><span style='background: #AEF1AE'>          ctx.error(MissingCompanionForStatic(defn.symbol), defn.pos)
+</span>62 <span style=''></span><span style='background: #AEF1AE'>        } else if (clashes.exists) {
+</span>63 <span style=''></span><span style='background: #AEF1AE'>          </span><span style='background: #F0ADAD'>ctx.error(&quot;companion classes cannot define members with same name as @static member&quot;, defn.pos)</span><span style='background: #AEF1AE'>
+</span>64 <span style=''></span><span style='background: #AEF1AE'>         } else if (defn.symbol.is(Flags.Mutable) &amp;&amp; companion.is(Flags.Trait)) {
+</span>65 <span style=''></span><span style='background: #AEF1AE'>          </span><span style='background: #F0ADAD'>ctx.error(&quot;Companions of traits cannot define mutable @static fields&quot;, defn.pos)</span><span style='background: #AEF1AE'>
+</span>66 <span style=''></span><span style='background: #AEF1AE'>        } else if (defn.symbol.is(Flags.Lazy)) {
+</span>67 <span style=''></span><span style='background: #AEF1AE'>          </span><span style='background: #F0ADAD'>ctx.error(&quot;Lazy @static fields are not supported&quot;, defn.pos)</span><span style='background: #AEF1AE'>
+</span>68 <span style=''></span><span style='background: #AEF1AE'>        } else if (defn.symbol.allOverriddenSymbols.nonEmpty) {
+</span>69 <span style=''></span><span style='background: #AEF1AE'>          ctx.error(&quot;@static members cannot override or implement non-static ones&quot;, defn.pos)
+</span>70 <span style=''></span><span style='background: #AEF1AE'>        }
+</span>71 <span style=''></span><span style='background: #AEF1AE'>      } else hadNonStaticField = hadNonStaticField || defn.isInstanceOf[ValDef]</span><span style=''>
+</span>72 <span style=''>
+</span>73 <span style=''>    }
+</span>74 <span style=''>    tree
+</span>75 <span style=''>  }
+</span>76 <span style=''>
+</span>77 <span style=''>  override def transformSelect(tree: tpd.Select)(implicit ctx: Context): tpd.Tree = {
+</span>78 <span style=''>    if (</span><span style='background: #AEF1AE'>tree.symbol.hasAnnotation(defn.ScalaStaticAnnot)</span><span style=''>) </span><span style='background: #AEF1AE'>{
+</span>79 <span style=''></span><span style='background: #AEF1AE'>      val symbolWhitelist = tree.symbol.ownersIterator.flatMap(x =&gt; if (x.is(Flags.Module)) List(x, x.companionModule) else List(x)).toSet
+</span>80 <span style=''></span><span style='background: #AEF1AE'>      def isSafeQual(t: Tree): Boolean = { // follow the desugared paths created by typer
+</span>81 <span style=''></span><span style='background: #AEF1AE'>        t match {
+</span>82 <span style=''></span><span style='background: #AEF1AE'>          case t: This =&gt; true
+</span>83 <span style=''></span><span style='background: #AEF1AE'>          case t: Select =&gt; isSafeQual(t.qualifier) &amp;&amp; symbolWhitelist.contains(t.symbol)
+</span>84 <span style=''></span><span style='background: #AEF1AE'>          case t: Ident =&gt; </span><span style='background: #F0ADAD'>symbolWhitelist.contains(t.symbol)</span><span style='background: #AEF1AE'>
+</span>85 <span style=''></span><span style='background: #AEF1AE'>          case t: Block =&gt; </span><span style='background: #F0ADAD'>t.stats.forall(tpd.isPureExpr) &amp;&amp; isSafeQual(t.expr)</span><span style='background: #AEF1AE'>
+</span>86 <span style=''></span><span style='background: #AEF1AE'>        }
+</span>87 <span style=''></span><span style='background: #AEF1AE'>      }
+</span>88 <span style=''></span><span style='background: #AEF1AE'>      if (isSafeQual(tree.qualifier))
+</span>89 <span style=''></span><span style='background: #AEF1AE'>        ref(tree.symbol)
+</span>90 <span style=''></span><span style='background: #AEF1AE'>      else </span><span style='background: #F0ADAD'>tree</span><span style='background: #AEF1AE'>
+</span>91 <span style=''></span><span style='background: #AEF1AE'>    }</span><span style=''> else </span><span style='background: #AEF1AE'>tree</span><span style=''>
+</span>92 <span style=''>  }
+</span>93 <span style=''>}
+</span></pre>
+          </div>
+          <div class="tab-pane" id="statementlist">
+            <table cellspacing="0" cellpadding="0" class="table statementlist">
+      <tr>
+        <th>Line</th>
+        <th>Stmt Id</th>
+        <th>Pos</th>
+        <th>Tree</th>
+        <th>Symbol</th>
+        <th>Code</th>
+      </tr><tr>
+        <td>
+          42
+        </td>
+        <td>
+          52957
+        </td>
+        <td>
+          1640
+          -
+          1653
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          &quot;checkStatic&quot;
+        </td>
+      </tr><tr>
+        <td>
+          45
+        </td>
+        <td>
+          52960
+        </td>
+        <td>
+          1761
+          -
+          1804
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          scala.collection.immutable.List.collect
+        </td>
+        <td style="background: #AEF1AE">
+          tree.body(ctx).collect[dotty.tools.dotc.ast.tpd.ValOrDefDef, List[dotty.tools.dotc.ast.tpd.ValOrDefDef]](({
+  @SerialVersionUID(value = 0) final &lt;synthetic&gt; class $anonfun extends scala.runtime.AbstractPartialFunction[dotty.tools.dotc.ast.Trees.Tree[dotty.tools.dotc.core.Types.Type],dotty.tools.dotc.ast.tpd.ValOrDefDef] with Serializable {
+    def &lt;init&gt;(): &lt;$anon: dotty.tools.dotc.ast.Trees.Tree[dotty.tools.dotc.core.Types.Type] =&gt; dotty.tools.dotc.ast.tpd.ValOrDefDef&gt; = {
+      $anonfun.super.&lt;init&gt;();
+      ()
+    };
+    final override def applyOrElse[A1 &lt;: dotty.tools.dotc.ast.Trees.Tree[dotty.tools.dotc.core.Types.Type], B1 &gt;: dotty.tools.dotc.ast.tpd.ValOrDefDef](x1: A1, default: A1 =&gt; B1): B1 = ((x1.asInstanceOf[dotty.tools.dotc.ast.Trees.Tree[dotty.tools.dotc.core.Types.Type]]: dotty.tools.dotc.ast.Trees.Tree[dotty.tools.dotc.core.Types.Type]): dotty.tools.dotc.ast.Trees.Tree[dotty.tools.dotc.core.Types.Type] @unchecked) match {
+      case (t @ (_: dotty.tools.dotc.ast.tpd.ValOrDefDef)) =&gt; t
+      case (defaultCase$ @ _) =&gt; default.apply(x1)
+    };
+    final def isDefinedAt(x1: dotty.tools.dotc.ast.Trees.Tree[dotty.tools.dotc.core.Types.Type]): Boolean = ((x1.asInstanceOf[dotty.tools.dotc.ast.Trees.Tree[dotty.tools.dotc.core.Types.Type]]: dotty.tools.dotc.ast.Trees.Tree[dotty.tools.dotc.core.Types.Type]): dotty.tools.dotc.ast.Trees.Tree[dotty.tools.dotc.core.Types.Type] @unchecked) match {
+      case (t @ (_: dotty.tools.dotc.ast.tpd.ValOrDefDef)) =&gt; true
+      case (defaultCase$ @ _) =&gt; false
+    }
+  };
+  new $anonfun()
+}: PartialFunction[dotty.tools.dotc.ast.Trees.Tree[dotty.tools.dotc.core.Types.Type],dotty.tools.dotc.ast.tpd.ValOrDefDef]))(immutable.this.List.canBuildFrom[dotty.tools.dotc.ast.tpd.ValOrDefDef])
+        </td>
+      </tr><tr>
+        <td>
+          45
+        </td>
+        <td>
+          52959
+        </td>
+        <td>
+          1778
+          -
+          1778
+        </td>
+        <td>
+          TypeApply
+        </td>
+        <td>
+          scala.collection.immutable.List.canBuildFrom
+        </td>
+        <td style="background: #AEF1AE">
+          immutable.this.List.canBuildFrom[dotty.tools.dotc.ast.tpd.ValOrDefDef]
+        </td>
+      </tr><tr>
+        <td>
+          45
+        </td>
+        <td>
+          52958
+        </td>
+        <td>
+          1778
+          -
+          1778
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.transform.CheckStatic.$anonfun.&lt;init&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          new $anonfun()
+        </td>
+      </tr><tr>
+        <td>
+          46
+        </td>
+        <td>
+          52961
+        </td>
+        <td>
+          1833
+          -
+          1838
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          false
+        </td>
+      </tr><tr>
+        <td>
+          47
+        </td>
+        <td>
+          53020
+        </td>
+        <td>
+          1843
+          -
+          3113
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.immutable.List.foreach
+        </td>
+        <td style="background: #AEF1AE">
+          defns.foreach[Unit](((defn: dotty.tools.dotc.ast.tpd.ValOrDefDef) =&gt; if (core.Symbols.toDenot(defn.symbol(ctx))(ctx).hasAnnotation(Contexts.this.Context.toBase(ctx).definitions.ScalaStaticAnnot(ctx))(ctx))
+  {
+    if (core.Symbols.toDenot(ctx.owner)(ctx).is(core.Flags.Module)(ctx).unary_!)
+      ctx.error(reporting.diagnostic.messages.StaticFieldsOnlyAllowedInObjects.apply(defn.symbol(ctx))(ctx), core.Decorators.sourcePos(defn.pos)(ctx))
+    else
+      ();
+    if (defn.isInstanceOf[dotty.tools.dotc.ast.tpd.ValDef].&amp;&amp;(hadNonStaticField))
+      ctx.error(diagnostic.this.Message.toNoExplanation(&quot;@static fields should preceed non-static ones&quot;), core.Decorators.sourcePos(defn.pos)(ctx))
+    else
+      ();
+    val companion: dotty.tools.dotc.core.Symbols.Symbol = core.Symbols.toDenot(ctx.owner)(ctx).companionClass(ctx);
+    def clashes: dotty.tools.dotc.core.Denotations.PreDenotation = core.Symbols.toClassDenot(companion.asClass)(ctx).membersNamed(defn.name)(ctx);
+    if (core.Symbols.toDenot(companion)(ctx).exists.unary_!)
+      ctx.error(reporting.diagnostic.messages.MissingCompanionForStatic.apply(defn.symbol(ctx))(ctx), core.Decorators.sourcePos(defn.pos)(ctx))
+    else
+      if (clashes.exists)
+        ctx.error(diagnostic.this.Message.toNoExplanation(&quot;companion classes cannot define members with same name as @static member&quot;), core.Decorators.sourcePos(defn.pos)(ctx))
+      else
+        if (core.Symbols.toDenot(defn.symbol(ctx))(ctx).is(core.Flags.Mutable)(ctx).&amp;&amp;(core.Symbols.toDenot(companion)(ctx).is(core.Flags.Trait)(ctx)))
+          ctx.error(diagnostic.this.Message.toNoExplanation(&quot;Companions of traits cannot define mutable @static fields&quot;), core.Decorators.sourcePos(defn.pos)(ctx))
+        else
+          if (core.Symbols.toDenot(defn.symbol(ctx))(ctx).is(core.Flags.Lazy)(ctx))
+            ctx.error(diagnostic.this.Message.toNoExplanation(&quot;Lazy @static fields are not supported&quot;), core.Decorators.sourcePos(defn.pos)(ctx))
+          else
+            if (core.Symbols.toDenot(defn.symbol(ctx))(ctx).allOverriddenSymbols(ctx).nonEmpty)
+              ctx.error(diagnostic.this.Message.toNoExplanation(&quot;@static members cannot override or implement non-static ones&quot;), core.Decorators.sourcePos(defn.pos)(ctx))
+            else
+              ()
+  }
+else
+  hadNonStaticField = hadNonStaticField.||(defn.isInstanceOf[dotty.tools.dotc.ast.tpd.ValDef])))
+        </td>
+      </tr><tr>
+        <td>
+          48
+        </td>
+        <td>
+          52962
+        </td>
+        <td>
+          1874
+          -
+          1933
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.SymDenotations.SymDenotation.hasAnnotation
+        </td>
+        <td style="background: #AEF1AE">
+          core.Symbols.toDenot(defn.symbol(ctx))(ctx).hasAnnotation(Contexts.this.Context.toBase(ctx).definitions.ScalaStaticAnnot(ctx))(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          48
+        </td>
+        <td>
+          53016
+        </td>
+        <td>
+          1935
+          -
+          3041
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          {
+  if (core.Symbols.toDenot(ctx.owner)(ctx).is(core.Flags.Module)(ctx).unary_!)
+    ctx.error(reporting.diagnostic.messages.StaticFieldsOnlyAllowedInObjects.apply(defn.symbol(ctx))(ctx), core.Decorators.sourcePos(defn.pos)(ctx))
+  else
+    ();
+  if (defn.isInstanceOf[dotty.tools.dotc.ast.tpd.ValDef].&amp;&amp;(hadNonStaticField))
+    ctx.error(diagnostic.this.Message.toNoExplanation(&quot;@static fields should preceed non-static ones&quot;), core.Decorators.sourcePos(defn.pos)(ctx))
+  else
+    ();
+  val companion: dotty.tools.dotc.core.Symbols.Symbol = core.Symbols.toDenot(ctx.owner)(ctx).companionClass(ctx);
+  def clashes: dotty.tools.dotc.core.Denotations.PreDenotation = core.Symbols.toClassDenot(companion.asClass)(ctx).membersNamed(defn.name)(ctx);
+  if (core.Symbols.toDenot(companion)(ctx).exists.unary_!)
+    ctx.error(reporting.diagnostic.messages.MissingCompanionForStatic.apply(defn.symbol(ctx))(ctx), core.Decorators.sourcePos(defn.pos)(ctx))
+  else
+    if (clashes.exists)
+      ctx.error(diagnostic.this.Message.toNoExplanation(&quot;companion classes cannot define members with same name as @static member&quot;), core.Decorators.sourcePos(defn.pos)(ctx))
+    else
+      if (core.Symbols.toDenot(defn.symbol(ctx))(ctx).is(core.Flags.Mutable)(ctx).&amp;&amp;(core.Symbols.toDenot(companion)(ctx).is(core.Flags.Trait)(ctx)))
+        ctx.error(diagnostic.this.Message.toNoExplanation(&quot;Companions of traits cannot define mutable @static fields&quot;), core.Decorators.sourcePos(defn.pos)(ctx))
+      else
+        if (core.Symbols.toDenot(defn.symbol(ctx))(ctx).is(core.Flags.Lazy)(ctx))
+          ctx.error(diagnostic.this.Message.toNoExplanation(&quot;Lazy @static fields are not supported&quot;), core.Decorators.sourcePos(defn.pos)(ctx))
+        else
+          if (core.Symbols.toDenot(defn.symbol(ctx))(ctx).allOverriddenSymbols(ctx).nonEmpty)
+            ctx.error(diagnostic.this.Message.toNoExplanation(&quot;@static members cannot override or implement non-static ones&quot;), core.Decorators.sourcePos(defn.pos)(ctx))
+          else
+            ()
+}
+        </td>
+      </tr><tr>
+        <td>
+          49
+        </td>
+        <td>
+          52963
+        </td>
+        <td>
+          1949
+          -
+          1958
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Contexts.Context.owner
+        </td>
+        <td style="background: #AEF1AE">
+          ctx.owner
+        </td>
+      </tr><tr>
+        <td>
+          49
+        </td>
+        <td>
+          52971
+        </td>
+        <td>
+          1945
+          -
+          1945
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          ()
+        </td>
+      </tr><tr>
+        <td>
+          49
+        </td>
+        <td>
+          52965
+        </td>
+        <td>
+          1948
+          -
+          1969
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.Boolean.unary_!
+        </td>
+        <td style="background: #AEF1AE">
+          core.Symbols.toDenot(ctx.owner)(ctx).is(core.Flags.Module)(ctx).unary_!
+        </td>
+      </tr><tr>
+        <td>
+          49
+        </td>
+        <td>
+          52970
+        </td>
+        <td>
+          1945
+          -
+          1945
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          ()
+        </td>
+      </tr><tr>
+        <td>
+          49
+        </td>
+        <td>
+          52964
+        </td>
+        <td>
+          1962
+          -
+          1968
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Flags.Module
+        </td>
+        <td style="background: #AEF1AE">
+          core.Flags.Module
+        </td>
+      </tr><tr>
+        <td>
+          50
+        </td>
+        <td>
+          52966
+        </td>
+        <td>
+          1993
+          -
+          2038
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.reporting.diagnostic.messages.StaticFieldsOnlyAllowedInObjects.apply
+        </td>
+        <td style="background: #AEF1AE">
+          reporting.diagnostic.messages.StaticFieldsOnlyAllowedInObjects.apply(defn.symbol(ctx))(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          50
+        </td>
+        <td>
+          52969
+        </td>
+        <td>
+          1983
+          -
+          2049
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          dotty.tools.dotc.reporting.Reporting.error
+        </td>
+        <td style="background: #AEF1AE">
+          ctx.error(reporting.diagnostic.messages.StaticFieldsOnlyAllowedInObjects.apply(defn.symbol(ctx))(ctx), core.Decorators.sourcePos(defn.pos)(ctx))
+        </td>
+      </tr><tr>
+        <td>
+          50
+        </td>
+        <td>
+          52968
+        </td>
+        <td>
+          1983
+          -
+          2049
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.reporting.Reporting.error
+        </td>
+        <td style="background: #AEF1AE">
+          ctx.error(reporting.diagnostic.messages.StaticFieldsOnlyAllowedInObjects.apply(defn.symbol(ctx))(ctx), core.Decorators.sourcePos(defn.pos)(ctx))
+        </td>
+      </tr><tr>
+        <td>
+          50
+        </td>
+        <td>
+          52967
+        </td>
+        <td>
+          2040
+          -
+          2048
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.Decorators.sourcePos
+        </td>
+        <td style="background: #AEF1AE">
+          core.Decorators.sourcePos(defn.pos)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          53
+        </td>
+        <td>
+          52972
+        </td>
+        <td>
+          2073
+          -
+          2119
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Boolean.&amp;&amp;
+        </td>
+        <td style="background: #AEF1AE">
+          defn.isInstanceOf[dotty.tools.dotc.ast.tpd.ValDef].&amp;&amp;(hadNonStaticField)
+        </td>
+      </tr><tr>
+        <td>
+          53
+        </td>
+        <td>
+          52978
+        </td>
+        <td>
+          2069
+          -
+          2069
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          ()
+        </td>
+      </tr><tr>
+        <td>
+          53
+        </td>
+        <td>
+          52977
+        </td>
+        <td>
+          2069
+          -
+          2069
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          ()
+        </td>
+      </tr><tr>
+        <td>
+          54
+        </td>
+        <td>
+          52975
+        </td>
+        <td>
+          2133
+          -
+          2201
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.reporting.Reporting.error
+        </td>
+        <td style="background: #F0ADAD">
+          ctx.error(diagnostic.this.Message.toNoExplanation(&quot;@static fields should preceed non-static ones&quot;), core.Decorators.sourcePos(defn.pos)(ctx))
+        </td>
+      </tr><tr>
+        <td>
+          54
+        </td>
+        <td>
+          52974
+        </td>
+        <td>
+          2192
+          -
+          2200
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.Decorators.sourcePos
+        </td>
+        <td style="background: #F0ADAD">
+          core.Decorators.sourcePos(defn.pos)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          54
+        </td>
+        <td>
+          52976
+        </td>
+        <td>
+          2133
+          -
+          2201
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          dotty.tools.dotc.reporting.Reporting.error
+        </td>
+        <td style="background: #F0ADAD">
+          ctx.error(diagnostic.this.Message.toNoExplanation(&quot;@static fields should preceed non-static ones&quot;), core.Decorators.sourcePos(defn.pos)(ctx))
+        </td>
+      </tr><tr>
+        <td>
+          54
+        </td>
+        <td>
+          52973
+        </td>
+        <td>
+          2143
+          -
+          2190
+        </td>
+        <td>
+          ApplyImplicitView
+        </td>
+        <td>
+          dotty.tools.dotc.reporting.diagnostic.Message.toNoExplanation
+        </td>
+        <td style="background: #F0ADAD">
+          diagnostic.this.Message.toNoExplanation(&quot;@static fields should preceed non-static ones&quot;)
+        </td>
+      </tr><tr>
+        <td>
+          57
+        </td>
+        <td>
+          52979
+        </td>
+        <td>
+          2237
+          -
+          2261
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.SymDenotations.SymDenotation.companionClass
+        </td>
+        <td style="background: #AEF1AE">
+          core.Symbols.toDenot(ctx.owner)(ctx).companionClass(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          58
+        </td>
+        <td>
+          52980
+        </td>
+        <td>
+          2284
+          -
+          2325
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.SymDenotations.ClassDenotation.membersNamed
+        </td>
+        <td style="background: #AEF1AE">
+          core.Symbols.toClassDenot(companion.asClass)(ctx).membersNamed(defn.name)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          60
+        </td>
+        <td>
+          52981
+        </td>
+        <td>
+          2339
+          -
+          2356
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.Boolean.unary_!
+        </td>
+        <td style="background: #AEF1AE">
+          core.Symbols.toDenot(companion)(ctx).exists.unary_!
+        </td>
+      </tr><tr>
+        <td>
+          61
+        </td>
+        <td>
+          52984
+        </td>
+        <td>
+          2370
+          -
+          2429
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.reporting.Reporting.error
+        </td>
+        <td style="background: #AEF1AE">
+          ctx.error(reporting.diagnostic.messages.MissingCompanionForStatic.apply(defn.symbol(ctx))(ctx), core.Decorators.sourcePos(defn.pos)(ctx))
+        </td>
+      </tr><tr>
+        <td>
+          61
+        </td>
+        <td>
+          52983
+        </td>
+        <td>
+          2420
+          -
+          2428
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.Decorators.sourcePos
+        </td>
+        <td style="background: #AEF1AE">
+          core.Decorators.sourcePos(defn.pos)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          61
+        </td>
+        <td>
+          52985
+        </td>
+        <td>
+          2370
+          -
+          2429
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          dotty.tools.dotc.reporting.Reporting.error
+        </td>
+        <td style="background: #AEF1AE">
+          ctx.error(reporting.diagnostic.messages.MissingCompanionForStatic.apply(defn.symbol(ctx))(ctx), core.Decorators.sourcePos(defn.pos)(ctx))
+        </td>
+      </tr><tr>
+        <td>
+          61
+        </td>
+        <td>
+          52982
+        </td>
+        <td>
+          2380
+          -
+          2418
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.reporting.diagnostic.messages.MissingCompanionForStatic.apply
+        </td>
+        <td style="background: #AEF1AE">
+          reporting.diagnostic.messages.MissingCompanionForStatic.apply(defn.symbol(ctx))(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          62
+        </td>
+        <td>
+          52986
+        </td>
+        <td>
+          2449
+          -
+          2463
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Denotations.PreDenotation.exists
+        </td>
+        <td style="background: #AEF1AE">
+          clashes.exists
+        </td>
+      </tr><tr>
+        <td>
+          62
+        </td>
+        <td>
+          53015
+        </td>
+        <td>
+          2445
+          -
+          3033
+        </td>
+        <td>
+          If
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          if (clashes.exists)
+  ctx.error(diagnostic.this.Message.toNoExplanation(&quot;companion classes cannot define members with same name as @static member&quot;), core.Decorators.sourcePos(defn.pos)(ctx))
+else
+  if (core.Symbols.toDenot(defn.symbol(ctx))(ctx).is(core.Flags.Mutable)(ctx).&amp;&amp;(core.Symbols.toDenot(companion)(ctx).is(core.Flags.Trait)(ctx)))
+    ctx.error(diagnostic.this.Message.toNoExplanation(&quot;Companions of traits cannot define mutable @static fields&quot;), core.Decorators.sourcePos(defn.pos)(ctx))
+  else
+    if (core.Symbols.toDenot(defn.symbol(ctx))(ctx).is(core.Flags.Lazy)(ctx))
+      ctx.error(diagnostic.this.Message.toNoExplanation(&quot;Lazy @static fields are not supported&quot;), core.Decorators.sourcePos(defn.pos)(ctx))
+    else
+      if (core.Symbols.toDenot(defn.symbol(ctx))(ctx).allOverriddenSymbols(ctx).nonEmpty)
+        ctx.error(diagnostic.this.Message.toNoExplanation(&quot;@static members cannot override or implement non-static ones&quot;), core.Decorators.sourcePos(defn.pos)(ctx))
+      else
+        ()
+        </td>
+      </tr><tr>
+        <td>
+          63
+        </td>
+        <td>
+          52990
+        </td>
+        <td>
+          2477
+          -
+          2572
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          dotty.tools.dotc.reporting.Reporting.error
+        </td>
+        <td style="background: #F0ADAD">
+          ctx.error(diagnostic.this.Message.toNoExplanation(&quot;companion classes cannot define members with same name as @static member&quot;), core.Decorators.sourcePos(defn.pos)(ctx))
+        </td>
+      </tr><tr>
+        <td>
+          63
+        </td>
+        <td>
+          52987
+        </td>
+        <td>
+          2487
+          -
+          2561
+        </td>
+        <td>
+          ApplyImplicitView
+        </td>
+        <td>
+          dotty.tools.dotc.reporting.diagnostic.Message.toNoExplanation
+        </td>
+        <td style="background: #F0ADAD">
+          diagnostic.this.Message.toNoExplanation(&quot;companion classes cannot define members with same name as @static member&quot;)
+        </td>
+      </tr><tr>
+        <td>
+          63
+        </td>
+        <td>
+          52989
+        </td>
+        <td>
+          2477
+          -
+          2572
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.reporting.Reporting.error
+        </td>
+        <td style="background: #F0ADAD">
+          ctx.error(diagnostic.this.Message.toNoExplanation(&quot;companion classes cannot define members with same name as @static member&quot;), core.Decorators.sourcePos(defn.pos)(ctx))
+        </td>
+      </tr><tr>
+        <td>
+          63
+        </td>
+        <td>
+          52988
+        </td>
+        <td>
+          2563
+          -
+          2571
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.Decorators.sourcePos
+        </td>
+        <td style="background: #F0ADAD">
+          core.Decorators.sourcePos(defn.pos)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          64
+        </td>
+        <td>
+          52993
+        </td>
+        <td>
+          2626
+          -
+          2651
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.SymDenotations.SymDenotation.is
+        </td>
+        <td style="background: #AEF1AE">
+          core.Symbols.toDenot(companion)(ctx).is(core.Flags.Trait)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          64
+        </td>
+        <td>
+          53014
+        </td>
+        <td>
+          2589
+          -
+          3033
+        </td>
+        <td>
+          If
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          if (core.Symbols.toDenot(defn.symbol(ctx))(ctx).is(core.Flags.Mutable)(ctx).&amp;&amp;(core.Symbols.toDenot(companion)(ctx).is(core.Flags.Trait)(ctx)))
+  ctx.error(diagnostic.this.Message.toNoExplanation(&quot;Companions of traits cannot define mutable @static fields&quot;), core.Decorators.sourcePos(defn.pos)(ctx))
+else
+  if (core.Symbols.toDenot(defn.symbol(ctx))(ctx).is(core.Flags.Lazy)(ctx))
+    ctx.error(diagnostic.this.Message.toNoExplanation(&quot;Lazy @static fields are not supported&quot;), core.Decorators.sourcePos(defn.pos)(ctx))
+  else
+    if (core.Symbols.toDenot(defn.symbol(ctx))(ctx).allOverriddenSymbols(ctx).nonEmpty)
+      ctx.error(diagnostic.this.Message.toNoExplanation(&quot;@static members cannot override or implement non-static ones&quot;), core.Decorators.sourcePos(defn.pos)(ctx))
+    else
+      ()
+        </td>
+      </tr><tr>
+        <td>
+          64
+        </td>
+        <td>
+          52992
+        </td>
+        <td>
+          2608
+          -
+          2621
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Flags.Mutable
+        </td>
+        <td style="background: #AEF1AE">
+          core.Flags.Mutable
+        </td>
+      </tr><tr>
+        <td>
+          64
+        </td>
+        <td>
+          52994
+        </td>
+        <td>
+          2593
+          -
+          2651
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Boolean.&amp;&amp;
+        </td>
+        <td style="background: #AEF1AE">
+          core.Symbols.toDenot(defn.symbol(ctx))(ctx).is(core.Flags.Mutable)(ctx).&amp;&amp;(core.Symbols.toDenot(companion)(ctx).is(core.Flags.Trait)(ctx))
+        </td>
+      </tr><tr>
+        <td>
+          64
+        </td>
+        <td>
+          52991
+        </td>
+        <td>
+          2593
+          -
+          2604
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Trees.Tree.symbol
+        </td>
+        <td style="background: #AEF1AE">
+          defn.symbol(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          65
+        </td>
+        <td>
+          52996
+        </td>
+        <td>
+          2736
+          -
+          2744
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.Decorators.sourcePos
+        </td>
+        <td style="background: #F0ADAD">
+          core.Decorators.sourcePos(defn.pos)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          65
+        </td>
+        <td>
+          52995
+        </td>
+        <td>
+          2675
+          -
+          2734
+        </td>
+        <td>
+          ApplyImplicitView
+        </td>
+        <td>
+          dotty.tools.dotc.reporting.diagnostic.Message.toNoExplanation
+        </td>
+        <td style="background: #F0ADAD">
+          diagnostic.this.Message.toNoExplanation(&quot;Companions of traits cannot define mutable @static fields&quot;)
+        </td>
+      </tr><tr>
+        <td>
+          65
+        </td>
+        <td>
+          52998
+        </td>
+        <td>
+          2665
+          -
+          2745
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          dotty.tools.dotc.reporting.Reporting.error
+        </td>
+        <td style="background: #F0ADAD">
+          ctx.error(diagnostic.this.Message.toNoExplanation(&quot;Companions of traits cannot define mutable @static fields&quot;), core.Decorators.sourcePos(defn.pos)(ctx))
+        </td>
+      </tr><tr>
+        <td>
+          65
+        </td>
+        <td>
+          52997
+        </td>
+        <td>
+          2665
+          -
+          2745
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.reporting.Reporting.error
+        </td>
+        <td style="background: #F0ADAD">
+          ctx.error(diagnostic.this.Message.toNoExplanation(&quot;Companions of traits cannot define mutable @static fields&quot;), core.Decorators.sourcePos(defn.pos)(ctx))
+        </td>
+      </tr><tr>
+        <td>
+          66
+        </td>
+        <td>
+          52999
+        </td>
+        <td>
+          2765
+          -
+          2791
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.SymDenotations.SymDenotation.is
+        </td>
+        <td style="background: #AEF1AE">
+          core.Symbols.toDenot(defn.symbol(ctx))(ctx).is(core.Flags.Lazy)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          66
+        </td>
+        <td>
+          53013
+        </td>
+        <td>
+          2761
+          -
+          3033
+        </td>
+        <td>
+          If
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          if (core.Symbols.toDenot(defn.symbol(ctx))(ctx).is(core.Flags.Lazy)(ctx))
+  ctx.error(diagnostic.this.Message.toNoExplanation(&quot;Lazy @static fields are not supported&quot;), core.Decorators.sourcePos(defn.pos)(ctx))
+else
+  if (core.Symbols.toDenot(defn.symbol(ctx))(ctx).allOverriddenSymbols(ctx).nonEmpty)
+    ctx.error(diagnostic.this.Message.toNoExplanation(&quot;@static members cannot override or implement non-static ones&quot;), core.Decorators.sourcePos(defn.pos)(ctx))
+  else
+    ()
+        </td>
+      </tr><tr>
+        <td>
+          67
+        </td>
+        <td>
+          53002
+        </td>
+        <td>
+          2805
+          -
+          2865
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.reporting.Reporting.error
+        </td>
+        <td style="background: #F0ADAD">
+          ctx.error(diagnostic.this.Message.toNoExplanation(&quot;Lazy @static fields are not supported&quot;), core.Decorators.sourcePos(defn.pos)(ctx))
+        </td>
+      </tr><tr>
+        <td>
+          67
+        </td>
+        <td>
+          53001
+        </td>
+        <td>
+          2856
+          -
+          2864
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.Decorators.sourcePos
+        </td>
+        <td style="background: #F0ADAD">
+          core.Decorators.sourcePos(defn.pos)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          67
+        </td>
+        <td>
+          53000
+        </td>
+        <td>
+          2815
+          -
+          2854
+        </td>
+        <td>
+          ApplyImplicitView
+        </td>
+        <td>
+          dotty.tools.dotc.reporting.diagnostic.Message.toNoExplanation
+        </td>
+        <td style="background: #F0ADAD">
+          diagnostic.this.Message.toNoExplanation(&quot;Lazy @static fields are not supported&quot;)
+        </td>
+      </tr><tr>
+        <td>
+          67
+        </td>
+        <td>
+          53003
+        </td>
+        <td>
+          2805
+          -
+          2865
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          dotty.tools.dotc.reporting.Reporting.error
+        </td>
+        <td style="background: #F0ADAD">
+          ctx.error(diagnostic.this.Message.toNoExplanation(&quot;Lazy @static fields are not supported&quot;), core.Decorators.sourcePos(defn.pos)(ctx))
+        </td>
+      </tr><tr>
+        <td>
+          68
+        </td>
+        <td>
+          53011
+        </td>
+        <td>
+          2881
+          -
+          2881
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          ()
+        </td>
+      </tr><tr>
+        <td>
+          68
+        </td>
+        <td>
+          53005
+        </td>
+        <td>
+          2885
+          -
+          2926
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.collection.TraversableOnce.nonEmpty
+        </td>
+        <td style="background: #AEF1AE">
+          core.Symbols.toDenot(defn.symbol(ctx))(ctx).allOverriddenSymbols(ctx).nonEmpty
+        </td>
+      </tr><tr>
+        <td>
+          68
+        </td>
+        <td>
+          53004
+        </td>
+        <td>
+          2885
+          -
+          2896
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Trees.Tree.symbol
+        </td>
+        <td style="background: #AEF1AE">
+          defn.symbol(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          68
+        </td>
+        <td>
+          53010
+        </td>
+        <td>
+          2881
+          -
+          2881
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          ()
+        </td>
+      </tr><tr>
+        <td>
+          68
+        </td>
+        <td>
+          53012
+        </td>
+        <td>
+          2881
+          -
+          3033
+        </td>
+        <td>
+          If
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          if (core.Symbols.toDenot(defn.symbol(ctx))(ctx).allOverriddenSymbols(ctx).nonEmpty)
+  ctx.error(diagnostic.this.Message.toNoExplanation(&quot;@static members cannot override or implement non-static ones&quot;), core.Decorators.sourcePos(defn.pos)(ctx))
+else
+  ()
+        </td>
+      </tr><tr>
+        <td>
+          69
+        </td>
+        <td>
+          53008
+        </td>
+        <td>
+          2940
+          -
+          3023
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.reporting.Reporting.error
+        </td>
+        <td style="background: #AEF1AE">
+          ctx.error(diagnostic.this.Message.toNoExplanation(&quot;@static members cannot override or implement non-static ones&quot;), core.Decorators.sourcePos(defn.pos)(ctx))
+        </td>
+      </tr><tr>
+        <td>
+          69
+        </td>
+        <td>
+          53007
+        </td>
+        <td>
+          3014
+          -
+          3022
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.Decorators.sourcePos
+        </td>
+        <td style="background: #AEF1AE">
+          core.Decorators.sourcePos(defn.pos)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          69
+        </td>
+        <td>
+          53009
+        </td>
+        <td>
+          2940
+          -
+          3023
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          dotty.tools.dotc.reporting.Reporting.error
+        </td>
+        <td style="background: #AEF1AE">
+          ctx.error(diagnostic.this.Message.toNoExplanation(&quot;@static members cannot override or implement non-static ones&quot;), core.Decorators.sourcePos(defn.pos)(ctx))
+        </td>
+      </tr><tr>
+        <td>
+          69
+        </td>
+        <td>
+          53006
+        </td>
+        <td>
+          2950
+          -
+          3012
+        </td>
+        <td>
+          ApplyImplicitView
+        </td>
+        <td>
+          dotty.tools.dotc.reporting.diagnostic.Message.toNoExplanation
+        </td>
+        <td style="background: #AEF1AE">
+          diagnostic.this.Message.toNoExplanation(&quot;@static members cannot override or implement non-static ones&quot;)
+        </td>
+      </tr><tr>
+        <td>
+          71
+        </td>
+        <td>
+          53017
+        </td>
+        <td>
+          3088
+          -
+          3113
+        </td>
+        <td>
+          TypeApply
+        </td>
+        <td>
+          scala.Any.isInstanceOf
+        </td>
+        <td style="background: #AEF1AE">
+          defn.isInstanceOf[dotty.tools.dotc.ast.tpd.ValDef]
+        </td>
+      </tr><tr>
+        <td>
+          71
+        </td>
+        <td>
+          53019
+        </td>
+        <td>
+          3047
+          -
+          3113
+        </td>
+        <td>
+          Assign
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          hadNonStaticField = hadNonStaticField.||(defn.isInstanceOf[dotty.tools.dotc.ast.tpd.ValDef])
+        </td>
+      </tr><tr>
+        <td>
+          71
+        </td>
+        <td>
+          53018
+        </td>
+        <td>
+          3067
+          -
+          3113
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Boolean.||
+        </td>
+        <td style="background: #AEF1AE">
+          hadNonStaticField.||(defn.isInstanceOf[dotty.tools.dotc.ast.tpd.ValDef])
+        </td>
+      </tr><tr>
+        <td>
+          78
+        </td>
+        <td>
+          53046
+        </td>
+        <td>
+          3279
+          -
+          3893
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          {
+  val symbolWhitelist: scala.collection.immutable.Set[dotty.tools.dotc.core.Symbols.Symbol] = core.Symbols.toDenot(tree.symbol(ctx))(ctx).ownersIterator(ctx).flatMap[dotty.tools.dotc.core.Symbols.Symbol](((x: dotty.tools.dotc.core.Symbols.Symbol) =&gt; if (core.Symbols.toDenot(x)(ctx).is(core.Flags.Module)(ctx))
+  scala.collection.immutable.List.apply[dotty.tools.dotc.core.Symbols.Symbol](x, core.Symbols.toDenot(x)(ctx).companionModule(ctx))
+else
+  scala.collection.immutable.List.apply[dotty.tools.dotc.core.Symbols.Symbol](x))).toSet[dotty.tools.dotc.core.Symbols.Symbol];
+  def isSafeQual(t: dotty.tools.dotc.ast.tpd.Tree): Boolean = t match {
+    case (t @ (_: dotty.tools.dotc.ast.tpd.This)) =&gt; true
+    case (t @ (_: dotty.tools.dotc.ast.tpd.Select)) =&gt; isSafeQual(t.qualifier).&amp;&amp;(symbolWhitelist.contains(t.symbol(ctx)))
+    case (t @ (_: dotty.tools.dotc.ast.tpd.Ident)) =&gt; symbolWhitelist.contains(t.symbol(ctx))
+    case (t @ (_: dotty.tools.dotc.ast.tpd.Block)) =&gt; t.stats.forall({
+  ((tree: dotty.tools.dotc.ast.tpd.Tree) =&gt; dotty.tools.dotc.ast.tpd.isPureExpr(tree)(ctx))
+}).&amp;&amp;(isSafeQual(t.expr))
+  };
+  if (isSafeQual(tree.qualifier))
+    ast.tpd.ref(tree.symbol(ctx))(ctx)
+  else
+    tree
+}
+        </td>
+      </tr><tr>
+        <td>
+          78
+        </td>
+        <td>
+          53021
+        </td>
+        <td>
+          3229
+          -
+          3277
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.SymDenotations.SymDenotation.hasAnnotation
+        </td>
+        <td style="background: #AEF1AE">
+          core.Symbols.toDenot(tree.symbol(ctx))(ctx).hasAnnotation(core.Symbols.defn(ctx).ScalaStaticAnnot(ctx))(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          79
+        </td>
+        <td>
+          53026
+        </td>
+        <td>
+          3373
+          -
+          3399
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          scala.collection.immutable.List.apply
+        </td>
+        <td style="background: #AEF1AE">
+          scala.collection.immutable.List.apply[dotty.tools.dotc.core.Symbols.Symbol](x, core.Symbols.toDenot(x)(ctx).companionModule(ctx))
+        </td>
+      </tr><tr>
+        <td>
+          79
+        </td>
+        <td>
+          53029
+        </td>
+        <td>
+          3309
+          -
+          3419
+        </td>
+        <td>
+          TypeApply
+        </td>
+        <td>
+          scala.collection.TraversableOnce.toSet
+        </td>
+        <td style="background: #AEF1AE">
+          core.Symbols.toDenot(tree.symbol(ctx))(ctx).ownersIterator(ctx).flatMap[dotty.tools.dotc.core.Symbols.Symbol](((x: dotty.tools.dotc.core.Symbols.Symbol) =&gt; if (core.Symbols.toDenot(x)(ctx).is(core.Flags.Module)(ctx))
+  scala.collection.immutable.List.apply[dotty.tools.dotc.core.Symbols.Symbol](x, core.Symbols.toDenot(x)(ctx).companionModule(ctx))
+else
+  scala.collection.immutable.List.apply[dotty.tools.dotc.core.Symbols.Symbol](x))).toSet[dotty.tools.dotc.core.Symbols.Symbol]
+        </td>
+      </tr><tr>
+        <td>
+          79
+        </td>
+        <td>
+          53022
+        </td>
+        <td>
+          3309
+          -
+          3320
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Trees.Tree.symbol
+        </td>
+        <td style="background: #AEF1AE">
+          tree.symbol(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          79
+        </td>
+        <td>
+          53025
+        </td>
+        <td>
+          3373
+          -
+          3399
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.immutable.List.apply
+        </td>
+        <td style="background: #AEF1AE">
+          scala.collection.immutable.List.apply[dotty.tools.dotc.core.Symbols.Symbol](x, core.Symbols.toDenot(x)(ctx).companionModule(ctx))
+        </td>
+      </tr><tr>
+        <td>
+          79
+        </td>
+        <td>
+          53028
+        </td>
+        <td>
+          3405
+          -
+          3412
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          scala.collection.immutable.List.apply
+        </td>
+        <td style="background: #AEF1AE">
+          scala.collection.immutable.List.apply[dotty.tools.dotc.core.Symbols.Symbol](x)
+        </td>
+      </tr><tr>
+        <td>
+          79
+        </td>
+        <td>
+          53027
+        </td>
+        <td>
+          3405
+          -
+          3412
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.immutable.List.apply
+        </td>
+        <td style="background: #AEF1AE">
+          scala.collection.immutable.List.apply[dotty.tools.dotc.core.Symbols.Symbol](x)
+        </td>
+      </tr><tr>
+        <td>
+          79
+        </td>
+        <td>
+          53024
+        </td>
+        <td>
+          3381
+          -
+          3398
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.SymDenotations.SymDenotation.companionModule
+        </td>
+        <td style="background: #AEF1AE">
+          core.Symbols.toDenot(x)(ctx).companionModule(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          79
+        </td>
+        <td>
+          53023
+        </td>
+        <td>
+          3353
+          -
+          3371
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.SymDenotations.SymDenotation.is
+        </td>
+        <td style="background: #AEF1AE">
+          core.Symbols.toDenot(x)(ctx).is(core.Flags.Module)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          82
+        </td>
+        <td>
+          53030
+        </td>
+        <td>
+          3554
+          -
+          3558
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          true
+        </td>
+      </tr><tr>
+        <td>
+          83
+        </td>
+        <td>
+          53031
+        </td>
+        <td>
+          3598
+          -
+          3609
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Trees.Select.qualifier
+        </td>
+        <td style="background: #AEF1AE">
+          t.qualifier
+        </td>
+      </tr><tr>
+        <td>
+          83
+        </td>
+        <td>
+          53034
+        </td>
+        <td>
+          3587
+          -
+          3648
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Boolean.&amp;&amp;
+        </td>
+        <td style="background: #AEF1AE">
+          isSafeQual(t.qualifier).&amp;&amp;(symbolWhitelist.contains(t.symbol(ctx)))
+        </td>
+      </tr><tr>
+        <td>
+          83
+        </td>
+        <td>
+          53033
+        </td>
+        <td>
+          3614
+          -
+          3648
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.SetLike.contains
+        </td>
+        <td style="background: #AEF1AE">
+          symbolWhitelist.contains(t.symbol(ctx))
+        </td>
+      </tr><tr>
+        <td>
+          83
+        </td>
+        <td>
+          53032
+        </td>
+        <td>
+          3639
+          -
+          3647
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Trees.Tree.symbol
+        </td>
+        <td style="background: #AEF1AE">
+          t.symbol(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          84
+        </td>
+        <td>
+          53035
+        </td>
+        <td>
+          3701
+          -
+          3709
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Trees.Tree.symbol
+        </td>
+        <td style="background: #F0ADAD">
+          t.symbol(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          84
+        </td>
+        <td>
+          53036
+        </td>
+        <td>
+          3676
+          -
+          3710
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.SetLike.contains
+        </td>
+        <td style="background: #F0ADAD">
+          symbolWhitelist.contains(t.symbol(ctx))
+        </td>
+      </tr><tr>
+        <td>
+          85
+        </td>
+        <td>
+          53038
+        </td>
+        <td>
+          3783
+          -
+          3789
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Trees.Block.expr
+        </td>
+        <td style="background: #F0ADAD">
+          t.expr
+        </td>
+      </tr><tr>
+        <td>
+          85
+        </td>
+        <td>
+          53040
+        </td>
+        <td>
+          3738
+          -
+          3790
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Boolean.&amp;&amp;
+        </td>
+        <td style="background: #F0ADAD">
+          t.stats.forall({
+  ((tree: dotty.tools.dotc.ast.tpd.Tree) =&gt; dotty.tools.dotc.ast.tpd.isPureExpr(tree)(ctx))
+}).&amp;&amp;(isSafeQual(t.expr))
+        </td>
+      </tr><tr>
+        <td>
+          85
+        </td>
+        <td>
+          53037
+        </td>
+        <td>
+          3753
+          -
+          3767
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.TypedTreeInfo.isPureExpr
+        </td>
+        <td style="background: #F0ADAD">
+          dotty.tools.dotc.ast.tpd.isPureExpr(tree)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          85
+        </td>
+        <td>
+          53039
+        </td>
+        <td>
+          3772
+          -
+          3790
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.transform.CheckStatic.isSafeQual
+        </td>
+        <td style="background: #F0ADAD">
+          isSafeQual(t.expr)
+        </td>
+      </tr><tr>
+        <td>
+          88
+        </td>
+        <td>
+          53042
+        </td>
+        <td>
+          3819
+          -
+          3845
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.transform.CheckStatic.isSafeQual
+        </td>
+        <td style="background: #AEF1AE">
+          isSafeQual(tree.qualifier)
+        </td>
+      </tr><tr>
+        <td>
+          88
+        </td>
+        <td>
+          53041
+        </td>
+        <td>
+          3830
+          -
+          3844
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Trees.Select.qualifier
+        </td>
+        <td style="background: #AEF1AE">
+          tree.qualifier
+        </td>
+      </tr><tr>
+        <td>
+          89
+        </td>
+        <td>
+          53044
+        </td>
+        <td>
+          3855
+          -
+          3871
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          dotty.tools.dotc.ast.tpd.ref
+        </td>
+        <td style="background: #AEF1AE">
+          ast.tpd.ref(tree.symbol(ctx))(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          89
+        </td>
+        <td>
+          53043
+        </td>
+        <td>
+          3855
+          -
+          3871
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.tpd.ref
+        </td>
+        <td style="background: #AEF1AE">
+          ast.tpd.ref(tree.symbol(ctx))(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          90
+        </td>
+        <td>
+          53045
+        </td>
+        <td>
+          3883
+          -
+          3887
+        </td>
+        <td>
+          Ident
+        </td>
+        <td>
+          dotty.tools.dotc.transform.CheckStatic.tree
+        </td>
+        <td style="background: #F0ADAD">
+          tree
+        </td>
+      </tr><tr>
+        <td>
+          91
+        </td>
+        <td>
+          53047
+        </td>
+        <td>
+          3899
+          -
+          3903
+        </td>
+        <td>
+          Ident
+        </td>
+        <td>
+          dotty.tools.dotc.transform.CheckStatic.tree
+        </td>
+        <td style="background: #AEF1AE">
+          tree
+        </td>
+      </tr>
+    </table>
+          </div>
+        </div>
+      </body>
+    </html>

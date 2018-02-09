@@ -1,0 +1,3025 @@
+<html>
+      <head>
+        <meta http-equiv="Content-Type" content="text/html; charset=utf-8"/>
+        <title id="title">
+          dotty/tools/repl/terminal/filters/UndoFilter.scala.html
+        </title>
+        <script src="https://ajax.googleapis.com/ajax/libs/jquery/1.10.2/jquery.min.js"></script><link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/jquery.tablesorter/2.20.1/css/theme.default.min.css" type="text/css"/><script src="https://cdnjs.cloudflare.com/ajax/libs/jquery.tablesorter/2.20.1/js/jquery.tablesorter.min.js"></script><link rel="stylesheet" href="https://netdna.bootstrapcdn.com/bootstrap/3.0.3/css/bootstrap.min.css" type="text/css"/><script src="https://netdna.bootstrapcdn.com/bootstrap/3.0.3/js/bootstrap.min.js"></script><script type="text/javascript">
+        $(document).ready(function() {$(".tablesorter").tablesorter();});
+      </script>
+        <style>
+          table.codegrid { font-family: monospace; font-size: 12px; width: auto!important; }table.statementlist { width: auto!important; font-size: 13px; } table.codegrid td { padding: 0!important; border: 0!important } table td.linenumber { width: 40px!important; } 
+        </style>
+      </head>
+      <body style="font-family: monospace;">
+        <ul class="nav nav-tabs">
+          <li>
+            <a href="#codegrid" data-toggle="tab">Codegrid</a>
+          </li>
+          <li>
+            <a href="#statementlist" data-toggle="tab">Statement List</a>
+          </li>
+        </ul>
+        <div class="tab-content">
+          <div class="tab-pane active" id="codegrid">
+            <pre style='font-size: 12pt; font-family: courier;'>1 <span style=''>package dotty.tools
+</span>2 <span style=''>package repl
+</span>3 <span style=''>package terminal
+</span>4 <span style=''>package filters
+</span>5 <span style=''>
+</span>6 <span style=''>import terminal.FilterTools._
+</span>7 <span style=''>import terminal.LazyList.~:
+</span>8 <span style=''>import terminal._
+</span>9 <span style=''>import scala.collection.mutable
+</span>10 <span style=''>
+</span>11 <span style=''>/**
+</span>12 <span style=''>  * A filter that implements &quot;undo&quot; functionality in the ammonite REPL. It
+</span>13 <span style=''>  * shares the same `Ctrl -` hotkey that the bash undo, but shares behavior
+</span>14 <span style=''>  * with the undo behavior in desktop text editors:
+</span>15 <span style=''>  *
+</span>16 <span style=''>  * - Multiple `delete`s in a row get collapsed
+</span>17 <span style=''>  * - In addition to edits you can undo cursor movements: undo will bring your
+</span>18 <span style=''>  *   cursor back to location of previous edits before it undoes them
+</span>19 <span style=''>  * - Provides &quot;redo&quot; functionality under `Alt -`/`Esc -`: un-undo the things
+</span>20 <span style=''>  *   you didn't actually want to undo!
+</span>21 <span style=''>  *
+</span>22 <span style=''>  * @param maxUndo: the maximum number of undo-frames that are stored.
+</span>23 <span style=''>  */
+</span>24 <span style=''>case class UndoFilter(maxUndo: Int = 25) extends DelegateFilter(&quot;UndoFilter&quot;) {
+</span>25 <span style=''>  /**
+</span>26 <span style=''>    * The current stack of states that undo/redo would cycle through.
+</span>27 <span style=''>    *
+</span>28 <span style=''>    * Not really the appropriate data structure, since when it reaches
+</span>29 <span style=''>    * `maxUndo` in length we remove one element from the start whenever we
+</span>30 <span style=''>    * append one element to the end, which costs `O(n)`. On the other hand,
+</span>31 <span style=''>    * It also costs `O(n)` to maintain the buffer of previous states, and
+</span>32 <span style=''>    * so `n` is probably going to be pretty small anyway (tens?) so `O(n)`
+</span>33 <span style=''>    * is perfectly fine.
+</span>34 <span style=''>    */
+</span>35 <span style=''>  val undoBuffer = </span><span style='background: #F0ADAD'>mutable.Buffer[(Vector[Char], Int)](Vector[Char]() -&gt; 0)</span><span style=''>
+</span>36 <span style=''>
+</span>37 <span style=''>  /**
+</span>38 <span style=''>    * The current position in the undoStack that the terminal is currently in.
+</span>39 <span style=''>    */
+</span>40 <span style=''>  var undoIndex = </span><span style='background: #F0ADAD'>0</span><span style=''>
+</span>41 <span style=''>  /**
+</span>42 <span style=''>    * An enum representing what the user is &quot;currently&quot; doing. Used to
+</span>43 <span style=''>    * collapse sequential actions into one undo step: e.g. 10 plai 
+</span>44 <span style=''>    * chars typed becomes 1 undo step, or 10 chars deleted becomes one undo
+</span>45 <span style=''>    * step, but 4 chars typed followed by 3 chars deleted followed by 3 chars
+</span>46 <span style=''>    * typed gets grouped into 3 different undo steps
+</span>47 <span style=''>    */
+</span>48 <span style=''>  var state = </span><span style='background: #F0ADAD'>UndoState.Default</span><span style=''>
+</span>49 <span style=''>  def currentUndo = </span><span style='background: #F0ADAD'>undoBuffer(undoBuffer.length - undoIndex - 1)</span><span style=''>
+</span>50 <span style=''>
+</span>51 <span style=''>  def undo(b: Vector[Char], c: Int) = {
+</span>52 <span style=''>    val msg =
+</span>53 <span style=''>      if (</span><span style='background: #F0ADAD'>undoIndex &gt;= undoBuffer.length - 1</span><span style=''>) </span><span style='background: #F0ADAD'>UndoFilter.cannotUndoMsg</span><span style=''>
+</span>54 <span style=''>      else </span><span style='background: #F0ADAD'>{
+</span>55 <span style=''></span><span style='background: #F0ADAD'>        undoIndex += 1
+</span>56 <span style=''></span><span style='background: #F0ADAD'>        state = UndoState.Default
+</span>57 <span style=''></span><span style='background: #F0ADAD'>        UndoFilter.undoMsg
+</span>58 <span style=''></span><span style='background: #F0ADAD'>      }</span><span style=''>
+</span>59 <span style=''>    val (b1, c1) = currentUndo
+</span>60 <span style=''>    </span><span style='background: #F0ADAD'>(b1, c1, msg)</span><span style=''>
+</span>61 <span style=''>  }
+</span>62 <span style=''>
+</span>63 <span style=''>  def redo(b: Vector[Char], c: Int) = {
+</span>64 <span style=''>    val msg =
+</span>65 <span style=''>      if (</span><span style='background: #F0ADAD'>undoIndex &lt;= 0</span><span style=''>) </span><span style='background: #F0ADAD'>UndoFilter.cannotRedoMsg</span><span style=''>
+</span>66 <span style=''>      else </span><span style='background: #F0ADAD'>{
+</span>67 <span style=''></span><span style='background: #F0ADAD'>        undoIndex -= 1
+</span>68 <span style=''></span><span style='background: #F0ADAD'>        state = UndoState.Default
+</span>69 <span style=''></span><span style='background: #F0ADAD'>        UndoFilter.redoMsg
+</span>70 <span style=''></span><span style='background: #F0ADAD'>      }</span><span style=''>
+</span>71 <span style=''>
+</span>72 <span style=''>    </span><span style='background: #F0ADAD'>currentUndo</span><span style=''>
+</span>73 <span style=''>    val (b1, c1) = currentUndo
+</span>74 <span style=''>    </span><span style='background: #F0ADAD'>(b1, c1, msg)</span><span style=''>
+</span>75 <span style=''>  }
+</span>76 <span style=''>
+</span>77 <span style=''>  def wrap(bc: (Vector[Char], Int, Ansi.Str), rest: LazyList[Int]) = {
+</span>78 <span style=''>    val (b, c, msg) = bc
+</span>79 <span style=''>    </span><span style='background: #F0ADAD'>TS(rest, b, c, msg)</span><span style=''>
+</span>80 <span style=''>  }
+</span>81 <span style=''>
+</span>82 <span style=''>  def pushUndos(b: Vector[Char], c: Int) = {
+</span>83 <span style=''>    val (lastB, lastC) = currentUndo
+</span>84 <span style=''>    // Since we don't have access to the `typingFilter` in this code, we
+</span>85 <span style=''>    // instead attempt to reverse-engineer &quot;what happened&quot; to the buffer by
+</span>86 <span style=''>    // comparing the old one with the new.
+</span>87 <span style=''>    //
+</span>88 <span style=''>    // It turns out that it's not that hard to identify the few cases we care
+</span>89 <span style=''>    // about, since they're all result in either 0 or 1 chars being different
+</span>90 <span style=''>    // between old and new buffers.
+</span>91 <span style=''>    val newState =
+</span>92 <span style=''>    // Nothing changed means nothing changed
+</span>93 <span style=''>      if (</span><span style='background: #F0ADAD'>lastC == c &amp;&amp; lastB == b</span><span style=''>) </span><span style='background: #F0ADAD'>state</span><span style=''>
+</span>94 <span style=''>      // if cursor advanced 1, and buffer grew by 1 at the cursor, we're typing
+</span>95 <span style=''>      else </span><span style='background: #F0ADAD'>if (lastC + 1 == c &amp;&amp; lastB == b.patch(c-1, Nil, 1)) UndoState.Typing
+</span>96 <span style=''></span><span style='background: #F0ADAD'>      // cursor moved left 1, and buffer lost 1 char at that point, we're deleting
+</span>97 <span style=''></span><span style='background: #F0ADAD'>      else if (lastC - 1 == c &amp;&amp; lastB.patch(c, Nil, 1) == b) UndoState.Deleting
+</span>98 <span style=''></span><span style='background: #F0ADAD'>      // cursor didn't move, and buffer lost 1 char at that point, we're also deleting
+</span>99 <span style=''></span><span style='background: #F0ADAD'>      else if (lastC == c &amp;&amp; lastB.patch(c - 1, Nil, 1) == b) UndoState.Deleting
+</span>100 <span style=''></span><span style='background: #F0ADAD'>      // cursor moved around but buffer didn't change, we're navigating
+</span>101 <span style=''></span><span style='background: #F0ADAD'>      else if (lastC != c &amp;&amp; lastB == b) UndoState.Navigating
+</span>102 <span style=''></span><span style='background: #F0ADAD'>      // otherwise, sit in the &quot;Default&quot; state where every change is recorded.
+</span>103 <span style=''></span><span style='background: #F0ADAD'>      else UndoState.Default</span><span style=''>
+</span>104 <span style=''>
+</span>105 <span style=''>    if (</span><span style='background: #F0ADAD'>state != newState || newState == UndoState.Default &amp;&amp; (lastB, lastC) != (b, c)</span><span style=''>) </span><span style='background: #F0ADAD'>{
+</span>106 <span style=''></span><span style='background: #F0ADAD'>      // If something changes: either we enter a new `UndoState`, or we're in
+</span>107 <span style=''></span><span style='background: #F0ADAD'>      // the `Default` undo state and the terminal buffer/cursor change, then
+</span>108 <span style=''></span><span style='background: #F0ADAD'>      // truncate the `undoStack` and add a new tuple to the stack that we can
+</span>109 <span style=''></span><span style='background: #F0ADAD'>      // build upon. This means that we lose all ability to re-do actions after
+</span>110 <span style=''></span><span style='background: #F0ADAD'>      // someone starts making edits, which is consistent with most other
+</span>111 <span style=''></span><span style='background: #F0ADAD'>      // editors
+</span>112 <span style=''></span><span style='background: #F0ADAD'>      state = newState
+</span>113 <span style=''></span><span style='background: #F0ADAD'>      undoBuffer.remove(undoBuffer.length - undoIndex, undoIndex)
+</span>114 <span style=''></span><span style='background: #F0ADAD'>      undoIndex = 0
+</span>115 <span style=''></span><span style='background: #F0ADAD'>
+</span>116 <span style=''></span><span style='background: #F0ADAD'>      if (undoBuffer.length == maxUndo) undoBuffer.remove(0)
+</span>117 <span style=''></span><span style='background: #F0ADAD'>
+</span>118 <span style=''></span><span style='background: #F0ADAD'>      undoBuffer.append(b -&gt; c)
+</span>119 <span style=''></span><span style='background: #F0ADAD'>    }</span><span style=''> else </span><span style='background: #F0ADAD'>if (undoIndex == 0 &amp;&amp; (b, c) != undoBuffer(undoBuffer.length - 1)) {
+</span>120 <span style=''></span><span style='background: #F0ADAD'>      undoBuffer(undoBuffer.length - 1) = (b, c)
+</span>121 <span style=''></span><span style='background: #F0ADAD'>    }</span><span style=''>
+</span>122 <span style=''>
+</span>123 <span style=''>    </span><span style='background: #F0ADAD'>state = newState</span><span style=''>
+</span>124 <span style=''>  }
+</span>125 <span style=''>
+</span>126 <span style=''>  def filter = </span><span style='background: #F0ADAD'>Filter.merge(
+</span>127 <span style=''></span><span style='background: #F0ADAD'>    Filter.wrap(&quot;undoFilterWrapped&quot;) {
+</span>128 <span style=''></span><span style='background: #F0ADAD'>      case TS(q ~: rest, b, c, _) =&gt;
+</span>129 <span style=''></span><span style='background: #F0ADAD'>        pushUndos(b, c)
+</span>130 <span style=''></span><span style='background: #F0ADAD'>        None
+</span>131 <span style=''></span><span style='background: #F0ADAD'>    },
+</span>132 <span style=''></span><span style='background: #F0ADAD'>    Filter.partial(&quot;undoFilter&quot;) {
+</span>133 <span style=''></span><span style='background: #F0ADAD'>      case TS(31 ~: rest, b, c, _) =&gt; wrap(undo(b, c), rest)
+</span>134 <span style=''></span><span style='background: #F0ADAD'>      case TS(27 ~: 114 ~: rest, b, c, _) =&gt; wrap(undo(b, c), rest)
+</span>135 <span style=''></span><span style='background: #F0ADAD'>      case TS(27 ~: 45 ~: rest, b, c, _) =&gt; wrap(redo(b, c), rest)
+</span>136 <span style=''></span><span style='background: #F0ADAD'>    }
+</span>137 <span style=''></span><span style='background: #F0ADAD'>  )</span><span style=''>
+</span>138 <span style=''>}
+</span>139 <span style=''>
+</span>140 <span style=''>
+</span>141 <span style=''>sealed class UndoState(override val toString: String)
+</span>142 <span style=''>object UndoState {
+</span>143 <span style=''>  val Default    = </span><span style='background: #F0ADAD'>new UndoState(&quot;Default&quot;)</span><span style=''>
+</span>144 <span style=''>  val Typing     = </span><span style='background: #F0ADAD'>new UndoState(&quot;Typing&quot;)</span><span style=''>
+</span>145 <span style=''>  val Deleting   = </span><span style='background: #F0ADAD'>new UndoState(&quot;Deleting&quot;)</span><span style=''>
+</span>146 <span style=''>  val Navigating = </span><span style='background: #F0ADAD'>new UndoState(&quot;Navigating&quot;)</span><span style=''>
+</span>147 <span style=''>}
+</span>148 <span style=''>
+</span>149 <span style=''>object UndoFilter {
+</span>150 <span style=''>  val undoMsg       = </span><span style='background: #F0ADAD'>Ansi.Color.Blue(&quot; ...undoing last action, `Alt -` or `Esc -` to redo&quot;)</span><span style=''>
+</span>151 <span style=''>  val cannotUndoMsg = </span><span style='background: #F0ADAD'>Ansi.Color.Blue(&quot; ...no more actions to undo&quot;)</span><span style=''>
+</span>152 <span style=''>  val redoMsg       = </span><span style='background: #F0ADAD'>Ansi.Color.Blue(&quot; ...redoing last action&quot;)</span><span style=''>
+</span>153 <span style=''>  val cannotRedoMsg = </span><span style='background: #F0ADAD'>Ansi.Color.Blue(&quot; ...no more actions to redo&quot;)</span><span style=''>
+</span>154 <span style=''>}
+</span></pre>
+          </div>
+          <div class="tab-pane" id="statementlist">
+            <table cellspacing="0" cellpadding="0" class="table statementlist">
+      <tr>
+        <th>Line</th>
+        <th>Stmt Id</th>
+        <th>Pos</th>
+        <th>Tree</th>
+        <th>Symbol</th>
+        <th>Code</th>
+      </tr><tr>
+        <td>
+          35
+        </td>
+        <td>
+          82692
+        </td>
+        <td>
+          1366
+          -
+          1422
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.generic.GenericCompanion.apply
+        </td>
+        <td style="background: #F0ADAD">
+          scala.collection.mutable.Buffer.apply[(Vector[Char], Int)](scala.Predef.ArrowAssoc[scala.collection.immutable.Vector[Char]](scala.`package`.Vector.apply[Char]()).-&gt;[Int](0))
+        </td>
+      </tr><tr>
+        <td>
+          35
+        </td>
+        <td>
+          82691
+        </td>
+        <td>
+          1402
+          -
+          1421
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Predef.ArrowAssoc.-&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          scala.Predef.ArrowAssoc[scala.collection.immutable.Vector[Char]](scala.`package`.Vector.apply[Char]()).-&gt;[Int](0)
+        </td>
+      </tr><tr>
+        <td>
+          40
+        </td>
+        <td>
+          82693
+        </td>
+        <td>
+          1534
+          -
+          1535
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          0
+        </td>
+      </tr><tr>
+        <td>
+          48
+        </td>
+        <td>
+          82694
+        </td>
+        <td>
+          1909
+          -
+          1926
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.repl.terminal.filters.UndoState.Default
+        </td>
+        <td style="background: #F0ADAD">
+          UndoState.Default
+        </td>
+      </tr><tr>
+        <td>
+          49
+        </td>
+        <td>
+          82696
+        </td>
+        <td>
+          1947
+          -
+          1992
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.mutable.BufferLike.apply
+        </td>
+        <td style="background: #F0ADAD">
+          UndoFilter.this.undoBuffer.apply(UndoFilter.this.undoBuffer.length.-(UndoFilter.this.undoIndex).-(1))
+        </td>
+      </tr><tr>
+        <td>
+          49
+        </td>
+        <td>
+          82695
+        </td>
+        <td>
+          1958
+          -
+          1991
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Int.-
+        </td>
+        <td style="background: #F0ADAD">
+          UndoFilter.this.undoBuffer.length.-(UndoFilter.this.undoIndex).-(1)
+        </td>
+      </tr><tr>
+        <td>
+          53
+        </td>
+        <td>
+          82699
+        </td>
+        <td>
+          2094
+          -
+          2118
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.repl.terminal.filters.UndoFilter.cannotUndoMsg
+        </td>
+        <td style="background: #F0ADAD">
+          UndoFilter.cannotUndoMsg
+        </td>
+      </tr><tr>
+        <td>
+          53
+        </td>
+        <td>
+          82698
+        </td>
+        <td>
+          2058
+          -
+          2092
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Int.&gt;=
+        </td>
+        <td style="background: #F0ADAD">
+          UndoFilter.this.undoIndex.&gt;=(UndoFilter.this.undoBuffer.length.-(1))
+        </td>
+      </tr><tr>
+        <td>
+          53
+        </td>
+        <td>
+          82697
+        </td>
+        <td>
+          2071
+          -
+          2092
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Int.-
+        </td>
+        <td style="background: #F0ADAD">
+          UndoFilter.this.undoBuffer.length.-(1)
+        </td>
+      </tr><tr>
+        <td>
+          53
+        </td>
+        <td>
+          82700
+        </td>
+        <td>
+          2094
+          -
+          2118
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          dotty.tools.repl.terminal.filters.UndoFilter.cannotUndoMsg
+        </td>
+        <td style="background: #F0ADAD">
+          UndoFilter.cannotUndoMsg
+        </td>
+      </tr><tr>
+        <td>
+          54
+        </td>
+        <td>
+          82706
+        </td>
+        <td>
+          2130
+          -
+          2223
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          {
+  UndoFilter.this.undoIndex_=(UndoFilter.this.undoIndex.+(1));
+  UndoFilter.this.state_=(UndoState.Default);
+  UndoFilter.undoMsg
+}
+        </td>
+      </tr><tr>
+        <td>
+          55
+        </td>
+        <td>
+          82701
+        </td>
+        <td>
+          2140
+          -
+          2154
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Int.+
+        </td>
+        <td style="background: #F0ADAD">
+          UndoFilter.this.undoIndex.+(1)
+        </td>
+      </tr><tr>
+        <td>
+          55
+        </td>
+        <td>
+          82702
+        </td>
+        <td>
+          2140
+          -
+          2154
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.repl.terminal.filters.UndoFilter.undoIndex_=
+        </td>
+        <td style="background: #F0ADAD">
+          UndoFilter.this.undoIndex_=(UndoFilter.this.undoIndex.+(1))
+        </td>
+      </tr><tr>
+        <td>
+          56
+        </td>
+        <td>
+          82704
+        </td>
+        <td>
+          2163
+          -
+          2188
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.repl.terminal.filters.UndoFilter.state_=
+        </td>
+        <td style="background: #F0ADAD">
+          UndoFilter.this.state_=(UndoState.Default)
+        </td>
+      </tr><tr>
+        <td>
+          56
+        </td>
+        <td>
+          82703
+        </td>
+        <td>
+          2171
+          -
+          2188
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.repl.terminal.filters.UndoState.Default
+        </td>
+        <td style="background: #F0ADAD">
+          UndoState.Default
+        </td>
+      </tr><tr>
+        <td>
+          57
+        </td>
+        <td>
+          82705
+        </td>
+        <td>
+          2197
+          -
+          2215
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.repl.terminal.filters.UndoFilter.undoMsg
+        </td>
+        <td style="background: #F0ADAD">
+          UndoFilter.undoMsg
+        </td>
+      </tr><tr>
+        <td>
+          59
+        </td>
+        <td>
+          82707
+        </td>
+        <td>
+          2233
+          -
+          2233
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.Tuple2._1
+        </td>
+        <td style="background: #F0ADAD">
+          x$1._1
+        </td>
+      </tr><tr>
+        <td>
+          59
+        </td>
+        <td>
+          82708
+        </td>
+        <td>
+          2237
+          -
+          2237
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.Tuple2._2
+        </td>
+        <td style="background: #F0ADAD">
+          x$1._2
+        </td>
+      </tr><tr>
+        <td>
+          60
+        </td>
+        <td>
+          82709
+        </td>
+        <td>
+          2259
+          -
+          2272
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Tuple3.apply
+        </td>
+        <td style="background: #F0ADAD">
+          scala.Tuple3.apply[Vector[Char], Int, dotty.tools.repl.terminal.Ansi.Str](b1, c1, msg)
+        </td>
+      </tr><tr>
+        <td>
+          65
+        </td>
+        <td>
+          82710
+        </td>
+        <td>
+          2342
+          -
+          2356
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Int.&lt;=
+        </td>
+        <td style="background: #F0ADAD">
+          UndoFilter.this.undoIndex.&lt;=(0)
+        </td>
+      </tr><tr>
+        <td>
+          65
+        </td>
+        <td>
+          82712
+        </td>
+        <td>
+          2358
+          -
+          2382
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          dotty.tools.repl.terminal.filters.UndoFilter.cannotRedoMsg
+        </td>
+        <td style="background: #F0ADAD">
+          UndoFilter.cannotRedoMsg
+        </td>
+      </tr><tr>
+        <td>
+          65
+        </td>
+        <td>
+          82711
+        </td>
+        <td>
+          2358
+          -
+          2382
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.repl.terminal.filters.UndoFilter.cannotRedoMsg
+        </td>
+        <td style="background: #F0ADAD">
+          UndoFilter.cannotRedoMsg
+        </td>
+      </tr><tr>
+        <td>
+          66
+        </td>
+        <td>
+          82718
+        </td>
+        <td>
+          2394
+          -
+          2487
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          {
+  UndoFilter.this.undoIndex_=(UndoFilter.this.undoIndex.-(1));
+  UndoFilter.this.state_=(UndoState.Default);
+  UndoFilter.redoMsg
+}
+        </td>
+      </tr><tr>
+        <td>
+          67
+        </td>
+        <td>
+          82714
+        </td>
+        <td>
+          2404
+          -
+          2418
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.repl.terminal.filters.UndoFilter.undoIndex_=
+        </td>
+        <td style="background: #F0ADAD">
+          UndoFilter.this.undoIndex_=(UndoFilter.this.undoIndex.-(1))
+        </td>
+      </tr><tr>
+        <td>
+          67
+        </td>
+        <td>
+          82713
+        </td>
+        <td>
+          2404
+          -
+          2418
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Int.-
+        </td>
+        <td style="background: #F0ADAD">
+          UndoFilter.this.undoIndex.-(1)
+        </td>
+      </tr><tr>
+        <td>
+          68
+        </td>
+        <td>
+          82716
+        </td>
+        <td>
+          2427
+          -
+          2452
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.repl.terminal.filters.UndoFilter.state_=
+        </td>
+        <td style="background: #F0ADAD">
+          UndoFilter.this.state_=(UndoState.Default)
+        </td>
+      </tr><tr>
+        <td>
+          68
+        </td>
+        <td>
+          82715
+        </td>
+        <td>
+          2435
+          -
+          2452
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.repl.terminal.filters.UndoState.Default
+        </td>
+        <td style="background: #F0ADAD">
+          UndoState.Default
+        </td>
+      </tr><tr>
+        <td>
+          69
+        </td>
+        <td>
+          82717
+        </td>
+        <td>
+          2461
+          -
+          2479
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.repl.terminal.filters.UndoFilter.redoMsg
+        </td>
+        <td style="background: #F0ADAD">
+          UndoFilter.redoMsg
+        </td>
+      </tr><tr>
+        <td>
+          72
+        </td>
+        <td>
+          82719
+        </td>
+        <td>
+          2493
+          -
+          2504
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.repl.terminal.filters.UndoFilter.currentUndo
+        </td>
+        <td style="background: #F0ADAD">
+          UndoFilter.this.currentUndo
+        </td>
+      </tr><tr>
+        <td>
+          73
+        </td>
+        <td>
+          82721
+        </td>
+        <td>
+          2518
+          -
+          2518
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.Tuple2._2
+        </td>
+        <td style="background: #F0ADAD">
+          x$2._2
+        </td>
+      </tr><tr>
+        <td>
+          73
+        </td>
+        <td>
+          82720
+        </td>
+        <td>
+          2514
+          -
+          2514
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.Tuple2._1
+        </td>
+        <td style="background: #F0ADAD">
+          x$2._1
+        </td>
+      </tr><tr>
+        <td>
+          74
+        </td>
+        <td>
+          82722
+        </td>
+        <td>
+          2540
+          -
+          2553
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Tuple3.apply
+        </td>
+        <td style="background: #F0ADAD">
+          scala.Tuple3.apply[Vector[Char], Int, dotty.tools.repl.terminal.Ansi.Str](b1, c1, msg)
+        </td>
+      </tr><tr>
+        <td>
+          78
+        </td>
+        <td>
+          82723
+        </td>
+        <td>
+          2639
+          -
+          2639
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.Tuple3._1
+        </td>
+        <td style="background: #F0ADAD">
+          x$3._1
+        </td>
+      </tr><tr>
+        <td>
+          78
+        </td>
+        <td>
+          82725
+        </td>
+        <td>
+          2645
+          -
+          2645
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.Tuple3._3
+        </td>
+        <td style="background: #F0ADAD">
+          x$3._3
+        </td>
+      </tr><tr>
+        <td>
+          78
+        </td>
+        <td>
+          82724
+        </td>
+        <td>
+          2642
+          -
+          2642
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.Tuple3._2
+        </td>
+        <td style="background: #F0ADAD">
+          x$3._2
+        </td>
+      </tr><tr>
+        <td>
+          79
+        </td>
+        <td>
+          82726
+        </td>
+        <td>
+          2659
+          -
+          2678
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.repl.terminal.TermState.apply
+        </td>
+        <td style="background: #F0ADAD">
+          terminal.FilterTools.TS.apply(rest, b, c, msg)
+        </td>
+      </tr><tr>
+        <td>
+          83
+        </td>
+        <td>
+          82728
+        </td>
+        <td>
+          2745
+          -
+          2745
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.Tuple2._2
+        </td>
+        <td style="background: #F0ADAD">
+          x$4._2
+        </td>
+      </tr><tr>
+        <td>
+          83
+        </td>
+        <td>
+          82727
+        </td>
+        <td>
+          2738
+          -
+          2738
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.Tuple2._1
+        </td>
+        <td style="background: #F0ADAD">
+          x$4._1
+        </td>
+      </tr><tr>
+        <td>
+          93
+        </td>
+        <td>
+          82732
+        </td>
+        <td>
+          3257
+          -
+          3262
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          dotty.tools.repl.terminal.filters.UndoFilter.state
+        </td>
+        <td style="background: #F0ADAD">
+          UndoFilter.this.state
+        </td>
+      </tr><tr>
+        <td>
+          93
+        </td>
+        <td>
+          82731
+        </td>
+        <td>
+          3257
+          -
+          3262
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.repl.terminal.filters.UndoFilter.state
+        </td>
+        <td style="background: #F0ADAD">
+          UndoFilter.this.state
+        </td>
+      </tr><tr>
+        <td>
+          93
+        </td>
+        <td>
+          82730
+        </td>
+        <td>
+          3231
+          -
+          3255
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Boolean.&amp;&amp;
+        </td>
+        <td style="background: #F0ADAD">
+          lastC.==(c).&amp;&amp;(lastB.==(b))
+        </td>
+      </tr><tr>
+        <td>
+          93
+        </td>
+        <td>
+          82729
+        </td>
+        <td>
+          3245
+          -
+          3255
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.Object.==
+        </td>
+        <td style="background: #F0ADAD">
+          lastB.==(b)
+        </td>
+      </tr><tr>
+        <td>
+          95
+        </td>
+        <td>
+          82741
+        </td>
+        <td>
+          3407
+          -
+          3423
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.repl.terminal.filters.UndoState.Typing
+        </td>
+        <td style="background: #F0ADAD">
+          UndoState.Typing
+        </td>
+      </tr><tr>
+        <td>
+          95
+        </td>
+        <td>
+          82740
+        </td>
+        <td>
+          3358
+          -
+          3405
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Boolean.&amp;&amp;
+        </td>
+        <td style="background: #F0ADAD">
+          lastC.+(1).==(c).&amp;&amp;(lastB.==(b.patch[Char, Any](c.-(1), scala.collection.immutable.Nil, 1)(immutable.this.Vector.canBuildFrom[Char])))
+        </td>
+      </tr><tr>
+        <td>
+          95
+        </td>
+        <td>
+          82761
+        </td>
+        <td>
+          3354
+          -
+          3997
+        </td>
+        <td>
+          If
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          if (lastC.+(1).==(c).&amp;&amp;(lastB.==(b.patch[Char, Any](c.-(1), scala.collection.immutable.Nil, 1)(immutable.this.Vector.canBuildFrom[Char]))))
+  UndoState.Typing
+else
+  if (lastC.-(1).==(c).&amp;&amp;(lastB.patch[Char, scala.collection.immutable.Vector[Char]](c, scala.collection.immutable.Nil, 1)(immutable.this.Vector.canBuildFrom[Char]).==(b)))
+    UndoState.Deleting
+  else
+    if (lastC.==(c).&amp;&amp;(lastB.patch[Char, scala.collection.immutable.Vector[Char]](c.-(1), scala.collection.immutable.Nil, 1)(immutable.this.Vector.canBuildFrom[Char]).==(b)))
+      UndoState.Deleting
+    else
+      if (lastC.!=(c).&amp;&amp;(lastB.==(b)))
+        UndoState.Navigating
+      else
+        UndoState.Default
+        </td>
+      </tr><tr>
+        <td>
+          95
+        </td>
+        <td>
+          82734
+        </td>
+        <td>
+          3393
+          -
+          3396
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Int.-
+        </td>
+        <td style="background: #F0ADAD">
+          c.-(1)
+        </td>
+      </tr><tr>
+        <td>
+          95
+        </td>
+        <td>
+          82737
+        </td>
+        <td>
+          3392
+          -
+          3392
+        </td>
+        <td>
+          TypeApply
+        </td>
+        <td>
+          scala.collection.immutable.Vector.canBuildFrom
+        </td>
+        <td style="background: #F0ADAD">
+          immutable.this.Vector.canBuildFrom[Char]
+        </td>
+      </tr><tr>
+        <td>
+          95
+        </td>
+        <td>
+          82739
+        </td>
+        <td>
+          3376
+          -
+          3405
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.Object.==
+        </td>
+        <td style="background: #F0ADAD">
+          lastB.==(b.patch[Char, Any](c.-(1), scala.collection.immutable.Nil, 1)(immutable.this.Vector.canBuildFrom[Char]))
+        </td>
+      </tr><tr>
+        <td>
+          95
+        </td>
+        <td>
+          82733
+        </td>
+        <td>
+          3366
+          -
+          3367
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          1
+        </td>
+      </tr><tr>
+        <td>
+          95
+        </td>
+        <td>
+          82742
+        </td>
+        <td>
+          3407
+          -
+          3423
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          dotty.tools.repl.terminal.filters.UndoState.Typing
+        </td>
+        <td style="background: #F0ADAD">
+          UndoState.Typing
+        </td>
+      </tr><tr>
+        <td>
+          95
+        </td>
+        <td>
+          82736
+        </td>
+        <td>
+          3403
+          -
+          3404
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          1
+        </td>
+      </tr><tr>
+        <td>
+          95
+        </td>
+        <td>
+          82735
+        </td>
+        <td>
+          3398
+          -
+          3401
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.collection.immutable.Nil
+        </td>
+        <td style="background: #F0ADAD">
+          scala.collection.immutable.Nil
+        </td>
+      </tr><tr>
+        <td>
+          95
+        </td>
+        <td>
+          82738
+        </td>
+        <td>
+          3385
+          -
+          3405
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          scala.collection.SeqLike.patch
+        </td>
+        <td style="background: #F0ADAD">
+          b.patch[Char, Any](c.-(1), scala.collection.immutable.Nil, 1)(immutable.this.Vector.canBuildFrom[Char])
+        </td>
+      </tr><tr>
+        <td>
+          97
+        </td>
+        <td>
+          82743
+        </td>
+        <td>
+          3530
+          -
+          3531
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          1
+        </td>
+      </tr><tr>
+        <td>
+          97
+        </td>
+        <td>
+          82746
+        </td>
+        <td>
+          3569
+          -
+          3587
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.repl.terminal.filters.UndoState.Deleting
+        </td>
+        <td style="background: #F0ADAD">
+          UndoState.Deleting
+        </td>
+      </tr><tr>
+        <td>
+          97
+        </td>
+        <td>
+          82745
+        </td>
+        <td>
+          3522
+          -
+          3567
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Boolean.&amp;&amp;
+        </td>
+        <td style="background: #F0ADAD">
+          lastC.-(1).==(c).&amp;&amp;(lastB.patch[Char, scala.collection.immutable.Vector[Char]](c, scala.collection.immutable.Nil, 1)(immutable.this.Vector.canBuildFrom[Char]).==(b))
+        </td>
+      </tr><tr>
+        <td>
+          97
+        </td>
+        <td>
+          82760
+        </td>
+        <td>
+          3518
+          -
+          3997
+        </td>
+        <td>
+          If
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          if (lastC.-(1).==(c).&amp;&amp;(lastB.patch[Char, scala.collection.immutable.Vector[Char]](c, scala.collection.immutable.Nil, 1)(immutable.this.Vector.canBuildFrom[Char]).==(b)))
+  UndoState.Deleting
+else
+  if (lastC.==(c).&amp;&amp;(lastB.patch[Char, scala.collection.immutable.Vector[Char]](c.-(1), scala.collection.immutable.Nil, 1)(immutable.this.Vector.canBuildFrom[Char]).==(b)))
+    UndoState.Deleting
+  else
+    if (lastC.!=(c).&amp;&amp;(lastB.==(b)))
+      UndoState.Navigating
+    else
+      UndoState.Default
+        </td>
+      </tr><tr>
+        <td>
+          97
+        </td>
+        <td>
+          82744
+        </td>
+        <td>
+          3540
+          -
+          3567
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.Object.==
+        </td>
+        <td style="background: #F0ADAD">
+          lastB.patch[Char, scala.collection.immutable.Vector[Char]](c, scala.collection.immutable.Nil, 1)(immutable.this.Vector.canBuildFrom[Char]).==(b)
+        </td>
+      </tr><tr>
+        <td>
+          97
+        </td>
+        <td>
+          82747
+        </td>
+        <td>
+          3569
+          -
+          3587
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          dotty.tools.repl.terminal.filters.UndoState.Deleting
+        </td>
+        <td style="background: #F0ADAD">
+          UndoState.Deleting
+        </td>
+      </tr><tr>
+        <td>
+          99
+        </td>
+        <td>
+          82750
+        </td>
+        <td>
+          3737
+          -
+          3755
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.repl.terminal.filters.UndoState.Deleting
+        </td>
+        <td style="background: #F0ADAD">
+          UndoState.Deleting
+        </td>
+      </tr><tr>
+        <td>
+          99
+        </td>
+        <td>
+          82759
+        </td>
+        <td>
+          3686
+          -
+          3997
+        </td>
+        <td>
+          If
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          if (lastC.==(c).&amp;&amp;(lastB.patch[Char, scala.collection.immutable.Vector[Char]](c.-(1), scala.collection.immutable.Nil, 1)(immutable.this.Vector.canBuildFrom[Char]).==(b)))
+  UndoState.Deleting
+else
+  if (lastC.!=(c).&amp;&amp;(lastB.==(b)))
+    UndoState.Navigating
+  else
+    UndoState.Default
+        </td>
+      </tr><tr>
+        <td>
+          99
+        </td>
+        <td>
+          82749
+        </td>
+        <td>
+          3690
+          -
+          3735
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Boolean.&amp;&amp;
+        </td>
+        <td style="background: #F0ADAD">
+          lastC.==(c).&amp;&amp;(lastB.patch[Char, scala.collection.immutable.Vector[Char]](c.-(1), scala.collection.immutable.Nil, 1)(immutable.this.Vector.canBuildFrom[Char]).==(b))
+        </td>
+      </tr><tr>
+        <td>
+          99
+        </td>
+        <td>
+          82748
+        </td>
+        <td>
+          3704
+          -
+          3735
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.Object.==
+        </td>
+        <td style="background: #F0ADAD">
+          lastB.patch[Char, scala.collection.immutable.Vector[Char]](c.-(1), scala.collection.immutable.Nil, 1)(immutable.this.Vector.canBuildFrom[Char]).==(b)
+        </td>
+      </tr><tr>
+        <td>
+          99
+        </td>
+        <td>
+          82751
+        </td>
+        <td>
+          3737
+          -
+          3755
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          dotty.tools.repl.terminal.filters.UndoState.Deleting
+        </td>
+        <td style="background: #F0ADAD">
+          UndoState.Deleting
+        </td>
+      </tr><tr>
+        <td>
+          101
+        </td>
+        <td>
+          82758
+        </td>
+        <td>
+          3839
+          -
+          3997
+        </td>
+        <td>
+          If
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          if (lastC.!=(c).&amp;&amp;(lastB.==(b)))
+  UndoState.Navigating
+else
+  UndoState.Default
+        </td>
+      </tr><tr>
+        <td>
+          101
+        </td>
+        <td>
+          82752
+        </td>
+        <td>
+          3857
+          -
+          3867
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.Object.==
+        </td>
+        <td style="background: #F0ADAD">
+          lastB.==(b)
+        </td>
+      </tr><tr>
+        <td>
+          101
+        </td>
+        <td>
+          82755
+        </td>
+        <td>
+          3869
+          -
+          3889
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          dotty.tools.repl.terminal.filters.UndoState.Navigating
+        </td>
+        <td style="background: #F0ADAD">
+          UndoState.Navigating
+        </td>
+      </tr><tr>
+        <td>
+          101
+        </td>
+        <td>
+          82754
+        </td>
+        <td>
+          3869
+          -
+          3889
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.repl.terminal.filters.UndoState.Navigating
+        </td>
+        <td style="background: #F0ADAD">
+          UndoState.Navigating
+        </td>
+      </tr><tr>
+        <td>
+          101
+        </td>
+        <td>
+          82753
+        </td>
+        <td>
+          3843
+          -
+          3867
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Boolean.&amp;&amp;
+        </td>
+        <td style="background: #F0ADAD">
+          lastC.!=(c).&amp;&amp;(lastB.==(b))
+        </td>
+      </tr><tr>
+        <td>
+          103
+        </td>
+        <td>
+          82757
+        </td>
+        <td>
+          3980
+          -
+          3997
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          dotty.tools.repl.terminal.filters.UndoState.Default
+        </td>
+        <td style="background: #F0ADAD">
+          UndoState.Default
+        </td>
+      </tr><tr>
+        <td>
+          103
+        </td>
+        <td>
+          82756
+        </td>
+        <td>
+          3980
+          -
+          3997
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.repl.terminal.filters.UndoState.Default
+        </td>
+        <td style="background: #F0ADAD">
+          UndoState.Default
+        </td>
+      </tr><tr>
+        <td>
+          105
+        </td>
+        <td>
+          82764
+        </td>
+        <td>
+          4061
+          -
+          4085
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.Object.!=
+        </td>
+        <td style="background: #F0ADAD">
+          scala.Tuple2.apply[Vector[Char], Int](lastB, lastC).!=(scala.Tuple2.apply[Vector[Char], Int](b, c))
+        </td>
+      </tr><tr>
+        <td>
+          105
+        </td>
+        <td>
+          82781
+        </td>
+        <td>
+          4087
+          -
+          4704
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          {
+  UndoFilter.this.state_=(newState);
+  UndoFilter.this.undoBuffer.remove(UndoFilter.this.undoBuffer.length.-(UndoFilter.this.undoIndex), UndoFilter.this.undoIndex);
+  UndoFilter.this.undoIndex_=(0);
+  if (UndoFilter.this.undoBuffer.length.==(UndoFilter.this.maxUndo))
+    UndoFilter.this.undoBuffer.remove(0)
+  else
+    ();
+  UndoFilter.this.undoBuffer.append(scala.Predef.ArrowAssoc[Vector[Char]](b).-&gt;[Int](c))
+}
+        </td>
+      </tr><tr>
+        <td>
+          105
+        </td>
+        <td>
+          82763
+        </td>
+        <td>
+          4061
+          -
+          4085
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Tuple2.apply
+        </td>
+        <td style="background: #F0ADAD">
+          scala.Tuple2.apply[Vector[Char], Int](b, c)
+        </td>
+      </tr><tr>
+        <td>
+          105
+        </td>
+        <td>
+          82766
+        </td>
+        <td>
+          4007
+          -
+          4085
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Boolean.||
+        </td>
+        <td style="background: #F0ADAD">
+          UndoFilter.this.state.!=(newState).||(newState.==(UndoState.Default).&amp;&amp;(scala.Tuple2.apply[Vector[Char], Int](lastB, lastC).!=(scala.Tuple2.apply[Vector[Char], Int](b, c))))
+        </td>
+      </tr><tr>
+        <td>
+          105
+        </td>
+        <td>
+          82762
+        </td>
+        <td>
+          4040
+          -
+          4057
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.repl.terminal.filters.UndoState.Default
+        </td>
+        <td style="background: #F0ADAD">
+          UndoState.Default
+        </td>
+      </tr><tr>
+        <td>
+          105
+        </td>
+        <td>
+          82765
+        </td>
+        <td>
+          4028
+          -
+          4085
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Boolean.&amp;&amp;
+        </td>
+        <td style="background: #F0ADAD">
+          newState.==(UndoState.Default).&amp;&amp;(scala.Tuple2.apply[Vector[Char], Int](lastB, lastC).!=(scala.Tuple2.apply[Vector[Char], Int](b, c)))
+        </td>
+      </tr><tr>
+        <td>
+          112
+        </td>
+        <td>
+          82767
+        </td>
+        <td>
+          4501
+          -
+          4517
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.repl.terminal.filters.UndoFilter.state_=
+        </td>
+        <td style="background: #F0ADAD">
+          UndoFilter.this.state_=(newState)
+        </td>
+      </tr><tr>
+        <td>
+          113
+        </td>
+        <td>
+          82770
+        </td>
+        <td>
+          4573
+          -
+          4582
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.repl.terminal.filters.UndoFilter.undoIndex
+        </td>
+        <td style="background: #F0ADAD">
+          UndoFilter.this.undoIndex
+        </td>
+      </tr><tr>
+        <td>
+          113
+        </td>
+        <td>
+          82769
+        </td>
+        <td>
+          4542
+          -
+          4571
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Int.-
+        </td>
+        <td style="background: #F0ADAD">
+          UndoFilter.this.undoBuffer.length.-(UndoFilter.this.undoIndex)
+        </td>
+      </tr><tr>
+        <td>
+          113
+        </td>
+        <td>
+          82768
+        </td>
+        <td>
+          4562
+          -
+          4571
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.repl.terminal.filters.UndoFilter.undoIndex
+        </td>
+        <td style="background: #F0ADAD">
+          UndoFilter.this.undoIndex
+        </td>
+      </tr><tr>
+        <td>
+          113
+        </td>
+        <td>
+          82771
+        </td>
+        <td>
+          4524
+          -
+          4583
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.mutable.BufferLike.remove
+        </td>
+        <td style="background: #F0ADAD">
+          UndoFilter.this.undoBuffer.remove(UndoFilter.this.undoBuffer.length.-(UndoFilter.this.undoIndex), UndoFilter.this.undoIndex)
+        </td>
+      </tr><tr>
+        <td>
+          114
+        </td>
+        <td>
+          82772
+        </td>
+        <td>
+          4590
+          -
+          4603
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.repl.terminal.filters.UndoFilter.undoIndex_=
+        </td>
+        <td style="background: #F0ADAD">
+          UndoFilter.this.undoIndex_=(0)
+        </td>
+      </tr><tr>
+        <td>
+          116
+        </td>
+        <td>
+          82776
+        </td>
+        <td>
+          4645
+          -
+          4665
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          scala.collection.mutable.BufferLike.remove
+        </td>
+        <td style="background: #F0ADAD">
+          UndoFilter.this.undoBuffer.remove(0)
+        </td>
+      </tr><tr>
+        <td>
+          116
+        </td>
+        <td>
+          82773
+        </td>
+        <td>
+          4636
+          -
+          4643
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.repl.terminal.filters.UndoFilter.maxUndo
+        </td>
+        <td style="background: #F0ADAD">
+          UndoFilter.this.maxUndo
+        </td>
+      </tr><tr>
+        <td>
+          116
+        </td>
+        <td>
+          82775
+        </td>
+        <td>
+          4645
+          -
+          4665
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.mutable.BufferLike.remove
+        </td>
+        <td style="background: #F0ADAD">
+          UndoFilter.this.undoBuffer.remove(0)
+        </td>
+      </tr><tr>
+        <td>
+          116
+        </td>
+        <td>
+          82778
+        </td>
+        <td>
+          4611
+          -
+          4611
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          ()
+        </td>
+      </tr><tr>
+        <td>
+          116
+        </td>
+        <td>
+          82777
+        </td>
+        <td>
+          4611
+          -
+          4611
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          ()
+        </td>
+      </tr><tr>
+        <td>
+          116
+        </td>
+        <td>
+          82774
+        </td>
+        <td>
+          4615
+          -
+          4643
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Int.==
+        </td>
+        <td style="background: #F0ADAD">
+          UndoFilter.this.undoBuffer.length.==(UndoFilter.this.maxUndo)
+        </td>
+      </tr><tr>
+        <td>
+          118
+        </td>
+        <td>
+          82779
+        </td>
+        <td>
+          4691
+          -
+          4697
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Predef.ArrowAssoc.-&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          scala.Predef.ArrowAssoc[Vector[Char]](b).-&gt;[Int](c)
+        </td>
+      </tr><tr>
+        <td>
+          118
+        </td>
+        <td>
+          82780
+        </td>
+        <td>
+          4673
+          -
+          4698
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.mutable.BufferLike.append
+        </td>
+        <td style="background: #F0ADAD">
+          UndoFilter.this.undoBuffer.append(scala.Predef.ArrowAssoc[Vector[Char]](b).-&gt;[Int](c))
+        </td>
+      </tr><tr>
+        <td>
+          119
+        </td>
+        <td>
+          82791
+        </td>
+        <td>
+          4710
+          -
+          4710
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          ()
+        </td>
+      </tr><tr>
+        <td>
+          119
+        </td>
+        <td>
+          82782
+        </td>
+        <td>
+          4727
+          -
+          4728
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          0
+        </td>
+      </tr><tr>
+        <td>
+          119
+        </td>
+        <td>
+          82785
+        </td>
+        <td>
+          4732
+          -
+          4775
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.Object.!=
+        </td>
+        <td style="background: #F0ADAD">
+          scala.Tuple2.apply[Vector[Char], Int](b, c).!=(UndoFilter.this.undoBuffer.apply(UndoFilter.this.undoBuffer.length.-(1)))
+        </td>
+      </tr><tr>
+        <td>
+          119
+        </td>
+        <td>
+          82793
+        </td>
+        <td>
+          4710
+          -
+          4833
+        </td>
+        <td>
+          If
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          if (UndoFilter.this.undoIndex.==(0).&amp;&amp;(scala.Tuple2.apply[Vector[Char], Int](b, c).!=(UndoFilter.this.undoBuffer.apply(UndoFilter.this.undoBuffer.length.-(1)))))
+  UndoFilter.this.undoBuffer.update(UndoFilter.this.undoBuffer.length.-(1), scala.Tuple2.apply[Vector[Char], Int](b, c))
+else
+  ()
+        </td>
+      </tr><tr>
+        <td>
+          119
+        </td>
+        <td>
+          82784
+        </td>
+        <td>
+          4742
+          -
+          4775
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.mutable.BufferLike.apply
+        </td>
+        <td style="background: #F0ADAD">
+          UndoFilter.this.undoBuffer.apply(UndoFilter.this.undoBuffer.length.-(1))
+        </td>
+      </tr><tr>
+        <td>
+          119
+        </td>
+        <td>
+          82786
+        </td>
+        <td>
+          4714
+          -
+          4775
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Boolean.&amp;&amp;
+        </td>
+        <td style="background: #F0ADAD">
+          UndoFilter.this.undoIndex.==(0).&amp;&amp;(scala.Tuple2.apply[Vector[Char], Int](b, c).!=(UndoFilter.this.undoBuffer.apply(UndoFilter.this.undoBuffer.length.-(1))))
+        </td>
+      </tr><tr>
+        <td>
+          119
+        </td>
+        <td>
+          82783
+        </td>
+        <td>
+          4753
+          -
+          4774
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Int.-
+        </td>
+        <td style="background: #F0ADAD">
+          UndoFilter.this.undoBuffer.length.-(1)
+        </td>
+      </tr><tr>
+        <td>
+          119
+        </td>
+        <td>
+          82792
+        </td>
+        <td>
+          4710
+          -
+          4710
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          ()
+        </td>
+      </tr><tr>
+        <td>
+          120
+        </td>
+        <td>
+          82788
+        </td>
+        <td>
+          4821
+          -
+          4827
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Tuple2.apply
+        </td>
+        <td style="background: #F0ADAD">
+          scala.Tuple2.apply[Vector[Char], Int](b, c)
+        </td>
+      </tr><tr>
+        <td>
+          120
+        </td>
+        <td>
+          82790
+        </td>
+        <td>
+          4785
+          -
+          4827
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          scala.collection.mutable.BufferLike.update
+        </td>
+        <td style="background: #F0ADAD">
+          UndoFilter.this.undoBuffer.update(UndoFilter.this.undoBuffer.length.-(1), scala.Tuple2.apply[Vector[Char], Int](b, c))
+        </td>
+      </tr><tr>
+        <td>
+          120
+        </td>
+        <td>
+          82787
+        </td>
+        <td>
+          4796
+          -
+          4817
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Int.-
+        </td>
+        <td style="background: #F0ADAD">
+          UndoFilter.this.undoBuffer.length.-(1)
+        </td>
+      </tr><tr>
+        <td>
+          120
+        </td>
+        <td>
+          82789
+        </td>
+        <td>
+          4785
+          -
+          4827
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.mutable.BufferLike.update
+        </td>
+        <td style="background: #F0ADAD">
+          UndoFilter.this.undoBuffer.update(UndoFilter.this.undoBuffer.length.-(1), scala.Tuple2.apply[Vector[Char], Int](b, c))
+        </td>
+      </tr><tr>
+        <td>
+          123
+        </td>
+        <td>
+          82794
+        </td>
+        <td>
+          4839
+          -
+          4855
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.repl.terminal.filters.UndoFilter.state_=
+        </td>
+        <td style="background: #F0ADAD">
+          UndoFilter.this.state_=(newState)
+        </td>
+      </tr><tr>
+        <td>
+          126
+        </td>
+        <td>
+          82808
+        </td>
+        <td>
+          4876
+          -
+          5250
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.repl.terminal.Filter.merge
+        </td>
+        <td style="background: #F0ADAD">
+          terminal.Filter.merge(terminal.Filter.wrap(&quot;undoFilterWrapped&quot;)(((x0$1: dotty.tools.repl.terminal.TermInfo) =&gt; x0$1 match {
+  case terminal.FilterTools.TS.unapply(&lt;unapply-selector&gt;) &lt;unapply&gt; (terminal.LazyList.~:.unapply[Int](&lt;unapply-selector&gt;) &lt;unapply&gt; ((q @ _), (rest @ _)), (b @ _), (c @ _), _) =&gt; {
+    UndoFilter.this.pushUndos(b, c);
+    scala.None
+  }
+})), terminal.Filter.partial(&quot;undoFilter&quot;)(({
+  @SerialVersionUID(value = 0) final &lt;synthetic&gt; class $anonfun extends scala.runtime.AbstractPartialFunction[dotty.tools.repl.terminal.TermInfo,dotty.tools.repl.terminal.TermAction] with Serializable {
+    def &lt;init&gt;(): &lt;$anon: dotty.tools.repl.terminal.TermInfo =&gt; dotty.tools.repl.terminal.TermAction&gt; = {
+      $anonfun.super.&lt;init&gt;();
+      ()
+    };
+    final override def applyOrElse[A1 &lt;: dotty.tools.repl.terminal.TermInfo, B1 &gt;: dotty.tools.repl.terminal.TermAction](x1: A1, default: A1 =&gt; B1): B1 = ((x1.asInstanceOf[dotty.tools.repl.terminal.TermInfo]: dotty.tools.repl.terminal.TermInfo): dotty.tools.repl.terminal.TermInfo @unchecked) match {
+      case terminal.FilterTools.TS.unapply(&lt;unapply-selector&gt;) &lt;unapply&gt; (terminal.LazyList.~:.unapply[Int](&lt;unapply-selector&gt;) &lt;unapply&gt; (31, (rest @ _)), (b @ _), (c @ _), _) =&gt; UndoFilter.this.wrap(UndoFilter.this.undo(b, c), rest)
+      case terminal.FilterTools.TS.unapply(&lt;unapply-selector&gt;) &lt;unapply&gt; (terminal.LazyList.~:.unapply[Int](&lt;unapply-selector&gt;) &lt;unapply&gt; (27, terminal.LazyList.~:.unapply[Int](&lt;unapply-selector&gt;) &lt;unapply&gt; (114, (rest @ _))), (b @ _), (c @ _), _) =&gt; UndoFilter.this.wrap(UndoFilter.this.undo(b, c), rest)
+      case terminal.FilterTools.TS.unapply(&lt;unapply-selector&gt;) &lt;unapply&gt; (terminal.LazyList.~:.unapply[Int](&lt;unapply-selector&gt;) &lt;unapply&gt; (27, terminal.LazyList.~:.unapply[Int](&lt;unapply-selector&gt;) &lt;unapply&gt; (45, (rest @ _))), (b @ _), (c @ _), _) =&gt; UndoFilter.this.wrap(UndoFilter.this.redo(b, c), rest)
+      case (defaultCase$ @ _) =&gt; default.apply(x1)
+    };
+    final def isDefinedAt(x1: dotty.tools.repl.terminal.TermInfo): Boolean = ((x1.asInstanceOf[dotty.tools.repl.terminal.TermInfo]: dotty.tools.repl.terminal.TermInfo): dotty.tools.repl.terminal.TermInfo @unchecked) match {
+      case terminal.FilterTools.TS.unapply(&lt;unapply-selector&gt;) &lt;unapply&gt; (terminal.LazyList.~:.unapply[Int](&lt;unapply-selector&gt;) &lt;unapply&gt; (31, (rest @ _)), (b @ _), (c @ _), _) =&gt; true
+      case terminal.FilterTools.TS.unapply(&lt;unapply-selector&gt;) &lt;unapply&gt; (terminal.LazyList.~:.unapply[Int](&lt;unapply-selector&gt;) &lt;unapply&gt; (27, terminal.LazyList.~:.unapply[Int](&lt;unapply-selector&gt;) &lt;unapply&gt; (114, (rest @ _))), (b @ _), (c @ _), _) =&gt; true
+      case terminal.FilterTools.TS.unapply(&lt;unapply-selector&gt;) &lt;unapply&gt; (terminal.LazyList.~:.unapply[Int](&lt;unapply-selector&gt;) &lt;unapply&gt; (27, terminal.LazyList.~:.unapply[Int](&lt;unapply-selector&gt;) &lt;unapply&gt; (45, (rest @ _))), (b @ _), (c @ _), _) =&gt; true
+      case (defaultCase$ @ _) =&gt; false
+    }
+  };
+  new $anonfun()
+}: PartialFunction[dotty.tools.repl.terminal.TermInfo,dotty.tools.repl.terminal.TermAction])))
+        </td>
+      </tr><tr>
+        <td>
+          127
+        </td>
+        <td>
+          82795
+        </td>
+        <td>
+          4906
+          -
+          4925
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          &quot;undoFilterWrapped&quot;
+        </td>
+      </tr><tr>
+        <td>
+          127
+        </td>
+        <td>
+          82798
+        </td>
+        <td>
+          4894
+          -
+          5008
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.repl.terminal.Filter.wrap
+        </td>
+        <td style="background: #F0ADAD">
+          terminal.Filter.wrap(&quot;undoFilterWrapped&quot;)(((x0$1: dotty.tools.repl.terminal.TermInfo) =&gt; x0$1 match {
+  case terminal.FilterTools.TS.unapply(&lt;unapply-selector&gt;) &lt;unapply&gt; (terminal.LazyList.~:.unapply[Int](&lt;unapply-selector&gt;) &lt;unapply&gt; ((q @ _), (rest @ _)), (b @ _), (c @ _), _) =&gt; {
+    UndoFilter.this.pushUndos(b, c);
+    scala.None
+  }
+}))
+        </td>
+      </tr><tr>
+        <td>
+          129
+        </td>
+        <td>
+          82796
+        </td>
+        <td>
+          4974
+          -
+          4989
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.repl.terminal.filters.UndoFilter.pushUndos
+        </td>
+        <td style="background: #F0ADAD">
+          UndoFilter.this.pushUndos(b, c)
+        </td>
+      </tr><tr>
+        <td>
+          130
+        </td>
+        <td>
+          82797
+        </td>
+        <td>
+          4998
+          -
+          5002
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.None
+        </td>
+        <td style="background: #F0ADAD">
+          scala.None
+        </td>
+      </tr><tr>
+        <td>
+          132
+        </td>
+        <td>
+          82806
+        </td>
+        <td>
+          5043
+          -
+          5043
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.repl.terminal.filters.UndoFilter.$anonfun.&lt;init&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          new $anonfun()
+        </td>
+      </tr><tr>
+        <td>
+          132
+        </td>
+        <td>
+          82799
+        </td>
+        <td>
+          5029
+          -
+          5041
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          &quot;undoFilter&quot;
+        </td>
+      </tr><tr>
+        <td>
+          132
+        </td>
+        <td>
+          82807
+        </td>
+        <td>
+          5014
+          -
+          5246
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.repl.terminal.Filter.partial
+        </td>
+        <td style="background: #F0ADAD">
+          terminal.Filter.partial(&quot;undoFilter&quot;)(({
+  @SerialVersionUID(value = 0) final &lt;synthetic&gt; class $anonfun extends scala.runtime.AbstractPartialFunction[dotty.tools.repl.terminal.TermInfo,dotty.tools.repl.terminal.TermAction] with Serializable {
+    def &lt;init&gt;(): &lt;$anon: dotty.tools.repl.terminal.TermInfo =&gt; dotty.tools.repl.terminal.TermAction&gt; = {
+      $anonfun.super.&lt;init&gt;();
+      ()
+    };
+    final override def applyOrElse[A1 &lt;: dotty.tools.repl.terminal.TermInfo, B1 &gt;: dotty.tools.repl.terminal.TermAction](x1: A1, default: A1 =&gt; B1): B1 = ((x1.asInstanceOf[dotty.tools.repl.terminal.TermInfo]: dotty.tools.repl.terminal.TermInfo): dotty.tools.repl.terminal.TermInfo @unchecked) match {
+      case terminal.FilterTools.TS.unapply(&lt;unapply-selector&gt;) &lt;unapply&gt; (terminal.LazyList.~:.unapply[Int](&lt;unapply-selector&gt;) &lt;unapply&gt; (31, (rest @ _)), (b @ _), (c @ _), _) =&gt; UndoFilter.this.wrap(UndoFilter.this.undo(b, c), rest)
+      case terminal.FilterTools.TS.unapply(&lt;unapply-selector&gt;) &lt;unapply&gt; (terminal.LazyList.~:.unapply[Int](&lt;unapply-selector&gt;) &lt;unapply&gt; (27, terminal.LazyList.~:.unapply[Int](&lt;unapply-selector&gt;) &lt;unapply&gt; (114, (rest @ _))), (b @ _), (c @ _), _) =&gt; UndoFilter.this.wrap(UndoFilter.this.undo(b, c), rest)
+      case terminal.FilterTools.TS.unapply(&lt;unapply-selector&gt;) &lt;unapply&gt; (terminal.LazyList.~:.unapply[Int](&lt;unapply-selector&gt;) &lt;unapply&gt; (27, terminal.LazyList.~:.unapply[Int](&lt;unapply-selector&gt;) &lt;unapply&gt; (45, (rest @ _))), (b @ _), (c @ _), _) =&gt; UndoFilter.this.wrap(UndoFilter.this.redo(b, c), rest)
+      case (defaultCase$ @ _) =&gt; default.apply(x1)
+    };
+    final def isDefinedAt(x1: dotty.tools.repl.terminal.TermInfo): Boolean = ((x1.asInstanceOf[dotty.tools.repl.terminal.TermInfo]: dotty.tools.repl.terminal.TermInfo): dotty.tools.repl.terminal.TermInfo @unchecked) match {
+      case terminal.FilterTools.TS.unapply(&lt;unapply-selector&gt;) &lt;unapply&gt; (terminal.LazyList.~:.unapply[Int](&lt;unapply-selector&gt;) &lt;unapply&gt; (31, (rest @ _)), (b @ _), (c @ _), _) =&gt; true
+      case terminal.FilterTools.TS.unapply(&lt;unapply-selector&gt;) &lt;unapply&gt; (terminal.LazyList.~:.unapply[Int](&lt;unapply-selector&gt;) &lt;unapply&gt; (27, terminal.LazyList.~:.unapply[Int](&lt;unapply-selector&gt;) &lt;unapply&gt; (114, (rest @ _))), (b @ _), (c @ _), _) =&gt; true
+      case terminal.FilterTools.TS.unapply(&lt;unapply-selector&gt;) &lt;unapply&gt; (terminal.LazyList.~:.unapply[Int](&lt;unapply-selector&gt;) &lt;unapply&gt; (27, terminal.LazyList.~:.unapply[Int](&lt;unapply-selector&gt;) &lt;unapply&gt; (45, (rest @ _))), (b @ _), (c @ _), _) =&gt; true
+      case (defaultCase$ @ _) =&gt; false
+    }
+  };
+  new $anonfun()
+}: PartialFunction[dotty.tools.repl.terminal.TermInfo,dotty.tools.repl.terminal.TermAction]))
+        </td>
+      </tr><tr>
+        <td>
+          133
+        </td>
+        <td>
+          82800
+        </td>
+        <td>
+          5088
+          -
+          5098
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.repl.terminal.filters.UndoFilter.undo
+        </td>
+        <td style="background: #F0ADAD">
+          UndoFilter.this.undo(b, c)
+        </td>
+      </tr><tr>
+        <td>
+          133
+        </td>
+        <td>
+          82801
+        </td>
+        <td>
+          5083
+          -
+          5105
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.repl.terminal.filters.UndoFilter.wrap
+        </td>
+        <td style="background: #F0ADAD">
+          UndoFilter.this.wrap(UndoFilter.this.undo(b, c), rest)
+        </td>
+      </tr><tr>
+        <td>
+          134
+        </td>
+        <td>
+          82803
+        </td>
+        <td>
+          5151
+          -
+          5173
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.repl.terminal.filters.UndoFilter.wrap
+        </td>
+        <td style="background: #F0ADAD">
+          UndoFilter.this.wrap(UndoFilter.this.undo(b, c), rest)
+        </td>
+      </tr><tr>
+        <td>
+          134
+        </td>
+        <td>
+          82802
+        </td>
+        <td>
+          5156
+          -
+          5166
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.repl.terminal.filters.UndoFilter.undo
+        </td>
+        <td style="background: #F0ADAD">
+          UndoFilter.this.undo(b, c)
+        </td>
+      </tr><tr>
+        <td>
+          135
+        </td>
+        <td>
+          82805
+        </td>
+        <td>
+          5218
+          -
+          5240
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.repl.terminal.filters.UndoFilter.wrap
+        </td>
+        <td style="background: #F0ADAD">
+          UndoFilter.this.wrap(UndoFilter.this.redo(b, c), rest)
+        </td>
+      </tr><tr>
+        <td>
+          135
+        </td>
+        <td>
+          82804
+        </td>
+        <td>
+          5223
+          -
+          5233
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.repl.terminal.filters.UndoFilter.redo
+        </td>
+        <td style="background: #F0ADAD">
+          UndoFilter.this.redo(b, c)
+        </td>
+      </tr><tr>
+        <td>
+          143
+        </td>
+        <td>
+          82809
+        </td>
+        <td>
+          5347
+          -
+          5371
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.repl.terminal.filters.UndoState.&lt;init&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          new UndoState(&quot;Default&quot;)
+        </td>
+      </tr><tr>
+        <td>
+          144
+        </td>
+        <td>
+          82810
+        </td>
+        <td>
+          5391
+          -
+          5414
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.repl.terminal.filters.UndoState.&lt;init&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          new UndoState(&quot;Typing&quot;)
+        </td>
+      </tr><tr>
+        <td>
+          145
+        </td>
+        <td>
+          82811
+        </td>
+        <td>
+          5434
+          -
+          5459
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.repl.terminal.filters.UndoState.&lt;init&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          new UndoState(&quot;Deleting&quot;)
+        </td>
+      </tr><tr>
+        <td>
+          146
+        </td>
+        <td>
+          82812
+        </td>
+        <td>
+          5479
+          -
+          5506
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.repl.terminal.filters.UndoState.&lt;init&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          new UndoState(&quot;Navigating&quot;)
+        </td>
+      </tr><tr>
+        <td>
+          150
+        </td>
+        <td>
+          82814
+        </td>
+        <td>
+          5552
+          -
+          5622
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.repl.terminal.Ansi.Attr.apply
+        </td>
+        <td style="background: #F0ADAD">
+          terminal.Ansi.Color.Blue.apply(Ansi.this.Str.parse(&quot; ...undoing last action, `Alt -` or `Esc -` to redo&quot;))
+        </td>
+      </tr><tr>
+        <td>
+          150
+        </td>
+        <td>
+          82813
+        </td>
+        <td>
+          5568
+          -
+          5621
+        </td>
+        <td>
+          ApplyImplicitView
+        </td>
+        <td>
+          dotty.tools.repl.terminal.Ansi.Str.parse
+        </td>
+        <td style="background: #F0ADAD">
+          Ansi.this.Str.parse(&quot; ...undoing last action, `Alt -` or `Esc -` to redo&quot;)
+        </td>
+      </tr><tr>
+        <td>
+          151
+        </td>
+        <td>
+          82815
+        </td>
+        <td>
+          5661
+          -
+          5690
+        </td>
+        <td>
+          ApplyImplicitView
+        </td>
+        <td>
+          dotty.tools.repl.terminal.Ansi.Str.parse
+        </td>
+        <td style="background: #F0ADAD">
+          Ansi.this.Str.parse(&quot; ...no more actions to undo&quot;)
+        </td>
+      </tr><tr>
+        <td>
+          151
+        </td>
+        <td>
+          82816
+        </td>
+        <td>
+          5645
+          -
+          5691
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.repl.terminal.Ansi.Attr.apply
+        </td>
+        <td style="background: #F0ADAD">
+          terminal.Ansi.Color.Blue.apply(Ansi.this.Str.parse(&quot; ...no more actions to undo&quot;))
+        </td>
+      </tr><tr>
+        <td>
+          152
+        </td>
+        <td>
+          82818
+        </td>
+        <td>
+          5714
+          -
+          5756
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.repl.terminal.Ansi.Attr.apply
+        </td>
+        <td style="background: #F0ADAD">
+          terminal.Ansi.Color.Blue.apply(Ansi.this.Str.parse(&quot; ...redoing last action&quot;))
+        </td>
+      </tr><tr>
+        <td>
+          152
+        </td>
+        <td>
+          82817
+        </td>
+        <td>
+          5730
+          -
+          5755
+        </td>
+        <td>
+          ApplyImplicitView
+        </td>
+        <td>
+          dotty.tools.repl.terminal.Ansi.Str.parse
+        </td>
+        <td style="background: #F0ADAD">
+          Ansi.this.Str.parse(&quot; ...redoing last action&quot;)
+        </td>
+      </tr><tr>
+        <td>
+          153
+        </td>
+        <td>
+          82820
+        </td>
+        <td>
+          5779
+          -
+          5825
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.repl.terminal.Ansi.Attr.apply
+        </td>
+        <td style="background: #F0ADAD">
+          terminal.Ansi.Color.Blue.apply(Ansi.this.Str.parse(&quot; ...no more actions to redo&quot;))
+        </td>
+      </tr><tr>
+        <td>
+          153
+        </td>
+        <td>
+          82819
+        </td>
+        <td>
+          5795
+          -
+          5824
+        </td>
+        <td>
+          ApplyImplicitView
+        </td>
+        <td>
+          dotty.tools.repl.terminal.Ansi.Str.parse
+        </td>
+        <td style="background: #F0ADAD">
+          Ansi.this.Str.parse(&quot; ...no more actions to redo&quot;)
+        </td>
+      </tr>
+    </table>
+          </div>
+        </div>
+      </body>
+    </html>

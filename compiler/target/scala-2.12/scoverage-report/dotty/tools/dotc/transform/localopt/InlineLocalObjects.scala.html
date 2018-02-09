@@ -1,0 +1,1999 @@
+<html>
+      <head>
+        <meta http-equiv="Content-Type" content="text/html; charset=utf-8"/>
+        <title id="title">
+          dotty/tools/dotc/transform/localopt/InlineLocalObjects.scala.html
+        </title>
+        <script src="https://ajax.googleapis.com/ajax/libs/jquery/1.10.2/jquery.min.js"></script><link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/jquery.tablesorter/2.20.1/css/theme.default.min.css" type="text/css"/><script src="https://cdnjs.cloudflare.com/ajax/libs/jquery.tablesorter/2.20.1/js/jquery.tablesorter.min.js"></script><link rel="stylesheet" href="https://netdna.bootstrapcdn.com/bootstrap/3.0.3/css/bootstrap.min.css" type="text/css"/><script src="https://netdna.bootstrapcdn.com/bootstrap/3.0.3/js/bootstrap.min.js"></script><script type="text/javascript">
+        $(document).ready(function() {$(".tablesorter").tablesorter();});
+      </script>
+        <style>
+          table.codegrid { font-family: monospace; font-size: 12px; width: auto!important; }table.statementlist { width: auto!important; font-size: 13px; } table.codegrid td { padding: 0!important; border: 0!important } table td.linenumber { width: 40px!important; } 
+        </style>
+      </head>
+      <body style="font-family: monospace;">
+        <ul class="nav nav-tabs">
+          <li>
+            <a href="#codegrid" data-toggle="tab">Codegrid</a>
+          </li>
+          <li>
+            <a href="#statementlist" data-toggle="tab">Statement List</a>
+          </li>
+        </ul>
+        <div class="tab-content">
+          <div class="tab-pane active" id="codegrid">
+            <pre style='font-size: 12pt; font-family: courier;'>1 <span style=''>package dotty.tools.dotc
+</span>2 <span style=''>package transform.localopt
+</span>3 <span style=''>
+</span>4 <span style=''>import core.Constants.Constant
+</span>5 <span style=''>import core.Contexts.Context
+</span>6 <span style=''>import core.Decorators._
+</span>7 <span style=''>import core.Names.Name
+</span>8 <span style=''>import core.NameKinds.LocalOptInlineLocalObj
+</span>9 <span style=''>import core.Types.Type
+</span>10 <span style=''>import core.StdNames._
+</span>11 <span style=''>import core.Symbols._
+</span>12 <span style=''>import core.Flags._
+</span>13 <span style=''>import ast.Trees._
+</span>14 <span style=''>import scala.collection.mutable
+</span>15 <span style=''>import scala.collection.mutable.LinkedHashMap
+</span>16 <span style=''>import transform.SymUtils._
+</span>17 <span style=''>import config.Printers.simplify
+</span>18 <span style=''>import Simplify._
+</span>19 <span style=''>
+</span>20 <span style=''>/** Rewrite fields of local instances as vals.
+</span>21 <span style=''> *
+</span>22 <span style=''> *  If a local instance does not escape the local scope, it will be removed
+</span>23 <span style=''> *  later by DropNoEffects, thus implementing the equivalent of (local) multi
+</span>24 <span style=''> *  parameter value classes. The main motivation for this transformation is to
+</span>25 <span style=''> *  get ride of the intermediate tuples object somes created when pattern
+</span>26 <span style=''> *  matching on Scala2 case classes.
+</span>27 <span style=''> */
+</span>28 <span style=''>class InlineLocalObjects(val simplifyPhase: Simplify) extends Optimisation {
+</span>29 <span style=''>  import ast.tpd._
+</span>30 <span style=''>
+</span>31 <span style=''>  // ValDefs whose rhs is a case class instantiation: potential candidates.
+</span>32 <span style=''>  val candidates = </span><span style='background: #AEF1AE'>mutable.HashSet[Symbol]()</span><span style=''>
+</span>33 <span style=''>
+</span>34 <span style=''>  // ValDefs whose lhs is used with `._1` (or any getter call).
+</span>35 <span style=''>  val gettersCalled = </span><span style='background: #AEF1AE'>mutable.HashSet[Symbol]()</span><span style=''>
+</span>36 <span style=''>
+</span>37 <span style=''>  // Immutable sorted map from class to new fields, initialized between visitor and transformer.
+</span>38 <span style=''>  var newFieldsMapping: Map[Symbol, LinkedHashMap[Symbol, Symbol]] = </span><span style='background: #AEF1AE'>null</span><span style=''>
+</span>39 <span style=''>  //                          |                     |       |
+</span>40 <span style=''>  //                          |                     |       New fields, replacements these getters
+</span>41 <span style=''>  //                          |                     Usages of getters of these classes
+</span>42 <span style=''>  //                          ValDefs of the classes that are being torn apart; = candidates.intersect(gettersCalled)
+</span>43 <span style=''>
+</span>44 <span style=''>  def clear(): Unit = {
+</span>45 <span style=''>    </span><span style='background: #AEF1AE'>candidates.clear()</span><span style=''>
+</span>46 <span style=''>    </span><span style='background: #AEF1AE'>gettersCalled.clear()</span><span style=''>
+</span>47 <span style=''>    </span><span style='background: #AEF1AE'>newFieldsMapping = null</span><span style=''>
+</span>48 <span style=''>  }
+</span>49 <span style=''>
+</span>50 <span style=''>  def initNewFieldsMapping()(implicit ctx: Context): Unit =
+</span>51 <span style=''>    if (</span><span style='background: #AEF1AE'>newFieldsMapping == null</span><span style=''>) {
+</span>52 <span style=''>      </span><span style='background: #AEF1AE'>newFieldsMapping = candidates.intersect(gettersCalled).map { refVal =&gt;
+</span>53 <span style=''></span><span style='background: #AEF1AE'>        val accessors = refVal.info.classSymbol.caseAccessors.filter(_.isGetter)
+</span>54 <span style=''></span><span style='background: #AEF1AE'>        val newLocals = accessors.map { x =&gt;
+</span>55 <span style=''></span><span style='background: #AEF1AE'>          val owner: Symbol  = refVal.owner
+</span>56 <span style=''></span><span style='background: #AEF1AE'>          val name:  Name    = LocalOptInlineLocalObj.fresh()
+</span>57 <span style=''></span><span style='background: #AEF1AE'>          val flags: FlagSet = Synthetic
+</span>58 <span style=''></span><span style='background: #AEF1AE'>          val info:  Type    = x.asSeenFrom(refVal.info).info.finalResultType.widenDealias
+</span>59 <span style=''></span><span style='background: #AEF1AE'>          ctx.newSymbol(owner, name, flags, info)
+</span>60 <span style=''></span><span style='background: #AEF1AE'>        }
+</span>61 <span style=''></span><span style='background: #AEF1AE'>        (refVal, LinkedHashMap[Symbol, Symbol](accessors.zip(newLocals): _*))
+</span>62 <span style=''></span><span style='background: #AEF1AE'>      }.toMap</span><span style=''>
+</span>63 <span style=''>    }
+</span>64 <span style=''>
+</span>65 <span style=''>  // Pattern for candidates to this optimisation: ValDefs where the rhs is an
+</span>66 <span style=''>  // immutable case class instantiation.
+</span>67 <span style=''>  object NewCaseClassValDef {
+</span>68 <span style=''>    def unapply(t: ValDef)(implicit ctx: Context): Option[(Tree, List[Tree])] =
+</span>69 <span style=''>      </span><span style='background: #AEF1AE'>t.rhs</span><span style=''> match {
+</span>70 <span style=''>        case Apply(fun, args)
+</span>71 <span style=''>          if </span><span style='background: #AEF1AE'>t.symbol.info.classSymbol.is(CaseClass)                          &amp;&amp; // is rhs a case class?
+</span>72 <span style=''></span><span style='background: #AEF1AE'>             !t.symbol.is(Lazy | Mutable)                                     &amp;&amp; // is lhs a val?
+</span>73 <span style=''></span><span style='background: #AEF1AE'>             !t.symbol.info.classSymbol.caseAccessors.exists(_.is(Mutable))   &amp;&amp; // is the case class immutable?
+</span>74 <span style=''></span><span style='background: #AEF1AE'>             fun.symbol.isConstructor                                         &amp;&amp; // is rhs a new?
+</span>75 <span style=''></span><span style='background: #AEF1AE'>             t.tpe.widenDealias == t.symbol.info.finalResultType.widenDealias</span><span style=''> =&gt; // no case class inheritance or enums
+</span>76 <span style=''>          </span><span style='background: #AEF1AE'>Some((fun, args))</span><span style=''>
+</span>77 <span style=''>        case _ =&gt; </span><span style='background: #AEF1AE'>None</span><span style=''>
+</span>78 <span style=''>      }
+</span>79 <span style=''>  }
+</span>80 <span style=''>
+</span>81 <span style=''>  def visitor(implicit ctx: Context): Tree =&gt; Unit = {
+</span>82 <span style=''>    case t @ NewCaseClassValDef(fun, args) =&gt;
+</span>83 <span style=''>      </span><span style='background: #AEF1AE'>candidates += t.symbol</span><span style=''>
+</span>84 <span style=''>    case t @ Select(qual, _) if </span><span style='background: #AEF1AE'>isImmutableAccessor(t)</span><span style=''> =&gt;
+</span>85 <span style=''>      </span><span style='background: #AEF1AE'>gettersCalled += qual.symbol</span><span style=''>
+</span>86 <span style=''>    case _ </span><span style='background: #AEF1AE'>=&gt;</span><span style=''>
+</span>87 <span style=''>  }
+</span>88 <span style=''>
+</span>89 <span style=''>  def transformer(implicit ctx: Context): Tree =&gt; Tree = {
+</span>90 <span style=''>    </span><span style='background: #AEF1AE'>initNewFieldsMapping()</span><span style=''>;
+</span>91 <span style=''>    {
+</span>92 <span style=''>      case t @ NewCaseClassValDef(fun, args) if </span><span style='background: #AEF1AE'>newFieldsMapping.contains(t.symbol)</span><span style=''> =&gt;
+</span>93 <span style=''>        val newFields     = </span><span style='background: #AEF1AE'>newFieldsMapping(t.symbol).values.toList</span><span style=''>
+</span>94 <span style=''>        val newFieldsDefs = </span><span style='background: #AEF1AE'>newFields.zip(args).map { case (nf, arg) =&gt;
+</span>95 <span style=''></span><span style='background: #AEF1AE'>          val rhs = arg.changeOwnerAfter(t.symbol, nf.symbol, simplifyPhase)
+</span>96 <span style=''></span><span style='background: #AEF1AE'>          ValDef(nf.asTerm, rhs)
+</span>97 <span style=''></span><span style='background: #AEF1AE'>        }</span><span style=''>
+</span>98 <span style=''>        val recreate      = </span><span style='background: #AEF1AE'>cpy.ValDef(t)(rhs = fun.appliedToArgs(newFields.map(x =&gt; ref(x))))</span><span style=''>
+</span>99 <span style=''>        </span><span style='background: #AEF1AE'>simplify.println(</span><span style='background: #F0ADAD'>s&quot;Replacing ${t.symbol.fullName} with stack-allocated fields ($newFields)&quot;</span><span style='background: #AEF1AE'>)</span><span style=''>
+</span>100 <span style=''>        </span><span style='background: #AEF1AE'>Thicket(newFieldsDefs :+ recreate)</span><span style=''>
+</span>101 <span style=''>
+</span>102 <span style=''>      case t @ Select(rec, _) if </span><span style='background: #AEF1AE'>isImmutableAccessor(t)</span><span style=''> =&gt;
+</span>103 <span style=''>        </span><span style='background: #AEF1AE'>newFieldsMapping.getOrElse(rec.symbol, Map.empty[Symbol, Symbol]).get(t.symbol)</span><span style=''> match {
+</span>104 <span style=''>          case None         =&gt; t
+</span>105 <span style=''>          case Some(newSym) =&gt; </span><span style='background: #AEF1AE'>ref(newSym)</span><span style=''>
+</span>106 <span style=''>        }
+</span>107 <span style=''>
+</span>108 <span style=''>      case t =&gt; t
+</span>109 <span style=''>    }
+</span>110 <span style=''>  }
+</span>111 <span style=''>}
+</span></pre>
+          </div>
+          <div class="tab-pane" id="statementlist">
+            <table cellspacing="0" cellpadding="0" class="table statementlist">
+      <tr>
+        <th>Line</th>
+        <th>Stmt Id</th>
+        <th>Pos</th>
+        <th>Tree</th>
+        <th>Symbol</th>
+        <th>Code</th>
+      </tr><tr>
+        <td>
+          32
+        </td>
+        <td>
+          64713
+        </td>
+        <td>
+          1060
+          -
+          1085
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.generic.GenericCompanion.apply
+        </td>
+        <td style="background: #AEF1AE">
+          scala.collection.mutable.HashSet.apply[dotty.tools.dotc.core.Symbols.Symbol]()
+        </td>
+      </tr><tr>
+        <td>
+          35
+        </td>
+        <td>
+          64714
+        </td>
+        <td>
+          1173
+          -
+          1198
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.generic.GenericCompanion.apply
+        </td>
+        <td style="background: #AEF1AE">
+          scala.collection.mutable.HashSet.apply[dotty.tools.dotc.core.Symbols.Symbol]()
+        </td>
+      </tr><tr>
+        <td>
+          38
+        </td>
+        <td>
+          64715
+        </td>
+        <td>
+          1366
+          -
+          1370
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          null
+        </td>
+      </tr><tr>
+        <td>
+          45
+        </td>
+        <td>
+          64716
+        </td>
+        <td>
+          1766
+          -
+          1784
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.mutable.HashSet.clear
+        </td>
+        <td style="background: #AEF1AE">
+          InlineLocalObjects.this.candidates.clear()
+        </td>
+      </tr><tr>
+        <td>
+          46
+        </td>
+        <td>
+          64717
+        </td>
+        <td>
+          1789
+          -
+          1810
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.mutable.HashSet.clear
+        </td>
+        <td style="background: #AEF1AE">
+          InlineLocalObjects.this.gettersCalled.clear()
+        </td>
+      </tr><tr>
+        <td>
+          47
+        </td>
+        <td>
+          64718
+        </td>
+        <td>
+          1815
+          -
+          1838
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.transform.localopt.InlineLocalObjects.newFieldsMapping_=
+        </td>
+        <td style="background: #AEF1AE">
+          InlineLocalObjects.this.newFieldsMapping_=(null)
+        </td>
+      </tr><tr>
+        <td>
+          51
+        </td>
+        <td>
+          64719
+        </td>
+        <td>
+          1912
+          -
+          1936
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.Object.==
+        </td>
+        <td style="background: #AEF1AE">
+          InlineLocalObjects.this.newFieldsMapping.==(null)
+        </td>
+      </tr><tr>
+        <td>
+          51
+        </td>
+        <td>
+          64743
+        </td>
+        <td>
+          1908
+          -
+          1908
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          ()
+        </td>
+      </tr><tr>
+        <td>
+          51
+        </td>
+        <td>
+          64742
+        </td>
+        <td>
+          1908
+          -
+          1908
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          ()
+        </td>
+      </tr><tr>
+        <td>
+          52
+        </td>
+        <td>
+          64737
+        </td>
+        <td>
+          2005
+          -
+          2005
+        </td>
+        <td>
+          TypeApply
+        </td>
+        <td>
+          scala.collection.mutable.HashSet.canBuildFrom
+        </td>
+        <td style="background: #AEF1AE">
+          mutable.this.HashSet.canBuildFrom[(dotty.tools.dotc.core.Symbols.Symbol, scala.collection.mutable.LinkedHashMap[dotty.tools.dotc.core.Symbols.Symbol,dotty.tools.dotc.core.Symbols.Symbol])]
+        </td>
+      </tr><tr>
+        <td>
+          52
+        </td>
+        <td>
+          64740
+        </td>
+        <td>
+          1946
+          -
+          2532
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.transform.localopt.InlineLocalObjects.newFieldsMapping_=
+        </td>
+        <td style="background: #AEF1AE">
+          InlineLocalObjects.this.newFieldsMapping_=(InlineLocalObjects.this.candidates.intersect(InlineLocalObjects.this.gettersCalled).map[(dotty.tools.dotc.core.Symbols.Symbol, scala.collection.mutable.LinkedHashMap[dotty.tools.dotc.core.Symbols.Symbol,dotty.tools.dotc.core.Symbols.Symbol]), scala.collection.mutable.HashSet[(dotty.tools.dotc.core.Symbols.Symbol, scala.collection.mutable.LinkedHashMap[dotty.tools.dotc.core.Symbols.Symbol,dotty.tools.dotc.core.Symbols.Symbol])]](((refVal: dotty.tools.dotc.core.Symbols.Symbol) =&gt; {
+  val accessors: List[dotty.tools.dotc.core.Symbols.Symbol] = transform.SymUtils.decorateSymbol(core.Symbols.toDenot(refVal)(ctx).info(ctx).classSymbol(ctx)).caseAccessors(ctx).filter(((x$1: dotty.tools.dotc.core.Symbols.Symbol) =&gt; core.Symbols.toDenot(x$1)(ctx).isGetter(ctx)));
+  val newLocals: List[dotty.tools.dotc.core.Symbols.Symbol{type ThisName = dotty.tools.dotc.core.Names.Name}] = accessors.map[dotty.tools.dotc.core.Symbols.Symbol{type ThisName = dotty.tools.dotc.core.Names.Name}, List[dotty.tools.dotc.core.Symbols.Symbol{type ThisName = dotty.tools.dotc.core.Names.Name}]](((x: dotty.tools.dotc.core.Symbols.Symbol) =&gt; {
+    val owner: dotty.tools.dotc.core.Symbols.Symbol = core.Symbols.toDenot(refVal)(ctx).owner;
+    val name: dotty.tools.dotc.core.Names.Name = core.NameKinds.LocalOptInlineLocalObj.fresh(core.NameKinds.LocalOptInlineLocalObj.fresh$default$1)(ctx);
+    val flags: dotty.tools.dotc.core.Flags.FlagSet = core.Flags.Synthetic;
+    val info: dotty.tools.dotc.core.Types.Type = core.Symbols.toDenot(x)(ctx).asSeenFrom(core.Symbols.toDenot(refVal)(ctx).info(ctx))(ctx).info(ctx).finalResultType(ctx).widenDealias(ctx);
+    ctx.newSymbol[dotty.tools.dotc.core.Names.Name](owner, name, flags, info, ctx.newSymbol$default$5[Nothing], ctx.newSymbol$default$6[Nothing])
+  }))(immutable.this.List.canBuildFrom[dotty.tools.dotc.core.Symbols.Symbol{type ThisName = dotty.tools.dotc.core.Names.Name}]);
+  scala.Tuple2.apply[dotty.tools.dotc.core.Symbols.Symbol, scala.collection.mutable.LinkedHashMap[dotty.tools.dotc.core.Symbols.Symbol,dotty.tools.dotc.core.Symbols.Symbol]](refVal, scala.collection.mutable.LinkedHashMap.apply[dotty.tools.dotc.core.Symbols.Symbol, dotty.tools.dotc.core.Symbols.Symbol]((accessors.zip[dotty.tools.dotc.core.Symbols.Symbol, dotty.tools.dotc.core.Symbols.Symbol{type ThisName = dotty.tools.dotc.core.Names.Name}, List[(dotty.tools.dotc.core.Symbols.Symbol, dotty.tools.dotc.core.Symbols.Symbol{type ThisName = dotty.tools.dotc.core.Names.Name})]](newLocals)(immutable.this.List.canBuildFrom[(dotty.tools.dotc.core.Symbols.Symbol, dotty.tools.dotc.core.Symbols.Symbol{type ThisName = dotty.tools.dotc.core.Names.Name})]): _*)))
+}))(mutable.this.HashSet.canBuildFrom[(dotty.tools.dotc.core.Symbols.Symbol, scala.collection.mutable.LinkedHashMap[dotty.tools.dotc.core.Symbols.Symbol,dotty.tools.dotc.core.Symbols.Symbol])]).toMap[dotty.tools.dotc.core.Symbols.Symbol, scala.collection.mutable.LinkedHashMap[dotty.tools.dotc.core.Symbols.Symbol,dotty.tools.dotc.core.Symbols.Symbol]](scala.Predef.$conforms[(dotty.tools.dotc.core.Symbols.Symbol, scala.collection.mutable.LinkedHashMap[dotty.tools.dotc.core.Symbols.Symbol,dotty.tools.dotc.core.Symbols.Symbol])]))
+        </td>
+      </tr><tr>
+        <td>
+          52
+        </td>
+        <td>
+          64741
+        </td>
+        <td>
+          1946
+          -
+          2532
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          dotty.tools.dotc.transform.localopt.InlineLocalObjects.newFieldsMapping_=
+        </td>
+        <td style="background: #AEF1AE">
+          InlineLocalObjects.this.newFieldsMapping_=(InlineLocalObjects.this.candidates.intersect(InlineLocalObjects.this.gettersCalled).map[(dotty.tools.dotc.core.Symbols.Symbol, scala.collection.mutable.LinkedHashMap[dotty.tools.dotc.core.Symbols.Symbol,dotty.tools.dotc.core.Symbols.Symbol]), scala.collection.mutable.HashSet[(dotty.tools.dotc.core.Symbols.Symbol, scala.collection.mutable.LinkedHashMap[dotty.tools.dotc.core.Symbols.Symbol,dotty.tools.dotc.core.Symbols.Symbol])]](((refVal: dotty.tools.dotc.core.Symbols.Symbol) =&gt; {
+  val accessors: List[dotty.tools.dotc.core.Symbols.Symbol] = transform.SymUtils.decorateSymbol(core.Symbols.toDenot(refVal)(ctx).info(ctx).classSymbol(ctx)).caseAccessors(ctx).filter(((x$1: dotty.tools.dotc.core.Symbols.Symbol) =&gt; core.Symbols.toDenot(x$1)(ctx).isGetter(ctx)));
+  val newLocals: List[dotty.tools.dotc.core.Symbols.Symbol{type ThisName = dotty.tools.dotc.core.Names.Name}] = accessors.map[dotty.tools.dotc.core.Symbols.Symbol{type ThisName = dotty.tools.dotc.core.Names.Name}, List[dotty.tools.dotc.core.Symbols.Symbol{type ThisName = dotty.tools.dotc.core.Names.Name}]](((x: dotty.tools.dotc.core.Symbols.Symbol) =&gt; {
+    val owner: dotty.tools.dotc.core.Symbols.Symbol = core.Symbols.toDenot(refVal)(ctx).owner;
+    val name: dotty.tools.dotc.core.Names.Name = core.NameKinds.LocalOptInlineLocalObj.fresh(core.NameKinds.LocalOptInlineLocalObj.fresh$default$1)(ctx);
+    val flags: dotty.tools.dotc.core.Flags.FlagSet = core.Flags.Synthetic;
+    val info: dotty.tools.dotc.core.Types.Type = core.Symbols.toDenot(x)(ctx).asSeenFrom(core.Symbols.toDenot(refVal)(ctx).info(ctx))(ctx).info(ctx).finalResultType(ctx).widenDealias(ctx);
+    ctx.newSymbol[dotty.tools.dotc.core.Names.Name](owner, name, flags, info, ctx.newSymbol$default$5[Nothing], ctx.newSymbol$default$6[Nothing])
+  }))(immutable.this.List.canBuildFrom[dotty.tools.dotc.core.Symbols.Symbol{type ThisName = dotty.tools.dotc.core.Names.Name}]);
+  scala.Tuple2.apply[dotty.tools.dotc.core.Symbols.Symbol, scala.collection.mutable.LinkedHashMap[dotty.tools.dotc.core.Symbols.Symbol,dotty.tools.dotc.core.Symbols.Symbol]](refVal, scala.collection.mutable.LinkedHashMap.apply[dotty.tools.dotc.core.Symbols.Symbol, dotty.tools.dotc.core.Symbols.Symbol]((accessors.zip[dotty.tools.dotc.core.Symbols.Symbol, dotty.tools.dotc.core.Symbols.Symbol{type ThisName = dotty.tools.dotc.core.Names.Name}, List[(dotty.tools.dotc.core.Symbols.Symbol, dotty.tools.dotc.core.Symbols.Symbol{type ThisName = dotty.tools.dotc.core.Names.Name})]](newLocals)(immutable.this.List.canBuildFrom[(dotty.tools.dotc.core.Symbols.Symbol, dotty.tools.dotc.core.Symbols.Symbol{type ThisName = dotty.tools.dotc.core.Names.Name})]): _*)))
+}))(mutable.this.HashSet.canBuildFrom[(dotty.tools.dotc.core.Symbols.Symbol, scala.collection.mutable.LinkedHashMap[dotty.tools.dotc.core.Symbols.Symbol,dotty.tools.dotc.core.Symbols.Symbol])]).toMap[dotty.tools.dotc.core.Symbols.Symbol, scala.collection.mutable.LinkedHashMap[dotty.tools.dotc.core.Symbols.Symbol,dotty.tools.dotc.core.Symbols.Symbol]](scala.Predef.$conforms[(dotty.tools.dotc.core.Symbols.Symbol, scala.collection.mutable.LinkedHashMap[dotty.tools.dotc.core.Symbols.Symbol,dotty.tools.dotc.core.Symbols.Symbol])]))
+        </td>
+      </tr><tr>
+        <td>
+          52
+        </td>
+        <td>
+          64720
+        </td>
+        <td>
+          1986
+          -
+          1999
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.transform.localopt.InlineLocalObjects.gettersCalled
+        </td>
+        <td style="background: #AEF1AE">
+          InlineLocalObjects.this.gettersCalled
+        </td>
+      </tr><tr>
+        <td>
+          53
+        </td>
+        <td>
+          64722
+        </td>
+        <td>
+          2086
+          -
+          2096
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.SymDenotations.SymDenotation.isGetter
+        </td>
+        <td style="background: #AEF1AE">
+          core.Symbols.toDenot(x$1)(ctx).isGetter(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          53
+        </td>
+        <td>
+          64721
+        </td>
+        <td>
+          2041
+          -
+          2064
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.Types.Type.classSymbol
+        </td>
+        <td style="background: #AEF1AE">
+          core.Symbols.toDenot(refVal)(ctx).info(ctx).classSymbol(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          53
+        </td>
+        <td>
+          64723
+        </td>
+        <td>
+          2041
+          -
+          2097
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.TraversableLike.filter
+        </td>
+        <td style="background: #AEF1AE">
+          transform.SymUtils.decorateSymbol(core.Symbols.toDenot(refVal)(ctx).info(ctx).classSymbol(ctx)).caseAccessors(ctx).filter(((x$1: dotty.tools.dotc.core.Symbols.Symbol) =&gt; core.Symbols.toDenot(x$1)(ctx).isGetter(ctx)))
+        </td>
+      </tr><tr>
+        <td>
+          54
+        </td>
+        <td>
+          64731
+        </td>
+        <td>
+          2136
+          -
+          2136
+        </td>
+        <td>
+          TypeApply
+        </td>
+        <td>
+          scala.collection.immutable.List.canBuildFrom
+        </td>
+        <td style="background: #AEF1AE">
+          immutable.this.List.canBuildFrom[dotty.tools.dotc.core.Symbols.Symbol{type ThisName = dotty.tools.dotc.core.Names.Name}]
+        </td>
+      </tr><tr>
+        <td>
+          54
+        </td>
+        <td>
+          64732
+        </td>
+        <td>
+          2122
+          -
+          2440
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          scala.collection.immutable.List.map
+        </td>
+        <td style="background: #AEF1AE">
+          accessors.map[dotty.tools.dotc.core.Symbols.Symbol{type ThisName = dotty.tools.dotc.core.Names.Name}, List[dotty.tools.dotc.core.Symbols.Symbol{type ThisName = dotty.tools.dotc.core.Names.Name}]](((x: dotty.tools.dotc.core.Symbols.Symbol) =&gt; {
+  val owner: dotty.tools.dotc.core.Symbols.Symbol = core.Symbols.toDenot(refVal)(ctx).owner;
+  val name: dotty.tools.dotc.core.Names.Name = core.NameKinds.LocalOptInlineLocalObj.fresh(core.NameKinds.LocalOptInlineLocalObj.fresh$default$1)(ctx);
+  val flags: dotty.tools.dotc.core.Flags.FlagSet = core.Flags.Synthetic;
+  val info: dotty.tools.dotc.core.Types.Type = core.Symbols.toDenot(x)(ctx).asSeenFrom(core.Symbols.toDenot(refVal)(ctx).info(ctx))(ctx).info(ctx).finalResultType(ctx).widenDealias(ctx);
+  ctx.newSymbol[dotty.tools.dotc.core.Names.Name](owner, name, flags, info, ctx.newSymbol$default$5[Nothing], ctx.newSymbol$default$6[Nothing])
+}))(immutable.this.List.canBuildFrom[dotty.tools.dotc.core.Symbols.Symbol{type ThisName = dotty.tools.dotc.core.Names.Name}])
+        </td>
+      </tr><tr>
+        <td>
+          55
+        </td>
+        <td>
+          64724
+        </td>
+        <td>
+          2174
+          -
+          2186
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.SymDenotations.SymDenotation.owner
+        </td>
+        <td style="background: #AEF1AE">
+          core.Symbols.toDenot(refVal)(ctx).owner
+        </td>
+      </tr><tr>
+        <td>
+          56
+        </td>
+        <td>
+          64725
+        </td>
+        <td>
+          2218
+          -
+          2248
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.NameKinds.UniqueNameKind.fresh
+        </td>
+        <td style="background: #AEF1AE">
+          core.NameKinds.LocalOptInlineLocalObj.fresh(core.NameKinds.LocalOptInlineLocalObj.fresh$default$1)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          57
+        </td>
+        <td>
+          64726
+        </td>
+        <td>
+          2280
+          -
+          2289
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Flags.Synthetic
+        </td>
+        <td style="background: #AEF1AE">
+          core.Flags.Synthetic
+        </td>
+      </tr><tr>
+        <td>
+          58
+        </td>
+        <td>
+          64727
+        </td>
+        <td>
+          2321
+          -
+          2380
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.Types.Type.widenDealias
+        </td>
+        <td style="background: #AEF1AE">
+          core.Symbols.toDenot(x)(ctx).asSeenFrom(core.Symbols.toDenot(refVal)(ctx).info(ctx))(ctx).info(ctx).finalResultType(ctx).widenDealias(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          59
+        </td>
+        <td>
+          64728
+        </td>
+        <td>
+          2395
+          -
+          2395
+        </td>
+        <td>
+          TypeApply
+        </td>
+        <td>
+          dotty.tools.dotc.core.Symbols.newSymbol$default$5
+        </td>
+        <td style="background: #AEF1AE">
+          ctx.newSymbol$default$5[Nothing]
+        </td>
+      </tr><tr>
+        <td>
+          59
+        </td>
+        <td>
+          64730
+        </td>
+        <td>
+          2391
+          -
+          2430
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.core.Symbols.newSymbol
+        </td>
+        <td style="background: #AEF1AE">
+          ctx.newSymbol[dotty.tools.dotc.core.Names.Name](owner, name, flags, info, ctx.newSymbol$default$5[Nothing], ctx.newSymbol$default$6[Nothing])
+        </td>
+      </tr><tr>
+        <td>
+          59
+        </td>
+        <td>
+          64729
+        </td>
+        <td>
+          2395
+          -
+          2395
+        </td>
+        <td>
+          TypeApply
+        </td>
+        <td>
+          dotty.tools.dotc.core.Symbols.newSymbol$default$6
+        </td>
+        <td style="background: #AEF1AE">
+          ctx.newSymbol$default$6[Nothing]
+        </td>
+      </tr><tr>
+        <td>
+          61
+        </td>
+        <td>
+          64734
+        </td>
+        <td>
+          2488
+          -
+          2512
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          scala.collection.IterableLike.zip
+        </td>
+        <td style="background: #AEF1AE">
+          accessors.zip[dotty.tools.dotc.core.Symbols.Symbol, dotty.tools.dotc.core.Symbols.Symbol{type ThisName = dotty.tools.dotc.core.Names.Name}, List[(dotty.tools.dotc.core.Symbols.Symbol, dotty.tools.dotc.core.Symbols.Symbol{type ThisName = dotty.tools.dotc.core.Names.Name})]](newLocals)(immutable.this.List.canBuildFrom[(dotty.tools.dotc.core.Symbols.Symbol, dotty.tools.dotc.core.Symbols.Symbol{type ThisName = dotty.tools.dotc.core.Names.Name})])
+        </td>
+      </tr><tr>
+        <td>
+          61
+        </td>
+        <td>
+          64733
+        </td>
+        <td>
+          2501
+          -
+          2501
+        </td>
+        <td>
+          TypeApply
+        </td>
+        <td>
+          scala.collection.immutable.List.canBuildFrom
+        </td>
+        <td style="background: #AEF1AE">
+          immutable.this.List.canBuildFrom[(dotty.tools.dotc.core.Symbols.Symbol, dotty.tools.dotc.core.Symbols.Symbol{type ThisName = dotty.tools.dotc.core.Names.Name})]
+        </td>
+      </tr><tr>
+        <td>
+          61
+        </td>
+        <td>
+          64736
+        </td>
+        <td>
+          2449
+          -
+          2518
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Tuple2.apply
+        </td>
+        <td style="background: #AEF1AE">
+          scala.Tuple2.apply[dotty.tools.dotc.core.Symbols.Symbol, scala.collection.mutable.LinkedHashMap[dotty.tools.dotc.core.Symbols.Symbol,dotty.tools.dotc.core.Symbols.Symbol]](refVal, scala.collection.mutable.LinkedHashMap.apply[dotty.tools.dotc.core.Symbols.Symbol, dotty.tools.dotc.core.Symbols.Symbol]((accessors.zip[dotty.tools.dotc.core.Symbols.Symbol, dotty.tools.dotc.core.Symbols.Symbol{type ThisName = dotty.tools.dotc.core.Names.Name}, List[(dotty.tools.dotc.core.Symbols.Symbol, dotty.tools.dotc.core.Symbols.Symbol{type ThisName = dotty.tools.dotc.core.Names.Name})]](newLocals)(immutable.this.List.canBuildFrom[(dotty.tools.dotc.core.Symbols.Symbol, dotty.tools.dotc.core.Symbols.Symbol{type ThisName = dotty.tools.dotc.core.Names.Name})]): _*)))
+        </td>
+      </tr><tr>
+        <td>
+          61
+        </td>
+        <td>
+          64735
+        </td>
+        <td>
+          2458
+          -
+          2517
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.generic.GenMapFactory.apply
+        </td>
+        <td style="background: #AEF1AE">
+          scala.collection.mutable.LinkedHashMap.apply[dotty.tools.dotc.core.Symbols.Symbol, dotty.tools.dotc.core.Symbols.Symbol]((accessors.zip[dotty.tools.dotc.core.Symbols.Symbol, dotty.tools.dotc.core.Symbols.Symbol{type ThisName = dotty.tools.dotc.core.Names.Name}, List[(dotty.tools.dotc.core.Symbols.Symbol, dotty.tools.dotc.core.Symbols.Symbol{type ThisName = dotty.tools.dotc.core.Names.Name})]](newLocals)(immutable.this.List.canBuildFrom[(dotty.tools.dotc.core.Symbols.Symbol, dotty.tools.dotc.core.Symbols.Symbol{type ThisName = dotty.tools.dotc.core.Names.Name})]): _*))
+        </td>
+      </tr><tr>
+        <td>
+          62
+        </td>
+        <td>
+          64739
+        </td>
+        <td>
+          1965
+          -
+          2532
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          scala.collection.TraversableOnce.toMap
+        </td>
+        <td style="background: #AEF1AE">
+          InlineLocalObjects.this.candidates.intersect(InlineLocalObjects.this.gettersCalled).map[(dotty.tools.dotc.core.Symbols.Symbol, scala.collection.mutable.LinkedHashMap[dotty.tools.dotc.core.Symbols.Symbol,dotty.tools.dotc.core.Symbols.Symbol]), scala.collection.mutable.HashSet[(dotty.tools.dotc.core.Symbols.Symbol, scala.collection.mutable.LinkedHashMap[dotty.tools.dotc.core.Symbols.Symbol,dotty.tools.dotc.core.Symbols.Symbol])]](((refVal: dotty.tools.dotc.core.Symbols.Symbol) =&gt; {
+  val accessors: List[dotty.tools.dotc.core.Symbols.Symbol] = transform.SymUtils.decorateSymbol(core.Symbols.toDenot(refVal)(ctx).info(ctx).classSymbol(ctx)).caseAccessors(ctx).filter(((x$1: dotty.tools.dotc.core.Symbols.Symbol) =&gt; core.Symbols.toDenot(x$1)(ctx).isGetter(ctx)));
+  val newLocals: List[dotty.tools.dotc.core.Symbols.Symbol{type ThisName = dotty.tools.dotc.core.Names.Name}] = accessors.map[dotty.tools.dotc.core.Symbols.Symbol{type ThisName = dotty.tools.dotc.core.Names.Name}, List[dotty.tools.dotc.core.Symbols.Symbol{type ThisName = dotty.tools.dotc.core.Names.Name}]](((x: dotty.tools.dotc.core.Symbols.Symbol) =&gt; {
+    val owner: dotty.tools.dotc.core.Symbols.Symbol = core.Symbols.toDenot(refVal)(ctx).owner;
+    val name: dotty.tools.dotc.core.Names.Name = core.NameKinds.LocalOptInlineLocalObj.fresh(core.NameKinds.LocalOptInlineLocalObj.fresh$default$1)(ctx);
+    val flags: dotty.tools.dotc.core.Flags.FlagSet = core.Flags.Synthetic;
+    val info: dotty.tools.dotc.core.Types.Type = core.Symbols.toDenot(x)(ctx).asSeenFrom(core.Symbols.toDenot(refVal)(ctx).info(ctx))(ctx).info(ctx).finalResultType(ctx).widenDealias(ctx);
+    ctx.newSymbol[dotty.tools.dotc.core.Names.Name](owner, name, flags, info, ctx.newSymbol$default$5[Nothing], ctx.newSymbol$default$6[Nothing])
+  }))(immutable.this.List.canBuildFrom[dotty.tools.dotc.core.Symbols.Symbol{type ThisName = dotty.tools.dotc.core.Names.Name}]);
+  scala.Tuple2.apply[dotty.tools.dotc.core.Symbols.Symbol, scala.collection.mutable.LinkedHashMap[dotty.tools.dotc.core.Symbols.Symbol,dotty.tools.dotc.core.Symbols.Symbol]](refVal, scala.collection.mutable.LinkedHashMap.apply[dotty.tools.dotc.core.Symbols.Symbol, dotty.tools.dotc.core.Symbols.Symbol]((accessors.zip[dotty.tools.dotc.core.Symbols.Symbol, dotty.tools.dotc.core.Symbols.Symbol{type ThisName = dotty.tools.dotc.core.Names.Name}, List[(dotty.tools.dotc.core.Symbols.Symbol, dotty.tools.dotc.core.Symbols.Symbol{type ThisName = dotty.tools.dotc.core.Names.Name})]](newLocals)(immutable.this.List.canBuildFrom[(dotty.tools.dotc.core.Symbols.Symbol, dotty.tools.dotc.core.Symbols.Symbol{type ThisName = dotty.tools.dotc.core.Names.Name})]): _*)))
+}))(mutable.this.HashSet.canBuildFrom[(dotty.tools.dotc.core.Symbols.Symbol, scala.collection.mutable.LinkedHashMap[dotty.tools.dotc.core.Symbols.Symbol,dotty.tools.dotc.core.Symbols.Symbol])]).toMap[dotty.tools.dotc.core.Symbols.Symbol, scala.collection.mutable.LinkedHashMap[dotty.tools.dotc.core.Symbols.Symbol,dotty.tools.dotc.core.Symbols.Symbol]](scala.Predef.$conforms[(dotty.tools.dotc.core.Symbols.Symbol, scala.collection.mutable.LinkedHashMap[dotty.tools.dotc.core.Symbols.Symbol,dotty.tools.dotc.core.Symbols.Symbol])])
+        </td>
+      </tr><tr>
+        <td>
+          62
+        </td>
+        <td>
+          64738
+        </td>
+        <td>
+          2527
+          -
+          2527
+        </td>
+        <td>
+          TypeApply
+        </td>
+        <td>
+          scala.Predef.$conforms
+        </td>
+        <td style="background: #AEF1AE">
+          scala.Predef.$conforms[(dotty.tools.dotc.core.Symbols.Symbol, scala.collection.mutable.LinkedHashMap[dotty.tools.dotc.core.Symbols.Symbol,dotty.tools.dotc.core.Symbols.Symbol])]
+        </td>
+      </tr><tr>
+        <td>
+          69
+        </td>
+        <td>
+          64744
+        </td>
+        <td>
+          2775
+          -
+          2780
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Trees.ValOrDefDef.rhs
+        </td>
+        <td style="background: #AEF1AE">
+          t.rhs(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          71
+        </td>
+        <td>
+          64746
+        </td>
+        <td>
+          2861
+          -
+          2870
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Flags.CaseClass
+        </td>
+        <td style="background: #AEF1AE">
+          core.Flags.CaseClass
+        </td>
+      </tr><tr>
+        <td>
+          71
+        </td>
+        <td>
+          64745
+        </td>
+        <td>
+          2832
+          -
+          2857
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.Types.Type.classSymbol
+        </td>
+        <td style="background: #AEF1AE">
+          core.Symbols.toDenot(t.symbol(ctx))(ctx).info(ctx).classSymbol(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          72
+        </td>
+        <td>
+          64749
+        </td>
+        <td>
+          2950
+          -
+          2964
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.core.Flags.FlagSet.|
+        </td>
+        <td style="background: #AEF1AE">
+          core.Flags.Lazy.|(core.Flags.Mutable)
+        </td>
+      </tr><tr>
+        <td>
+          72
+        </td>
+        <td>
+          64748
+        </td>
+        <td>
+          2957
+          -
+          2964
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Flags.Mutable
+        </td>
+        <td style="background: #AEF1AE">
+          core.Flags.Mutable
+        </td>
+      </tr><tr>
+        <td>
+          72
+        </td>
+        <td>
+          64747
+        </td>
+        <td>
+          2938
+          -
+          2946
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Trees.Tree.symbol
+        </td>
+        <td style="background: #AEF1AE">
+          t.symbol(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          72
+        </td>
+        <td>
+          64750
+        </td>
+        <td>
+          2937
+          -
+          2965
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.Boolean.unary_!
+        </td>
+        <td style="background: #AEF1AE">
+          core.Symbols.toDenot(t.symbol(ctx))(ctx).is(core.Flags.Lazy.|(core.Flags.Mutable))(ctx).unary_!
+        </td>
+      </tr><tr>
+        <td>
+          73
+        </td>
+        <td>
+          64752
+        </td>
+        <td>
+          3083
+          -
+          3096
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.SymDenotations.SymDenotation.is
+        </td>
+        <td style="background: #AEF1AE">
+          core.Symbols.toDenot(x$2)(ctx).is(core.Flags.Mutable)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          73
+        </td>
+        <td>
+          64751
+        </td>
+        <td>
+          3036
+          -
+          3061
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.Types.Type.classSymbol
+        </td>
+        <td style="background: #AEF1AE">
+          core.Symbols.toDenot(t.symbol(ctx))(ctx).info(ctx).classSymbol(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          73
+        </td>
+        <td>
+          64753
+        </td>
+        <td>
+          3035
+          -
+          3097
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.Boolean.unary_!
+        </td>
+        <td style="background: #AEF1AE">
+          transform.SymUtils.decorateSymbol(core.Symbols.toDenot(t.symbol(ctx))(ctx).info(ctx).classSymbol(ctx)).caseAccessors(ctx).exists(((x$2: dotty.tools.dotc.core.Symbols.Symbol) =&gt; core.Symbols.toDenot(x$2)(ctx).is(core.Flags.Mutable)(ctx))).unary_!
+        </td>
+      </tr><tr>
+        <td>
+          74
+        </td>
+        <td>
+          64755
+        </td>
+        <td>
+          3148
+          -
+          3172
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.SymDenotations.SymDenotation.isConstructor
+        </td>
+        <td style="background: #AEF1AE">
+          core.Symbols.toDenot(fun.symbol(ctx))(ctx).isConstructor
+        </td>
+      </tr><tr>
+        <td>
+          74
+        </td>
+        <td>
+          64758
+        </td>
+        <td>
+          2832
+          -
+          3310
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Boolean.&amp;&amp;
+        </td>
+        <td style="background: #AEF1AE">
+          core.Symbols.toDenot(core.Symbols.toDenot(t.symbol(ctx))(ctx).info(ctx).classSymbol(ctx))(ctx).is(core.Flags.CaseClass)(ctx).&amp;&amp;(core.Symbols.toDenot(t.symbol(ctx))(ctx).is(core.Flags.Lazy.|(core.Flags.Mutable))(ctx).unary_!).&amp;&amp;(transform.SymUtils.decorateSymbol(core.Symbols.toDenot(t.symbol(ctx))(ctx).info(ctx).classSymbol(ctx)).caseAccessors(ctx).exists(((x$2: dotty.tools.dotc.core.Symbols.Symbol) =&gt; core.Symbols.toDenot(x$2)(ctx).is(core.Flags.Mutable)(ctx))).unary_!).&amp;&amp;(core.Symbols.toDenot(fun.symbol(ctx))(ctx).isConstructor).&amp;&amp;(t.tpe.widenDealias(ctx).==(core.Symbols.toDenot(t.symbol(ctx))(ctx).info(ctx).finalResultType(ctx).widenDealias(ctx)))
+        </td>
+      </tr><tr>
+        <td>
+          74
+        </td>
+        <td>
+          64754
+        </td>
+        <td>
+          3148
+          -
+          3158
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Trees.Tree.symbol
+        </td>
+        <td style="background: #AEF1AE">
+          fun.symbol(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          75
+        </td>
+        <td>
+          64757
+        </td>
+        <td>
+          3246
+          -
+          3310
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.Object.==
+        </td>
+        <td style="background: #AEF1AE">
+          t.tpe.widenDealias(ctx).==(core.Symbols.toDenot(t.symbol(ctx))(ctx).info(ctx).finalResultType(ctx).widenDealias(ctx))
+        </td>
+      </tr><tr>
+        <td>
+          75
+        </td>
+        <td>
+          64756
+        </td>
+        <td>
+          3268
+          -
+          3310
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.Types.Type.widenDealias
+        </td>
+        <td style="background: #AEF1AE">
+          core.Symbols.toDenot(t.symbol(ctx))(ctx).info(ctx).finalResultType(ctx).widenDealias(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          76
+        </td>
+        <td>
+          64760
+        </td>
+        <td>
+          3362
+          -
+          3379
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Some.apply
+        </td>
+        <td style="background: #AEF1AE">
+          scala.Some.apply[(dotty.tools.dotc.ast.Trees.Tree[dotty.tools.dotc.core.Types.Type], List[dotty.tools.dotc.ast.Trees.Tree[dotty.tools.dotc.core.Types.Type]])](scala.Tuple2.apply[dotty.tools.dotc.ast.Trees.Tree[dotty.tools.dotc.core.Types.Type], List[dotty.tools.dotc.ast.Trees.Tree[dotty.tools.dotc.core.Types.Type]]](fun, args))
+        </td>
+      </tr><tr>
+        <td>
+          76
+        </td>
+        <td>
+          64759
+        </td>
+        <td>
+          3367
+          -
+          3378
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Tuple2.apply
+        </td>
+        <td style="background: #AEF1AE">
+          scala.Tuple2.apply[dotty.tools.dotc.ast.Trees.Tree[dotty.tools.dotc.core.Types.Type], List[dotty.tools.dotc.ast.Trees.Tree[dotty.tools.dotc.core.Types.Type]]](fun, args)
+        </td>
+      </tr><tr>
+        <td>
+          77
+        </td>
+        <td>
+          64761
+        </td>
+        <td>
+          3398
+          -
+          3402
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.None
+        </td>
+        <td style="background: #AEF1AE">
+          scala.None
+        </td>
+      </tr><tr>
+        <td>
+          83
+        </td>
+        <td>
+          64764
+        </td>
+        <td>
+          3534
+          -
+          3534
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          ()
+        </td>
+      </tr><tr>
+        <td>
+          83
+        </td>
+        <td>
+          64763
+        </td>
+        <td>
+          3523
+          -
+          3545
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.mutable.HashSet.+=
+        </td>
+        <td style="background: #AEF1AE">
+          InlineLocalObjects.this.candidates.+=(t.symbol(ctx))
+        </td>
+      </tr><tr>
+        <td>
+          83
+        </td>
+        <td>
+          64762
+        </td>
+        <td>
+          3537
+          -
+          3545
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Trees.Tree.symbol
+        </td>
+        <td style="background: #AEF1AE">
+          t.symbol(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          84
+        </td>
+        <td>
+          64765
+        </td>
+        <td>
+          3578
+          -
+          3600
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.transform.localopt.Simplify.isImmutableAccessor
+        </td>
+        <td style="background: #AEF1AE">
+          Simplify.isImmutableAccessor(t)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          85
+        </td>
+        <td>
+          64767
+        </td>
+        <td>
+          3610
+          -
+          3638
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.mutable.HashSet.+=
+        </td>
+        <td style="background: #AEF1AE">
+          InlineLocalObjects.this.gettersCalled.+=(qual.symbol(ctx))
+        </td>
+      </tr><tr>
+        <td>
+          85
+        </td>
+        <td>
+          64766
+        </td>
+        <td>
+          3627
+          -
+          3638
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Trees.Tree.symbol
+        </td>
+        <td style="background: #AEF1AE">
+          qual.symbol(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          85
+        </td>
+        <td>
+          64768
+        </td>
+        <td>
+          3624
+          -
+          3624
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          ()
+        </td>
+      </tr><tr>
+        <td>
+          86
+        </td>
+        <td>
+          64769
+        </td>
+        <td>
+          3650
+          -
+          3652
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          ()
+        </td>
+      </tr><tr>
+        <td>
+          90
+        </td>
+        <td>
+          64770
+        </td>
+        <td>
+          3721
+          -
+          3743
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.transform.localopt.InlineLocalObjects.initNewFieldsMapping
+        </td>
+        <td style="background: #AEF1AE">
+          InlineLocalObjects.this.initNewFieldsMapping()(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          92
+        </td>
+        <td>
+          64772
+        </td>
+        <td>
+          3799
+          -
+          3834
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.MapLike.contains
+        </td>
+        <td style="background: #AEF1AE">
+          InlineLocalObjects.this.newFieldsMapping.contains(t.symbol(ctx))
+        </td>
+      </tr><tr>
+        <td>
+          92
+        </td>
+        <td>
+          64771
+        </td>
+        <td>
+          3825
+          -
+          3833
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Trees.Tree.symbol
+        </td>
+        <td style="background: #AEF1AE">
+          t.symbol(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          93
+        </td>
+        <td>
+          64773
+        </td>
+        <td>
+          3883
+          -
+          3891
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Trees.Tree.symbol
+        </td>
+        <td style="background: #AEF1AE">
+          t.symbol(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          93
+        </td>
+        <td>
+          64774
+        </td>
+        <td>
+          3866
+          -
+          3906
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.collection.TraversableOnce.toList
+        </td>
+        <td style="background: #AEF1AE">
+          InlineLocalObjects.this.newFieldsMapping.apply(t.symbol(ctx)).values.toList
+        </td>
+      </tr><tr>
+        <td>
+          94
+        </td>
+        <td>
+          64779
+        </td>
+        <td>
+          3935
+          -
+          4098
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          scala.collection.immutable.List.map
+        </td>
+        <td style="background: #AEF1AE">
+          newFields.zip[dotty.tools.dotc.core.Symbols.Symbol, dotty.tools.dotc.ast.tpd.Tree, List[(dotty.tools.dotc.core.Symbols.Symbol, dotty.tools.dotc.ast.tpd.Tree)]](args)(immutable.this.List.canBuildFrom[(dotty.tools.dotc.core.Symbols.Symbol, dotty.tools.dotc.ast.tpd.Tree)]).map[dotty.tools.dotc.ast.tpd.ValDef, List[dotty.tools.dotc.ast.tpd.ValDef]](((x0$3: (dotty.tools.dotc.core.Symbols.Symbol, dotty.tools.dotc.ast.tpd.Tree)) =&gt; x0$3 match {
+  case (_1: dotty.tools.dotc.core.Symbols.Symbol, _2: dotty.tools.dotc.ast.tpd.Tree)(dotty.tools.dotc.core.Symbols.Symbol, dotty.tools.dotc.ast.tpd.Tree)((nf @ _), (arg @ _)) =&gt; {
+    val rhs: dotty.tools.dotc.ast.tpd.Tree = ast.tpd.TreeOps[dotty.tools.dotc.ast.tpd.Tree](arg).changeOwnerAfter(t.symbol(ctx), core.Symbols.toDenot(nf)(ctx).symbol, InlineLocalObjects.this.simplifyPhase)(ctx);
+    ast.tpd.ValDef(nf.asTerm(ctx), rhs)(ctx)
+  }
+}))(immutable.this.List.canBuildFrom[dotty.tools.dotc.ast.tpd.ValDef])
+        </td>
+      </tr><tr>
+        <td>
+          94
+        </td>
+        <td>
+          64775
+        </td>
+        <td>
+          3948
+          -
+          3948
+        </td>
+        <td>
+          TypeApply
+        </td>
+        <td>
+          scala.collection.immutable.List.canBuildFrom
+        </td>
+        <td style="background: #AEF1AE">
+          immutable.this.List.canBuildFrom[(dotty.tools.dotc.core.Symbols.Symbol, dotty.tools.dotc.ast.tpd.Tree)]
+        </td>
+      </tr><tr>
+        <td>
+          94
+        </td>
+        <td>
+          64778
+        </td>
+        <td>
+          3959
+          -
+          3959
+        </td>
+        <td>
+          TypeApply
+        </td>
+        <td>
+          scala.collection.immutable.List.canBuildFrom
+        </td>
+        <td style="background: #AEF1AE">
+          immutable.this.List.canBuildFrom[dotty.tools.dotc.ast.tpd.ValDef]
+        </td>
+      </tr><tr>
+        <td>
+          95
+        </td>
+        <td>
+          64776
+        </td>
+        <td>
+          3999
+          -
+          4055
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.tpd.TreeOps.changeOwnerAfter
+        </td>
+        <td style="background: #AEF1AE">
+          ast.tpd.TreeOps[dotty.tools.dotc.ast.tpd.Tree](arg).changeOwnerAfter(t.symbol(ctx), core.Symbols.toDenot(nf)(ctx).symbol, InlineLocalObjects.this.simplifyPhase)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          96
+        </td>
+        <td>
+          64777
+        </td>
+        <td>
+          4066
+          -
+          4088
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.tpd.ValDef
+        </td>
+        <td style="background: #AEF1AE">
+          ast.tpd.ValDef(nf.asTerm(ctx), rhs)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          98
+        </td>
+        <td>
+          64782
+        </td>
+        <td>
+          4137
+          -
+          4137
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Trees.Instance.TreeCopier.ValDef$default$3
+        </td>
+        <td style="background: #AEF1AE">
+          ast.tpd.cpy.ValDef$default$3(x$3)
+        </td>
+      </tr><tr>
+        <td>
+          98
+        </td>
+        <td>
+          64781
+        </td>
+        <td>
+          4137
+          -
+          4137
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Trees.Instance.TreeCopier.ValDef$default$2
+        </td>
+        <td style="background: #AEF1AE">
+          ast.tpd.cpy.ValDef$default$2(x$3)
+        </td>
+      </tr><tr>
+        <td>
+          98
+        </td>
+        <td>
+          64783
+        </td>
+        <td>
+          4127
+          -
+          4193
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Trees.Instance.TreeCopier.ValDef
+        </td>
+        <td style="background: #AEF1AE">
+          ast.tpd.cpy.ValDef(x$3)(x$5, x$6, x$4)
+        </td>
+      </tr><tr>
+        <td>
+          98
+        </td>
+        <td>
+          64780
+        </td>
+        <td>
+          4147
+          -
+          4192
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.tpd.TreeOps.appliedToArgs
+        </td>
+        <td style="background: #AEF1AE">
+          ast.tpd.TreeOps[dotty.tools.dotc.ast.tpd.Tree](fun).appliedToArgs(newFields.map[dotty.tools.dotc.ast.tpd.Tree, List[dotty.tools.dotc.ast.tpd.Tree]](((x: dotty.tools.dotc.core.Symbols.Symbol) =&gt; ast.tpd.ref(x)(ctx)))(immutable.this.List.canBuildFrom[dotty.tools.dotc.ast.tpd.Tree]))(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          99
+        </td>
+        <td>
+          64788
+        </td>
+        <td>
+          4219
+          -
+          4293
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.StringContext.s
+        </td>
+        <td style="background: #F0ADAD">
+          scala.StringContext.apply(&quot;Replacing &quot;, &quot; with stack-allocated fields (&quot;, &quot;)&quot;).s(core.Symbols.toDenot(t.symbol(ctx))(ctx).fullName(ctx), newFields)
+        </td>
+      </tr><tr>
+        <td>
+          99
+        </td>
+        <td>
+          64785
+        </td>
+        <td>
+          4251
+          -
+          4282
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          &quot; with stack-allocated fields (&quot;
+        </td>
+      </tr><tr>
+        <td>
+          99
+        </td>
+        <td>
+          64784
+        </td>
+        <td>
+          4221
+          -
+          4232
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          &quot;Replacing &quot;
+        </td>
+      </tr><tr>
+        <td>
+          99
+        </td>
+        <td>
+          64787
+        </td>
+        <td>
+          4233
+          -
+          4250
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.SymDenotations.SymDenotation.fullName
+        </td>
+        <td style="background: #F0ADAD">
+          core.Symbols.toDenot(t.symbol(ctx))(ctx).fullName(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          99
+        </td>
+        <td>
+          64789
+        </td>
+        <td>
+          4202
+          -
+          4294
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.config.Printers.Printer.println
+        </td>
+        <td style="background: #AEF1AE">
+          config.Printers.simplify.println(scala.StringContext.apply(&quot;Replacing &quot;, &quot; with stack-allocated fields (&quot;, &quot;)&quot;).s(core.Symbols.toDenot(t.symbol(ctx))(ctx).fullName(ctx), newFields))
+        </td>
+      </tr><tr>
+        <td>
+          99
+        </td>
+        <td>
+          64786
+        </td>
+        <td>
+          4291
+          -
+          4293
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          &quot;)&quot;
+        </td>
+      </tr><tr>
+        <td>
+          100
+        </td>
+        <td>
+          64791
+        </td>
+        <td>
+          4311
+          -
+          4336
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          scala.collection.SeqLike.:+
+        </td>
+        <td style="background: #AEF1AE">
+          newFieldsDefs.:+[dotty.tools.dotc.ast.tpd.ValDef, List[dotty.tools.dotc.ast.tpd.Tree]](recreate)(immutable.this.List.canBuildFrom[dotty.tools.dotc.ast.tpd.ValDef])
+        </td>
+      </tr><tr>
+        <td>
+          100
+        </td>
+        <td>
+          64790
+        </td>
+        <td>
+          4325
+          -
+          4325
+        </td>
+        <td>
+          TypeApply
+        </td>
+        <td>
+          scala.collection.immutable.List.canBuildFrom
+        </td>
+        <td style="background: #AEF1AE">
+          immutable.this.List.canBuildFrom[dotty.tools.dotc.ast.tpd.ValDef]
+        </td>
+      </tr><tr>
+        <td>
+          100
+        </td>
+        <td>
+          64792
+        </td>
+        <td>
+          4303
+          -
+          4337
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Trees.Instance.Thicket
+        </td>
+        <td style="background: #AEF1AE">
+          ast.tpd.Thicket(newFieldsDefs.:+[dotty.tools.dotc.ast.tpd.ValDef, List[dotty.tools.dotc.ast.tpd.Tree]](recreate)(immutable.this.List.canBuildFrom[dotty.tools.dotc.ast.tpd.ValDef]))
+        </td>
+      </tr><tr>
+        <td>
+          102
+        </td>
+        <td>
+          64793
+        </td>
+        <td>
+          4372
+          -
+          4394
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.transform.localopt.Simplify.isImmutableAccessor
+        </td>
+        <td style="background: #AEF1AE">
+          Simplify.isImmutableAccessor(t)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          103
+        </td>
+        <td>
+          64797
+        </td>
+        <td>
+          4406
+          -
+          4485
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.MapLike.get
+        </td>
+        <td style="background: #AEF1AE">
+          InlineLocalObjects.this.newFieldsMapping.getOrElse[scala.collection.Map[dotty.tools.dotc.core.Symbols.Symbol,dotty.tools.dotc.core.Symbols.Symbol]](rec.symbol(ctx), scala.Predef.Map.empty[dotty.tools.dotc.core.Symbols.Symbol, dotty.tools.dotc.core.Symbols.Symbol]).get(t.symbol(ctx))
+        </td>
+      </tr><tr>
+        <td>
+          103
+        </td>
+        <td>
+          64794
+        </td>
+        <td>
+          4433
+          -
+          4443
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Trees.Tree.symbol
+        </td>
+        <td style="background: #AEF1AE">
+          rec.symbol(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          103
+        </td>
+        <td>
+          64796
+        </td>
+        <td>
+          4476
+          -
+          4484
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Trees.Tree.symbol
+        </td>
+        <td style="background: #AEF1AE">
+          t.symbol(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          103
+        </td>
+        <td>
+          64795
+        </td>
+        <td>
+          4445
+          -
+          4470
+        </td>
+        <td>
+          TypeApply
+        </td>
+        <td>
+          scala.collection.immutable.Map.empty
+        </td>
+        <td style="background: #AEF1AE">
+          scala.Predef.Map.empty[dotty.tools.dotc.core.Symbols.Symbol, dotty.tools.dotc.core.Symbols.Symbol]
+        </td>
+      </tr><tr>
+        <td>
+          105
+        </td>
+        <td>
+          64798
+        </td>
+        <td>
+          4558
+          -
+          4569
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.tpd.ref
+        </td>
+        <td style="background: #AEF1AE">
+          ast.tpd.ref(newSym)(ctx)
+        </td>
+      </tr>
+    </table>
+          </div>
+        </div>
+      </body>
+    </html>

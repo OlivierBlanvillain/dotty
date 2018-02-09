@@ -1,0 +1,2809 @@
+<html>
+      <head>
+        <meta http-equiv="Content-Type" content="text/html; charset=utf-8"/>
+        <title id="title">
+          dotty/tools/dotc/transform/localopt/ConstantFold.scala.html
+        </title>
+        <script src="https://ajax.googleapis.com/ajax/libs/jquery/1.10.2/jquery.min.js"></script><link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/jquery.tablesorter/2.20.1/css/theme.default.min.css" type="text/css"/><script src="https://cdnjs.cloudflare.com/ajax/libs/jquery.tablesorter/2.20.1/js/jquery.tablesorter.min.js"></script><link rel="stylesheet" href="https://netdna.bootstrapcdn.com/bootstrap/3.0.3/css/bootstrap.min.css" type="text/css"/><script src="https://netdna.bootstrapcdn.com/bootstrap/3.0.3/js/bootstrap.min.js"></script><script type="text/javascript">
+        $(document).ready(function() {$(".tablesorter").tablesorter();});
+      </script>
+        <style>
+          table.codegrid { font-family: monospace; font-size: 12px; width: auto!important; }table.statementlist { width: auto!important; font-size: 13px; } table.codegrid td { padding: 0!important; border: 0!important } table td.linenumber { width: 40px!important; } 
+        </style>
+      </head>
+      <body style="font-family: monospace;">
+        <ul class="nav nav-tabs">
+          <li>
+            <a href="#codegrid" data-toggle="tab">Codegrid</a>
+          </li>
+          <li>
+            <a href="#statementlist" data-toggle="tab">Statement List</a>
+          </li>
+        </ul>
+        <div class="tab-content">
+          <div class="tab-pane active" id="codegrid">
+            <pre style='font-size: 12pt; font-family: courier;'>1 <span style=''>package dotty.tools.dotc
+</span>2 <span style=''>package transform.localopt
+</span>3 <span style=''>
+</span>4 <span style=''>import core.Contexts.Context
+</span>5 <span style=''>import core.Symbols._
+</span>6 <span style=''>import core.Types._
+</span>7 <span style=''>import typer.ConstFold
+</span>8 <span style=''>import ast.Trees._
+</span>9 <span style=''>
+</span>10 <span style=''>/** Various constant folding.
+</span>11 <span style=''> *
+</span>12 <span style=''> *  - Starts/ends with the constant folding implemented in typer (ConstFold).
+</span>13 <span style=''> *
+</span>14 <span style=''> *  - Join branches if they are &quot;similar&quot;
+</span>15 <span style=''> *
+</span>16 <span style=''> *  - regularize arithmetic and boolean expressions to have constants on the
+</span>17 <span style=''> *    left, ie. 6 * 2 * a * 5 =&gt; 60 * a
+</span>18 <span style=''> *
+</span>19 <span style=''> *  - (if) specific optimisation that propagate booleans, negation, and factor
+</span>20 <span style=''> *    out (nested) if with equivalent branches wrt to isSimilar. For example:
+</span>21 <span style=''> *      - if (b) exp else exp → b; exp
+</span>22 <span style=''> *      - if (b1) e1 else if (b2) e1 else e2 → if (b1 || b2) e1 else e2
+</span>23 <span style=''> *      - if(!b) e1 else e2 → if(b) e2 else e1
+</span>24 <span style=''> *
+</span>25 <span style=''> *  - Constant propagation over pattern matching.
+</span>26 <span style=''> *
+</span>27 <span style=''> *  @author DarkDimius, OlivierBlanvillain, gan74
+</span>28 <span style=''> */
+</span>29 <span style=''> class ConstantFold(val simplifyPhase: Simplify) extends Optimisation {
+</span>30 <span style=''>  import ast.tpd._
+</span>31 <span style=''>
+</span>32 <span style=''>  def visitor(implicit ctx: Context) = </span><span style='background: #AEF1AE'>NoVisitor</span><span style=''>
+</span>33 <span style=''>  def clear(): Unit = </span><span style='background: #AEF1AE'>()</span><span style=''>
+</span>34 <span style=''>
+</span>35 <span style=''>  def transformer(implicit ctx: Context): Tree =&gt; Tree = {
+</span>36 <span style=''>    // TODO: include handling of isInstanceOf similar to one in IsInstanceOfEvaluator
+</span>37 <span style=''>    // TODO: include methods such as Int.int2double(see ./tests/pos/harmonize.scala)
+</span>38 <span style=''>    case If(cond1, thenp, elsep) if </span><span style='background: #AEF1AE'>isSimilar(thenp, elsep)</span><span style=''> =&gt;
+</span>39 <span style=''>      </span><span style='background: #AEF1AE'>Block(cond1 :: Nil, thenp)</span><span style=''>
+</span>40 <span style=''>
+</span>41 <span style=''>    case If(cond1, If(cond2, thenp2, elsep2), elsep1) if </span><span style='background: #AEF1AE'>isSimilar(elsep1, elsep2)</span><span style=''> =&gt;
+</span>42 <span style=''>      </span><span style='background: #AEF1AE'>If(cond1.select(defn.Boolean_&amp;&amp;).appliedTo(cond2), thenp2, elsep1)</span><span style=''>
+</span>43 <span style=''>
+</span>44 <span style=''>    case If(cond1, If(cond2, thenp2, elsep2), elsep1) if </span><span style='background: #AEF1AE'>isSimilar(elsep1, thenp2)</span><span style=''> =&gt;
+</span>45 <span style=''>      </span><span style='background: #AEF1AE'>If(cond1.select(defn.Boolean_!).ensureApplied.select(defn.Boolean_||).appliedTo(cond2), elsep1, elsep2)</span><span style=''>
+</span>46 <span style=''>
+</span>47 <span style=''>    case If(cond1, thenp1, If(cond2, thenp2, elsep2)) if </span><span style='background: #AEF1AE'>isSimilar(thenp1, thenp2)</span><span style=''> =&gt;
+</span>48 <span style=''>      </span><span style='background: #AEF1AE'>If(cond1.select(defn.Boolean_||).appliedTo(cond2), thenp1, elsep2)</span><span style=''>
+</span>49 <span style=''>
+</span>50 <span style=''>    case If(cond1, thenp1, If(cond2, thenp2, elsep2)) if </span><span style='background: #AEF1AE'>isSimilar(thenp1, elsep2)</span><span style=''> =&gt;
+</span>51 <span style=''>      </span><span style='background: #AEF1AE'>If(cond1.select(defn.Boolean_||).appliedTo(cond2.select(defn.Boolean_!).ensureApplied), thenp1, thenp2)</span><span style=''>
+</span>52 <span style=''>
+</span>53 <span style=''>    case If(t: Literal, thenp, elsep) =&gt;
+</span>54 <span style=''>      if (</span><span style='background: #AEF1AE'>t.const.booleanValue</span><span style=''>) </span><span style='background: #AEF1AE'>thenp</span><span style=''>
+</span>55 <span style=''>      else </span><span style='background: #AEF1AE'>elsep</span><span style=''>
+</span>56 <span style=''>
+</span>57 <span style=''>    case ift @ If(cond, thenp: Literal, elsep: Literal)
+</span>58 <span style=''>      if </span><span style='background: #AEF1AE'>isBool(ift.tpe) &amp;&amp; thenp.const.booleanValue &amp;&amp; !elsep.const.booleanValue</span><span style=''> =&gt;
+</span>59 <span style=''>        cond
+</span>60 <span style=''>
+</span>61 <span style=''>    //  the lower two are disabled, as it may make the isSimilar rule not apply for a nested structure of iffs.
+</span>62 <span style=''>    //  see the example below:
+</span>63 <span style=''>    //         (b1, b2) match {
+</span>64 <span style=''>    //           case (true, true) =&gt; true
+</span>65 <span style=''>    //           case (false, false) =&gt; true
+</span>66 <span style=''>    //           case _ =&gt; false
+</span>67 <span style=''>    //         }
+</span>68 <span style=''>    // case ift @ If(cond, thenp: Literal, elsep)
+</span>69 <span style=''>    //   if isBool(ift.tpe) &amp;&amp; thenp.const.booleanValue =&gt;
+</span>70 <span style=''>    //     if (thenp.const.booleanValue)
+</span>71 <span style=''>    //       cond.select(defn.Boolean_||).appliedTo(elsep)
+</span>72 <span style=''>    //     else // thenp is false, this tree is bigger then the original
+</span>73 <span style=''>    //       cond.select(defn.Boolean_!).ensureApplied.select(defn.Boolean_&amp;&amp;).appliedTo(elsep)
+</span>74 <span style=''>    // case ift @ If(cond, thenp, elsep :Literal) if
+</span>75 <span style=''>    //    isBool(ift.tpe) &amp;&amp; !elsep.const.booleanValue =&gt;
+</span>76 <span style=''>    //       cond.select(defn.Boolean_&amp;&amp;).appliedTo(elsep)
+</span>77 <span style=''>    //   the other case ins't handled intentionally. See previous case for explanation
+</span>78 <span style=''>    
+</span>79 <span style=''>    case If(t @ Select(recv, _), thenp, elsep) if </span><span style='background: #AEF1AE'>t.symbol eq defn.Boolean_!</span><span style=''> =&gt;
+</span>80 <span style=''>      </span><span style='background: #AEF1AE'>If(recv, elsep, thenp)</span><span style=''>
+</span>81 <span style=''>
+</span>82 <span style=''>    case If(t @ Apply(Select(recv, _), Nil), thenp, elsep) if </span><span style='background: #AEF1AE'>t.symbol eq defn.Boolean_!</span><span style=''> =&gt;
+</span>83 <span style=''>      </span><span style='background: #AEF1AE'>If(recv, elsep, thenp)</span><span style=''>
+</span>84 <span style=''>
+</span>85 <span style=''>    // TODO: similar trick for comparisons.
+</span>86 <span style=''>    // TODO: handle comparison with min\max values
+</span>87 <span style=''>    case Apply(meth1 @ Select(Apply(meth2 @ Select(rec, _), Nil), _), Nil)
+</span>88 <span style=''>      if </span><span style='background: #AEF1AE'>meth1.symbol == defn.Boolean_! &amp;&amp; meth2.symbol == defn.Boolean_!</span><span style=''> =&gt;
+</span>89 <span style=''>        rec
+</span>90 <span style=''>
+</span>91 <span style=''>    case meth1 @ Select(meth2 @ Select(rec, _), _)
+</span>92 <span style=''>      if </span><span style='background: #AEF1AE'>meth1.symbol == defn.Boolean_! &amp;&amp; meth2.symbol == defn.Boolean_! &amp;&amp; </span><span style='background: #F0ADAD'>!ctx.erasedTypes</span><span style=''> =&gt;
+</span>93 <span style=''>        rec
+</span>94 <span style=''>
+</span>95 <span style=''>    case t @ Apply(Select(lhs, _), List(rhs)) =&gt;
+</span>96 <span style=''>      val sym = </span><span style='background: #AEF1AE'>t.symbol</span><span style=''>
+</span>97 <span style=''>      (lhs, rhs) match {
+</span>98 <span style=''>        case (lhs, Literal(_)) if </span><span style='background: #AEF1AE'>!lhs.isInstanceOf[Literal] &amp;&amp; simplifyPhase.CommutativePrimitiveOperations.contains(sym)</span><span style=''> =&gt;
+</span>99 <span style=''>          </span><span style='background: #AEF1AE'>rhs.select(sym).appliedTo(lhs)</span><span style=''>
+</span>100 <span style=''>
+</span>101 <span style=''>        case (l, _) if </span><span style='background: #AEF1AE'>(sym == defn.Boolean_&amp;&amp;) &amp;&amp; isConst(l.tpe)</span><span style=''> =&gt;
+</span>102 <span style=''>          val const = </span><span style='background: #AEF1AE'>asConst(l.tpe).value.booleanValue</span><span style=''>
+</span>103 <span style=''>          if (const) </span><span style='background: #AEF1AE'>Block(lhs :: Nil, rhs)</span><span style=''>
+</span>104 <span style=''>          else </span><span style='background: #F0ADAD'>l</span><span style=''>
+</span>105 <span style=''>
+</span>106 <span style=''>        case (l, x: Literal) if </span><span style='background: #AEF1AE'>sym == defn.Boolean_== &amp;&amp; isBool(l.tpe) &amp;&amp; isBool(x.tpe)</span><span style=''> =&gt;
+</span>107 <span style=''>          if (</span><span style='background: #AEF1AE'>x.const.booleanValue</span><span style=''>) </span><span style='background: #AEF1AE'>l</span><span style=''>
+</span>108 <span style=''>          else </span><span style='background: #AEF1AE'>l.select(defn.Boolean_!).ensureApplied</span><span style=''>
+</span>109 <span style=''>
+</span>110 <span style=''>        case (l, x: Literal) if </span><span style='background: #AEF1AE'>sym == defn.Boolean_!= &amp;&amp; </span><span style='background: #F0ADAD'>isBool(l.tpe)</span><span style='background: #AEF1AE'> &amp;&amp; </span><span style='background: #F0ADAD'>isBool(x.tpe)</span><span style=''> =&gt;
+</span>111 <span style=''>          if (</span><span style='background: #F0ADAD'>!x.const.booleanValue</span><span style=''>) </span><span style='background: #F0ADAD'>l</span><span style=''>
+</span>112 <span style=''>          else </span><span style='background: #F0ADAD'>l.select(defn.Boolean_!).ensureApplied</span><span style=''>
+</span>113 <span style=''>
+</span>114 <span style=''>        case (x: Literal, l) if </span><span style='background: #AEF1AE'>sym == defn.Boolean_== &amp;&amp; isBool(l.tpe) &amp;&amp; isBool(x.tpe)</span><span style=''> =&gt;
+</span>115 <span style=''>          if (</span><span style='background: #AEF1AE'>x.const.booleanValue</span><span style=''>) </span><span style='background: #AEF1AE'>l</span><span style=''>
+</span>116 <span style=''>          else </span><span style='background: #AEF1AE'>l.select(defn.Boolean_!).ensureApplied</span><span style=''>
+</span>117 <span style=''>
+</span>118 <span style=''>        case (x: Literal, l) if </span><span style='background: #AEF1AE'>sym == defn.Boolean_!= &amp;&amp; </span><span style='background: #F0ADAD'>isBool(l.tpe)</span><span style='background: #AEF1AE'> &amp;&amp; </span><span style='background: #F0ADAD'>isBool(x.tpe)</span><span style=''> =&gt;
+</span>119 <span style=''>          if (</span><span style='background: #F0ADAD'>!x.const.booleanValue</span><span style=''>) </span><span style='background: #F0ADAD'>l</span><span style=''>
+</span>120 <span style=''>          else </span><span style='background: #F0ADAD'>l.select(defn.Boolean_!).ensureApplied</span><span style=''>
+</span>121 <span style=''>
+</span>122 <span style=''>        case (l: Literal, _) if </span><span style='background: #AEF1AE'>(sym == defn.Boolean_||) &amp;&amp; isConst(l.tpe)</span><span style=''>   =&gt;
+</span>123 <span style=''>          val const = </span><span style='background: #AEF1AE'>asConst(l.tpe).value.booleanValue</span><span style=''>
+</span>124 <span style=''>          if (</span><span style='background: #AEF1AE'>l.const.booleanValue</span><span style=''>) </span><span style='background: #F0ADAD'>l</span><span style=''>
+</span>125 <span style=''>          else </span><span style='background: #AEF1AE'>Block(lhs :: Nil, rhs)</span><span style=''>
+</span>126 <span style=''>
+</span>127 <span style=''>        // case (Literal(Constant(1)), _)    if sym == defn.Int_*  =&gt; rhs
+</span>128 <span style=''>        // case (Literal(Constant(0)), _)    if sym == defn.Int_+  =&gt; rhs
+</span>129 <span style=''>        // case (Literal(Constant(1L)), _)   if sym == defn.Long_* =&gt; rhs
+</span>130 <span style=''>        // case (Literal(Constant(0L)), _)   if sym == defn.Long_+ =&gt; rhs
+</span>131 <span style=''>        // // TODO: same for float, double, short
+</span>132 <span style=''>        // // TODO: empty string concat
+</span>133 <span style=''>        // // TODO: disctribute &amp; reorder constants
+</span>134 <span style=''>        // // TODO: merge subsequent casts
+</span>135 <span style=''>        // case (_, Literal(Constant(1)))    if sym == defn.Int_/  =&gt; lhs
+</span>136 <span style=''>        // case (_, Literal(Constant(1L)))   if sym == defn.Long_/ =&gt; lhs
+</span>137 <span style=''>        // case (_, Literal(Constant(0)))    if sym == defn.Int_/  =&gt;
+</span>138 <span style=''>        //   Block(List(lhs),
+</span>139 <span style=''>        //     ref(defn.throwMethod).appliedTo(New(defn.ArithmeticExceptionClass.typeRef, defn.ArithmeticExceptionClass_stringConstructor, Literal(Constant(&quot;/ by zero&quot;)) :: Nil)))
+</span>140 <span style=''>        // case (_, Literal(Constant(0L)))  if sym == defn.Long_/ =&gt;
+</span>141 <span style=''>        //   Block(List(lhs),
+</span>142 <span style=''>        //     ref(defn.throwMethod).appliedTo(New(defn.ArithmeticExceptionClass.typeRef, defn.ArithmeticExceptionClass_stringConstructor, Literal(Constant(&quot;/ by zero&quot;)) :: Nil)))
+</span>143 <span style=''>
+</span>144 <span style=''>        case (l: Literal, r: Literal)  =&gt;
+</span>145 <span style=''>          (l.tpe.widenTermRefExpr, r.tpe.widenTermRefExpr) match {
+</span>146 <span style=''>            case (ConstantType(_), ConstantType(_)) =&gt; 
+</span>147 <span style=''>              val s = </span><span style='background: #AEF1AE'>ConstFold.apply(t)</span><span style=''>
+</span>148 <span style=''>              if (</span><span style='background: #AEF1AE'>(s ne null) &amp;&amp; s.tpe.isInstanceOf[ConstantType]</span><span style=''>) </span><span style='background: #AEF1AE'>Literal(s.tpe.asInstanceOf[ConstantType].value)</span><span style=''>
+</span>149 <span style=''>              else </span><span style='background: #AEF1AE'>t</span><span style=''>
+</span>150 <span style=''>            case _ =&gt; t
+</span>151 <span style=''>          }
+</span>152 <span style=''>
+</span>153 <span style=''>        case _ =&gt; t
+</span>154 <span style=''>      }
+</span>155 <span style=''>
+</span>156 <span style=''>    // This case can only be triggered when running Simplify before pattern matching:
+</span>157 <span style=''>    // case t: Match
+</span>158 <span style=''>    //   if t.selector.tpe.isInstanceOf[ConstantType] &amp;&amp;
+</span>159 <span style=''>    //      t.cases.forall { x =&gt;
+</span>160 <span style=''>    //        x.pat.tpe.isInstanceOf[ConstantType] || (isWildcardArg(x.pat) &amp;&amp; x.guard.isEmpty)
+</span>161 <span style=''>    //      } =&gt;
+</span>162 <span style=''>    //   val selectorValue = t.selector.tpe.asInstanceOf[ConstantType].value
+</span>163 <span style=''>    //   val better = t.cases.find(x =&gt; isWildcardArg(x.pat) || (x.pat.tpe.asInstanceOf[ConstantType].value eq selectorValue))
+</span>164 <span style=''>    //   if (better.nonEmpty) better.get.body
+</span>165 <span style=''>    //   else t
+</span>166 <span style=''>
+</span>167 <span style=''>    case t: Literal =&gt; t
+</span>168 <span style=''>    case t: CaseDef =&gt; t
+</span>169 <span style=''>    case t =&gt; t
+</span>170 <span style=''>  }
+</span>171 <span style=''>
+</span>172 <span style=''>
+</span>173 <span style=''>
+</span>174 <span style=''>  def isSimilar(t1: Tree, t2: Tree)(implicit ctx: Context): Boolean = t1 match {
+</span>175 <span style=''>    case t1: Apply =&gt;
+</span>176 <span style=''>      t2 match {
+</span>177 <span style=''>        case t2: Apply =&gt;
+</span>178 <span style=''>          </span><span style='background: #AEF1AE'>(t1.symbol == t2.symbol) &amp;&amp;
+</span>179 <span style=''></span><span style='background: #AEF1AE'>          (t1.args zip t2.args).forall(x =&gt; isSimilar(x._1, x._2)) &amp;&amp;
+</span>180 <span style=''></span><span style='background: #AEF1AE'>          isSimilar(t1.fun, t2.fun)</span><span style=''>
+</span>181 <span style=''>        case _ =&gt; </span><span style='background: #AEF1AE'>false</span><span style=''>
+</span>182 <span style=''>      }
+</span>183 <span style=''>    case t1: Ident =&gt;
+</span>184 <span style=''>      t2 match {
+</span>185 <span style=''>        case t2: Ident =&gt;
+</span>186 <span style=''>          </span><span style='background: #AEF1AE'>t1.symbol eq t2.symbol</span><span style=''>
+</span>187 <span style=''>        case _ =&gt; // Select
+</span>188 <span style=''>          </span><span style='background: #AEF1AE'>isSimilar(t2, t1)</span><span style=''>
+</span>189 <span style=''>      }
+</span>190 <span style=''>    case t1: Select =&gt; t2 match {
+</span>191 <span style=''>      case t2: Select =&gt;
+</span>192 <span style=''>        </span><span style='background: #AEF1AE'>(t1.symbol eq t2.symbol) &amp;&amp;
+</span>193 <span style=''></span><span style='background: #AEF1AE'>        isSimilar(t1.qualifier, t2.qualifier)</span><span style=''>
+</span>194 <span style=''>      case t2: Ident =&gt; </span><span style='background: #AEF1AE'>desugarIdent(t2)</span><span style=''> match {
+</span>195 <span style=''>        case t2: Select =&gt; </span><span style='background: #F0ADAD'>isSimilar(t1, t2)</span><span style=''>
+</span>196 <span style=''>        case _ =&gt; </span><span style='background: #AEF1AE'>false</span><span style=''>
+</span>197 <span style=''>      }
+</span>198 <span style=''>      case _ =&gt; </span><span style='background: #AEF1AE'>false</span><span style=''>
+</span>199 <span style=''>    }
+</span>200 <span style=''>    case t1: Literal =&gt; t2 match {
+</span>201 <span style=''>      case t2: Literal =&gt;
+</span>202 <span style=''>        </span><span style='background: #AEF1AE'>t1.const.tag   == t2.const.tag &amp;&amp;
+</span>203 <span style=''></span><span style='background: #AEF1AE'>        t1.const.value == t2.const.value</span><span style=''>
+</span>204 <span style=''>      case _ =&gt; </span><span style='background: #AEF1AE'>false</span><span style=''>
+</span>205 <span style=''>    }
+</span>206 <span style=''>    case _ =&gt; </span><span style='background: #AEF1AE'>false</span><span style=''>
+</span>207 <span style=''>  }
+</span>208 <span style=''>
+</span>209 <span style=''>  def isBool(tpe: Type)(implicit ctx: Context): Boolean       = </span><span style='background: #AEF1AE'>tpe.derivesFrom(defn.BooleanClass)</span><span style=''>
+</span>210 <span style=''>  def isConst(tpe: Type)(implicit ctx: Context): Boolean      = </span><span style='background: #AEF1AE'>tpe.isInstanceOf[ConstantType]</span><span style=''>
+</span>211 <span style=''>  def asConst(tpe: Type)(implicit ctx: Context): ConstantType = </span><span style='background: #AEF1AE'>tpe.asInstanceOf[ConstantType]</span><span style=''>
+</span>212 <span style=''>}
+</span></pre>
+          </div>
+          <div class="tab-pane" id="statementlist">
+            <table cellspacing="0" cellpadding="0" class="table statementlist">
+      <tr>
+        <th>Line</th>
+        <th>Stmt Id</th>
+        <th>Pos</th>
+        <th>Tree</th>
+        <th>Symbol</th>
+        <th>Code</th>
+      </tr><tr>
+        <td>
+          32
+        </td>
+        <td>
+          63994
+        </td>
+        <td>
+          1002
+          -
+          1011
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.transform.localopt.Optimisation.NoVisitor
+        </td>
+        <td style="background: #AEF1AE">
+          ConstantFold.this.NoVisitor
+        </td>
+      </tr><tr>
+        <td>
+          33
+        </td>
+        <td>
+          63995
+        </td>
+        <td>
+          1034
+          -
+          1036
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          ()
+        </td>
+      </tr><tr>
+        <td>
+          38
+        </td>
+        <td>
+          63996
+        </td>
+        <td>
+          1304
+          -
+          1327
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.transform.localopt.ConstantFold.isSimilar
+        </td>
+        <td style="background: #AEF1AE">
+          ConstantFold.this.isSimilar(thenp, elsep)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          39
+        </td>
+        <td>
+          63997
+        </td>
+        <td>
+          1337
+          -
+          1363
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.tpd.Block
+        </td>
+        <td style="background: #AEF1AE">
+          ast.tpd.Block({
+  &lt;synthetic&gt; &lt;artifact&gt; val x$1: dotty.tools.dotc.ast.Trees.Tree[dotty.tools.dotc.core.Types.Type] = cond1;
+  scala.collection.immutable.Nil.::[dotty.tools.dotc.ast.Trees.Tree[dotty.tools.dotc.core.Types.Type]](x$1)
+}, thenp)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          41
+        </td>
+        <td>
+          63998
+        </td>
+        <td>
+          1422
+          -
+          1447
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.transform.localopt.ConstantFold.isSimilar
+        </td>
+        <td style="background: #AEF1AE">
+          ConstantFold.this.isSimilar(elsep1, elsep2)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          42
+        </td>
+        <td>
+          63999
+        </td>
+        <td>
+          1457
+          -
+          1523
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.tpd.If
+        </td>
+        <td style="background: #AEF1AE">
+          ast.tpd.If(ast.tpd.TreeOps[dotty.tools.dotc.ast.tpd.Select](ast.tpd.TreeOps[dotty.tools.dotc.ast.Trees.Tree[dotty.tools.dotc.core.Types.Type]](cond1).select(core.Symbols.defn(ctx).Boolean_&amp;&amp;)(ctx)).appliedTo(cond2)(ctx), thenp2, elsep1)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          44
+        </td>
+        <td>
+          64000
+        </td>
+        <td>
+          1582
+          -
+          1607
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.transform.localopt.ConstantFold.isSimilar
+        </td>
+        <td style="background: #AEF1AE">
+          ConstantFold.this.isSimilar(elsep1, thenp2)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          45
+        </td>
+        <td>
+          64001
+        </td>
+        <td>
+          1617
+          -
+          1720
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.tpd.If
+        </td>
+        <td style="background: #AEF1AE">
+          ast.tpd.If(ast.tpd.TreeOps[dotty.tools.dotc.ast.tpd.Select](ast.tpd.TreeOps[dotty.tools.dotc.ast.tpd.Tree](ast.tpd.TreeOps[dotty.tools.dotc.ast.tpd.Select](ast.tpd.TreeOps[dotty.tools.dotc.ast.Trees.Tree[dotty.tools.dotc.core.Types.Type]](cond1).select(core.Symbols.defn(ctx).Boolean_!)(ctx)).ensureApplied(ctx)).select(core.Symbols.defn(ctx).Boolean_||)(ctx)).appliedTo(cond2)(ctx), elsep1, elsep2)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          47
+        </td>
+        <td>
+          64002
+        </td>
+        <td>
+          1779
+          -
+          1804
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.transform.localopt.ConstantFold.isSimilar
+        </td>
+        <td style="background: #AEF1AE">
+          ConstantFold.this.isSimilar(thenp1, thenp2)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          48
+        </td>
+        <td>
+          64003
+        </td>
+        <td>
+          1814
+          -
+          1880
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.tpd.If
+        </td>
+        <td style="background: #AEF1AE">
+          ast.tpd.If(ast.tpd.TreeOps[dotty.tools.dotc.ast.tpd.Select](ast.tpd.TreeOps[dotty.tools.dotc.ast.Trees.Tree[dotty.tools.dotc.core.Types.Type]](cond1).select(core.Symbols.defn(ctx).Boolean_||)(ctx)).appliedTo(cond2)(ctx), thenp1, elsep2)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          50
+        </td>
+        <td>
+          64004
+        </td>
+        <td>
+          1939
+          -
+          1964
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.transform.localopt.ConstantFold.isSimilar
+        </td>
+        <td style="background: #AEF1AE">
+          ConstantFold.this.isSimilar(thenp1, elsep2)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          51
+        </td>
+        <td>
+          64005
+        </td>
+        <td>
+          1974
+          -
+          2077
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.tpd.If
+        </td>
+        <td style="background: #AEF1AE">
+          ast.tpd.If(ast.tpd.TreeOps[dotty.tools.dotc.ast.tpd.Select](ast.tpd.TreeOps[dotty.tools.dotc.ast.Trees.Tree[dotty.tools.dotc.core.Types.Type]](cond1).select(core.Symbols.defn(ctx).Boolean_||)(ctx)).appliedTo(ast.tpd.TreeOps[dotty.tools.dotc.ast.tpd.Select](ast.tpd.TreeOps[dotty.tools.dotc.ast.Trees.Tree[dotty.tools.dotc.core.Types.Type]](cond2).select(core.Symbols.defn(ctx).Boolean_!)(ctx)).ensureApplied(ctx))(ctx), thenp1, thenp2)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          54
+        </td>
+        <td>
+          64007
+        </td>
+        <td>
+          2152
+          -
+          2157
+        </td>
+        <td>
+          Ident
+        </td>
+        <td>
+          dotty.tools.dotc.transform.localopt.ConstantFold.thenp
+        </td>
+        <td style="background: #AEF1AE">
+          thenp
+        </td>
+      </tr><tr>
+        <td>
+          54
+        </td>
+        <td>
+          64006
+        </td>
+        <td>
+          2130
+          -
+          2150
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Constants.Constant.booleanValue
+        </td>
+        <td style="background: #AEF1AE">
+          t.const.booleanValue
+        </td>
+      </tr><tr>
+        <td>
+          55
+        </td>
+        <td>
+          64008
+        </td>
+        <td>
+          2169
+          -
+          2174
+        </td>
+        <td>
+          Ident
+        </td>
+        <td>
+          dotty.tools.dotc.transform.localopt.ConstantFold.elsep
+        </td>
+        <td style="background: #AEF1AE">
+          elsep
+        </td>
+      </tr><tr>
+        <td>
+          58
+        </td>
+        <td>
+          64010
+        </td>
+        <td>
+          2260
+          -
+          2284
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Constants.Constant.booleanValue
+        </td>
+        <td style="background: #AEF1AE">
+          thenp.const.booleanValue
+        </td>
+      </tr><tr>
+        <td>
+          58
+        </td>
+        <td>
+          64009
+        </td>
+        <td>
+          2248
+          -
+          2255
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Trees.Tree.tpe
+        </td>
+        <td style="background: #AEF1AE">
+          ift.tpe
+        </td>
+      </tr><tr>
+        <td>
+          58
+        </td>
+        <td>
+          64012
+        </td>
+        <td>
+          2241
+          -
+          2313
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Boolean.&amp;&amp;
+        </td>
+        <td style="background: #AEF1AE">
+          ConstantFold.this.isBool(ift.tpe)(ctx).&amp;&amp;(thenp.const.booleanValue).&amp;&amp;(elsep.const.booleanValue.unary_!)
+        </td>
+      </tr><tr>
+        <td>
+          58
+        </td>
+        <td>
+          64011
+        </td>
+        <td>
+          2288
+          -
+          2313
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.Boolean.unary_!
+        </td>
+        <td style="background: #AEF1AE">
+          elsep.const.booleanValue.unary_!
+        </td>
+      </tr><tr>
+        <td>
+          79
+        </td>
+        <td>
+          64013
+        </td>
+        <td>
+          3346
+          -
+          3360
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Definitions.Boolean_!
+        </td>
+        <td style="background: #AEF1AE">
+          core.Symbols.defn(ctx).Boolean_!
+        </td>
+      </tr><tr>
+        <td>
+          79
+        </td>
+        <td>
+          64014
+        </td>
+        <td>
+          3334
+          -
+          3360
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.Object.eq
+        </td>
+        <td style="background: #AEF1AE">
+          t.symbol(ctx).eq(core.Symbols.defn(ctx).Boolean_!)
+        </td>
+      </tr><tr>
+        <td>
+          80
+        </td>
+        <td>
+          64015
+        </td>
+        <td>
+          3370
+          -
+          3392
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.tpd.If
+        </td>
+        <td style="background: #AEF1AE">
+          ast.tpd.If(recv, elsep, thenp)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          82
+        </td>
+        <td>
+          64016
+        </td>
+        <td>
+          3468
+          -
+          3482
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Definitions.Boolean_!
+        </td>
+        <td style="background: #AEF1AE">
+          core.Symbols.defn(ctx).Boolean_!
+        </td>
+      </tr><tr>
+        <td>
+          82
+        </td>
+        <td>
+          64017
+        </td>
+        <td>
+          3456
+          -
+          3482
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.Object.eq
+        </td>
+        <td style="background: #AEF1AE">
+          t.symbol(ctx).eq(core.Symbols.defn(ctx).Boolean_!)
+        </td>
+      </tr><tr>
+        <td>
+          83
+        </td>
+        <td>
+          64018
+        </td>
+        <td>
+          3492
+          -
+          3514
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.tpd.If
+        </td>
+        <td style="background: #AEF1AE">
+          ast.tpd.If(recv, elsep, thenp)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          88
+        </td>
+        <td>
+          64022
+        </td>
+        <td>
+          3695
+          -
+          3759
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Boolean.&amp;&amp;
+        </td>
+        <td style="background: #AEF1AE">
+          meth1.symbol(ctx).==(core.Symbols.defn(ctx).Boolean_!).&amp;&amp;(meth2.symbol(ctx).==(core.Symbols.defn(ctx).Boolean_!))
+        </td>
+      </tr><tr>
+        <td>
+          88
+        </td>
+        <td>
+          64019
+        </td>
+        <td>
+          3711
+          -
+          3725
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Definitions.Boolean_!
+        </td>
+        <td style="background: #AEF1AE">
+          core.Symbols.defn(ctx).Boolean_!
+        </td>
+      </tr><tr>
+        <td>
+          88
+        </td>
+        <td>
+          64021
+        </td>
+        <td>
+          3729
+          -
+          3759
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.Object.==
+        </td>
+        <td style="background: #AEF1AE">
+          meth2.symbol(ctx).==(core.Symbols.defn(ctx).Boolean_!)
+        </td>
+      </tr><tr>
+        <td>
+          88
+        </td>
+        <td>
+          64020
+        </td>
+        <td>
+          3745
+          -
+          3759
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Definitions.Boolean_!
+        </td>
+        <td style="background: #AEF1AE">
+          core.Symbols.defn(ctx).Boolean_!
+        </td>
+      </tr><tr>
+        <td>
+          92
+        </td>
+        <td>
+          64025
+        </td>
+        <td>
+          3870
+          -
+          3900
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.Object.==
+        </td>
+        <td style="background: #AEF1AE">
+          meth2.symbol(ctx).==(core.Symbols.defn(ctx).Boolean_!)
+        </td>
+      </tr><tr>
+        <td>
+          92
+        </td>
+        <td>
+          64027
+        </td>
+        <td>
+          3836
+          -
+          3920
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Boolean.&amp;&amp;
+        </td>
+        <td style="background: #AEF1AE">
+          meth1.symbol(ctx).==(core.Symbols.defn(ctx).Boolean_!).&amp;&amp;(meth2.symbol(ctx).==(core.Symbols.defn(ctx).Boolean_!)).&amp;&amp;(ctx.erasedTypes.unary_!)
+        </td>
+      </tr><tr>
+        <td>
+          92
+        </td>
+        <td>
+          64024
+        </td>
+        <td>
+          3886
+          -
+          3900
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Definitions.Boolean_!
+        </td>
+        <td style="background: #AEF1AE">
+          core.Symbols.defn(ctx).Boolean_!
+        </td>
+      </tr><tr>
+        <td>
+          92
+        </td>
+        <td>
+          64026
+        </td>
+        <td>
+          3904
+          -
+          3920
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.Boolean.unary_!
+        </td>
+        <td style="background: #F0ADAD">
+          ctx.erasedTypes.unary_!
+        </td>
+      </tr><tr>
+        <td>
+          92
+        </td>
+        <td>
+          64023
+        </td>
+        <td>
+          3852
+          -
+          3866
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Definitions.Boolean_!
+        </td>
+        <td style="background: #AEF1AE">
+          core.Symbols.defn(ctx).Boolean_!
+        </td>
+      </tr><tr>
+        <td>
+          96
+        </td>
+        <td>
+          64028
+        </td>
+        <td>
+          4002
+          -
+          4010
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Trees.Tree.symbol
+        </td>
+        <td style="background: #AEF1AE">
+          t.symbol(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          98
+        </td>
+        <td>
+          64030
+        </td>
+        <td>
+          4070
+          -
+          4158
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Boolean.&amp;&amp;
+        </td>
+        <td style="background: #AEF1AE">
+          lhs.isInstanceOf[dotty.tools.dotc.ast.tpd.Literal].unary_!.&amp;&amp;(ConstantFold.this.simplifyPhase.CommutativePrimitiveOperations.contains(sym))
+        </td>
+      </tr><tr>
+        <td>
+          98
+        </td>
+        <td>
+          64029
+        </td>
+        <td>
+          4100
+          -
+          4158
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.SetLike.contains
+        </td>
+        <td style="background: #AEF1AE">
+          ConstantFold.this.simplifyPhase.CommutativePrimitiveOperations.contains(sym)
+        </td>
+      </tr><tr>
+        <td>
+          99
+        </td>
+        <td>
+          64031
+        </td>
+        <td>
+          4172
+          -
+          4202
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.tpd.TreeOps.appliedTo
+        </td>
+        <td style="background: #AEF1AE">
+          ast.tpd.TreeOps[dotty.tools.dotc.ast.tpd.Select](ast.tpd.TreeOps[dotty.tools.dotc.ast.Trees.Tree[dotty.tools.dotc.core.Types.Type]](rhs).select(sym)(ctx)).appliedTo(lhs)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          101
+        </td>
+        <td>
+          64034
+        </td>
+        <td>
+          4227
+          -
+          4269
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Boolean.&amp;&amp;
+        </td>
+        <td style="background: #AEF1AE">
+          sym.==(core.Symbols.defn(ctx).Boolean_&amp;&amp;).&amp;&amp;(ConstantFold.this.isConst(l.tpe)(ctx))
+        </td>
+      </tr><tr>
+        <td>
+          101
+        </td>
+        <td>
+          64033
+        </td>
+        <td>
+          4255
+          -
+          4269
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.transform.localopt.ConstantFold.isConst
+        </td>
+        <td style="background: #AEF1AE">
+          ConstantFold.this.isConst(l.tpe)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          101
+        </td>
+        <td>
+          64032
+        </td>
+        <td>
+          4235
+          -
+          4250
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Definitions.Boolean_&amp;&amp;
+        </td>
+        <td style="background: #AEF1AE">
+          core.Symbols.defn(ctx).Boolean_&amp;&amp;
+        </td>
+      </tr><tr>
+        <td>
+          102
+        </td>
+        <td>
+          64036
+        </td>
+        <td>
+          4295
+          -
+          4328
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Constants.Constant.booleanValue
+        </td>
+        <td style="background: #AEF1AE">
+          ConstantFold.this.asConst(l.tpe)(ctx).value.booleanValue
+        </td>
+      </tr><tr>
+        <td>
+          102
+        </td>
+        <td>
+          64035
+        </td>
+        <td>
+          4303
+          -
+          4308
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Trees.Tree.tpe
+        </td>
+        <td style="background: #AEF1AE">
+          l.tpe
+        </td>
+      </tr><tr>
+        <td>
+          103
+        </td>
+        <td>
+          64037
+        </td>
+        <td>
+          4350
+          -
+          4372
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.tpd.Block
+        </td>
+        <td style="background: #AEF1AE">
+          ast.tpd.Block({
+  &lt;synthetic&gt; &lt;artifact&gt; val x$2: dotty.tools.dotc.ast.Trees.Tree[dotty.tools.dotc.core.Types.Type] = lhs;
+  scala.collection.immutable.Nil.::[dotty.tools.dotc.ast.Trees.Tree[dotty.tools.dotc.core.Types.Type]](x$2)
+}, rhs)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          103
+        </td>
+        <td>
+          64038
+        </td>
+        <td>
+          4350
+          -
+          4372
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          dotty.tools.dotc.ast.tpd.Block
+        </td>
+        <td style="background: #AEF1AE">
+          ast.tpd.Block({
+  &lt;synthetic&gt; &lt;artifact&gt; val x$2: dotty.tools.dotc.ast.Trees.Tree[dotty.tools.dotc.core.Types.Type] = lhs;
+  scala.collection.immutable.Nil.::[dotty.tools.dotc.ast.Trees.Tree[dotty.tools.dotc.core.Types.Type]](x$2)
+}, rhs)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          104
+        </td>
+        <td>
+          64039
+        </td>
+        <td>
+          4388
+          -
+          4389
+        </td>
+        <td>
+          Ident
+        </td>
+        <td>
+          dotty.tools.dotc.transform.localopt.ConstantFold.l
+        </td>
+        <td style="background: #F0ADAD">
+          l
+        </td>
+      </tr><tr>
+        <td>
+          106
+        </td>
+        <td>
+          64040
+        </td>
+        <td>
+          4430
+          -
+          4445
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Definitions.Boolean_==
+        </td>
+        <td style="background: #AEF1AE">
+          core.Symbols.defn(ctx).Boolean_==
+        </td>
+      </tr><tr>
+        <td>
+          106
+        </td>
+        <td>
+          64043
+        </td>
+        <td>
+          4423
+          -
+          4479
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Boolean.&amp;&amp;
+        </td>
+        <td style="background: #AEF1AE">
+          sym.==(core.Symbols.defn(ctx).Boolean_==).&amp;&amp;(ConstantFold.this.isBool(l.tpe)(ctx)).&amp;&amp;(ConstantFold.this.isBool(x.tpe)(ctx))
+        </td>
+      </tr><tr>
+        <td>
+          106
+        </td>
+        <td>
+          64042
+        </td>
+        <td>
+          4466
+          -
+          4479
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.transform.localopt.ConstantFold.isBool
+        </td>
+        <td style="background: #AEF1AE">
+          ConstantFold.this.isBool(x.tpe)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          106
+        </td>
+        <td>
+          64041
+        </td>
+        <td>
+          4449
+          -
+          4462
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.transform.localopt.ConstantFold.isBool
+        </td>
+        <td style="background: #AEF1AE">
+          ConstantFold.this.isBool(l.tpe)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          107
+        </td>
+        <td>
+          64045
+        </td>
+        <td>
+          4519
+          -
+          4520
+        </td>
+        <td>
+          Ident
+        </td>
+        <td>
+          dotty.tools.dotc.transform.localopt.ConstantFold.l
+        </td>
+        <td style="background: #AEF1AE">
+          l
+        </td>
+      </tr><tr>
+        <td>
+          107
+        </td>
+        <td>
+          64044
+        </td>
+        <td>
+          4497
+          -
+          4517
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Constants.Constant.booleanValue
+        </td>
+        <td style="background: #AEF1AE">
+          x.const.booleanValue
+        </td>
+      </tr><tr>
+        <td>
+          108
+        </td>
+        <td>
+          64046
+        </td>
+        <td>
+          4536
+          -
+          4574
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.tpd.TreeOps.ensureApplied
+        </td>
+        <td style="background: #AEF1AE">
+          ast.tpd.TreeOps[dotty.tools.dotc.ast.tpd.Select](ast.tpd.TreeOps[dotty.tools.dotc.ast.Trees.Tree[dotty.tools.dotc.core.Types.Type]](l).select(core.Symbols.defn(ctx).Boolean_!)(ctx)).ensureApplied(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          108
+        </td>
+        <td>
+          64047
+        </td>
+        <td>
+          4536
+          -
+          4574
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          dotty.tools.dotc.ast.tpd.TreeOps.ensureApplied
+        </td>
+        <td style="background: #AEF1AE">
+          ast.tpd.TreeOps[dotty.tools.dotc.ast.tpd.Select](ast.tpd.TreeOps[dotty.tools.dotc.ast.Trees.Tree[dotty.tools.dotc.core.Types.Type]](l).select(core.Symbols.defn(ctx).Boolean_!)(ctx)).ensureApplied(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          110
+        </td>
+        <td>
+          64049
+        </td>
+        <td>
+          4634
+          -
+          4647
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.transform.localopt.ConstantFold.isBool
+        </td>
+        <td style="background: #F0ADAD">
+          ConstantFold.this.isBool(l.tpe)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          110
+        </td>
+        <td>
+          64048
+        </td>
+        <td>
+          4615
+          -
+          4630
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Definitions.Boolean_!=
+        </td>
+        <td style="background: #AEF1AE">
+          core.Symbols.defn(ctx).Boolean_!=
+        </td>
+      </tr><tr>
+        <td>
+          110
+        </td>
+        <td>
+          64051
+        </td>
+        <td>
+          4608
+          -
+          4664
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Boolean.&amp;&amp;
+        </td>
+        <td style="background: #AEF1AE">
+          sym.==(core.Symbols.defn(ctx).Boolean_!=).&amp;&amp;(ConstantFold.this.isBool(l.tpe)(ctx)).&amp;&amp;(ConstantFold.this.isBool(x.tpe)(ctx))
+        </td>
+      </tr><tr>
+        <td>
+          110
+        </td>
+        <td>
+          64050
+        </td>
+        <td>
+          4651
+          -
+          4664
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.transform.localopt.ConstantFold.isBool
+        </td>
+        <td style="background: #F0ADAD">
+          ConstantFold.this.isBool(x.tpe)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          111
+        </td>
+        <td>
+          64052
+        </td>
+        <td>
+          4682
+          -
+          4703
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.Boolean.unary_!
+        </td>
+        <td style="background: #F0ADAD">
+          x.const.booleanValue.unary_!
+        </td>
+      </tr><tr>
+        <td>
+          111
+        </td>
+        <td>
+          64053
+        </td>
+        <td>
+          4705
+          -
+          4706
+        </td>
+        <td>
+          Ident
+        </td>
+        <td>
+          dotty.tools.dotc.transform.localopt.ConstantFold.l
+        </td>
+        <td style="background: #F0ADAD">
+          l
+        </td>
+      </tr><tr>
+        <td>
+          112
+        </td>
+        <td>
+          64055
+        </td>
+        <td>
+          4722
+          -
+          4760
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          dotty.tools.dotc.ast.tpd.TreeOps.ensureApplied
+        </td>
+        <td style="background: #F0ADAD">
+          ast.tpd.TreeOps[dotty.tools.dotc.ast.tpd.Select](ast.tpd.TreeOps[dotty.tools.dotc.ast.Trees.Tree[dotty.tools.dotc.core.Types.Type]](l).select(core.Symbols.defn(ctx).Boolean_!)(ctx)).ensureApplied(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          112
+        </td>
+        <td>
+          64054
+        </td>
+        <td>
+          4722
+          -
+          4760
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.tpd.TreeOps.ensureApplied
+        </td>
+        <td style="background: #F0ADAD">
+          ast.tpd.TreeOps[dotty.tools.dotc.ast.tpd.Select](ast.tpd.TreeOps[dotty.tools.dotc.ast.Trees.Tree[dotty.tools.dotc.core.Types.Type]](l).select(core.Symbols.defn(ctx).Boolean_!)(ctx)).ensureApplied(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          114
+        </td>
+        <td>
+          64058
+        </td>
+        <td>
+          4837
+          -
+          4850
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.transform.localopt.ConstantFold.isBool
+        </td>
+        <td style="background: #AEF1AE">
+          ConstantFold.this.isBool(x.tpe)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          114
+        </td>
+        <td>
+          64057
+        </td>
+        <td>
+          4820
+          -
+          4833
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.transform.localopt.ConstantFold.isBool
+        </td>
+        <td style="background: #AEF1AE">
+          ConstantFold.this.isBool(l.tpe)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          114
+        </td>
+        <td>
+          64059
+        </td>
+        <td>
+          4794
+          -
+          4850
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Boolean.&amp;&amp;
+        </td>
+        <td style="background: #AEF1AE">
+          sym.==(core.Symbols.defn(ctx).Boolean_==).&amp;&amp;(ConstantFold.this.isBool(l.tpe)(ctx)).&amp;&amp;(ConstantFold.this.isBool(x.tpe)(ctx))
+        </td>
+      </tr><tr>
+        <td>
+          114
+        </td>
+        <td>
+          64056
+        </td>
+        <td>
+          4801
+          -
+          4816
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Definitions.Boolean_==
+        </td>
+        <td style="background: #AEF1AE">
+          core.Symbols.defn(ctx).Boolean_==
+        </td>
+      </tr><tr>
+        <td>
+          115
+        </td>
+        <td>
+          64061
+        </td>
+        <td>
+          4890
+          -
+          4891
+        </td>
+        <td>
+          Ident
+        </td>
+        <td>
+          dotty.tools.dotc.transform.localopt.ConstantFold.l
+        </td>
+        <td style="background: #AEF1AE">
+          l
+        </td>
+      </tr><tr>
+        <td>
+          115
+        </td>
+        <td>
+          64060
+        </td>
+        <td>
+          4868
+          -
+          4888
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Constants.Constant.booleanValue
+        </td>
+        <td style="background: #AEF1AE">
+          x.const.booleanValue
+        </td>
+      </tr><tr>
+        <td>
+          116
+        </td>
+        <td>
+          64063
+        </td>
+        <td>
+          4907
+          -
+          4945
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          dotty.tools.dotc.ast.tpd.TreeOps.ensureApplied
+        </td>
+        <td style="background: #AEF1AE">
+          ast.tpd.TreeOps[dotty.tools.dotc.ast.tpd.Select](ast.tpd.TreeOps[dotty.tools.dotc.ast.Trees.Tree[dotty.tools.dotc.core.Types.Type]](l).select(core.Symbols.defn(ctx).Boolean_!)(ctx)).ensureApplied(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          116
+        </td>
+        <td>
+          64062
+        </td>
+        <td>
+          4907
+          -
+          4945
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.tpd.TreeOps.ensureApplied
+        </td>
+        <td style="background: #AEF1AE">
+          ast.tpd.TreeOps[dotty.tools.dotc.ast.tpd.Select](ast.tpd.TreeOps[dotty.tools.dotc.ast.Trees.Tree[dotty.tools.dotc.core.Types.Type]](l).select(core.Symbols.defn(ctx).Boolean_!)(ctx)).ensureApplied(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          118
+        </td>
+        <td>
+          64064
+        </td>
+        <td>
+          4986
+          -
+          5001
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Definitions.Boolean_!=
+        </td>
+        <td style="background: #AEF1AE">
+          core.Symbols.defn(ctx).Boolean_!=
+        </td>
+      </tr><tr>
+        <td>
+          118
+        </td>
+        <td>
+          64067
+        </td>
+        <td>
+          4979
+          -
+          5035
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Boolean.&amp;&amp;
+        </td>
+        <td style="background: #AEF1AE">
+          sym.==(core.Symbols.defn(ctx).Boolean_!=).&amp;&amp;(ConstantFold.this.isBool(l.tpe)(ctx)).&amp;&amp;(ConstantFold.this.isBool(x.tpe)(ctx))
+        </td>
+      </tr><tr>
+        <td>
+          118
+        </td>
+        <td>
+          64066
+        </td>
+        <td>
+          5022
+          -
+          5035
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.transform.localopt.ConstantFold.isBool
+        </td>
+        <td style="background: #F0ADAD">
+          ConstantFold.this.isBool(x.tpe)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          118
+        </td>
+        <td>
+          64065
+        </td>
+        <td>
+          5005
+          -
+          5018
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.transform.localopt.ConstantFold.isBool
+        </td>
+        <td style="background: #F0ADAD">
+          ConstantFold.this.isBool(l.tpe)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          119
+        </td>
+        <td>
+          64069
+        </td>
+        <td>
+          5076
+          -
+          5077
+        </td>
+        <td>
+          Ident
+        </td>
+        <td>
+          dotty.tools.dotc.transform.localopt.ConstantFold.l
+        </td>
+        <td style="background: #F0ADAD">
+          l
+        </td>
+      </tr><tr>
+        <td>
+          119
+        </td>
+        <td>
+          64068
+        </td>
+        <td>
+          5053
+          -
+          5074
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.Boolean.unary_!
+        </td>
+        <td style="background: #F0ADAD">
+          x.const.booleanValue.unary_!
+        </td>
+      </tr><tr>
+        <td>
+          120
+        </td>
+        <td>
+          64070
+        </td>
+        <td>
+          5093
+          -
+          5131
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.tpd.TreeOps.ensureApplied
+        </td>
+        <td style="background: #F0ADAD">
+          ast.tpd.TreeOps[dotty.tools.dotc.ast.tpd.Select](ast.tpd.TreeOps[dotty.tools.dotc.ast.Trees.Tree[dotty.tools.dotc.core.Types.Type]](l).select(core.Symbols.defn(ctx).Boolean_!)(ctx)).ensureApplied(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          120
+        </td>
+        <td>
+          64071
+        </td>
+        <td>
+          5093
+          -
+          5131
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          dotty.tools.dotc.ast.tpd.TreeOps.ensureApplied
+        </td>
+        <td style="background: #F0ADAD">
+          ast.tpd.TreeOps[dotty.tools.dotc.ast.tpd.Select](ast.tpd.TreeOps[dotty.tools.dotc.ast.Trees.Tree[dotty.tools.dotc.core.Types.Type]](l).select(core.Symbols.defn(ctx).Boolean_!)(ctx)).ensureApplied(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          122
+        </td>
+        <td>
+          64073
+        </td>
+        <td>
+          5193
+          -
+          5207
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.transform.localopt.ConstantFold.isConst
+        </td>
+        <td style="background: #AEF1AE">
+          ConstantFold.this.isConst(l.tpe)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          122
+        </td>
+        <td>
+          64072
+        </td>
+        <td>
+          5173
+          -
+          5188
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Definitions.Boolean_||
+        </td>
+        <td style="background: #AEF1AE">
+          core.Symbols.defn(ctx).Boolean_||
+        </td>
+      </tr><tr>
+        <td>
+          122
+        </td>
+        <td>
+          64074
+        </td>
+        <td>
+          5165
+          -
+          5207
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Boolean.&amp;&amp;
+        </td>
+        <td style="background: #AEF1AE">
+          sym.==(core.Symbols.defn(ctx).Boolean_||).&amp;&amp;(ConstantFold.this.isConst(l.tpe)(ctx))
+        </td>
+      </tr><tr>
+        <td>
+          123
+        </td>
+        <td>
+          64076
+        </td>
+        <td>
+          5235
+          -
+          5268
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Constants.Constant.booleanValue
+        </td>
+        <td style="background: #AEF1AE">
+          ConstantFold.this.asConst(l.tpe)(ctx).value.booleanValue
+        </td>
+      </tr><tr>
+        <td>
+          123
+        </td>
+        <td>
+          64075
+        </td>
+        <td>
+          5243
+          -
+          5248
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Trees.Tree.tpe
+        </td>
+        <td style="background: #AEF1AE">
+          l.tpe
+        </td>
+      </tr><tr>
+        <td>
+          124
+        </td>
+        <td>
+          64078
+        </td>
+        <td>
+          5305
+          -
+          5306
+        </td>
+        <td>
+          Ident
+        </td>
+        <td>
+          dotty.tools.dotc.transform.localopt.ConstantFold.l
+        </td>
+        <td style="background: #F0ADAD">
+          l
+        </td>
+      </tr><tr>
+        <td>
+          124
+        </td>
+        <td>
+          64077
+        </td>
+        <td>
+          5283
+          -
+          5303
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Constants.Constant.booleanValue
+        </td>
+        <td style="background: #AEF1AE">
+          l.const.booleanValue
+        </td>
+      </tr><tr>
+        <td>
+          125
+        </td>
+        <td>
+          64079
+        </td>
+        <td>
+          5322
+          -
+          5344
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.tpd.Block
+        </td>
+        <td style="background: #AEF1AE">
+          ast.tpd.Block({
+  &lt;synthetic&gt; &lt;artifact&gt; val x$3: dotty.tools.dotc.ast.Trees.Tree[dotty.tools.dotc.core.Types.Type] = lhs;
+  scala.collection.immutable.Nil.::[dotty.tools.dotc.ast.Trees.Tree[dotty.tools.dotc.core.Types.Type]](x$3)
+}, rhs)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          125
+        </td>
+        <td>
+          64080
+        </td>
+        <td>
+          5322
+          -
+          5344
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          dotty.tools.dotc.ast.tpd.Block
+        </td>
+        <td style="background: #AEF1AE">
+          ast.tpd.Block({
+  &lt;synthetic&gt; &lt;artifact&gt; val x$3: dotty.tools.dotc.ast.Trees.Tree[dotty.tools.dotc.core.Types.Type] = lhs;
+  scala.collection.immutable.Nil.::[dotty.tools.dotc.ast.Trees.Tree[dotty.tools.dotc.core.Types.Type]](x$3)
+}, rhs)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          147
+        </td>
+        <td>
+          64081
+        </td>
+        <td>
+          6722
+          -
+          6740
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.typer.ConstFold.apply
+        </td>
+        <td style="background: #AEF1AE">
+          typer.ConstFold.apply(t)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          148
+        </td>
+        <td>
+          64082
+        </td>
+        <td>
+          6765
+          -
+          6769
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          null
+        </td>
+      </tr><tr>
+        <td>
+          148
+        </td>
+        <td>
+          64085
+        </td>
+        <td>
+          6808
+          -
+          6855
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.tpd.Literal
+        </td>
+        <td style="background: #AEF1AE">
+          ast.tpd.Literal(s.tpe.asInstanceOf[dotty.tools.dotc.core.Types.ConstantType].value)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          148
+        </td>
+        <td>
+          64084
+        </td>
+        <td>
+          6759
+          -
+          6806
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Boolean.&amp;&amp;
+        </td>
+        <td style="background: #AEF1AE">
+          s.ne(null).&amp;&amp;(s.tpe.isInstanceOf[dotty.tools.dotc.core.Types.ConstantType])
+        </td>
+      </tr><tr>
+        <td>
+          148
+        </td>
+        <td>
+          64086
+        </td>
+        <td>
+          6808
+          -
+          6855
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          dotty.tools.dotc.ast.tpd.Literal
+        </td>
+        <td style="background: #AEF1AE">
+          ast.tpd.Literal(s.tpe.asInstanceOf[dotty.tools.dotc.core.Types.ConstantType].value)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          148
+        </td>
+        <td>
+          64083
+        </td>
+        <td>
+          6774
+          -
+          6806
+        </td>
+        <td>
+          TypeApply
+        </td>
+        <td>
+          scala.Any.isInstanceOf
+        </td>
+        <td style="background: #AEF1AE">
+          s.tpe.isInstanceOf[dotty.tools.dotc.core.Types.ConstantType]
+        </td>
+      </tr><tr>
+        <td>
+          149
+        </td>
+        <td>
+          64087
+        </td>
+        <td>
+          6875
+          -
+          6876
+        </td>
+        <td>
+          Ident
+        </td>
+        <td>
+          dotty.tools.dotc.transform.localopt.ConstantFold.t
+        </td>
+        <td style="background: #AEF1AE">
+          t
+        </td>
+      </tr><tr>
+        <td>
+          178
+        </td>
+        <td>
+          64088
+        </td>
+        <td>
+          7764
+          -
+          7773
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Trees.Tree.symbol
+        </td>
+        <td style="background: #AEF1AE">
+          t2.symbol(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          179
+        </td>
+        <td>
+          64091
+        </td>
+        <td>
+          7822
+          -
+          7843
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.transform.localopt.ConstantFold.isSimilar
+        </td>
+        <td style="background: #AEF1AE">
+          ConstantFold.this.isSimilar(x._1, x._2)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          179
+        </td>
+        <td>
+          64094
+        </td>
+        <td>
+          7750
+          -
+          7883
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Boolean.&amp;&amp;
+        </td>
+        <td style="background: #AEF1AE">
+          t1.symbol(ctx).==(t2.symbol(ctx)).&amp;&amp;(t1.args.zip[dotty.tools.dotc.ast.Trees.Tree[dotty.tools.dotc.core.Types.Type], dotty.tools.dotc.ast.Trees.Tree[dotty.tools.dotc.core.Types.Type], List[(dotty.tools.dotc.ast.Trees.Tree[dotty.tools.dotc.core.Types.Type], dotty.tools.dotc.ast.Trees.Tree[dotty.tools.dotc.core.Types.Type])]](t2.args)(immutable.this.List.canBuildFrom[(dotty.tools.dotc.ast.Trees.Tree[dotty.tools.dotc.core.Types.Type], dotty.tools.dotc.ast.Trees.Tree[dotty.tools.dotc.core.Types.Type])]).forall(((x: (dotty.tools.dotc.ast.Trees.Tree[dotty.tools.dotc.core.Types.Type], dotty.tools.dotc.ast.Trees.Tree[dotty.tools.dotc.core.Types.Type])) =&gt; ConstantFold.this.isSimilar(x._1, x._2)(ctx)))).&amp;&amp;(ConstantFold.this.isSimilar(t1.fun, t2.fun)(ctx))
+        </td>
+      </tr><tr>
+        <td>
+          179
+        </td>
+        <td>
+          64090
+        </td>
+        <td>
+          7797
+          -
+          7797
+        </td>
+        <td>
+          TypeApply
+        </td>
+        <td>
+          scala.collection.immutable.List.canBuildFrom
+        </td>
+        <td style="background: #AEF1AE">
+          immutable.this.List.canBuildFrom[(dotty.tools.dotc.ast.Trees.Tree[dotty.tools.dotc.core.Types.Type], dotty.tools.dotc.ast.Trees.Tree[dotty.tools.dotc.core.Types.Type])]
+        </td>
+      </tr><tr>
+        <td>
+          179
+        </td>
+        <td>
+          64092
+        </td>
+        <td>
+          7789
+          -
+          7844
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.LinearSeqOptimized.forall
+        </td>
+        <td style="background: #AEF1AE">
+          t1.args.zip[dotty.tools.dotc.ast.Trees.Tree[dotty.tools.dotc.core.Types.Type], dotty.tools.dotc.ast.Trees.Tree[dotty.tools.dotc.core.Types.Type], List[(dotty.tools.dotc.ast.Trees.Tree[dotty.tools.dotc.core.Types.Type], dotty.tools.dotc.ast.Trees.Tree[dotty.tools.dotc.core.Types.Type])]](t2.args)(immutable.this.List.canBuildFrom[(dotty.tools.dotc.ast.Trees.Tree[dotty.tools.dotc.core.Types.Type], dotty.tools.dotc.ast.Trees.Tree[dotty.tools.dotc.core.Types.Type])]).forall(((x: (dotty.tools.dotc.ast.Trees.Tree[dotty.tools.dotc.core.Types.Type], dotty.tools.dotc.ast.Trees.Tree[dotty.tools.dotc.core.Types.Type])) =&gt; ConstantFold.this.isSimilar(x._1, x._2)(ctx)))
+        </td>
+      </tr><tr>
+        <td>
+          179
+        </td>
+        <td>
+          64089
+        </td>
+        <td>
+          7801
+          -
+          7808
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Trees.Apply.args
+        </td>
+        <td style="background: #AEF1AE">
+          t2.args
+        </td>
+      </tr><tr>
+        <td>
+          180
+        </td>
+        <td>
+          64093
+        </td>
+        <td>
+          7858
+          -
+          7883
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.transform.localopt.ConstantFold.isSimilar
+        </td>
+        <td style="background: #AEF1AE">
+          ConstantFold.this.isSimilar(t1.fun, t2.fun)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          181
+        </td>
+        <td>
+          64095
+        </td>
+        <td>
+          7902
+          -
+          7907
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          false
+        </td>
+      </tr><tr>
+        <td>
+          186
+        </td>
+        <td>
+          64097
+        </td>
+        <td>
+          7991
+          -
+          8013
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.Object.eq
+        </td>
+        <td style="background: #AEF1AE">
+          t1.symbol(ctx).eq(t2.symbol(ctx))
+        </td>
+      </tr><tr>
+        <td>
+          186
+        </td>
+        <td>
+          64096
+        </td>
+        <td>
+          8004
+          -
+          8013
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Trees.Tree.symbol
+        </td>
+        <td style="background: #AEF1AE">
+          t2.symbol(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          188
+        </td>
+        <td>
+          64098
+        </td>
+        <td>
+          8052
+          -
+          8069
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.transform.localopt.ConstantFold.isSimilar
+        </td>
+        <td style="background: #AEF1AE">
+          ConstantFold.this.isSimilar(t2, t1)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          192
+        </td>
+        <td>
+          64099
+        </td>
+        <td>
+          8159
+          -
+          8168
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Trees.Tree.symbol
+        </td>
+        <td style="background: #AEF1AE">
+          t2.symbol(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          192
+        </td>
+        <td>
+          64101
+        </td>
+        <td>
+          8145
+          -
+          8218
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Boolean.&amp;&amp;
+        </td>
+        <td style="background: #AEF1AE">
+          t1.symbol(ctx).eq(t2.symbol(ctx)).&amp;&amp;(ConstantFold.this.isSimilar(t1.qualifier, t2.qualifier)(ctx))
+        </td>
+      </tr><tr>
+        <td>
+          193
+        </td>
+        <td>
+          64100
+        </td>
+        <td>
+          8181
+          -
+          8218
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.transform.localopt.ConstantFold.isSimilar
+        </td>
+        <td style="background: #AEF1AE">
+          ConstantFold.this.isSimilar(t1.qualifier, t2.qualifier)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          194
+        </td>
+        <td>
+          64102
+        </td>
+        <td>
+          8243
+          -
+          8259
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.tpd.desugarIdent
+        </td>
+        <td style="background: #AEF1AE">
+          ast.tpd.desugarIdent(t2)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          195
+        </td>
+        <td>
+          64103
+        </td>
+        <td>
+          8295
+          -
+          8312
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.transform.localopt.ConstantFold.isSimilar
+        </td>
+        <td style="background: #F0ADAD">
+          ConstantFold.this.isSimilar(t1, t2)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          196
+        </td>
+        <td>
+          64104
+        </td>
+        <td>
+          8331
+          -
+          8336
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          false
+        </td>
+      </tr><tr>
+        <td>
+          198
+        </td>
+        <td>
+          64105
+        </td>
+        <td>
+          8361
+          -
+          8366
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          false
+        </td>
+      </tr><tr>
+        <td>
+          202
+        </td>
+        <td>
+          64109
+        </td>
+        <td>
+          8442
+          -
+          8516
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Boolean.&amp;&amp;
+        </td>
+        <td style="background: #AEF1AE">
+          t1.const.tag.==(t2.const.tag).&amp;&amp;(t1.const.value.==(t2.const.value))
+        </td>
+      </tr><tr>
+        <td>
+          202
+        </td>
+        <td>
+          64106
+        </td>
+        <td>
+          8460
+          -
+          8472
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Constants.Constant.tag
+        </td>
+        <td style="background: #AEF1AE">
+          t2.const.tag
+        </td>
+      </tr><tr>
+        <td>
+          203
+        </td>
+        <td>
+          64108
+        </td>
+        <td>
+          8484
+          -
+          8516
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Any.==
+        </td>
+        <td style="background: #AEF1AE">
+          t1.const.value.==(t2.const.value)
+        </td>
+      </tr><tr>
+        <td>
+          203
+        </td>
+        <td>
+          64107
+        </td>
+        <td>
+          8502
+          -
+          8516
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Constants.Constant.value
+        </td>
+        <td style="background: #AEF1AE">
+          t2.const.value
+        </td>
+      </tr><tr>
+        <td>
+          204
+        </td>
+        <td>
+          64110
+        </td>
+        <td>
+          8533
+          -
+          8538
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          false
+        </td>
+      </tr><tr>
+        <td>
+          206
+        </td>
+        <td>
+          64111
+        </td>
+        <td>
+          8559
+          -
+          8564
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          false
+        </td>
+      </tr><tr>
+        <td>
+          209
+        </td>
+        <td>
+          64112
+        </td>
+        <td>
+          8634
+          -
+          8668
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.Types.Type.derivesFrom
+        </td>
+        <td style="background: #AEF1AE">
+          tpe.derivesFrom(core.Symbols.defn(ctx).BooleanClass(ctx))(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          210
+        </td>
+        <td>
+          64113
+        </td>
+        <td>
+          8733
+          -
+          8763
+        </td>
+        <td>
+          TypeApply
+        </td>
+        <td>
+          scala.Any.isInstanceOf
+        </td>
+        <td style="background: #AEF1AE">
+          tpe.isInstanceOf[dotty.tools.dotc.core.Types.ConstantType]
+        </td>
+      </tr><tr>
+        <td>
+          211
+        </td>
+        <td>
+          64114
+        </td>
+        <td>
+          8828
+          -
+          8858
+        </td>
+        <td>
+          TypeApply
+        </td>
+        <td>
+          scala.Any.asInstanceOf
+        </td>
+        <td style="background: #AEF1AE">
+          tpe.asInstanceOf[dotty.tools.dotc.core.Types.ConstantType]
+        </td>
+      </tr>
+    </table>
+          </div>
+        </div>
+      </body>
+    </html>

@@ -1,0 +1,5316 @@
+<html>
+      <head>
+        <meta http-equiv="Content-Type" content="text/html; charset=utf-8"/>
+        <title id="title">
+          dotty/tools/dotc/transform/PostTyper.scala.html
+        </title>
+        <script src="https://ajax.googleapis.com/ajax/libs/jquery/1.10.2/jquery.min.js"></script><link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/jquery.tablesorter/2.20.1/css/theme.default.min.css" type="text/css"/><script src="https://cdnjs.cloudflare.com/ajax/libs/jquery.tablesorter/2.20.1/js/jquery.tablesorter.min.js"></script><link rel="stylesheet" href="https://netdna.bootstrapcdn.com/bootstrap/3.0.3/css/bootstrap.min.css" type="text/css"/><script src="https://netdna.bootstrapcdn.com/bootstrap/3.0.3/js/bootstrap.min.js"></script><script type="text/javascript">
+        $(document).ready(function() {$(".tablesorter").tablesorter();});
+      </script>
+        <style>
+          table.codegrid { font-family: monospace; font-size: 12px; width: auto!important; }table.statementlist { width: auto!important; font-size: 13px; } table.codegrid td { padding: 0!important; border: 0!important } table td.linenumber { width: 40px!important; } 
+        </style>
+      </head>
+      <body style="font-family: monospace;">
+        <ul class="nav nav-tabs">
+          <li>
+            <a href="#codegrid" data-toggle="tab">Codegrid</a>
+          </li>
+          <li>
+            <a href="#statementlist" data-toggle="tab">Statement List</a>
+          </li>
+        </ul>
+        <div class="tab-content">
+          <div class="tab-pane active" id="codegrid">
+            <pre style='font-size: 12pt; font-family: courier;'>1 <span style=''>package dotty.tools.dotc
+</span>2 <span style=''>package transform
+</span>3 <span style=''>
+</span>4 <span style=''>import dotty.tools.dotc.ast.{Trees, tpd, untpd}
+</span>5 <span style=''>import scala.collection.{ mutable, immutable }
+</span>6 <span style=''>import ValueClasses._
+</span>7 <span style=''>import scala.annotation.tailrec
+</span>8 <span style=''>import core._
+</span>9 <span style=''>import typer.ErrorReporting._
+</span>10 <span style=''>import typer.Checking
+</span>11 <span style=''>import Types._, Contexts._, Constants._, Names._, NameOps._, Flags._, DenotTransformers._
+</span>12 <span style=''>import SymDenotations._, Symbols._, StdNames._, Annotations._, Trees._, Scopes._, Denotations._
+</span>13 <span style=''>import util.Positions._
+</span>14 <span style=''>import Decorators._
+</span>15 <span style=''>import config.Printers.typr
+</span>16 <span style=''>import Symbols._, TypeUtils._, SymUtils._
+</span>17 <span style=''>import reporting.diagnostic.messages.{NotAMember, SuperCallsNotAllowedInline}
+</span>18 <span style=''>
+</span>19 <span style=''>/** A macro transform that runs immediately after typer and that performs the following functions:
+</span>20 <span style=''> *
+</span>21 <span style=''> *  (1) Add super accessors and protected accessors (@see SuperAccessors)
+</span>22 <span style=''> *
+</span>23 <span style=''> *  (2) Convert parameter fields that have the same name as a corresponding
+</span>24 <span style=''> *      public parameter field in a superclass to a forwarder to the superclass
+</span>25 <span style=''> *      field (corresponding = super class field is initialized with subclass field)
+</span>26 <span style=''> *      (@see ForwardParamAccessors)
+</span>27 <span style=''> *
+</span>28 <span style=''> *  (3) Add synthetic methods (@see SyntheticMethods)
+</span>29 <span style=''> *
+</span>30 <span style=''> *  (4) Check that `New` nodes can be instantiated, and that annotations are valid
+</span>31 <span style=''> *
+</span>32 <span style=''> *  (5) Convert all trees representing types to TypeTrees.
+</span>33 <span style=''> *
+</span>34 <span style=''> *  (6) Check the bounds of AppliedTypeTrees
+</span>35 <span style=''> *
+</span>36 <span style=''> *  (7) Insert `.package` for selections of package object members
+</span>37 <span style=''> *
+</span>38 <span style=''> *  (8) Replaces self references by name with `this`
+</span>39 <span style=''> *
+</span>40 <span style=''> *  (9) Adds SourceFile annotations to all top-level classes and objects
+</span>41 <span style=''> *
+</span>42 <span style=''> *  (10) Adds Child annotations to all sealed classes
+</span>43 <span style=''> *
+</span>44 <span style=''> *  (11) Minimizes `call` fields of `Inline` nodes to just point to the toplevel
+</span>45 <span style=''> *       class from which code was inlined.
+</span>46 <span style=''> *
+</span>47 <span style=''> *  (12) Converts GADT bounds into normal type bounds
+</span>48 <span style=''> *
+</span>49 <span style=''> *  The reason for making this a macro transform is that some functions (in particular
+</span>50 <span style=''> *  super and protected accessors and instantiation checks) are naturally top-down and
+</span>51 <span style=''> *  don't lend themselves to the bottom-up approach of a mini phase. The other two functions
+</span>52 <span style=''> *  (forwarding param accessors and synthetic methods) only apply to templates and fit
+</span>53 <span style=''> *  mini-phase or subfunction of a macro phase equally well. But taken by themselves
+</span>54 <span style=''> *  they do not warrant their own group of miniphases before pickling.
+</span>55 <span style=''> */
+</span>56 <span style=''>class PostTyper extends MacroTransform with IdentityDenotTransformer { thisPhase =&gt;
+</span>57 <span style=''>  import tpd._
+</span>58 <span style=''>
+</span>59 <span style=''>  /** the following two members override abstract members in Transform */
+</span>60 <span style=''>  override def phaseName: String = </span><span style='background: #AEF1AE'>&quot;posttyper&quot;</span><span style=''>
+</span>61 <span style=''>
+</span>62 <span style=''>  override def changesMembers = </span><span style='background: #AEF1AE'>true</span><span style=''> // the phase adds super accessors and synthetic methods
+</span>63 <span style=''>
+</span>64 <span style=''>  override def transformPhase(implicit ctx: Context) = </span><span style='background: #AEF1AE'>thisPhase.next</span><span style=''>
+</span>65 <span style=''>
+</span>66 <span style=''>  protected def newTransformer(implicit ctx: Context): Transformer =
+</span>67 <span style=''>    </span><span style='background: #AEF1AE'>new PostTyperTransformer</span><span style=''>
+</span>68 <span style=''>
+</span>69 <span style=''>  val superAcc = </span><span style='background: #AEF1AE'>new SuperAccessors(thisPhase)</span><span style=''>
+</span>70 <span style=''>  val paramFwd = </span><span style='background: #AEF1AE'>new ParamForwarding(thisPhase)</span><span style=''>
+</span>71 <span style=''>  val synthMth = </span><span style='background: #AEF1AE'>new SyntheticMethods(thisPhase)</span><span style=''>
+</span>72 <span style=''>
+</span>73 <span style=''>  private def newPart(tree: Tree): Option[New] = </span><span style='background: #AEF1AE'>methPart(tree)</span><span style=''> match {
+</span>74 <span style=''>    case Select(nu: New, _) =&gt; </span><span style='background: #AEF1AE'>Some(nu)</span><span style=''>
+</span>75 <span style=''>    case _ =&gt; </span><span style='background: #AEF1AE'>None</span><span style=''>
+</span>76 <span style=''>  }
+</span>77 <span style=''>
+</span>78 <span style=''>  private def checkValidJavaAnnotation(annot: Tree)(implicit ctx: Context): Unit = </span><span style='background: #AEF1AE'>{
+</span>79 <span style=''></span><span style='background: #AEF1AE'>    // TODO fill in
+</span>80 <span style=''></span><span style='background: #AEF1AE'>  }</span><span style=''>
+</span>81 <span style=''>
+</span>82 <span style=''>  class PostTyperTransformer extends Transformer {
+</span>83 <span style=''>
+</span>84 <span style=''>    private[this] var inJavaAnnot: Boolean = </span><span style='background: #AEF1AE'>false</span><span style=''>
+</span>85 <span style=''>
+</span>86 <span style=''>    private[this] var noCheckNews: Set[New] = </span><span style='background: #AEF1AE'>Set()</span><span style=''>
+</span>87 <span style=''>
+</span>88 <span style=''>    def withNoCheckNews[T](ts: List[New])(op: =&gt; T): T = {
+</span>89 <span style=''>      val saved = </span><span style='background: #AEF1AE'>noCheckNews</span><span style=''>
+</span>90 <span style=''>      </span><span style='background: #AEF1AE'>noCheckNews ++= ts</span><span style=''>
+</span>91 <span style=''>      try </span><span style='background: #AEF1AE'>op</span><span style=''> finally </span><span style='background: #AEF1AE'>noCheckNews = saved</span><span style=''>
+</span>92 <span style=''>    }
+</span>93 <span style=''>
+</span>94 <span style=''>    def isCheckable(t: New) = </span><span style='background: #AEF1AE'>!inJavaAnnot &amp;&amp; !noCheckNews.contains(t)</span><span style=''>
+</span>95 <span style=''>
+</span>96 <span style=''>    private def transformAnnot(annot: Tree)(implicit ctx: Context): Tree = {
+</span>97 <span style=''>      val saved = </span><span style='background: #AEF1AE'>inJavaAnnot</span><span style=''>
+</span>98 <span style=''>      inJavaAnnot = </span><span style='background: #AEF1AE'>annot.symbol is JavaDefined</span><span style=''>
+</span>99 <span style=''>      if (</span><span style='background: #AEF1AE'>inJavaAnnot</span><span style=''>) </span><span style='background: #AEF1AE'>checkValidJavaAnnotation(annot)</span><span style=''>
+</span>100 <span style=''>      try </span><span style='background: #AEF1AE'>transform(annot)</span><span style=''>
+</span>101 <span style=''>      finally </span><span style='background: #AEF1AE'>inJavaAnnot = saved</span><span style=''>
+</span>102 <span style=''>    }
+</span>103 <span style=''>
+</span>104 <span style=''>    private def transformAnnot(annot: Annotation)(implicit ctx: Context): Annotation =
+</span>105 <span style=''>      </span><span style='background: #AEF1AE'>annot.derivedAnnotation(transformAnnot(annot.tree))</span><span style=''>
+</span>106 <span style=''>
+</span>107 <span style=''>    private def transformMemberDef(tree: MemberDef)(implicit ctx: Context): Unit = {
+</span>108 <span style=''>      val sym = </span><span style='background: #AEF1AE'>tree.symbol</span><span style=''>
+</span>109 <span style=''>      </span><span style='background: #AEF1AE'>sym.registerIfChild()</span><span style=''>
+</span>110 <span style=''>      </span><span style='background: #AEF1AE'>sym.transformAnnotations(transformAnnot)</span><span style=''>
+</span>111 <span style=''>    }
+</span>112 <span style=''>
+</span>113 <span style=''>    private def transformSelect(tree: Select, targs: List[Tree])(implicit ctx: Context): Tree = {
+</span>114 <span style=''>      val qual = </span><span style='background: #AEF1AE'>tree.qualifier</span><span style=''>
+</span>115 <span style=''>      </span><span style='background: #AEF1AE'>qual.symbol.moduleClass.denot</span><span style=''> match {
+</span>116 <span style=''>        case pkg: PackageClassDenotation if </span><span style='background: #AEF1AE'>!tree.symbol.maybeOwner.is(Package)</span><span style=''> =&gt;
+</span>117 <span style=''>          </span><span style='background: #AEF1AE'>transformSelect(cpy.Select(tree)(qual select pkg.packageObj.symbol, tree.name), targs)</span><span style=''>
+</span>118 <span style=''>        case _ =&gt;
+</span>119 <span style=''>          val tree1 = </span><span style='background: #AEF1AE'>super.transform(tree)</span><span style=''>
+</span>120 <span style=''>          </span><span style='background: #AEF1AE'>constToLiteral(tree1)</span><span style=''> match {
+</span>121 <span style=''>            case _: Literal =&gt; tree1
+</span>122 <span style=''>            case _ =&gt; </span><span style='background: #AEF1AE'>superAcc.transformSelect(tree1, targs)</span><span style=''>
+</span>123 <span style=''>          }
+</span>124 <span style=''>      }
+</span>125 <span style=''>    }
+</span>126 <span style=''>
+</span>127 <span style=''>    private def normalizeTypeArgs(tree: TypeApply)(implicit ctx: Context): TypeApply = </span><span style='background: #AEF1AE'>tree.tpe</span><span style=''> match {
+</span>128 <span style=''>      case pt: PolyType =&gt; // wait for more arguments coming
+</span>129 <span style=''>        tree
+</span>130 <span style=''>      case _ =&gt;
+</span>131 <span style=''>        def decompose(tree: TypeApply): (Tree, List[Tree]) = </span><span style='background: #AEF1AE'>tree.fun</span><span style=''> match {
+</span>132 <span style=''>          case fun: TypeApply =&gt;
+</span>133 <span style=''>            val (tycon, args) = decompose(fun)
+</span>134 <span style=''>            </span><span style='background: #AEF1AE'>(tycon, args ++ tree.args)</span><span style=''>
+</span>135 <span style=''>          case _ =&gt;
+</span>136 <span style=''>            </span><span style='background: #AEF1AE'>(tree.fun, tree.args)</span><span style=''>
+</span>137 <span style=''>        }
+</span>138 <span style=''>        def reorderArgs(pnames: List[Name], namedArgs: List[NamedArg], otherArgs: List[Tree]): List[Tree] = pnames match {
+</span>139 <span style=''>          case pname :: pnames1 =&gt;
+</span>140 <span style=''>            </span><span style='background: #AEF1AE'>namedArgs.partition(_.name == pname)</span><span style=''> match {
+</span>141 <span style=''>              case (NamedArg(_, arg) :: _, namedArgs1) =&gt;
+</span>142 <span style=''>                arg </span><span style='background: #AEF1AE'>:: reorderArgs(pnames1, namedArgs1, otherArgs)</span><span style=''>
+</span>143 <span style=''>              case _ =&gt;
+</span>144 <span style=''>                val otherArg :: otherArgs1 = otherArgs
+</span>145 <span style=''>                otherArg </span><span style='background: #AEF1AE'>:: reorderArgs(pnames1, namedArgs, otherArgs1)</span><span style=''>
+</span>146 <span style=''>            }
+</span>147 <span style=''>          case nil =&gt;
+</span>148 <span style=''>            </span><span style='background: #AEF1AE'>assert(namedArgs.isEmpty &amp;&amp; otherArgs.isEmpty)</span><span style=''>
+</span>149 <span style=''>            </span><span style='background: #AEF1AE'>Nil</span><span style=''>
+</span>150 <span style=''>        }
+</span>151 <span style=''>        val (tycon, args) = decompose(tree)
+</span>152 <span style=''>        </span><span style='background: #AEF1AE'>tycon.tpe.widen</span><span style=''> match {
+</span>153 <span style=''>          case tp: PolyType if </span><span style='background: #AEF1AE'>args.exists(isNamedArg)</span><span style=''> =&gt;
+</span>154 <span style=''>            val (namedArgs, otherArgs) = args.partition(isNamedArg)
+</span>155 <span style=''>            val args1 = </span><span style='background: #AEF1AE'>reorderArgs(tp.paramNames, namedArgs.asInstanceOf[List[NamedArg]], otherArgs)</span><span style=''>
+</span>156 <span style=''>            </span><span style='background: #AEF1AE'>TypeApply(tycon, args1).withPos(tree.pos).withType(tree.tpe)</span><span style=''>
+</span>157 <span style=''>          case _ =&gt;
+</span>158 <span style=''>            tree
+</span>159 <span style=''>        }
+</span>160 <span style=''>    }
+</span>161 <span style=''>
+</span>162 <span style=''>    /** 1. If we are an an inline method but not in a nested quote, mark the inline method
+</span>163 <span style=''>     *  as a macro.
+</span>164 <span style=''>     *
+</span>165 <span style=''>     *  2. If selection is a quote or splice node, record that fact in the current compilation unit.
+</span>166 <span style=''>     */
+</span>167 <span style=''>    private def handleMeta(sym: Symbol)(implicit ctx: Context): Unit = {
+</span>168 <span style=''>
+</span>169 <span style=''>      def markAsMacro(c: Context): Unit =
+</span>170 <span style=''>        if (</span><span style='background: #AEF1AE'>c.owner eq c.outer.owner</span><span style=''>) </span><span style='background: #F0ADAD'>markAsMacro(c.outer)</span><span style=''>
+</span>171 <span style=''>        else </span><span style='background: #AEF1AE'>if (c.owner.isInlineMethod) c.owner.setFlag(Macro)
+</span>172 <span style=''></span><span style='background: #AEF1AE'>        else if (!c.outer.owner.is(Package)) markAsMacro(c.outer)</span><span style=''>
+</span>173 <span style=''>
+</span>174 <span style=''>      if (</span><span style='background: #AEF1AE'>sym.isSplice || sym.isQuote</span><span style=''>) </span><span style='background: #AEF1AE'>{
+</span>175 <span style=''></span><span style='background: #AEF1AE'>        markAsMacro(ctx)
+</span>176 <span style=''></span><span style='background: #AEF1AE'>        ctx.compilationUnit.containsQuotesOrSplices = true
+</span>177 <span style=''></span><span style='background: #AEF1AE'>      }</span><span style=''>
+</span>178 <span style=''>    }
+</span>179 <span style=''>
+</span>180 <span style=''>    override def transform(tree: Tree)(implicit ctx: Context): Tree =
+</span>181 <span style=''>      try </span><span style='background: #AEF1AE'>tree match {
+</span>182 <span style=''></span><span style='background: #AEF1AE'>        case tree: Ident if !tree.isType =&gt;
+</span>183 <span style=''></span><span style='background: #AEF1AE'>          handleMeta(tree.symbol)
+</span>184 <span style=''></span><span style='background: #AEF1AE'>          tree.tpe match {
+</span>185 <span style=''></span><span style='background: #AEF1AE'>            case tpe: ThisType =&gt; This(tpe.cls).withPos(tree.pos)
+</span>186 <span style=''></span><span style='background: #AEF1AE'>            case _ =&gt; tree
+</span>187 <span style=''></span><span style='background: #AEF1AE'>          }
+</span>188 <span style=''></span><span style='background: #AEF1AE'>        case tree @ Select(qual, name) =&gt;
+</span>189 <span style=''></span><span style='background: #AEF1AE'>          handleMeta(tree.symbol)
+</span>190 <span style=''></span><span style='background: #AEF1AE'>          if (name.isTypeName) {
+</span>191 <span style=''></span><span style='background: #AEF1AE'>            Checking.checkRealizable(qual.tpe, qual.pos.focus)
+</span>192 <span style=''></span><span style='background: #AEF1AE'>            super.transform(tree)
+</span>193 <span style=''></span><span style='background: #AEF1AE'>          }
+</span>194 <span style=''></span><span style='background: #AEF1AE'>          else
+</span>195 <span style=''></span><span style='background: #AEF1AE'>            transformSelect(tree, Nil)
+</span>196 <span style=''></span><span style='background: #AEF1AE'>        case tree: Super =&gt;
+</span>197 <span style=''></span><span style='background: #AEF1AE'>          if (ctx.owner.enclosingMethod.isInlineMethod)
+</span>198 <span style=''></span><span style='background: #AEF1AE'>            ctx.error(SuperCallsNotAllowedInline(ctx.owner), tree.pos)
+</span>199 <span style=''></span><span style='background: #AEF1AE'>          super.transform(tree)
+</span>200 <span style=''></span><span style='background: #AEF1AE'>        case tree: Apply =&gt;
+</span>201 <span style=''></span><span style='background: #AEF1AE'>          methPart(tree) match {
+</span>202 <span style=''></span><span style='background: #AEF1AE'>            case Select(nu: New, nme.CONSTRUCTOR) if isCheckable(nu) =&gt;
+</span>203 <span style=''></span><span style='background: #AEF1AE'>              // need to check instantiability here, because the type of the New itself
+</span>204 <span style=''></span><span style='background: #AEF1AE'>              // might be a type constructor.
+</span>205 <span style=''></span><span style='background: #AEF1AE'>              Checking.checkInstantiable(tree.tpe, nu.pos)
+</span>206 <span style=''></span><span style='background: #AEF1AE'>              withNoCheckNews(nu :: Nil)(super.transform(tree))
+</span>207 <span style=''></span><span style='background: #AEF1AE'>            case _ =&gt;
+</span>208 <span style=''></span><span style='background: #AEF1AE'>              super.transform(tree)
+</span>209 <span style=''></span><span style='background: #AEF1AE'>          }
+</span>210 <span style=''></span><span style='background: #AEF1AE'>        case tree: TypeApply =&gt;
+</span>211 <span style=''></span><span style='background: #AEF1AE'>          val tree1 @ TypeApply(fn, args) = normalizeTypeArgs(tree)
+</span>212 <span style=''></span><span style='background: #AEF1AE'>          Checking.checkBounds(args, fn.tpe.widen.asInstanceOf[PolyType])
+</span>213 <span style=''></span><span style='background: #AEF1AE'>          fn match {
+</span>214 <span style=''></span><span style='background: #AEF1AE'>            case sel: Select =&gt;
+</span>215 <span style=''></span><span style='background: #AEF1AE'>              val args1 = transform(args)
+</span>216 <span style=''></span><span style='background: #AEF1AE'>              val sel1 = transformSelect(sel, args1)
+</span>217 <span style=''></span><span style='background: #AEF1AE'>              if (superAcc.isProtectedAccessor(sel1)) </span><span style='background: #F0ADAD'>sel1</span><span style='background: #AEF1AE'> else cpy.TypeApply(tree1)(sel1, args1)
+</span>218 <span style=''></span><span style='background: #AEF1AE'>            case _ =&gt;
+</span>219 <span style=''></span><span style='background: #AEF1AE'>              super.transform(tree1)
+</span>220 <span style=''></span><span style='background: #AEF1AE'>          }
+</span>221 <span style=''></span><span style='background: #AEF1AE'>        case tree @ Assign(sel: Select, _) =&gt;
+</span>222 <span style=''></span><span style='background: #AEF1AE'>          super.transform(superAcc.transformAssign(tree))
+</span>223 <span style=''></span><span style='background: #AEF1AE'>        case Inlined(call, bindings, expansion) =&gt;
+</span>224 <span style=''></span><span style='background: #AEF1AE'>          // Leave only a call trace consisting of
+</span>225 <span style=''></span><span style='background: #AEF1AE'>          //  - a reference to the top-level class from which the call was inlined,
+</span>226 <span style=''></span><span style='background: #AEF1AE'>          //  - the call's position
+</span>227 <span style=''></span><span style='background: #AEF1AE'>          // in the call field of an Inlined node.
+</span>228 <span style=''></span><span style='background: #AEF1AE'>          // The trace has enough info to completely reconstruct positions.
+</span>229 <span style=''></span><span style='background: #AEF1AE'>          // The minimization is done for two reasons:
+</span>230 <span style=''></span><span style='background: #AEF1AE'>          //  1. To save space (calls might contain large inline arguments, which would otherwise
+</span>231 <span style=''></span><span style='background: #AEF1AE'>          //     be duplicated
+</span>232 <span style=''></span><span style='background: #AEF1AE'>          //  2. To enable correct pickling (calls can share symbols with the inlined code, which
+</span>233 <span style=''></span><span style='background: #AEF1AE'>          //     would trigger an assertion when pickling).
+</span>234 <span style=''></span><span style='background: #AEF1AE'>          val callTrace = Ident(call.symbol.topLevelClass.typeRef).withPos(call.pos)
+</span>235 <span style=''></span><span style='background: #AEF1AE'>          cpy.Inlined(tree)(callTrace, transformSub(bindings), transform(expansion))
+</span>236 <span style=''></span><span style='background: #AEF1AE'>        case tree: Template =&gt;
+</span>237 <span style=''></span><span style='background: #AEF1AE'>          withNoCheckNews(tree.parents.flatMap(newPart)) {
+</span>238 <span style=''></span><span style='background: #AEF1AE'>            val templ1 = paramFwd.forwardParamAccessors(tree)
+</span>239 <span style=''></span><span style='background: #AEF1AE'>            synthMth.addSyntheticMethods(
+</span>240 <span style=''></span><span style='background: #AEF1AE'>                superAcc.wrapTemplate(templ1)(
+</span>241 <span style=''></span><span style='background: #AEF1AE'>                  super.transform(_).asInstanceOf[Template]))
+</span>242 <span style=''></span><span style='background: #AEF1AE'>          }
+</span>243 <span style=''></span><span style='background: #AEF1AE'>        case tree: DefDef =&gt;
+</span>244 <span style=''></span><span style='background: #AEF1AE'>          transformMemberDef(tree)
+</span>245 <span style=''></span><span style='background: #AEF1AE'>          superAcc.wrapDefDef(tree)(super.transform(tree).asInstanceOf[DefDef])
+</span>246 <span style=''></span><span style='background: #AEF1AE'>        case tree: TypeDef =&gt;
+</span>247 <span style=''></span><span style='background: #AEF1AE'>          transformMemberDef(tree)
+</span>248 <span style=''></span><span style='background: #AEF1AE'>          val sym = tree.symbol
+</span>249 <span style=''></span><span style='background: #AEF1AE'>          if (sym.isClass) {
+</span>250 <span style=''></span><span style='background: #AEF1AE'>            // Add SourceFile annotation to top-level classes
+</span>251 <span style=''></span><span style='background: #AEF1AE'>            if (sym.owner.is(Package) &amp;&amp;
+</span>252 <span style=''></span><span style='background: #AEF1AE'>              ctx.compilationUnit.source.exists &amp;&amp;
+</span>253 <span style=''></span><span style='background: #AEF1AE'>              sym != defn.SourceFileAnnot)
+</span>254 <span style=''></span><span style='background: #AEF1AE'>              sym.addAnnotation(Annotation.makeSourceFile(ctx.compilationUnit.source.file.path))
+</span>255 <span style=''></span><span style='background: #AEF1AE'>            tree
+</span>256 <span style=''></span><span style='background: #AEF1AE'>          }
+</span>257 <span style=''></span><span style='background: #AEF1AE'>          super.transform(tree)
+</span>258 <span style=''></span><span style='background: #AEF1AE'>        case tree: MemberDef =&gt;
+</span>259 <span style=''></span><span style='background: #AEF1AE'>          transformMemberDef(tree)
+</span>260 <span style=''></span><span style='background: #AEF1AE'>          super.transform(tree)
+</span>261 <span style=''></span><span style='background: #AEF1AE'>        case tree: New if isCheckable(tree) =&gt;
+</span>262 <span style=''></span><span style='background: #AEF1AE'>          Checking.checkInstantiable(tree.tpe, tree.pos)
+</span>263 <span style=''></span><span style='background: #AEF1AE'>          super.transform(tree)
+</span>264 <span style=''></span><span style='background: #AEF1AE'>        case tree @ Annotated(annotated, annot) =&gt;
+</span>265 <span style=''></span><span style='background: #AEF1AE'>          cpy.Annotated(tree)(transform(annotated), transformAnnot(annot))
+</span>266 <span style=''></span><span style='background: #AEF1AE'>        case tree: AppliedTypeTree =&gt;
+</span>267 <span style=''></span><span style='background: #AEF1AE'>          Checking.checkAppliedType(tree, boundsCheck = !ctx.mode.is(Mode.Pattern))
+</span>268 <span style=''></span><span style='background: #AEF1AE'>          super.transform(tree)
+</span>269 <span style=''></span><span style='background: #AEF1AE'>        case SingletonTypeTree(ref) =&gt;
+</span>270 <span style=''></span><span style='background: #AEF1AE'>          Checking.checkRealizable(ref.tpe, ref.pos.focus)
+</span>271 <span style=''></span><span style='background: #AEF1AE'>          super.transform(tree)
+</span>272 <span style=''></span><span style='background: #AEF1AE'>        case tree: TypeTree =&gt;
+</span>273 <span style=''></span><span style='background: #AEF1AE'>          tree.withType(
+</span>274 <span style=''></span><span style='background: #AEF1AE'>            tree.tpe match {
+</span>275 <span style=''></span><span style='background: #AEF1AE'>              case AnnotatedType(tpe, annot) =&gt; AnnotatedType(tpe, transformAnnot(annot))
+</span>276 <span style=''></span><span style='background: #AEF1AE'>              case tpe =&gt; tpe
+</span>277 <span style=''></span><span style='background: #AEF1AE'>            }
+</span>278 <span style=''></span><span style='background: #AEF1AE'>          )
+</span>279 <span style=''></span><span style='background: #AEF1AE'>        case Import(expr, selectors) =&gt;
+</span>280 <span style=''></span><span style='background: #AEF1AE'>          val exprTpe = expr.tpe
+</span>281 <span style=''></span><span style='background: #AEF1AE'>          val seen = mutable.Set.empty[Name]
+</span>282 <span style=''></span><span style='background: #AEF1AE'>          def checkIdent(ident: untpd.Ident): Unit = {
+</span>283 <span style=''></span><span style='background: #AEF1AE'>            val name = ident.name.asTermName
+</span>284 <span style=''></span><span style='background: #AEF1AE'>            if (name != nme.WILDCARD &amp;&amp; !exprTpe.member(name).exists &amp;&amp; !exprTpe.member(name.toTypeName).exists)
+</span>285 <span style=''></span><span style='background: #AEF1AE'>              ctx.error(NotAMember(exprTpe, name, &quot;value&quot;), ident.pos)
+</span>286 <span style=''></span><span style='background: #AEF1AE'>            if (seen(ident.name))
+</span>287 <span style=''></span><span style='background: #AEF1AE'>              ctx.error(s&quot;${ident.show} is renamed twice&quot;, ident.pos)
+</span>288 <span style=''></span><span style='background: #AEF1AE'>            seen += ident.name
+</span>289 <span style=''></span><span style='background: #AEF1AE'>          }
+</span>290 <span style=''></span><span style='background: #AEF1AE'>          selectors.foreach {
+</span>291 <span style=''></span><span style='background: #AEF1AE'>            case ident: untpd.Ident                 =&gt; checkIdent(ident)
+</span>292 <span style=''></span><span style='background: #AEF1AE'>            case Thicket((ident: untpd.Ident) :: _) =&gt; checkIdent(ident)
+</span>293 <span style=''></span><span style='background: #AEF1AE'>            case _                                  </span><span style='background: #F0ADAD'>=&gt;</span><span style='background: #AEF1AE'>
+</span>294 <span style=''></span><span style='background: #AEF1AE'>          }
+</span>295 <span style=''></span><span style='background: #AEF1AE'>          super.transform(tree)
+</span>296 <span style=''></span><span style='background: #AEF1AE'>        case Typed(Ident(nme.WILDCARD), _) =&gt;
+</span>297 <span style=''></span><span style='background: #AEF1AE'>          super.transform(tree)(ctx.addMode(Mode.Pattern))
+</span>298 <span style=''></span><span style='background: #AEF1AE'>            // The added mode signals that bounds in a pattern need not
+</span>299 <span style=''></span><span style='background: #AEF1AE'>            // conform to selector bounds. I.e. assume
+</span>300 <span style=''></span><span style='background: #AEF1AE'>            //     type Tree[T &gt;: Null &lt;: Type]
+</span>301 <span style=''></span><span style='background: #AEF1AE'>            // One is still allowed to write
+</span>302 <span style=''></span><span style='background: #AEF1AE'>            //     case x: Tree[_]
+</span>303 <span style=''></span><span style='background: #AEF1AE'>            // (which translates to)
+</span>304 <span style=''></span><span style='background: #AEF1AE'>            //     case x: (_: Tree[_])
+</span>305 <span style=''></span><span style='background: #AEF1AE'>        case tree =&gt;
+</span>306 <span style=''></span><span style='background: #AEF1AE'>          super.transform(tree)
+</span>307 <span style=''></span><span style='background: #AEF1AE'>      }</span><span style=''>
+</span>308 <span style=''>      catch {
+</span>309 <span style=''>        case ex : AssertionError =&gt;
+</span>310 <span style=''>          </span><span style='background: #F0ADAD'>println(i&quot;error while transforming $tree&quot;)</span><span style=''>
+</span>311 <span style=''>          </span><span style='background: #F0ADAD'>throw ex</span><span style=''>
+</span>312 <span style=''>      }
+</span>313 <span style=''>  }
+</span>314 <span style=''>}
+</span></pre>
+          </div>
+          <div class="tab-pane" id="statementlist">
+            <table cellspacing="0" cellpadding="0" class="table statementlist">
+      <tr>
+        <th>Line</th>
+        <th>Stmt Id</th>
+        <th>Pos</th>
+        <th>Tree</th>
+        <th>Symbol</th>
+        <th>Code</th>
+      </tr><tr>
+        <td>
+          60
+        </td>
+        <td>
+          61696
+        </td>
+        <td>
+          2518
+          -
+          2529
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          &quot;posttyper&quot;
+        </td>
+      </tr><tr>
+        <td>
+          62
+        </td>
+        <td>
+          61697
+        </td>
+        <td>
+          2563
+          -
+          2567
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          true
+        </td>
+      </tr><tr>
+        <td>
+          64
+        </td>
+        <td>
+          61698
+        </td>
+        <td>
+          2680
+          -
+          2694
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Phases.Phase.next
+        </td>
+        <td style="background: #AEF1AE">
+          PostTyper.this.next
+        </td>
+      </tr><tr>
+        <td>
+          67
+        </td>
+        <td>
+          61699
+        </td>
+        <td>
+          2769
+          -
+          2793
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.transform.PostTyper.PostTyperTransformer.&lt;init&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          new PostTyper.this.PostTyperTransformer()
+        </td>
+      </tr><tr>
+        <td>
+          69
+        </td>
+        <td>
+          61700
+        </td>
+        <td>
+          2812
+          -
+          2841
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.transform.SuperAccessors.&lt;init&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          new SuperAccessors(PostTyper.this)
+        </td>
+      </tr><tr>
+        <td>
+          70
+        </td>
+        <td>
+          61701
+        </td>
+        <td>
+          2859
+          -
+          2889
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.transform.ParamForwarding.&lt;init&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          new ParamForwarding(PostTyper.this)
+        </td>
+      </tr><tr>
+        <td>
+          71
+        </td>
+        <td>
+          61702
+        </td>
+        <td>
+          2907
+          -
+          2938
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.transform.SyntheticMethods.&lt;init&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          new SyntheticMethods(PostTyper.this)
+        </td>
+      </tr><tr>
+        <td>
+          73
+        </td>
+        <td>
+          61703
+        </td>
+        <td>
+          2989
+          -
+          3003
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.ast.TreeInfo.methPart
+        </td>
+        <td style="background: #AEF1AE">
+          dotty.tools.dotc.ast.tpd.methPart(tree)
+        </td>
+      </tr><tr>
+        <td>
+          74
+        </td>
+        <td>
+          61704
+        </td>
+        <td>
+          3043
+          -
+          3051
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Some.apply
+        </td>
+        <td style="background: #AEF1AE">
+          scala.Some.apply[dotty.tools.dotc.ast.tpd.New](nu)
+        </td>
+      </tr><tr>
+        <td>
+          75
+        </td>
+        <td>
+          61705
+        </td>
+        <td>
+          3066
+          -
+          3070
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.None
+        </td>
+        <td style="background: #AEF1AE">
+          scala.None
+        </td>
+      </tr><tr>
+        <td>
+          78
+        </td>
+        <td>
+          61706
+        </td>
+        <td>
+          3159
+          -
+          3184
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          ()
+        </td>
+      </tr><tr>
+        <td>
+          84
+        </td>
+        <td>
+          61707
+        </td>
+        <td>
+          3283
+          -
+          3288
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          false
+        </td>
+      </tr><tr>
+        <td>
+          86
+        </td>
+        <td>
+          61708
+        </td>
+        <td>
+          3336
+          -
+          3341
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.generic.GenericCompanion.apply
+        </td>
+        <td style="background: #AEF1AE">
+          scala.Predef.Set.apply[dotty.tools.dotc.ast.tpd.New]()
+        </td>
+      </tr><tr>
+        <td>
+          89
+        </td>
+        <td>
+          61709
+        </td>
+        <td>
+          3420
+          -
+          3431
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.transform.PostTyper.PostTyperTransformer.noCheckNews
+        </td>
+        <td style="background: #AEF1AE">
+          PostTyperTransformer.this.noCheckNews
+        </td>
+      </tr><tr>
+        <td>
+          90
+        </td>
+        <td>
+          61710
+        </td>
+        <td>
+          3438
+          -
+          3456
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.SetLike.++
+        </td>
+        <td style="background: #AEF1AE">
+          PostTyperTransformer.this.noCheckNews.++(ts)
+        </td>
+      </tr><tr>
+        <td>
+          91
+        </td>
+        <td>
+          61711
+        </td>
+        <td>
+          3467
+          -
+          3469
+        </td>
+        <td>
+          Ident
+        </td>
+        <td>
+          dotty.tools.dotc.transform.PostTyper.PostTyperTransformer.op
+        </td>
+        <td style="background: #AEF1AE">
+          op
+        </td>
+      </tr><tr>
+        <td>
+          91
+        </td>
+        <td>
+          61712
+        </td>
+        <td>
+          3478
+          -
+          3497
+        </td>
+        <td>
+          Assign
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          PostTyperTransformer.this.noCheckNews = saved
+        </td>
+      </tr><tr>
+        <td>
+          94
+        </td>
+        <td>
+          61713
+        </td>
+        <td>
+          3551
+          -
+          3575
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.Boolean.unary_!
+        </td>
+        <td style="background: #AEF1AE">
+          PostTyperTransformer.this.noCheckNews.contains(t).unary_!
+        </td>
+      </tr><tr>
+        <td>
+          94
+        </td>
+        <td>
+          61714
+        </td>
+        <td>
+          3535
+          -
+          3575
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Boolean.&amp;&amp;
+        </td>
+        <td style="background: #AEF1AE">
+          PostTyperTransformer.this.inJavaAnnot.unary_!.&amp;&amp;(PostTyperTransformer.this.noCheckNews.contains(t).unary_!)
+        </td>
+      </tr><tr>
+        <td>
+          97
+        </td>
+        <td>
+          61715
+        </td>
+        <td>
+          3672
+          -
+          3683
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.transform.PostTyper.PostTyperTransformer.inJavaAnnot
+        </td>
+        <td style="background: #AEF1AE">
+          PostTyperTransformer.this.inJavaAnnot
+        </td>
+      </tr><tr>
+        <td>
+          98
+        </td>
+        <td>
+          61716
+        </td>
+        <td>
+          3704
+          -
+          3731
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.SymDenotations.SymDenotation.is
+        </td>
+        <td style="background: #AEF1AE">
+          core.Symbols.toDenot(annot.symbol(ctx))(ctx).is(core.Flags.JavaDefined)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          99
+        </td>
+        <td>
+          61720
+        </td>
+        <td>
+          3738
+          -
+          3738
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          ()
+        </td>
+      </tr><tr>
+        <td>
+          99
+        </td>
+        <td>
+          61719
+        </td>
+        <td>
+          3755
+          -
+          3786
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          dotty.tools.dotc.transform.PostTyper.checkValidJavaAnnotation
+        </td>
+        <td style="background: #AEF1AE">
+          PostTyper.this.checkValidJavaAnnotation(annot)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          99
+        </td>
+        <td>
+          61718
+        </td>
+        <td>
+          3755
+          -
+          3786
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.transform.PostTyper.checkValidJavaAnnotation
+        </td>
+        <td style="background: #AEF1AE">
+          PostTyper.this.checkValidJavaAnnotation(annot)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          99
+        </td>
+        <td>
+          61721
+        </td>
+        <td>
+          3738
+          -
+          3738
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          ()
+        </td>
+      </tr><tr>
+        <td>
+          99
+        </td>
+        <td>
+          61717
+        </td>
+        <td>
+          3742
+          -
+          3753
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.transform.PostTyper.PostTyperTransformer.inJavaAnnot
+        </td>
+        <td style="background: #AEF1AE">
+          PostTyperTransformer.this.inJavaAnnot
+        </td>
+      </tr><tr>
+        <td>
+          100
+        </td>
+        <td>
+          61722
+        </td>
+        <td>
+          3797
+          -
+          3813
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.transform.PostTyper.PostTyperTransformer.transform
+        </td>
+        <td style="background: #AEF1AE">
+          PostTyperTransformer.this.transform(annot)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          100
+        </td>
+        <td>
+          61723
+        </td>
+        <td>
+          3797
+          -
+          3813
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          dotty.tools.dotc.transform.PostTyper.PostTyperTransformer.transform
+        </td>
+        <td style="background: #AEF1AE">
+          PostTyperTransformer.this.transform(annot)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          101
+        </td>
+        <td>
+          61724
+        </td>
+        <td>
+          3828
+          -
+          3847
+        </td>
+        <td>
+          Assign
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          PostTyperTransformer.this.inJavaAnnot = saved
+        </td>
+      </tr><tr>
+        <td>
+          105
+        </td>
+        <td>
+          61725
+        </td>
+        <td>
+          3948
+          -
+          3999
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.Annotations.Annotation.derivedAnnotation
+        </td>
+        <td style="background: #AEF1AE">
+          annot.derivedAnnotation(PostTyperTransformer.this.transformAnnot(annot.tree(ctx))(ctx))(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          108
+        </td>
+        <td>
+          61726
+        </td>
+        <td>
+          4102
+          -
+          4113
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Trees.Tree.symbol
+        </td>
+        <td style="background: #AEF1AE">
+          tree.symbol(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          109
+        </td>
+        <td>
+          61729
+        </td>
+        <td>
+          4120
+          -
+          4141
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.transform.SymUtils.registerIfChild
+        </td>
+        <td style="background: #AEF1AE">
+          qual$1.registerIfChild(x$11)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          109
+        </td>
+        <td>
+          61728
+        </td>
+        <td>
+          4124
+          -
+          4124
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.transform.SymUtils.registerIfChild$default$1
+        </td>
+        <td style="background: #AEF1AE">
+          qual$1.registerIfChild$default$1
+        </td>
+      </tr><tr>
+        <td>
+          109
+        </td>
+        <td>
+          61727
+        </td>
+        <td>
+          4120
+          -
+          4123
+        </td>
+        <td>
+          ApplyImplicitView
+        </td>
+        <td>
+          dotty.tools.dotc.transform.SymUtils.decorateSymbol
+        </td>
+        <td style="background: #AEF1AE">
+          SymUtils.decorateSymbol(sym)
+        </td>
+      </tr><tr>
+        <td>
+          110
+        </td>
+        <td>
+          61730
+        </td>
+        <td>
+          4148
+          -
+          4188
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.SymDenotations.SymDenotation.transformAnnotations
+        </td>
+        <td style="background: #AEF1AE">
+          core.Symbols.toDenot(sym)(ctx).transformAnnotations({
+  ((annot: dotty.tools.dotc.core.Annotations.Annotation) =&gt; PostTyperTransformer.this.transformAnnot(annot)(ctx))
+})(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          114
+        </td>
+        <td>
+          61731
+        </td>
+        <td>
+          4311
+          -
+          4325
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Trees.Select.qualifier
+        </td>
+        <td style="background: #AEF1AE">
+          tree.qualifier
+        </td>
+      </tr><tr>
+        <td>
+          115
+        </td>
+        <td>
+          61732
+        </td>
+        <td>
+          4332
+          -
+          4361
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.Symbols.Symbol.denot
+        </td>
+        <td style="background: #AEF1AE">
+          core.Symbols.toDenot(qual.symbol(ctx))(ctx).moduleClass(ctx).denot(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          116
+        </td>
+        <td>
+          61734
+        </td>
+        <td>
+          4415
+          -
+          4437
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.SymDenotations.SymDenotation.maybeOwner
+        </td>
+        <td style="background: #AEF1AE">
+          core.Symbols.toDenot(tree.symbol(ctx))(ctx).maybeOwner
+        </td>
+      </tr><tr>
+        <td>
+          116
+        </td>
+        <td>
+          61733
+        </td>
+        <td>
+          4415
+          -
+          4426
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Trees.Tree.symbol
+        </td>
+        <td style="background: #AEF1AE">
+          tree.symbol(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          116
+        </td>
+        <td>
+          61736
+        </td>
+        <td>
+          4414
+          -
+          4449
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.Boolean.unary_!
+        </td>
+        <td style="background: #AEF1AE">
+          core.Symbols.toDenot(core.Symbols.toDenot(tree.symbol(ctx))(ctx).maybeOwner)(ctx).is(core.Flags.Package)(ctx).unary_!
+        </td>
+      </tr><tr>
+        <td>
+          116
+        </td>
+        <td>
+          61735
+        </td>
+        <td>
+          4441
+          -
+          4448
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Flags.Package
+        </td>
+        <td style="background: #AEF1AE">
+          core.Flags.Package
+        </td>
+      </tr><tr>
+        <td>
+          117
+        </td>
+        <td>
+          61737
+        </td>
+        <td>
+          4463
+          -
+          4549
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.transform.PostTyper.PostTyperTransformer.transformSelect
+        </td>
+        <td style="background: #AEF1AE">
+          PostTyperTransformer.this.transformSelect(PostTyperTransformer.this.cpy.Select(tree)(dotty.tools.dotc.ast.tpd.TreeOps[dotty.tools.dotc.ast.Trees.Tree[dotty.tools.dotc.core.Types.Type]](qual).select(pkg.packageObj(ctx).symbol)(ctx), tree.name)(ctx), targs)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          119
+        </td>
+        <td>
+          61738
+        </td>
+        <td>
+          4590
+          -
+          4611
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.transform.MacroTransform.Transformer.transform
+        </td>
+        <td style="background: #AEF1AE">
+          PostTyperTransformer.super.transform(tree)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          120
+        </td>
+        <td>
+          61739
+        </td>
+        <td>
+          4622
+          -
+          4643
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.TypedTreeInfo.constToLiteral
+        </td>
+        <td style="background: #AEF1AE">
+          dotty.tools.dotc.ast.tpd.constToLiteral(tree1)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          122
+        </td>
+        <td>
+          61740
+        </td>
+        <td>
+          4711
+          -
+          4749
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.transform.SuperAccessors.transformSelect
+        </td>
+        <td style="background: #AEF1AE">
+          PostTyper.this.superAcc.transformSelect(tree1, targs)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          127
+        </td>
+        <td>
+          61741
+        </td>
+        <td>
+          4864
+          -
+          4872
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Trees.Tree.tpe
+        </td>
+        <td style="background: #AEF1AE">
+          tree.tpe
+        </td>
+      </tr><tr>
+        <td>
+          131
+        </td>
+        <td>
+          61742
+        </td>
+        <td>
+          5032
+          -
+          5040
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Trees.TypeApply.fun
+        </td>
+        <td style="background: #AEF1AE">
+          tree.fun
+        </td>
+      </tr><tr>
+        <td>
+          133
+        </td>
+        <td>
+          61743
+        </td>
+        <td>
+          5099
+          -
+          5099
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.Tuple2._1
+        </td>
+        <td style="background: #AEF1AE">
+          x$1._1
+        </td>
+      </tr><tr>
+        <td>
+          133
+        </td>
+        <td>
+          61744
+        </td>
+        <td>
+          5106
+          -
+          5106
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.Tuple2._2
+        </td>
+        <td style="background: #AEF1AE">
+          x$1._2
+        </td>
+      </tr><tr>
+        <td>
+          134
+        </td>
+        <td>
+          61746
+        </td>
+        <td>
+          5154
+          -
+          5154
+        </td>
+        <td>
+          TypeApply
+        </td>
+        <td>
+          scala.collection.immutable.List.canBuildFrom
+        </td>
+        <td style="background: #AEF1AE">
+          immutable.this.List.canBuildFrom[dotty.tools.dotc.ast.tpd.Tree]
+        </td>
+      </tr><tr>
+        <td>
+          134
+        </td>
+        <td>
+          61745
+        </td>
+        <td>
+          5157
+          -
+          5166
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Trees.TypeApply.args
+        </td>
+        <td style="background: #AEF1AE">
+          tree.args
+        </td>
+      </tr><tr>
+        <td>
+          134
+        </td>
+        <td>
+          61748
+        </td>
+        <td>
+          5141
+          -
+          5167
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Tuple2.apply
+        </td>
+        <td style="background: #AEF1AE">
+          scala.Tuple2.apply[dotty.tools.dotc.ast.tpd.Tree, List[dotty.tools.dotc.ast.tpd.Tree]](tycon, args.++[dotty.tools.dotc.ast.tpd.Tree, List[dotty.tools.dotc.ast.tpd.Tree]](tree.args)(immutable.this.List.canBuildFrom[dotty.tools.dotc.ast.tpd.Tree]))
+        </td>
+      </tr><tr>
+        <td>
+          134
+        </td>
+        <td>
+          61747
+        </td>
+        <td>
+          5149
+          -
+          5166
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          scala.collection.immutable.List.++
+        </td>
+        <td style="background: #AEF1AE">
+          args.++[dotty.tools.dotc.ast.tpd.Tree, List[dotty.tools.dotc.ast.tpd.Tree]](tree.args)(immutable.this.List.canBuildFrom[dotty.tools.dotc.ast.tpd.Tree])
+        </td>
+      </tr><tr>
+        <td>
+          136
+        </td>
+        <td>
+          61749
+        </td>
+        <td>
+          5201
+          -
+          5209
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Trees.TypeApply.fun
+        </td>
+        <td style="background: #AEF1AE">
+          tree.fun
+        </td>
+      </tr><tr>
+        <td>
+          136
+        </td>
+        <td>
+          61751
+        </td>
+        <td>
+          5200
+          -
+          5221
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Tuple2.apply
+        </td>
+        <td style="background: #AEF1AE">
+          scala.Tuple2.apply[dotty.tools.dotc.ast.Trees.Tree[dotty.tools.dotc.core.Types.Type], List[dotty.tools.dotc.ast.Trees.Tree[dotty.tools.dotc.core.Types.Type]]](tree.fun, tree.args)
+        </td>
+      </tr><tr>
+        <td>
+          136
+        </td>
+        <td>
+          61750
+        </td>
+        <td>
+          5211
+          -
+          5220
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Trees.TypeApply.args
+        </td>
+        <td style="background: #AEF1AE">
+          tree.args
+        </td>
+      </tr><tr>
+        <td>
+          140
+        </td>
+        <td>
+          61752
+        </td>
+        <td>
+          5422
+          -
+          5437
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.Object.==
+        </td>
+        <td style="background: #AEF1AE">
+          x$2.name.==(pname)
+        </td>
+      </tr><tr>
+        <td>
+          140
+        </td>
+        <td>
+          61753
+        </td>
+        <td>
+          5402
+          -
+          5438
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.TraversableLike.partition
+        </td>
+        <td style="background: #AEF1AE">
+          namedArgs.partition(((x$2: dotty.tools.dotc.ast.tpd.NamedArg) =&gt; x$2.name.==(pname)))
+        </td>
+      </tr><tr>
+        <td>
+          142
+        </td>
+        <td>
+          61754
+        </td>
+        <td>
+          5525
+          -
+          5571
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.immutable.List.::
+        </td>
+        <td style="background: #AEF1AE">
+          reorderArgs(pnames1, namedArgs1, otherArgs).::[dotty.tools.dotc.ast.tpd.Tree](x$3)
+        </td>
+      </tr><tr>
+        <td>
+          144
+        </td>
+        <td>
+          61755
+        </td>
+        <td>
+          5616
+          -
+          5616
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.Tuple2._1
+        </td>
+        <td style="background: #AEF1AE">
+          x$4._1
+        </td>
+      </tr><tr>
+        <td>
+          144
+        </td>
+        <td>
+          61756
+        </td>
+        <td>
+          5628
+          -
+          5628
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.Tuple2._2
+        </td>
+        <td style="background: #AEF1AE">
+          x$4._2
+        </td>
+      </tr><tr>
+        <td>
+          145
+        </td>
+        <td>
+          61757
+        </td>
+        <td>
+          5676
+          -
+          5722
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.immutable.List.::
+        </td>
+        <td style="background: #AEF1AE">
+          reorderArgs(pnames1, namedArgs, otherArgs1).::[dotty.tools.dotc.ast.tpd.Tree](x$5)
+        </td>
+      </tr><tr>
+        <td>
+          148
+        </td>
+        <td>
+          61758
+        </td>
+        <td>
+          5799
+          -
+          5816
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.collection.SeqLike.isEmpty
+        </td>
+        <td style="background: #AEF1AE">
+          otherArgs.isEmpty
+        </td>
+      </tr><tr>
+        <td>
+          148
+        </td>
+        <td>
+          61760
+        </td>
+        <td>
+          5771
+          -
+          5817
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Predef.assert
+        </td>
+        <td style="background: #AEF1AE">
+          scala.Predef.assert(namedArgs.isEmpty.&amp;&amp;(otherArgs.isEmpty))
+        </td>
+      </tr><tr>
+        <td>
+          148
+        </td>
+        <td>
+          61759
+        </td>
+        <td>
+          5778
+          -
+          5816
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Boolean.&amp;&amp;
+        </td>
+        <td style="background: #AEF1AE">
+          namedArgs.isEmpty.&amp;&amp;(otherArgs.isEmpty)
+        </td>
+      </tr><tr>
+        <td>
+          149
+        </td>
+        <td>
+          61761
+        </td>
+        <td>
+          5830
+          -
+          5833
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.collection.immutable.Nil
+        </td>
+        <td style="background: #AEF1AE">
+          scala.collection.immutable.Nil
+        </td>
+      </tr><tr>
+        <td>
+          151
+        </td>
+        <td>
+          61763
+        </td>
+        <td>
+          5864
+          -
+          5864
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.Tuple2._2
+        </td>
+        <td style="background: #AEF1AE">
+          x$6._2
+        </td>
+      </tr><tr>
+        <td>
+          151
+        </td>
+        <td>
+          61762
+        </td>
+        <td>
+          5857
+          -
+          5857
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.Tuple2._1
+        </td>
+        <td style="background: #AEF1AE">
+          x$6._1
+        </td>
+      </tr><tr>
+        <td>
+          152
+        </td>
+        <td>
+          61764
+        </td>
+        <td>
+          5896
+          -
+          5911
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.Types.Type.widen
+        </td>
+        <td style="background: #AEF1AE">
+          tycon.tpe.widen(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          153
+        </td>
+        <td>
+          61766
+        </td>
+        <td>
+          5951
+          -
+          5974
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.LinearSeqOptimized.exists
+        </td>
+        <td style="background: #AEF1AE">
+          args.exists(dotty.tools.dotc.ast.tpd.isNamedArg)
+        </td>
+      </tr><tr>
+        <td>
+          153
+        </td>
+        <td>
+          61765
+        </td>
+        <td>
+          5963
+          -
+          5973
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.ast.TreeInfo.isNamedArg
+        </td>
+        <td style="background: #AEF1AE">
+          dotty.tools.dotc.ast.tpd.isNamedArg
+        </td>
+      </tr><tr>
+        <td>
+          154
+        </td>
+        <td>
+          61767
+        </td>
+        <td>
+          5995
+          -
+          5995
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.Tuple2._1
+        </td>
+        <td style="background: #AEF1AE">
+          x$7._1
+        </td>
+      </tr><tr>
+        <td>
+          154
+        </td>
+        <td>
+          61768
+        </td>
+        <td>
+          6006
+          -
+          6006
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.Tuple2._2
+        </td>
+        <td style="background: #AEF1AE">
+          x$7._2
+        </td>
+      </tr><tr>
+        <td>
+          155
+        </td>
+        <td>
+          61770
+        </td>
+        <td>
+          6097
+          -
+          6135
+        </td>
+        <td>
+          TypeApply
+        </td>
+        <td>
+          scala.Any.asInstanceOf
+        </td>
+        <td style="background: #AEF1AE">
+          namedArgs.asInstanceOf[List[dotty.tools.dotc.ast.tpd.NamedArg]]
+        </td>
+      </tr><tr>
+        <td>
+          155
+        </td>
+        <td>
+          61769
+        </td>
+        <td>
+          6082
+          -
+          6095
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Types.PolyType.paramNames
+        </td>
+        <td style="background: #AEF1AE">
+          tp.paramNames
+        </td>
+      </tr><tr>
+        <td>
+          155
+        </td>
+        <td>
+          61771
+        </td>
+        <td>
+          6070
+          -
+          6147
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.transform.PostTyper.PostTyperTransformer.reorderArgs
+        </td>
+        <td style="background: #AEF1AE">
+          reorderArgs(tp.paramNames, namedArgs.asInstanceOf[List[dotty.tools.dotc.ast.tpd.NamedArg]], otherArgs)
+        </td>
+      </tr><tr>
+        <td>
+          156
+        </td>
+        <td>
+          61772
+        </td>
+        <td>
+          6160
+          -
+          6220
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Trees.Tree.withType
+        </td>
+        <td style="background: #AEF1AE">
+          dotty.tools.dotc.ast.tpd.TypeApply(tycon, args1)(ctx).withPos(tree.pos).withType(tree.tpe)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          170
+        </td>
+        <td>
+          61773
+        </td>
+        <td>
+          6641
+          -
+          6654
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Contexts.Context.owner
+        </td>
+        <td style="background: #AEF1AE">
+          c.outer.owner
+        </td>
+      </tr><tr>
+        <td>
+          170
+        </td>
+        <td>
+          61776
+        </td>
+        <td>
+          6656
+          -
+          6676
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.transform.PostTyper.PostTyperTransformer.markAsMacro
+        </td>
+        <td style="background: #F0ADAD">
+          markAsMacro(c.outer)
+        </td>
+      </tr><tr>
+        <td>
+          170
+        </td>
+        <td>
+          61775
+        </td>
+        <td>
+          6668
+          -
+          6675
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Contexts.Context.outer
+        </td>
+        <td style="background: #F0ADAD">
+          c.outer
+        </td>
+      </tr><tr>
+        <td>
+          170
+        </td>
+        <td>
+          61774
+        </td>
+        <td>
+          6630
+          -
+          6654
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.Object.eq
+        </td>
+        <td style="background: #AEF1AE">
+          c.owner.eq(c.outer.owner)
+        </td>
+      </tr><tr>
+        <td>
+          170
+        </td>
+        <td>
+          61777
+        </td>
+        <td>
+          6656
+          -
+          6676
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          dotty.tools.dotc.transform.PostTyper.PostTyperTransformer.markAsMacro
+        </td>
+        <td style="background: #F0ADAD">
+          markAsMacro(c.outer)
+        </td>
+      </tr><tr>
+        <td>
+          171
+        </td>
+        <td>
+          61779
+        </td>
+        <td>
+          6718
+          -
+          6725
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Contexts.Context.owner
+        </td>
+        <td style="background: #AEF1AE">
+          c.owner
+        </td>
+      </tr><tr>
+        <td>
+          171
+        </td>
+        <td>
+          61782
+        </td>
+        <td>
+          6718
+          -
+          6740
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          dotty.tools.dotc.core.SymDenotations.SymDenotation.setFlag
+        </td>
+        <td style="background: #AEF1AE">
+          core.Symbols.toDenot(c.owner)(ctx).setFlag(core.Flags.Macro)
+        </td>
+      </tr><tr>
+        <td>
+          171
+        </td>
+        <td>
+          61778
+        </td>
+        <td>
+          6694
+          -
+          6716
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.SymDenotations.SymDenotation.isInlineMethod
+        </td>
+        <td style="background: #AEF1AE">
+          core.Symbols.toDenot(c.owner)(ctx).isInlineMethod(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          171
+        </td>
+        <td>
+          61781
+        </td>
+        <td>
+          6718
+          -
+          6740
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.core.SymDenotations.SymDenotation.setFlag
+        </td>
+        <td style="background: #AEF1AE">
+          core.Symbols.toDenot(c.owner)(ctx).setFlag(core.Flags.Macro)
+        </td>
+      </tr><tr>
+        <td>
+          171
+        </td>
+        <td>
+          61792
+        </td>
+        <td>
+          6690
+          -
+          6806
+        </td>
+        <td>
+          If
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          if (core.Symbols.toDenot(c.owner)(ctx).isInlineMethod(ctx))
+  core.Symbols.toDenot(c.owner)(ctx).setFlag(core.Flags.Macro)
+else
+  if (core.Symbols.toDenot(c.outer.owner)(ctx).is(core.Flags.Package)(ctx).unary_!)
+    markAsMacro(c.outer)
+  else
+    ()
+        </td>
+      </tr><tr>
+        <td>
+          171
+        </td>
+        <td>
+          61780
+        </td>
+        <td>
+          6734
+          -
+          6739
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Flags.Macro
+        </td>
+        <td style="background: #AEF1AE">
+          core.Flags.Macro
+        </td>
+      </tr><tr>
+        <td>
+          172
+        </td>
+        <td>
+          61788
+        </td>
+        <td>
+          6786
+          -
+          6806
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          dotty.tools.dotc.transform.PostTyper.PostTyperTransformer.markAsMacro
+        </td>
+        <td style="background: #AEF1AE">
+          markAsMacro(c.outer)
+        </td>
+      </tr><tr>
+        <td>
+          172
+        </td>
+        <td>
+          61791
+        </td>
+        <td>
+          6754
+          -
+          6806
+        </td>
+        <td>
+          If
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          if (core.Symbols.toDenot(c.outer.owner)(ctx).is(core.Flags.Package)(ctx).unary_!)
+  markAsMacro(c.outer)
+else
+  ()
+        </td>
+      </tr><tr>
+        <td>
+          172
+        </td>
+        <td>
+          61785
+        </td>
+        <td>
+          6758
+          -
+          6784
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.Boolean.unary_!
+        </td>
+        <td style="background: #AEF1AE">
+          core.Symbols.toDenot(c.outer.owner)(ctx).is(core.Flags.Package)(ctx).unary_!
+        </td>
+      </tr><tr>
+        <td>
+          172
+        </td>
+        <td>
+          61784
+        </td>
+        <td>
+          6776
+          -
+          6783
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Flags.Package
+        </td>
+        <td style="background: #AEF1AE">
+          core.Flags.Package
+        </td>
+      </tr><tr>
+        <td>
+          172
+        </td>
+        <td>
+          61787
+        </td>
+        <td>
+          6786
+          -
+          6806
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.transform.PostTyper.PostTyperTransformer.markAsMacro
+        </td>
+        <td style="background: #AEF1AE">
+          markAsMacro(c.outer)
+        </td>
+      </tr><tr>
+        <td>
+          172
+        </td>
+        <td>
+          61790
+        </td>
+        <td>
+          6754
+          -
+          6754
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          ()
+        </td>
+      </tr><tr>
+        <td>
+          172
+        </td>
+        <td>
+          61783
+        </td>
+        <td>
+          6759
+          -
+          6772
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Contexts.Context.owner
+        </td>
+        <td style="background: #AEF1AE">
+          c.outer.owner
+        </td>
+      </tr><tr>
+        <td>
+          172
+        </td>
+        <td>
+          61786
+        </td>
+        <td>
+          6798
+          -
+          6805
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Contexts.Context.outer
+        </td>
+        <td style="background: #AEF1AE">
+          c.outer
+        </td>
+      </tr><tr>
+        <td>
+          172
+        </td>
+        <td>
+          61789
+        </td>
+        <td>
+          6754
+          -
+          6754
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          ()
+        </td>
+      </tr><tr>
+        <td>
+          174
+        </td>
+        <td>
+          61797
+        </td>
+        <td>
+          6847
+          -
+          6940
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          {
+  markAsMacro(ctx);
+  ctx.compilationUnit.containsQuotesOrSplices_=(true)
+}
+        </td>
+      </tr><tr>
+        <td>
+          174
+        </td>
+        <td>
+          61794
+        </td>
+        <td>
+          6818
+          -
+          6845
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Boolean.||
+        </td>
+        <td style="background: #AEF1AE">
+          SymUtils.decorateSymbol(sym).isSplice(ctx).||(SymUtils.decorateSymbol(sym).isQuote(ctx))
+        </td>
+      </tr><tr>
+        <td>
+          174
+        </td>
+        <td>
+          61793
+        </td>
+        <td>
+          6834
+          -
+          6845
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.transform.SymUtils.isQuote
+        </td>
+        <td style="background: #AEF1AE">
+          SymUtils.decorateSymbol(sym).isQuote(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          174
+        </td>
+        <td>
+          61799
+        </td>
+        <td>
+          6814
+          -
+          6814
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          ()
+        </td>
+      </tr><tr>
+        <td>
+          174
+        </td>
+        <td>
+          61798
+        </td>
+        <td>
+          6814
+          -
+          6814
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          ()
+        </td>
+      </tr><tr>
+        <td>
+          175
+        </td>
+        <td>
+          61795
+        </td>
+        <td>
+          6857
+          -
+          6873
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.transform.PostTyper.PostTyperTransformer.markAsMacro
+        </td>
+        <td style="background: #AEF1AE">
+          markAsMacro(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          176
+        </td>
+        <td>
+          61796
+        </td>
+        <td>
+          6882
+          -
+          6932
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.CompilationUnit.containsQuotesOrSplices_=
+        </td>
+        <td style="background: #AEF1AE">
+          ctx.compilationUnit.containsQuotesOrSplices_=(true)
+        </td>
+      </tr><tr>
+        <td>
+          181
+        </td>
+        <td>
+          61920
+        </td>
+        <td>
+          7028
+          -
+          12763
+        </td>
+        <td>
+          Match
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          tree match {
+  case (tree @ (_: dotty.tools.dotc.ast.tpd.Ident)) if tree.isType.unary_! =&gt; {
+    PostTyperTransformer.this.handleMeta(tree.symbol(ctx))(ctx);
+    tree.tpe match {
+      case (tpe @ (_: dotty.tools.dotc.core.Types.ThisType)) =&gt; dotty.tools.dotc.ast.tpd.This(tpe.cls(ctx))(ctx).withPos(tree.pos)
+      case _ =&gt; tree
+    }
+  }
+  case (tree @ (qualifier: dotty.tools.dotc.ast.Trees.Tree[dotty.tools.dotc.core.Types.Type], name: dotty.tools.dotc.core.Names.Name)dotty.tools.dotc.ast.Trees.Select[dotty.tools.dotc.core.Types.Type]((qual @ _), (name @ _))) =&gt; {
+    PostTyperTransformer.this.handleMeta(tree.symbol(ctx))(ctx);
+    if (name.isTypeName)
+      {
+        typer.Checking.checkRealizable(qual.tpe, qual.pos.focus)(ctx);
+        PostTyperTransformer.super.transform(tree)(ctx)
+      }
+    else
+      PostTyperTransformer.this.transformSelect(tree, scala.collection.immutable.Nil)(ctx)
+  }
+  case (tree @ (_: dotty.tools.dotc.ast.tpd.Super)) =&gt; {
+    if (core.Symbols.toDenot(core.Symbols.toDenot(ctx.owner)(ctx).enclosingMethod(ctx))(ctx).isInlineMethod(ctx))
+      ctx.error(reporting.diagnostic.messages.SuperCallsNotAllowedInline.apply(ctx.owner)(ctx), core.Decorators.sourcePos(tree.pos)(ctx))
+    else
+      ();
+    PostTyperTransformer.super.transform(tree)(ctx)
+  }
+  case (tree @ (_: dotty.tools.dotc.ast.tpd.Apply)) =&gt; dotty.tools.dotc.ast.tpd.methPart(tree) match {
+    case (qualifier: dotty.tools.dotc.ast.Trees.Tree[dotty.tools.dotc.core.Types.Type], name: dotty.tools.dotc.core.Names.Name)dotty.tools.dotc.ast.Trees.Select[dotty.tools.dotc.core.Types.Type]((nu @ (_: dotty.tools.dotc.ast.tpd.New)), core.StdNames.nme.CONSTRUCTOR) if PostTyperTransformer.this.isCheckable(nu) =&gt; {
+      typer.Checking.checkInstantiable(tree.tpe, nu.pos)(ctx);
+      PostTyperTransformer.this.withNoCheckNews[dotty.tools.dotc.ast.tpd.Tree]({
+        &lt;synthetic&gt; &lt;artifact&gt; val x$8: dotty.tools.dotc.ast.tpd.New = nu;
+        scala.collection.immutable.Nil.::[dotty.tools.dotc.ast.tpd.New](x$8)
+      })(PostTyperTransformer.super.transform(tree)(ctx))
+    }
+    case _ =&gt; PostTyperTransformer.super.transform(tree)(ctx)
+  }
+  case (tree @ (_: dotty.tools.dotc.ast.tpd.TypeApply)) =&gt; {
+    &lt;synthetic&gt; &lt;artifact&gt; private[this] val x$9: (dotty.tools.dotc.ast.Trees.TypeApply[dotty.tools.dotc.core.Types.Type], dotty.tools.dotc.ast.Trees.Tree[dotty.tools.dotc.core.Types.Type], List[dotty.tools.dotc.ast.Trees.Tree[dotty.tools.dotc.core.Types.Type]]) = (PostTyperTransformer.this.normalizeTypeArgs(tree)(ctx): dotty.tools.dotc.ast.tpd.TypeApply @unchecked) match {
+      case (tree1 @ (fun: dotty.tools.dotc.ast.Trees.Tree[dotty.tools.dotc.core.Types.Type], args: List[dotty.tools.dotc.ast.Trees.Tree[dotty.tools.dotc.core.Types.Type]])dotty.tools.dotc.ast.Trees.TypeApply[dotty.tools.dotc.core.Types.Type]((fn @ _), (args @ _))) =&gt; scala.Tuple3.apply[dotty.tools.dotc.ast.Trees.TypeApply[dotty.tools.dotc.core.Types.Type], dotty.tools.dotc.ast.Trees.Tree[dotty.tools.dotc.core.Types.Type], List[dotty.tools.dotc.ast.Trees.Tree[dotty.tools.dotc.core.Types.Type]]](tree1, fn, args)
+    };
+    val tree1: dotty.tools.dotc.ast.Trees.TypeApply[dotty.tools.dotc.core.Types.Type] = x$9._1;
+    val fn: dotty.tools.dotc.ast.Trees.Tree[dotty.tools.dotc.core.Types.Type] = x$9._2;
+    val args: List[dotty.tools.dotc.ast.Trees.Tree[dotty.tools.dotc.core.Types.Type]] = x$9._3;
+    typer.Checking.checkBounds(args, fn.tpe.widen(ctx).asInstanceOf[dotty.tools.dotc.core.Types.PolyType])(ctx);
+    fn match {
+      case (sel @ (_: dotty.tools.dotc.ast.tpd.Select)) =&gt; {
+        val args1: List[dotty.tools.dotc.ast.tpd.Tree] = PostTyperTransformer.this.transform(args)(ctx);
+        val sel1: dotty.tools.dotc.ast.tpd.Tree = PostTyperTransformer.this.transformSelect(sel, args1)(ctx);
+        if (PostTyper.this.superAcc.isProtectedAccessor(sel1)(ctx))
+          sel1
+        else
+          PostTyperTransformer.this.cpy.TypeApply(tree1)(sel1, args1)(ctx)
+      }
+      case _ =&gt; PostTyperTransformer.super.transform(tree1)(ctx)
+    }
+  }
+  case (tree @ (lhs: dotty.tools.dotc.ast.Trees.Tree[dotty.tools.dotc.core.Types.Type], rhs: dotty.tools.dotc.ast.Trees.Tree[dotty.tools.dotc.core.Types.Type])dotty.tools.dotc.ast.Trees.Assign[dotty.tools.dotc.core.Types.Type]((sel @ (_: dotty.tools.dotc.ast.tpd.Select)), _)) =&gt; PostTyperTransformer.super.transform(PostTyper.this.superAcc.transformAssign(tree)(ctx))(ctx)
+  case (call: dotty.tools.dotc.ast.tpd.Tree, bindings: List[dotty.tools.dotc.ast.Trees.MemberDef[dotty.tools.dotc.core.Types.Type]], expansion: dotty.tools.dotc.ast.Trees.Tree[dotty.tools.dotc.core.Types.Type])dotty.tools.dotc.ast.Trees.Inlined[dotty.tools.dotc.core.Types.Type]((call @ _), (bindings @ _), (expansion @ _)) =&gt; {
+    val callTrace: dotty.tools.dotc.ast.Trees.Ident[dotty.tools.dotc.core.Types.Type] = dotty.tools.dotc.ast.tpd.Ident(core.Symbols.toDenot(core.Symbols.toDenot(call.symbol(ctx))(ctx).topLevelClass(ctx))(ctx).typeRef(ctx))(ctx).withPos(call.pos);
+    PostTyperTransformer.this.cpy.Inlined(tree)(callTrace, PostTyperTransformer.this.transformSub[dotty.tools.dotc.ast.Trees.MemberDef[dotty.tools.dotc.core.Types.Type]](bindings)(ctx), PostTyperTransformer.this.transform(expansion)(ctx))(ctx)
+  }
+  case (tree @ (_: dotty.tools.dotc.ast.tpd.Template)) =&gt; PostTyperTransformer.this.withNoCheckNews[dotty.tools.dotc.ast.tpd.Template](tree.parents.flatMap[dotty.tools.dotc.ast.tpd.New, List[dotty.tools.dotc.ast.tpd.New]]({
+    ((tree: dotty.tools.dotc.ast.tpd.Tree) =&gt; scala.this.Option.option2Iterable[dotty.tools.dotc.ast.tpd.New](PostTyper.this.newPart(tree)))
+  })(immutable.this.List.canBuildFrom[dotty.tools.dotc.ast.tpd.New]))({
+    val templ1: dotty.tools.dotc.ast.tpd.Template = PostTyper.this.paramFwd.forwardParamAccessors(tree)(ctx);
+    PostTyper.this.synthMth.addSyntheticMethods(PostTyper.this.superAcc.wrapTemplate(templ1)(((x$10: dotty.tools.dotc.ast.tpd.Template) =&gt; PostTyperTransformer.super.transform(x$10)(ctx).asInstanceOf[dotty.tools.dotc.ast.tpd.Template]))(ctx))(ctx)
+  })
+  case (tree @ (_: dotty.tools.dotc.ast.tpd.DefDef)) =&gt; {
+    PostTyperTransformer.this.transformMemberDef(tree)(ctx);
+    PostTyper.this.superAcc.wrapDefDef(tree)(PostTyperTransformer.super.transform(tree)(ctx).asInstanceOf[dotty.tools.dotc.ast.tpd.DefDef])(ctx)
+  }
+  case (tree @ (_: dotty.tools.dotc.ast.tpd.TypeDef)) =&gt; {
+    PostTyperTransformer.this.transformMemberDef(tree)(ctx);
+    val sym: dotty.tools.dotc.core.Symbols.Symbol = tree.symbol(ctx);
+    if (sym.isClass)
+      {
+        if (core.Symbols.toDenot(core.Symbols.toDenot(sym)(ctx).owner)(ctx).is(core.Flags.Package)(ctx).&amp;&amp;(ctx.compilationUnit.source.exists).&amp;&amp;(sym.!=(core.Symbols.defn(ctx).SourceFileAnnot(ctx))))
+          core.Symbols.toDenot(sym)(ctx).addAnnotation(core.Annotations.Annotation.makeSourceFile(ctx.compilationUnit.source.file.path)(ctx))
+        else
+          ();
+        tree
+      }
+    else
+      ();
+    PostTyperTransformer.super.transform(tree)(ctx)
+  }
+  case (tree @ (_: dotty.tools.dotc.ast.tpd.MemberDef)) =&gt; {
+    PostTyperTransformer.this.transformMemberDef(tree)(ctx);
+    PostTyperTransformer.super.transform(tree)(ctx)
+  }
+  case (tree @ (_: dotty.tools.dotc.ast.tpd.New)) if PostTyperTransformer.this.isCheckable(tree) =&gt; {
+    typer.Checking.checkInstantiable(tree.tpe, tree.pos)(ctx);
+    PostTyperTransformer.super.transform(tree)(ctx)
+  }
+  case (tree @ (arg: dotty.tools.dotc.ast.Trees.Tree[dotty.tools.dotc.core.Types.Type], annot: dotty.tools.dotc.ast.Trees.Tree[dotty.tools.dotc.core.Types.Type])dotty.tools.dotc.ast.Trees.Annotated[dotty.tools.dotc.core.Types.Type]((annotated @ _), (annot @ _))) =&gt; PostTyperTransformer.this.cpy.Annotated(tree)(PostTyperTransformer.this.transform(annotated)(ctx), PostTyperTransformer.this.transformAnnot(annot)(ctx))(ctx)
+  case (tree @ (_: dotty.tools.dotc.ast.tpd.AppliedTypeTree)) =&gt; {
+    typer.Checking.checkAppliedType(tree, ctx.mode.is(core.Mode.Pattern).unary_!)(ctx);
+    PostTyperTransformer.super.transform(tree)(ctx)
+  }
+  case (ref: dotty.tools.dotc.ast.Trees.Tree[dotty.tools.dotc.core.Types.Type])dotty.tools.dotc.ast.Trees.SingletonTypeTree[dotty.tools.dotc.core.Types.Type]((ref @ _)) =&gt; {
+    typer.Checking.checkRealizable(ref.tpe, ref.pos.focus)(ctx);
+    PostTyperTransformer.super.transform(tree)(ctx)
+  }
+  case (tree @ (_: dotty.tools.dotc.ast.tpd.TypeTree)) =&gt; tree.withType(tree.tpe match {
+    case (tpe: dotty.tools.dotc.core.Types.Type, annot: dotty.tools.dotc.core.Annotations.Annotation)dotty.tools.dotc.core.Types.AnnotatedType((tpe @ _), (annot @ _)) =&gt; core.Types.AnnotatedType.apply(tpe, PostTyperTransformer.this.transformAnnot(annot)(ctx))
+    case (tpe @ _) =&gt; tpe
+  })(ctx)
+  case (expr: dotty.tools.dotc.ast.Trees.Tree[dotty.tools.dotc.core.Types.Type], selectors: List[dotty.tools.dotc.ast.Trees.Tree[dotty.tools.dotc.ast.Trees.Untyped]])dotty.tools.dotc.ast.Trees.Import[dotty.tools.dotc.core.Types.Type]((expr @ _), (selectors @ _)) =&gt; {
+    val exprTpe: dotty.tools.dotc.core.Types.Type = expr.tpe;
+    val seen: scala.collection.mutable.Set[dotty.tools.dotc.core.Names.Name] = scala.collection.mutable.Set.empty[dotty.tools.dotc.core.Names.Name];
+    def checkIdent(ident: dotty.tools.dotc.ast.untpd.Ident): Unit = {
+      val name: dotty.tools.dotc.core.Names.TermName = ident.name.asTermName;
+      if (name.!=(core.StdNames.nme.WILDCARD).&amp;&amp;(exprTpe.member(name)(ctx).exists.unary_!).&amp;&amp;(exprTpe.member(name.toTypeName)(ctx).exists.unary_!))
+        ctx.error(reporting.diagnostic.messages.NotAMember.apply(exprTpe, name, &quot;value&quot;)(ctx), core.Decorators.sourcePos(ident.pos)(ctx))
+      else
+        ();
+      if (seen.apply(ident.name))
+        ctx.error(diagnostic.this.Message.toNoExplanation(scala.StringContext.apply(&quot;&quot;, &quot; is renamed twice&quot;).s(ident.show(ctx))), core.Decorators.sourcePos(ident.pos)(ctx))
+      else
+        ();
+      {
+        seen.+=(ident.name);
+        ()
+      }
+    };
+    selectors.foreach[Unit](((x0$1: dotty.tools.dotc.ast.Trees.Tree[dotty.tools.dotc.ast.Trees.Untyped]) =&gt; x0$1 match {
+      case (ident @ (_: dotty.tools.dotc.ast.untpd.Ident)) =&gt; checkIdent(ident)
+      case (trees: List[dotty.tools.dotc.ast.Trees.Tree[dotty.tools.dotc.ast.Trees.Untyped]])dotty.tools.dotc.ast.Trees.Thicket[dotty.tools.dotc.ast.Trees.Untyped]((head: dotty.tools.dotc.ast.Trees.Tree[dotty.tools.dotc.ast.Trees.Untyped], tl: List[dotty.tools.dotc.ast.Trees.Tree[dotty.tools.dotc.ast.Trees.Untyped]])scala.collection.immutable.::[dotty.tools.dotc.ast.Trees.Tree[dotty.tools.dotc.ast.Trees.Untyped]]((ident @ (_: dotty.tools.dotc.ast.untpd.Ident)), _)) =&gt; checkIdent(ident)
+      case _ =&gt; ()
+    }));
+    PostTyperTransformer.super.transform(tree)(ctx)
+  }
+  case (expr: dotty.tools.dotc.ast.Trees.Tree[dotty.tools.dotc.core.Types.Type], tpt: dotty.tools.dotc.ast.Trees.Tree[dotty.tools.dotc.core.Types.Type])dotty.tools.dotc.ast.Trees.Typed[dotty.tools.dotc.core.Types.Type]((name: dotty.tools.dotc.core.Names.Name)dotty.tools.dotc.ast.Trees.Ident[Any](core.StdNames.nme.WILDCARD), _) =&gt; PostTyperTransformer.super.transform(tree)(core.Contexts.ModeChanges(ctx).addMode(core.Mode.Pattern))
+  case (tree @ _) =&gt; PostTyperTransformer.super.transform(tree)(ctx)
+}
+        </td>
+      </tr><tr>
+        <td>
+          182
+        </td>
+        <td>
+          61800
+        </td>
+        <td>
+          7069
+          -
+          7081
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.Boolean.unary_!
+        </td>
+        <td style="background: #AEF1AE">
+          tree.isType.unary_!
+        </td>
+      </tr><tr>
+        <td>
+          183
+        </td>
+        <td>
+          61801
+        </td>
+        <td>
+          7095
+          -
+          7118
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.transform.PostTyper.PostTyperTransformer.handleMeta
+        </td>
+        <td style="background: #AEF1AE">
+          PostTyperTransformer.this.handleMeta(tree.symbol(ctx))(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          184
+        </td>
+        <td>
+          61802
+        </td>
+        <td>
+          7129
+          -
+          7137
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Trees.Tree.tpe
+        </td>
+        <td style="background: #AEF1AE">
+          tree.tpe
+        </td>
+      </tr><tr>
+        <td>
+          185
+        </td>
+        <td>
+          61803
+        </td>
+        <td>
+          7185
+          -
+          7192
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.Types.ThisType.cls
+        </td>
+        <td style="background: #AEF1AE">
+          tpe.cls(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          185
+        </td>
+        <td>
+          61805
+        </td>
+        <td>
+          7180
+          -
+          7211
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Positioned.withPos
+        </td>
+        <td style="background: #AEF1AE">
+          dotty.tools.dotc.ast.tpd.This(tpe.cls(ctx))(ctx).withPos(tree.pos)
+        </td>
+      </tr><tr>
+        <td>
+          185
+        </td>
+        <td>
+          61804
+        </td>
+        <td>
+          7202
+          -
+          7210
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Positioned.pos
+        </td>
+        <td style="background: #AEF1AE">
+          tree.pos
+        </td>
+      </tr><tr>
+        <td>
+          189
+        </td>
+        <td>
+          61806
+        </td>
+        <td>
+          7303
+          -
+          7326
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.transform.PostTyper.PostTyperTransformer.handleMeta
+        </td>
+        <td style="background: #AEF1AE">
+          PostTyperTransformer.this.handleMeta(tree.symbol(ctx))(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          190
+        </td>
+        <td>
+          61807
+        </td>
+        <td>
+          7341
+          -
+          7356
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Names.Name.isTypeName
+        </td>
+        <td style="background: #AEF1AE">
+          name.isTypeName
+        </td>
+      </tr><tr>
+        <td>
+          190
+        </td>
+        <td>
+          61810
+        </td>
+        <td>
+          7358
+          -
+          7468
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          {
+  typer.Checking.checkRealizable(qual.tpe, qual.pos.focus)(ctx);
+  PostTyperTransformer.super.transform(tree)(ctx)
+}
+        </td>
+      </tr><tr>
+        <td>
+          191
+        </td>
+        <td>
+          61808
+        </td>
+        <td>
+          7372
+          -
+          7422
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.typer.Checking.checkRealizable
+        </td>
+        <td style="background: #AEF1AE">
+          typer.Checking.checkRealizable(qual.tpe, qual.pos.focus)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          192
+        </td>
+        <td>
+          61809
+        </td>
+        <td>
+          7435
+          -
+          7456
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.transform.MacroTransform.Transformer.transform
+        </td>
+        <td style="background: #AEF1AE">
+          PostTyperTransformer.super.transform(tree)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          195
+        </td>
+        <td>
+          61812
+        </td>
+        <td>
+          7496
+          -
+          7522
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          dotty.tools.dotc.transform.PostTyper.PostTyperTransformer.transformSelect
+        </td>
+        <td style="background: #AEF1AE">
+          PostTyperTransformer.this.transformSelect(tree, scala.collection.immutable.Nil)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          195
+        </td>
+        <td>
+          61811
+        </td>
+        <td>
+          7496
+          -
+          7522
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.transform.PostTyper.PostTyperTransformer.transformSelect
+        </td>
+        <td style="background: #AEF1AE">
+          PostTyperTransformer.this.transformSelect(tree, scala.collection.immutable.Nil)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          197
+        </td>
+        <td>
+          61818
+        </td>
+        <td>
+          7561
+          -
+          7561
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          ()
+        </td>
+      </tr><tr>
+        <td>
+          197
+        </td>
+        <td>
+          61819
+        </td>
+        <td>
+          7561
+          -
+          7561
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          ()
+        </td>
+      </tr><tr>
+        <td>
+          197
+        </td>
+        <td>
+          61813
+        </td>
+        <td>
+          7565
+          -
+          7605
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.SymDenotations.SymDenotation.isInlineMethod
+        </td>
+        <td style="background: #AEF1AE">
+          core.Symbols.toDenot(core.Symbols.toDenot(ctx.owner)(ctx).enclosingMethod(ctx))(ctx).isInlineMethod(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          198
+        </td>
+        <td>
+          61815
+        </td>
+        <td>
+          7668
+          -
+          7676
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.Decorators.sourcePos
+        </td>
+        <td style="background: #AEF1AE">
+          core.Decorators.sourcePos(tree.pos)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          198
+        </td>
+        <td>
+          61814
+        </td>
+        <td>
+          7629
+          -
+          7666
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.reporting.diagnostic.messages.SuperCallsNotAllowedInline.apply
+        </td>
+        <td style="background: #AEF1AE">
+          reporting.diagnostic.messages.SuperCallsNotAllowedInline.apply(ctx.owner)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          198
+        </td>
+        <td>
+          61817
+        </td>
+        <td>
+          7619
+          -
+          7677
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          dotty.tools.dotc.reporting.Reporting.error
+        </td>
+        <td style="background: #AEF1AE">
+          ctx.error(reporting.diagnostic.messages.SuperCallsNotAllowedInline.apply(ctx.owner)(ctx), core.Decorators.sourcePos(tree.pos)(ctx))
+        </td>
+      </tr><tr>
+        <td>
+          198
+        </td>
+        <td>
+          61816
+        </td>
+        <td>
+          7619
+          -
+          7677
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.reporting.Reporting.error
+        </td>
+        <td style="background: #AEF1AE">
+          ctx.error(reporting.diagnostic.messages.SuperCallsNotAllowedInline.apply(ctx.owner)(ctx), core.Decorators.sourcePos(tree.pos)(ctx))
+        </td>
+      </tr><tr>
+        <td>
+          199
+        </td>
+        <td>
+          61820
+        </td>
+        <td>
+          7688
+          -
+          7709
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.transform.MacroTransform.Transformer.transform
+        </td>
+        <td style="background: #AEF1AE">
+          PostTyperTransformer.super.transform(tree)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          201
+        </td>
+        <td>
+          61821
+        </td>
+        <td>
+          7748
+          -
+          7762
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.ast.TreeInfo.methPart
+        </td>
+        <td style="background: #AEF1AE">
+          dotty.tools.dotc.ast.tpd.methPart(tree)
+        </td>
+      </tr><tr>
+        <td>
+          202
+        </td>
+        <td>
+          61822
+        </td>
+        <td>
+          7824
+          -
+          7839
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.transform.PostTyper.PostTyperTransformer.isCheckable
+        </td>
+        <td style="background: #AEF1AE">
+          PostTyperTransformer.this.isCheckable(nu)
+        </td>
+      </tr><tr>
+        <td>
+          205
+        </td>
+        <td>
+          61823
+        </td>
+        <td>
+          7991
+          -
+          8035
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.typer.Checking.checkInstantiable
+        </td>
+        <td style="background: #AEF1AE">
+          typer.Checking.checkInstantiable(tree.tpe, nu.pos)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          206
+        </td>
+        <td>
+          61824
+        </td>
+        <td>
+          8069
+          -
+          8075
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.immutable.List.::
+        </td>
+        <td style="background: #AEF1AE">
+          scala.collection.immutable.Nil.::[dotty.tools.dotc.ast.tpd.New](x$8)
+        </td>
+      </tr><tr>
+        <td>
+          206
+        </td>
+        <td>
+          61826
+        </td>
+        <td>
+          8050
+          -
+          8099
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.transform.PostTyper.PostTyperTransformer.withNoCheckNews
+        </td>
+        <td style="background: #AEF1AE">
+          PostTyperTransformer.this.withNoCheckNews[dotty.tools.dotc.ast.tpd.Tree]({
+  &lt;synthetic&gt; &lt;artifact&gt; val x$8: dotty.tools.dotc.ast.tpd.New = nu;
+  scala.collection.immutable.Nil.::[dotty.tools.dotc.ast.tpd.New](x$8)
+})(PostTyperTransformer.super.transform(tree)(ctx))
+        </td>
+      </tr><tr>
+        <td>
+          206
+        </td>
+        <td>
+          61825
+        </td>
+        <td>
+          8077
+          -
+          8098
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.transform.MacroTransform.Transformer.transform
+        </td>
+        <td style="background: #AEF1AE">
+          PostTyperTransformer.super.transform(tree)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          208
+        </td>
+        <td>
+          61827
+        </td>
+        <td>
+          8136
+          -
+          8157
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.transform.MacroTransform.Transformer.transform
+        </td>
+        <td style="background: #AEF1AE">
+          PostTyperTransformer.super.transform(tree)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          211
+        </td>
+        <td>
+          61830
+        </td>
+        <td>
+          8238
+          -
+          8238
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.Tuple3._3
+        </td>
+        <td style="background: #AEF1AE">
+          x$9._3
+        </td>
+      </tr><tr>
+        <td>
+          211
+        </td>
+        <td>
+          61829
+        </td>
+        <td>
+          8234
+          -
+          8234
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.Tuple3._2
+        </td>
+        <td style="background: #AEF1AE">
+          x$9._2
+        </td>
+      </tr><tr>
+        <td>
+          211
+        </td>
+        <td>
+          61828
+        </td>
+        <td>
+          8216
+          -
+          8216
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.Tuple3._1
+        </td>
+        <td style="background: #AEF1AE">
+          x$9._1
+        </td>
+      </tr><tr>
+        <td>
+          212
+        </td>
+        <td>
+          61831
+        </td>
+        <td>
+          8280
+          -
+          8343
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.typer.Checking.checkBounds
+        </td>
+        <td style="background: #AEF1AE">
+          typer.Checking.checkBounds(args, fn.tpe.widen(ctx).asInstanceOf[dotty.tools.dotc.core.Types.PolyType])(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          215
+        </td>
+        <td>
+          61832
+        </td>
+        <td>
+          8423
+          -
+          8438
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Trees.Instance.TreeMap.transform
+        </td>
+        <td style="background: #AEF1AE">
+          PostTyperTransformer.this.transform(args)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          216
+        </td>
+        <td>
+          61833
+        </td>
+        <td>
+          8464
+          -
+          8491
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.transform.PostTyper.PostTyperTransformer.transformSelect
+        </td>
+        <td style="background: #AEF1AE">
+          PostTyperTransformer.this.transformSelect(sel, args1)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          217
+        </td>
+        <td>
+          61836
+        </td>
+        <td>
+          8556
+          -
+          8589
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Trees.Instance.TreeCopier.TypeApply
+        </td>
+        <td style="background: #AEF1AE">
+          PostTyperTransformer.this.cpy.TypeApply(tree1)(sel1, args1)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          217
+        </td>
+        <td>
+          61835
+        </td>
+        <td>
+          8546
+          -
+          8550
+        </td>
+        <td>
+          Ident
+        </td>
+        <td>
+          dotty.tools.dotc.transform.PostTyper.PostTyperTransformer.sel1
+        </td>
+        <td style="background: #F0ADAD">
+          sel1
+        </td>
+      </tr><tr>
+        <td>
+          217
+        </td>
+        <td>
+          61834
+        </td>
+        <td>
+          8510
+          -
+          8544
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.transform.SuperAccessors.isProtectedAccessor
+        </td>
+        <td style="background: #AEF1AE">
+          PostTyper.this.superAcc.isProtectedAccessor(sel1)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          217
+        </td>
+        <td>
+          61837
+        </td>
+        <td>
+          8556
+          -
+          8589
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Trees.Instance.TreeCopier.TypeApply
+        </td>
+        <td style="background: #AEF1AE">
+          PostTyperTransformer.this.cpy.TypeApply(tree1)(sel1, args1)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          219
+        </td>
+        <td>
+          61838
+        </td>
+        <td>
+          8626
+          -
+          8648
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.transform.MacroTransform.Transformer.transform
+        </td>
+        <td style="background: #AEF1AE">
+          PostTyperTransformer.super.transform(tree1)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          222
+        </td>
+        <td>
+          61839
+        </td>
+        <td>
+          8717
+          -
+          8764
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.transform.MacroTransform.Transformer.transform
+        </td>
+        <td style="background: #AEF1AE">
+          PostTyperTransformer.super.transform(PostTyper.this.superAcc.transformAssign(tree)(ctx))(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          234
+        </td>
+        <td>
+          61842
+        </td>
+        <td>
+          9482
+          -
+          9540
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Positioned.withPos
+        </td>
+        <td style="background: #AEF1AE">
+          dotty.tools.dotc.ast.tpd.Ident(core.Symbols.toDenot(core.Symbols.toDenot(call.symbol(ctx))(ctx).topLevelClass(ctx))(ctx).typeRef(ctx))(ctx).withPos(call.pos)
+        </td>
+      </tr><tr>
+        <td>
+          234
+        </td>
+        <td>
+          61841
+        </td>
+        <td>
+          9531
+          -
+          9539
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Positioned.pos
+        </td>
+        <td style="background: #AEF1AE">
+          call.pos
+        </td>
+      </tr><tr>
+        <td>
+          234
+        </td>
+        <td>
+          61840
+        </td>
+        <td>
+          9488
+          -
+          9521
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.SymDenotations.SymDenotation.typeRef
+        </td>
+        <td style="background: #AEF1AE">
+          core.Symbols.toDenot(core.Symbols.toDenot(call.symbol(ctx))(ctx).topLevelClass(ctx))(ctx).typeRef(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          235
+        </td>
+        <td>
+          61843
+        </td>
+        <td>
+          9551
+          -
+          9625
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Trees.Instance.TreeCopier.Inlined
+        </td>
+        <td style="background: #AEF1AE">
+          PostTyperTransformer.this.cpy.Inlined(tree)(callTrace, PostTyperTransformer.this.transformSub[dotty.tools.dotc.ast.Trees.MemberDef[dotty.tools.dotc.core.Types.Type]](bindings)(ctx), PostTyperTransformer.this.transform(expansion)(ctx))(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          237
+        </td>
+        <td>
+          61845
+        </td>
+        <td>
+          9704
+          -
+          9711
+        </td>
+        <td>
+          ApplyImplicitView
+        </td>
+        <td>
+          scala.Option.option2Iterable
+        </td>
+        <td style="background: #AEF1AE">
+          scala.this.Option.option2Iterable[dotty.tools.dotc.ast.tpd.New](PostTyper.this.newPart(tree))
+        </td>
+      </tr><tr>
+        <td>
+          237
+        </td>
+        <td>
+          61844
+        </td>
+        <td>
+          9704
+          -
+          9711
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.transform.PostTyper.newPart
+        </td>
+        <td style="background: #AEF1AE">
+          PostTyper.this.newPart(tree)
+        </td>
+      </tr><tr>
+        <td>
+          237
+        </td>
+        <td>
+          61847
+        </td>
+        <td>
+          9683
+          -
+          9712
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          scala.collection.immutable.List.flatMap
+        </td>
+        <td style="background: #AEF1AE">
+          tree.parents.flatMap[dotty.tools.dotc.ast.tpd.New, List[dotty.tools.dotc.ast.tpd.New]]({
+  ((tree: dotty.tools.dotc.ast.tpd.Tree) =&gt; scala.this.Option.option2Iterable[dotty.tools.dotc.ast.tpd.New](PostTyper.this.newPart(tree)))
+})(immutable.this.List.canBuildFrom[dotty.tools.dotc.ast.tpd.New])
+        </td>
+      </tr><tr>
+        <td>
+          237
+        </td>
+        <td>
+          61850
+        </td>
+        <td>
+          9667
+          -
+          9940
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.transform.PostTyper.PostTyperTransformer.withNoCheckNews
+        </td>
+        <td style="background: #AEF1AE">
+          PostTyperTransformer.this.withNoCheckNews[dotty.tools.dotc.ast.tpd.Template](tree.parents.flatMap[dotty.tools.dotc.ast.tpd.New, List[dotty.tools.dotc.ast.tpd.New]]({
+  ((tree: dotty.tools.dotc.ast.tpd.Tree) =&gt; scala.this.Option.option2Iterable[dotty.tools.dotc.ast.tpd.New](PostTyper.this.newPart(tree)))
+})(immutable.this.List.canBuildFrom[dotty.tools.dotc.ast.tpd.New]))({
+  val templ1: dotty.tools.dotc.ast.tpd.Template = PostTyper.this.paramFwd.forwardParamAccessors(tree)(ctx);
+  PostTyper.this.synthMth.addSyntheticMethods(PostTyper.this.superAcc.wrapTemplate(templ1)(((x$10: dotty.tools.dotc.ast.tpd.Template) =&gt; PostTyperTransformer.super.transform(x$10)(ctx).asInstanceOf[dotty.tools.dotc.ast.tpd.Template]))(ctx))(ctx)
+})
+        </td>
+      </tr><tr>
+        <td>
+          237
+        </td>
+        <td>
+          61846
+        </td>
+        <td>
+          9703
+          -
+          9703
+        </td>
+        <td>
+          TypeApply
+        </td>
+        <td>
+          scala.collection.immutable.List.canBuildFrom
+        </td>
+        <td style="background: #AEF1AE">
+          immutable.this.List.canBuildFrom[dotty.tools.dotc.ast.tpd.New]
+        </td>
+      </tr><tr>
+        <td>
+          238
+        </td>
+        <td>
+          61848
+        </td>
+        <td>
+          9741
+          -
+          9777
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.transform.ParamForwarding.forwardParamAccessors
+        </td>
+        <td style="background: #AEF1AE">
+          PostTyper.this.paramFwd.forwardParamAccessors(tree)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          239
+        </td>
+        <td>
+          61849
+        </td>
+        <td>
+          9790
+          -
+          9928
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.transform.SyntheticMethods.addSyntheticMethods
+        </td>
+        <td style="background: #AEF1AE">
+          PostTyper.this.synthMth.addSyntheticMethods(PostTyper.this.superAcc.wrapTemplate(templ1)(((x$10: dotty.tools.dotc.ast.tpd.Template) =&gt; PostTyperTransformer.super.transform(x$10)(ctx).asInstanceOf[dotty.tools.dotc.ast.tpd.Template]))(ctx))(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          244
+        </td>
+        <td>
+          61851
+        </td>
+        <td>
+          9980
+          -
+          10004
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.transform.PostTyper.PostTyperTransformer.transformMemberDef
+        </td>
+        <td style="background: #AEF1AE">
+          PostTyperTransformer.this.transformMemberDef(tree)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          245
+        </td>
+        <td>
+          61852
+        </td>
+        <td>
+          10015
+          -
+          10084
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.transform.SuperAccessors.wrapDefDef
+        </td>
+        <td style="background: #AEF1AE">
+          PostTyper.this.superAcc.wrapDefDef(tree)(PostTyperTransformer.super.transform(tree)(ctx).asInstanceOf[dotty.tools.dotc.ast.tpd.DefDef])(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          247
+        </td>
+        <td>
+          61853
+        </td>
+        <td>
+          10125
+          -
+          10149
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.transform.PostTyper.PostTyperTransformer.transformMemberDef
+        </td>
+        <td style="background: #AEF1AE">
+          PostTyperTransformer.this.transformMemberDef(tree)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          248
+        </td>
+        <td>
+          61854
+        </td>
+        <td>
+          10170
+          -
+          10181
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Trees.Tree.symbol
+        </td>
+        <td style="background: #AEF1AE">
+          tree.symbol(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          249
+        </td>
+        <td>
+          61869
+        </td>
+        <td>
+          10192
+          -
+          10192
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          ()
+        </td>
+      </tr><tr>
+        <td>
+          249
+        </td>
+        <td>
+          61868
+        </td>
+        <td>
+          10192
+          -
+          10192
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          ()
+        </td>
+      </tr><tr>
+        <td>
+          249
+        </td>
+        <td>
+          61867
+        </td>
+        <td>
+          10209
+          -
+          10533
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          {
+  if (core.Symbols.toDenot(core.Symbols.toDenot(sym)(ctx).owner)(ctx).is(core.Flags.Package)(ctx).&amp;&amp;(ctx.compilationUnit.source.exists).&amp;&amp;(sym.!=(core.Symbols.defn(ctx).SourceFileAnnot(ctx))))
+    core.Symbols.toDenot(sym)(ctx).addAnnotation(core.Annotations.Annotation.makeSourceFile(ctx.compilationUnit.source.file.path)(ctx))
+  else
+    ();
+  tree
+}
+        </td>
+      </tr><tr>
+        <td>
+          249
+        </td>
+        <td>
+          61855
+        </td>
+        <td>
+          10196
+          -
+          10207
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Symbols.Symbol.isClass
+        </td>
+        <td style="background: #AEF1AE">
+          sym.isClass
+        </td>
+      </tr><tr>
+        <td>
+          251
+        </td>
+        <td>
+          61857
+        </td>
+        <td>
+          10302
+          -
+          10309
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Flags.Package
+        </td>
+        <td style="background: #AEF1AE">
+          core.Flags.Package
+        </td>
+      </tr><tr>
+        <td>
+          251
+        </td>
+        <td>
+          61866
+        </td>
+        <td>
+          10285
+          -
+          10285
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          ()
+        </td>
+      </tr><tr>
+        <td>
+          251
+        </td>
+        <td>
+          61865
+        </td>
+        <td>
+          10285
+          -
+          10285
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          ()
+        </td>
+      </tr><tr>
+        <td>
+          251
+        </td>
+        <td>
+          61856
+        </td>
+        <td>
+          10289
+          -
+          10298
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.SymDenotations.SymDenotation.owner
+        </td>
+        <td style="background: #AEF1AE">
+          core.Symbols.toDenot(sym)(ctx).owner
+        </td>
+      </tr><tr>
+        <td>
+          252
+        </td>
+        <td>
+          61858
+        </td>
+        <td>
+          10328
+          -
+          10361
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.util.SourceFile.exists
+        </td>
+        <td style="background: #AEF1AE">
+          ctx.compilationUnit.source.exists
+        </td>
+      </tr><tr>
+        <td>
+          252
+        </td>
+        <td>
+          61861
+        </td>
+        <td>
+          10289
+          -
+          10406
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Boolean.&amp;&amp;
+        </td>
+        <td style="background: #AEF1AE">
+          core.Symbols.toDenot(core.Symbols.toDenot(sym)(ctx).owner)(ctx).is(core.Flags.Package)(ctx).&amp;&amp;(ctx.compilationUnit.source.exists).&amp;&amp;(sym.!=(core.Symbols.defn(ctx).SourceFileAnnot(ctx)))
+        </td>
+      </tr><tr>
+        <td>
+          253
+        </td>
+        <td>
+          61860
+        </td>
+        <td>
+          10379
+          -
+          10406
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.Object.!=
+        </td>
+        <td style="background: #AEF1AE">
+          sym.!=(core.Symbols.defn(ctx).SourceFileAnnot(ctx))
+        </td>
+      </tr><tr>
+        <td>
+          253
+        </td>
+        <td>
+          61859
+        </td>
+        <td>
+          10386
+          -
+          10406
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.Definitions.SourceFileAnnot
+        </td>
+        <td style="background: #AEF1AE">
+          core.Symbols.defn(ctx).SourceFileAnnot(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          254
+        </td>
+        <td>
+          61863
+        </td>
+        <td>
+          10422
+          -
+          10504
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.core.SymDenotations.SymDenotation.addAnnotation
+        </td>
+        <td style="background: #AEF1AE">
+          core.Symbols.toDenot(sym)(ctx).addAnnotation(core.Annotations.Annotation.makeSourceFile(ctx.compilationUnit.source.file.path)(ctx))
+        </td>
+      </tr><tr>
+        <td>
+          254
+        </td>
+        <td>
+          61862
+        </td>
+        <td>
+          10440
+          -
+          10503
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.Annotations.Annotation.makeSourceFile
+        </td>
+        <td style="background: #AEF1AE">
+          core.Annotations.Annotation.makeSourceFile(ctx.compilationUnit.source.file.path)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          254
+        </td>
+        <td>
+          61864
+        </td>
+        <td>
+          10422
+          -
+          10504
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          dotty.tools.dotc.core.SymDenotations.SymDenotation.addAnnotation
+        </td>
+        <td style="background: #AEF1AE">
+          core.Symbols.toDenot(sym)(ctx).addAnnotation(core.Annotations.Annotation.makeSourceFile(ctx.compilationUnit.source.file.path)(ctx))
+        </td>
+      </tr><tr>
+        <td>
+          257
+        </td>
+        <td>
+          61870
+        </td>
+        <td>
+          10544
+          -
+          10565
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.transform.MacroTransform.Transformer.transform
+        </td>
+        <td style="background: #AEF1AE">
+          PostTyperTransformer.super.transform(tree)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          259
+        </td>
+        <td>
+          61871
+        </td>
+        <td>
+          10608
+          -
+          10632
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.transform.PostTyper.PostTyperTransformer.transformMemberDef
+        </td>
+        <td style="background: #AEF1AE">
+          PostTyperTransformer.this.transformMemberDef(tree)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          260
+        </td>
+        <td>
+          61872
+        </td>
+        <td>
+          10643
+          -
+          10664
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.transform.MacroTransform.Transformer.transform
+        </td>
+        <td style="background: #AEF1AE">
+          PostTyperTransformer.super.transform(tree)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          261
+        </td>
+        <td>
+          61873
+        </td>
+        <td>
+          10691
+          -
+          10708
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.transform.PostTyper.PostTyperTransformer.isCheckable
+        </td>
+        <td style="background: #AEF1AE">
+          PostTyperTransformer.this.isCheckable(tree)
+        </td>
+      </tr><tr>
+        <td>
+          262
+        </td>
+        <td>
+          61874
+        </td>
+        <td>
+          10722
+          -
+          10768
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.typer.Checking.checkInstantiable
+        </td>
+        <td style="background: #AEF1AE">
+          typer.Checking.checkInstantiable(tree.tpe, tree.pos)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          263
+        </td>
+        <td>
+          61875
+        </td>
+        <td>
+          10779
+          -
+          10800
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.transform.MacroTransform.Transformer.transform
+        </td>
+        <td style="background: #AEF1AE">
+          PostTyperTransformer.super.transform(tree)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          265
+        </td>
+        <td>
+          61876
+        </td>
+        <td>
+          10862
+          -
+          10926
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Trees.Instance.TreeCopier.Annotated
+        </td>
+        <td style="background: #AEF1AE">
+          PostTyperTransformer.this.cpy.Annotated(tree)(PostTyperTransformer.this.transform(annotated)(ctx), PostTyperTransformer.this.transformAnnot(annot)(ctx))(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          267
+        </td>
+        <td>
+          61877
+        </td>
+        <td>
+          10975
+          -
+          11048
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.typer.Checking.checkAppliedType
+        </td>
+        <td style="background: #AEF1AE">
+          typer.Checking.checkAppliedType(tree, ctx.mode.is(core.Mode.Pattern).unary_!)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          268
+        </td>
+        <td>
+          61878
+        </td>
+        <td>
+          11059
+          -
+          11080
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.transform.MacroTransform.Transformer.transform
+        </td>
+        <td style="background: #AEF1AE">
+          PostTyperTransformer.super.transform(tree)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          270
+        </td>
+        <td>
+          61879
+        </td>
+        <td>
+          11130
+          -
+          11178
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.typer.Checking.checkRealizable
+        </td>
+        <td style="background: #AEF1AE">
+          typer.Checking.checkRealizable(ref.tpe, ref.pos.focus)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          271
+        </td>
+        <td>
+          61880
+        </td>
+        <td>
+          11189
+          -
+          11210
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.transform.MacroTransform.Transformer.transform
+        </td>
+        <td style="background: #AEF1AE">
+          PostTyperTransformer.super.transform(tree)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          273
+        </td>
+        <td>
+          61881
+        </td>
+        <td>
+          11252
+          -
+          11441
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Trees.Tree.withType
+        </td>
+        <td style="background: #AEF1AE">
+          tree.withType(tree.tpe match {
+  case (tpe: dotty.tools.dotc.core.Types.Type, annot: dotty.tools.dotc.core.Annotations.Annotation)dotty.tools.dotc.core.Types.AnnotatedType((tpe @ _), (annot @ _)) =&gt; core.Types.AnnotatedType.apply(tpe, PostTyperTransformer.this.transformAnnot(annot)(ctx))
+  case (tpe @ _) =&gt; tpe
+})(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          280
+        </td>
+        <td>
+          61882
+        </td>
+        <td>
+          11506
+          -
+          11514
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Trees.Tree.tpe
+        </td>
+        <td style="background: #AEF1AE">
+          expr.tpe
+        </td>
+      </tr><tr>
+        <td>
+          281
+        </td>
+        <td>
+          61883
+        </td>
+        <td>
+          11536
+          -
+          11559
+        </td>
+        <td>
+          TypeApply
+        </td>
+        <td>
+          scala.collection.mutable.Set.empty
+        </td>
+        <td style="background: #AEF1AE">
+          scala.collection.mutable.Set.empty[dotty.tools.dotc.core.Names.Name]
+        </td>
+      </tr><tr>
+        <td>
+          283
+        </td>
+        <td>
+          61884
+        </td>
+        <td>
+          11638
+          -
+          11659
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Names.Name.asTermName
+        </td>
+        <td style="background: #AEF1AE">
+          ident.name.asTermName
+        </td>
+      </tr><tr>
+        <td>
+          284
+        </td>
+        <td>
+          61887
+        </td>
+        <td>
+          11748
+          -
+          11763
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Names.TermName.toTypeName
+        </td>
+        <td style="background: #AEF1AE">
+          name.toTypeName
+        </td>
+      </tr><tr>
+        <td>
+          284
+        </td>
+        <td>
+          61889
+        </td>
+        <td>
+          11676
+          -
+          11771
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Boolean.&amp;&amp;
+        </td>
+        <td style="background: #AEF1AE">
+          name.!=(core.StdNames.nme.WILDCARD).&amp;&amp;(exprTpe.member(name)(ctx).exists.unary_!).&amp;&amp;(exprTpe.member(name.toTypeName)(ctx).exists.unary_!)
+        </td>
+      </tr><tr>
+        <td>
+          284
+        </td>
+        <td>
+          61886
+        </td>
+        <td>
+          11700
+          -
+          11728
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.Boolean.unary_!
+        </td>
+        <td style="background: #AEF1AE">
+          exprTpe.member(name)(ctx).exists.unary_!
+        </td>
+      </tr><tr>
+        <td>
+          284
+        </td>
+        <td>
+          61895
+        </td>
+        <td>
+          11672
+          -
+          11672
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          ()
+        </td>
+      </tr><tr>
+        <td>
+          284
+        </td>
+        <td>
+          61894
+        </td>
+        <td>
+          11672
+          -
+          11672
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          ()
+        </td>
+      </tr><tr>
+        <td>
+          284
+        </td>
+        <td>
+          61885
+        </td>
+        <td>
+          11684
+          -
+          11696
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.StdNames.ScalaNames.WILDCARD
+        </td>
+        <td style="background: #AEF1AE">
+          core.StdNames.nme.WILDCARD
+        </td>
+      </tr><tr>
+        <td>
+          284
+        </td>
+        <td>
+          61888
+        </td>
+        <td>
+          11732
+          -
+          11771
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.Boolean.unary_!
+        </td>
+        <td style="background: #AEF1AE">
+          exprTpe.member(name.toTypeName)(ctx).exists.unary_!
+        </td>
+      </tr><tr>
+        <td>
+          285
+        </td>
+        <td>
+          61890
+        </td>
+        <td>
+          11797
+          -
+          11831
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.reporting.diagnostic.messages.NotAMember.apply
+        </td>
+        <td style="background: #AEF1AE">
+          reporting.diagnostic.messages.NotAMember.apply(exprTpe, name, &quot;value&quot;)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          285
+        </td>
+        <td>
+          61893
+        </td>
+        <td>
+          11787
+          -
+          11843
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          dotty.tools.dotc.reporting.Reporting.error
+        </td>
+        <td style="background: #AEF1AE">
+          ctx.error(reporting.diagnostic.messages.NotAMember.apply(exprTpe, name, &quot;value&quot;)(ctx), core.Decorators.sourcePos(ident.pos)(ctx))
+        </td>
+      </tr><tr>
+        <td>
+          285
+        </td>
+        <td>
+          61892
+        </td>
+        <td>
+          11787
+          -
+          11843
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.reporting.Reporting.error
+        </td>
+        <td style="background: #AEF1AE">
+          ctx.error(reporting.diagnostic.messages.NotAMember.apply(exprTpe, name, &quot;value&quot;)(ctx), core.Decorators.sourcePos(ident.pos)(ctx))
+        </td>
+      </tr><tr>
+        <td>
+          285
+        </td>
+        <td>
+          61891
+        </td>
+        <td>
+          11833
+          -
+          11842
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.Decorators.sourcePos
+        </td>
+        <td style="background: #AEF1AE">
+          core.Decorators.sourcePos(ident.pos)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          286
+        </td>
+        <td>
+          61896
+        </td>
+        <td>
+          11865
+          -
+          11875
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Trees.Ident.name
+        </td>
+        <td style="background: #AEF1AE">
+          ident.name
+        </td>
+      </tr><tr>
+        <td>
+          286
+        </td>
+        <td>
+          61907
+        </td>
+        <td>
+          11856
+          -
+          11856
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          ()
+        </td>
+      </tr><tr>
+        <td>
+          286
+        </td>
+        <td>
+          61897
+        </td>
+        <td>
+          11860
+          -
+          11876
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.GenSetLike.apply
+        </td>
+        <td style="background: #AEF1AE">
+          seen.apply(ident.name)
+        </td>
+      </tr><tr>
+        <td>
+          286
+        </td>
+        <td>
+          61906
+        </td>
+        <td>
+          11856
+          -
+          11856
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          ()
+        </td>
+      </tr><tr>
+        <td>
+          287
+        </td>
+        <td>
+          61899
+        </td>
+        <td>
+          11917
+          -
+          11935
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          &quot; is renamed twice&quot;
+        </td>
+      </tr><tr>
+        <td>
+          287
+        </td>
+        <td>
+          61902
+        </td>
+        <td>
+          11902
+          -
+          11935
+        </td>
+        <td>
+          ApplyImplicitView
+        </td>
+        <td>
+          dotty.tools.dotc.reporting.diagnostic.Message.toNoExplanation
+        </td>
+        <td style="background: #AEF1AE">
+          diagnostic.this.Message.toNoExplanation(scala.StringContext.apply(&quot;&quot;, &quot; is renamed twice&quot;).s(ident.show(ctx)))
+        </td>
+      </tr><tr>
+        <td>
+          287
+        </td>
+        <td>
+          61905
+        </td>
+        <td>
+          11892
+          -
+          11947
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          dotty.tools.dotc.reporting.Reporting.error
+        </td>
+        <td style="background: #AEF1AE">
+          ctx.error(diagnostic.this.Message.toNoExplanation(scala.StringContext.apply(&quot;&quot;, &quot; is renamed twice&quot;).s(ident.show(ctx))), core.Decorators.sourcePos(ident.pos)(ctx))
+        </td>
+      </tr><tr>
+        <td>
+          287
+        </td>
+        <td>
+          61904
+        </td>
+        <td>
+          11892
+          -
+          11947
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.reporting.Reporting.error
+        </td>
+        <td style="background: #AEF1AE">
+          ctx.error(diagnostic.this.Message.toNoExplanation(scala.StringContext.apply(&quot;&quot;, &quot; is renamed twice&quot;).s(ident.show(ctx))), core.Decorators.sourcePos(ident.pos)(ctx))
+        </td>
+      </tr><tr>
+        <td>
+          287
+        </td>
+        <td>
+          61898
+        </td>
+        <td>
+          11904
+          -
+          11905
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          &quot;&quot;
+        </td>
+      </tr><tr>
+        <td>
+          287
+        </td>
+        <td>
+          61901
+        </td>
+        <td>
+          11902
+          -
+          11935
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.StringContext.s
+        </td>
+        <td style="background: #AEF1AE">
+          scala.StringContext.apply(&quot;&quot;, &quot; is renamed twice&quot;).s(ident.show(ctx))
+        </td>
+      </tr><tr>
+        <td>
+          287
+        </td>
+        <td>
+          61903
+        </td>
+        <td>
+          11937
+          -
+          11946
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.Decorators.sourcePos
+        </td>
+        <td style="background: #AEF1AE">
+          core.Decorators.sourcePos(ident.pos)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          287
+        </td>
+        <td>
+          61900
+        </td>
+        <td>
+          11906
+          -
+          11916
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.printing.Showable.show
+        </td>
+        <td style="background: #AEF1AE">
+          ident.show(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          288
+        </td>
+        <td>
+          61908
+        </td>
+        <td>
+          11968
+          -
+          11978
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Trees.Ident.name
+        </td>
+        <td style="background: #AEF1AE">
+          ident.name
+        </td>
+      </tr><tr>
+        <td>
+          288
+        </td>
+        <td>
+          61910
+        </td>
+        <td>
+          11965
+          -
+          11965
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          ()
+        </td>
+      </tr><tr>
+        <td>
+          288
+        </td>
+        <td>
+          61909
+        </td>
+        <td>
+          11960
+          -
+          11978
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.mutable.SetLike.+=
+        </td>
+        <td style="background: #AEF1AE">
+          seen.+=(ident.name)
+        </td>
+      </tr><tr>
+        <td>
+          290
+        </td>
+        <td>
+          61914
+        </td>
+        <td>
+          12001
+          -
+          12233
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.immutable.List.foreach
+        </td>
+        <td style="background: #AEF1AE">
+          selectors.foreach[Unit](((x0$1: dotty.tools.dotc.ast.Trees.Tree[dotty.tools.dotc.ast.Trees.Untyped]) =&gt; x0$1 match {
+  case (ident @ (_: dotty.tools.dotc.ast.untpd.Ident)) =&gt; checkIdent(ident)
+  case (trees: List[dotty.tools.dotc.ast.Trees.Tree[dotty.tools.dotc.ast.Trees.Untyped]])dotty.tools.dotc.ast.Trees.Thicket[dotty.tools.dotc.ast.Trees.Untyped]((head: dotty.tools.dotc.ast.Trees.Tree[dotty.tools.dotc.ast.Trees.Untyped], tl: List[dotty.tools.dotc.ast.Trees.Tree[dotty.tools.dotc.ast.Trees.Untyped]])scala.collection.immutable.::[dotty.tools.dotc.ast.Trees.Tree[dotty.tools.dotc.ast.Trees.Untyped]]((ident @ (_: dotty.tools.dotc.ast.untpd.Ident)), _)) =&gt; checkIdent(ident)
+  case _ =&gt; ()
+}))
+        </td>
+      </tr><tr>
+        <td>
+          291
+        </td>
+        <td>
+          61911
+        </td>
+        <td>
+          12076
+          -
+          12093
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.transform.PostTyper.PostTyperTransformer.checkIdent
+        </td>
+        <td style="background: #AEF1AE">
+          checkIdent(ident)
+        </td>
+      </tr><tr>
+        <td>
+          292
+        </td>
+        <td>
+          61912
+        </td>
+        <td>
+          12149
+          -
+          12166
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.transform.PostTyper.PostTyperTransformer.checkIdent
+        </td>
+        <td style="background: #AEF1AE">
+          checkIdent(ident)
+        </td>
+      </tr><tr>
+        <td>
+          293
+        </td>
+        <td>
+          61913
+        </td>
+        <td>
+          12219
+          -
+          12221
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          ()
+        </td>
+      </tr><tr>
+        <td>
+          295
+        </td>
+        <td>
+          61915
+        </td>
+        <td>
+          12244
+          -
+          12265
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.transform.MacroTransform.Transformer.transform
+        </td>
+        <td style="background: #AEF1AE">
+          PostTyperTransformer.super.transform(tree)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          297
+        </td>
+        <td>
+          61917
+        </td>
+        <td>
+          12344
+          -
+          12369
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.core.Contexts.ModeChanges.addMode
+        </td>
+        <td style="background: #AEF1AE">
+          core.Contexts.ModeChanges(ctx).addMode(core.Mode.Pattern)
+        </td>
+      </tr><tr>
+        <td>
+          297
+        </td>
+        <td>
+          61916
+        </td>
+        <td>
+          12356
+          -
+          12368
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Mode.Pattern
+        </td>
+        <td style="background: #AEF1AE">
+          core.Mode.Pattern
+        </td>
+      </tr><tr>
+        <td>
+          297
+        </td>
+        <td>
+          61918
+        </td>
+        <td>
+          12322
+          -
+          12370
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.transform.MacroTransform.Transformer.transform
+        </td>
+        <td style="background: #AEF1AE">
+          PostTyperTransformer.super.transform(tree)(core.Contexts.ModeChanges(ctx).addMode(core.Mode.Pattern))
+        </td>
+      </tr><tr>
+        <td>
+          306
+        </td>
+        <td>
+          61919
+        </td>
+        <td>
+          12734
+          -
+          12755
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.transform.MacroTransform.Transformer.transform
+        </td>
+        <td style="background: #AEF1AE">
+          PostTyperTransformer.super.transform(tree)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          310
+        </td>
+        <td>
+          61922
+        </td>
+        <td>
+          12824
+          -
+          12866
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Predef.println
+        </td>
+        <td style="background: #F0ADAD">
+          scala.Predef.println(core.Decorators.StringInterpolators(scala.StringContext.apply(&quot;error while transforming &quot;, &quot;&quot;)).i(tree)(ctx))
+        </td>
+      </tr><tr>
+        <td>
+          310
+        </td>
+        <td>
+          61921
+        </td>
+        <td>
+          12832
+          -
+          12865
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.Decorators.StringInterpolators.i
+        </td>
+        <td style="background: #F0ADAD">
+          core.Decorators.StringInterpolators(scala.StringContext.apply(&quot;error while transforming &quot;, &quot;&quot;)).i(tree)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          311
+        </td>
+        <td>
+          61923
+        </td>
+        <td>
+          12877
+          -
+          12885
+        </td>
+        <td>
+          Throw
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          throw ex
+        </td>
+      </tr>
+    </table>
+          </div>
+        </div>
+      </body>
+    </html>

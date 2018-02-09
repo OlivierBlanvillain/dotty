@@ -1,0 +1,4807 @@
+<html>
+      <head>
+        <meta http-equiv="Content-Type" content="text/html; charset=utf-8"/>
+        <title id="title">
+          dotty/tools/dotc/transform/ReifyQuotes.scala.html
+        </title>
+        <script src="https://ajax.googleapis.com/ajax/libs/jquery/1.10.2/jquery.min.js"></script><link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/jquery.tablesorter/2.20.1/css/theme.default.min.css" type="text/css"/><script src="https://cdnjs.cloudflare.com/ajax/libs/jquery.tablesorter/2.20.1/js/jquery.tablesorter.min.js"></script><link rel="stylesheet" href="https://netdna.bootstrapcdn.com/bootstrap/3.0.3/css/bootstrap.min.css" type="text/css"/><script src="https://netdna.bootstrapcdn.com/bootstrap/3.0.3/js/bootstrap.min.js"></script><script type="text/javascript">
+        $(document).ready(function() {$(".tablesorter").tablesorter();});
+      </script>
+        <style>
+          table.codegrid { font-family: monospace; font-size: 12px; width: auto!important; }table.statementlist { width: auto!important; font-size: 13px; } table.codegrid td { padding: 0!important; border: 0!important } table td.linenumber { width: 40px!important; } 
+        </style>
+      </head>
+      <body style="font-family: monospace;">
+        <ul class="nav nav-tabs">
+          <li>
+            <a href="#codegrid" data-toggle="tab">Codegrid</a>
+          </li>
+          <li>
+            <a href="#statementlist" data-toggle="tab">Statement List</a>
+          </li>
+        </ul>
+        <div class="tab-content">
+          <div class="tab-pane active" id="codegrid">
+            <pre style='font-size: 12pt; font-family: courier;'>1 <span style=''>package dotty.tools.dotc
+</span>2 <span style=''>package transform
+</span>3 <span style=''>
+</span>4 <span style=''>import core._
+</span>5 <span style=''>import Decorators._, Flags._, Types._, Contexts._, Symbols._, Constants._
+</span>6 <span style=''>import Flags._
+</span>7 <span style=''>import ast.Trees._
+</span>8 <span style=''>import ast.TreeTypeMap
+</span>9 <span style=''>import util.Positions._
+</span>10 <span style=''>import StdNames._
+</span>11 <span style=''>import ast.untpd
+</span>12 <span style=''>import tasty.TreePickler.Hole
+</span>13 <span style=''>import MegaPhase.MiniPhase
+</span>14 <span style=''>import SymUtils._
+</span>15 <span style=''>import NameKinds.OuterSelectName
+</span>16 <span style=''>import typer.Implicits.SearchFailureType
+</span>17 <span style=''>
+</span>18 <span style=''>import scala.collection.mutable
+</span>19 <span style=''>import dotty.tools.dotc.core.StdNames._
+</span>20 <span style=''>import dotty.tools.dotc.core.quoted._
+</span>21 <span style=''>
+</span>22 <span style=''>
+</span>23 <span style=''>/** Translates quoted terms and types to `unpickle` method calls.
+</span>24 <span style=''> *  Checks that the phase consistency principle (PCP) holds.
+</span>25 <span style=''> */
+</span>26 <span style=''>class ReifyQuotes extends MacroTransformWithImplicits {
+</span>27 <span style=''>  import ast.tpd._
+</span>28 <span style=''>
+</span>29 <span style=''>  override def phaseName: String = </span><span style='background: #AEF1AE'>&quot;reifyQuotes&quot;</span><span style=''>
+</span>30 <span style=''>
+</span>31 <span style=''>  override def run(implicit ctx: Context): Unit =
+</span>32 <span style=''>    if (</span><span style='background: #AEF1AE'>ctx.compilationUnit.containsQuotesOrSplices</span><span style=''>) </span><span style='background: #AEF1AE'>super.run</span><span style=''>
+</span>33 <span style=''>
+</span>34 <span style=''>  protected def newTransformer(implicit ctx: Context): Transformer =
+</span>35 <span style=''>    </span><span style='background: #AEF1AE'>new Reifier(inQuote = false, null, 0, new LevelInfo)</span><span style=''>
+</span>36 <span style=''>
+</span>37 <span style=''>  private class LevelInfo {
+</span>38 <span style=''>    /** A map from locally defined symbols to the staging levels of their definitions */
+</span>39 <span style=''>    val levelOf = </span><span style='background: #AEF1AE'>new mutable.HashMap[Symbol, Int]</span><span style=''>
+</span>40 <span style=''>
+</span>41 <span style=''>    /** A stack of entered symbols, to be unwound after scope exit */
+</span>42 <span style=''>    var enteredSyms: List[Symbol] = </span><span style='background: #AEF1AE'>Nil</span><span style=''>
+</span>43 <span style=''>  }
+</span>44 <span style=''>
+</span>45 <span style=''>  /** Requiring that `paramRefs` consists of a single reference `seq` to a Seq[Any],
+</span>46 <span style=''>   *  a tree map that replaces each hole with index `n` with `seq(n)`, applied
+</span>47 <span style=''>   *  to any arguments in the hole.
+</span>48 <span style=''>   */
+</span>49 <span style=''>  private def replaceHoles(paramRefs: List[Tree]) = </span><span style='background: #AEF1AE'>new</span><span style=''> TreeMap {
+</span>50 <span style=''>    val seq :: Nil = paramRefs
+</span>51 <span style=''>    override def transform(tree: Tree)(implicit ctx: Context): Tree = tree match {
+</span>52 <span style=''>      case Hole(n, args) =&gt;
+</span>53 <span style=''>        val arg =
+</span>54 <span style=''>          </span><span style='background: #AEF1AE'>seq.select(nme.apply).appliedTo(Literal(Constant(n))).ensureConforms(tree.tpe)</span><span style=''>
+</span>55 <span style=''>        if (</span><span style='background: #AEF1AE'>args.isEmpty</span><span style=''>) </span><span style='background: #AEF1AE'>arg</span><span style=''>
+</span>56 <span style=''>        else </span><span style='background: #F0ADAD'>arg.select(nme.apply).appliedTo(SeqLiteral(args, TypeTree(defn.AnyType)))</span><span style=''>
+</span>57 <span style=''>      case _ =&gt;
+</span>58 <span style=''>        </span><span style='background: #AEF1AE'>super.transform(tree)</span><span style=''>
+</span>59 <span style=''>    }
+</span>60 <span style=''>  }
+</span>61 <span style=''>
+</span>62 <span style=''>  /** If `tree` has holes, convert it to a function taking a `Seq` of elements as arguments
+</span>63 <span style=''>   *  where each hole is replaced by the corresponding sequence element.
+</span>64 <span style=''>   */
+</span>65 <span style=''>  private def elimHoles(tree: Tree)(implicit ctx: Context): Tree =
+</span>66 <span style=''>    if (</span><span style='background: #AEF1AE'>tree.existsSubTree(_.isInstanceOf[Hole])</span><span style=''>)
+</span>67 <span style=''>      </span><span style='background: #AEF1AE'>Lambda(
+</span>68 <span style=''></span><span style='background: #AEF1AE'>        MethodType(defn.SeqType.appliedTo(defn.AnyType) :: Nil, tree.tpe),
+</span>69 <span style=''></span><span style='background: #AEF1AE'>        replaceHoles(_).transform(tree))</span><span style=''>
+</span>70 <span style=''>    else </span><span style='background: #AEF1AE'>tree</span><span style=''>
+</span>71 <span style=''>
+</span>72 <span style=''>  /** The main transformer class
+</span>73 <span style=''>   *  @param  inQuote    we are within a `'(...)` context that is not shadowed by a nested `~(...)`
+</span>74 <span style=''>   *  @param  outer      the next outer reifier, null is this is the topmost transformer
+</span>75 <span style=''>   *  @param  level      the current level, where quotes add one and splices subtract one level
+</span>76 <span style=''>   *  @param  levels     a stacked map from symbols to the levels in which they were defined
+</span>77 <span style=''>   */
+</span>78 <span style=''>  private class Reifier(inQuote: Boolean, val outer: Reifier, val level: Int, levels: LevelInfo) extends ImplicitsTransformer {
+</span>79 <span style=''>    import levels._
+</span>80 <span style=''>
+</span>81 <span style=''>    /** A nested reifier for a quote (if `isQuote = true`) or a splice (if not) */
+</span>82 <span style=''>    def nested(isQuote: Boolean): Reifier =
+</span>83 <span style=''>      </span><span style='background: #AEF1AE'>new Reifier(isQuote, this, if (isQuote) level + 1 else level - 1, levels)</span><span style=''>
+</span>84 <span style=''>
+</span>85 <span style=''>    /** We are in a `~(...)` context that is not shadowed by a nested `'(...)` */
+</span>86 <span style=''>    def inSplice = </span><span style='background: #AEF1AE'>outer != null &amp;&amp; !inQuote</span><span style=''>
+</span>87 <span style=''>
+</span>88 <span style=''>    /** A list of embedded quotes (if `inSplice = true`) or splices (if `inQuote = true`) */
+</span>89 <span style=''>    val embedded = </span><span style='background: #AEF1AE'>new mutable.ListBuffer[Tree]</span><span style=''>
+</span>90 <span style=''>
+</span>91 <span style=''>    /** A map from type ref T to expressions of type `quoted.Type[T]`&quot;.
+</span>92 <span style=''>     *  These will be turned into splices using `addTags`
+</span>93 <span style=''>     */
+</span>94 <span style=''>    val importedTags = </span><span style='background: #AEF1AE'>new mutable.LinkedHashMap[TypeRef, Tree]()</span><span style=''>
+</span>95 <span style=''>
+</span>96 <span style=''>    /** Assuming importedTags = `Type1 -&gt; tag1, ..., TypeN -&gt; tagN`, the expression
+</span>97 <span style=''>     *
+</span>98 <span style=''>     *      { type &lt;Type1&gt; = &lt;tag1&gt;.unary_~
+</span>99 <span style=''>     *        ...
+</span>100 <span style=''>     *        type &lt;TypeN&gt; = &lt;tagN&gt;.unary.~
+</span>101 <span style=''>     *        &lt;expr&gt;
+</span>102 <span style=''>     *      }
+</span>103 <span style=''>     *
+</span>104 <span style=''>     *  references to `TypeI` in `expr` are rewired to point to the locally
+</span>105 <span style=''>     *  defined versions. As a side effect, prepend the expressions `tag1, ..., `tagN`
+</span>106 <span style=''>     *  as splices to `embedded`.
+</span>107 <span style=''>     */
+</span>108 <span style=''>    def addTags(expr: Tree)(implicit ctx: Context): Tree =
+</span>109 <span style=''>      if (</span><span style='background: #AEF1AE'>importedTags.isEmpty</span><span style=''>) </span><span style='background: #AEF1AE'>expr</span><span style=''>
+</span>110 <span style=''>      else </span><span style='background: #AEF1AE'>{
+</span>111 <span style=''></span><span style='background: #AEF1AE'>        val itags = importedTags.toList
+</span>112 <span style=''></span><span style='background: #AEF1AE'>        val typeDefs = for ((tref, tag) &lt;- itags) yield {
+</span>113 <span style=''></span><span style='background: #AEF1AE'>          val rhs = transform(tag.select(tpnme.UNARY_~))
+</span>114 <span style=''></span><span style='background: #AEF1AE'>          val alias = ctx.typeAssigner.assignType(untpd.TypeBoundsTree(rhs, rhs), rhs, rhs)
+</span>115 <span style=''></span><span style='background: #AEF1AE'>          val original = tref.symbol.asType
+</span>116 <span style=''></span><span style='background: #AEF1AE'>          val local = original.copy(
+</span>117 <span style=''></span><span style='background: #AEF1AE'>            owner = ctx.owner,
+</span>118 <span style=''></span><span style='background: #AEF1AE'>            flags = Synthetic,
+</span>119 <span style=''></span><span style='background: #AEF1AE'>            info = TypeAlias(tag.tpe.select(tpnme.UNARY_~)))
+</span>120 <span style=''></span><span style='background: #AEF1AE'>          ctx.typeAssigner.assignType(untpd.TypeDef(original.name, alias), local)
+</span>121 <span style=''></span><span style='background: #AEF1AE'>        }
+</span>122 <span style=''></span><span style='background: #AEF1AE'>        importedTags.clear()
+</span>123 <span style=''></span><span style='background: #AEF1AE'>        Block(typeDefs,
+</span>124 <span style=''></span><span style='background: #AEF1AE'>          new TreeTypeMap(substFrom = itags.map(_._1.symbol), substTo = typeDefs.map(_.symbol))
+</span>125 <span style=''></span><span style='background: #AEF1AE'>            .apply(expr))
+</span>126 <span style=''></span><span style='background: #AEF1AE'>      }</span><span style=''>
+</span>127 <span style=''>
+</span>128 <span style=''>    /** Enter staging level of symbol defined by `tree`, if applicable. */
+</span>129 <span style=''>    def markDef(tree: Tree)(implicit ctx: Context) = tree match {
+</span>130 <span style=''>      case tree: DefTree =&gt;
+</span>131 <span style=''>        val sym = </span><span style='background: #AEF1AE'>tree.symbol</span><span style=''>
+</span>132 <span style=''>        if (</span><span style='background: #AEF1AE'>(sym.isClass || !sym.maybeOwner.isType) &amp;&amp; !levelOf.contains(sym)</span><span style=''>) </span><span style='background: #AEF1AE'>{
+</span>133 <span style=''></span><span style='background: #AEF1AE'>          levelOf(sym) = level
+</span>134 <span style=''></span><span style='background: #AEF1AE'>          enteredSyms = sym :: enteredSyms
+</span>135 <span style=''></span><span style='background: #AEF1AE'>        }</span><span style=''>
+</span>136 <span style=''>      case _ </span><span style='background: #AEF1AE'>=&gt;</span><span style=''>
+</span>137 <span style=''>    }
+</span>138 <span style=''>
+</span>139 <span style=''>    /** Does the level of `sym` match the current level?
+</span>140 <span style=''>     *  An exception is made for inline vals in macros. These are also OK if their level
+</span>141 <span style=''>     *  is one higher than the current level, because on execution such values
+</span>142 <span style=''>     *  are constant expression trees and we can pull out the constant from the tree.
+</span>143 <span style=''>     */
+</span>144 <span style=''>    def levelOK(sym: Symbol)(implicit ctx: Context): Boolean = </span><span style='background: #AEF1AE'>levelOf.get(sym)</span><span style=''> match {
+</span>145 <span style=''>      case Some(l) =&gt;
+</span>146 <span style=''>        </span><span style='background: #AEF1AE'>l == level ||
+</span>147 <span style=''></span><span style='background: #AEF1AE'>        sym.is(Inline) &amp;&amp; sym.owner.is(Macro) &amp;&amp; sym.info.isValueType &amp;&amp; l - 1 == level</span><span style=''>
+</span>148 <span style=''>      case None =&gt;
+</span>149 <span style=''>        </span><span style='background: #AEF1AE'>true</span><span style=''>
+</span>150 <span style=''>    }
+</span>151 <span style=''>
+</span>152 <span style=''>    /** Issue a &quot;splice outside quote&quot; error unless we ar in the body of an inline method */
+</span>153 <span style=''>    def spliceOutsideQuotes(pos: Position)(implicit ctx: Context) =
+</span>154 <span style=''>      </span><span style='background: #AEF1AE'>ctx.error(i&quot;splice outside quotes&quot;, pos)</span><span style=''>
+</span>155 <span style=''>
+</span>156 <span style=''>    /** Try to heal phase-inconsistent reference to type `T` using a local type definition.
+</span>157 <span style=''>     *  @return None      if successful
+</span>158 <span style=''>     *  @return Some(msg) if unsuccessful where `msg` is a potentially empty error message
+</span>159 <span style=''>     *                    to be added to the &quot;inconsistent phase&quot; message.
+</span>160 <span style=''>     */
+</span>161 <span style=''>    def tryHeal(tp: Type, pos: Position)(implicit ctx: Context): Option[String] = tp match {
+</span>162 <span style=''>      case tp: TypeRef =&gt;
+</span>163 <span style=''>        val reqType = </span><span style='background: #AEF1AE'>defn.QuotedTypeType.appliedTo(tp)</span><span style=''>
+</span>164 <span style=''>        val tag = </span><span style='background: #AEF1AE'>ctx.typer.inferImplicitArg(reqType, pos)</span><span style=''>
+</span>165 <span style=''>        </span><span style='background: #AEF1AE'>tag.tpe</span><span style=''> match {
+</span>166 <span style=''>          case fail: SearchFailureType =&gt;
+</span>167 <span style=''>            </span><span style='background: #AEF1AE'>Some(i&quot;&quot;&quot;
+</span>168 <span style=''></span><span style='background: #AEF1AE'>                    |
+</span>169 <span style=''></span><span style='background: #AEF1AE'>                    | The access would be accepted with the right type tag, but
+</span>170 <span style=''></span><span style='background: #AEF1AE'>                    | ${ctx.typer.missingArgMsg(tag, reqType, &quot;&quot;)}&quot;&quot;&quot;)</span><span style=''>
+</span>171 <span style=''>          case _ =&gt;
+</span>172 <span style=''>            </span><span style='background: #AEF1AE'>importedTags(tp) = nested(isQuote = false).transform(tag)</span><span style=''>
+</span>173 <span style=''>            </span><span style='background: #AEF1AE'>None</span><span style=''>
+</span>174 <span style=''>        }
+</span>175 <span style=''>      case _ =&gt;
+</span>176 <span style=''>        </span><span style='background: #AEF1AE'>Some(&quot;&quot;)</span><span style=''>
+</span>177 <span style=''>    }
+</span>178 <span style=''>
+</span>179 <span style=''>    /** Check reference to `sym` for phase consistency, where `tp` is the underlying type
+</span>180 <span style=''>     *  by which we refer to `sym`.
+</span>181 <span style=''>     */
+</span>182 <span style=''>    def check(sym: Symbol, tp: Type, pos: Position)(implicit ctx: Context): Unit = {
+</span>183 <span style=''>      val isThis = </span><span style='background: #AEF1AE'>tp.isInstanceOf[ThisType]</span><span style=''>
+</span>184 <span style=''>      def symStr =
+</span>185 <span style=''>        if (</span><span style='background: #AEF1AE'>!isThis</span><span style=''>) </span><span style='background: #AEF1AE'>sym.show</span><span style=''>
+</span>186 <span style=''>        else </span><span style='background: #AEF1AE'>if (sym.is(ModuleClass)) </span><span style='background: #F0ADAD'>sym.sourceModule.show</span><span style='background: #AEF1AE'>
+</span>187 <span style=''></span><span style='background: #AEF1AE'>        else i&quot;${sym.name}.this&quot;</span><span style=''>
+</span>188 <span style=''>      if (</span><span style='background: #AEF1AE'>!isThis &amp;&amp; sym.maybeOwner.isType</span><span style=''>)
+</span>189 <span style=''>        </span><span style='background: #AEF1AE'>check(sym.owner, sym.owner.thisType, pos)</span><span style=''>
+</span>190 <span style=''>      else </span><span style='background: #AEF1AE'>if (sym.exists &amp;&amp; !sym.isStaticOwner &amp;&amp; !levelOK(sym))
+</span>191 <span style=''></span><span style='background: #AEF1AE'>        for (errMsg &lt;- tryHeal(tp, pos))
+</span>192 <span style=''></span><span style='background: #AEF1AE'>          ctx.error(em&quot;&quot;&quot;access to $symStr from wrong staging level:
+</span>193 <span style=''></span><span style='background: #AEF1AE'>                        | - the definition is at level ${levelOf(sym)},
+</span>194 <span style=''></span><span style='background: #AEF1AE'>                        | - but the access is at level $level.$errMsg&quot;&quot;&quot;, pos)</span><span style=''>
+</span>195 <span style=''>    }
+</span>196 <span style=''>
+</span>197 <span style=''>    /** Check all named types and this-types in a given type for phase consistency. */
+</span>198 <span style=''>    def checkType(pos: Position)(implicit ctx: Context): TypeAccumulator[Unit] = </span><span style='background: #AEF1AE'>new</span><span style=''> TypeAccumulator[Unit] {
+</span>199 <span style=''>      def apply(acc: Unit, tp: Type): Unit = </span><span style='background: #AEF1AE'>reporting.trace(</span><span style='background: #F0ADAD'>i&quot;check type level $tp at $level&quot;</span><span style='background: #AEF1AE'>) {
+</span>200 <span style=''></span><span style='background: #AEF1AE'>        tp match {
+</span>201 <span style=''></span><span style='background: #AEF1AE'>          case tp: NamedType if tp.symbol.isSplice =&gt;
+</span>202 <span style=''></span><span style='background: #AEF1AE'>            if (</span><span style='background: #F0ADAD'>inQuote</span><span style='background: #AEF1AE'>) </span><span style='background: #F0ADAD'>outer.checkType(pos).foldOver(acc, tp)</span><span style='background: #AEF1AE'>
+</span>203 <span style=''></span><span style='background: #AEF1AE'>            else </span><span style='background: #F0ADAD'>{
+</span>204 <span style=''></span><span style='background: #F0ADAD'>              if (tp.isTerm) spliceOutsideQuotes(pos)
+</span>205 <span style=''></span><span style='background: #F0ADAD'>              tp
+</span>206 <span style=''></span><span style='background: #F0ADAD'>            }</span><span style='background: #AEF1AE'>
+</span>207 <span style=''></span><span style='background: #AEF1AE'>          case tp: NamedType =&gt;
+</span>208 <span style=''></span><span style='background: #AEF1AE'>            check(tp.symbol, tp, pos)
+</span>209 <span style=''></span><span style='background: #AEF1AE'>            foldOver(acc, tp)
+</span>210 <span style=''></span><span style='background: #AEF1AE'>          case tp: ThisType =&gt;
+</span>211 <span style=''></span><span style='background: #AEF1AE'>            check(tp.cls, tp, pos)
+</span>212 <span style=''></span><span style='background: #AEF1AE'>            foldOver(acc, tp)
+</span>213 <span style=''></span><span style='background: #AEF1AE'>          case _ =&gt;
+</span>214 <span style=''></span><span style='background: #AEF1AE'>            foldOver(acc, tp)
+</span>215 <span style=''></span><span style='background: #AEF1AE'>        }
+</span>216 <span style=''></span><span style='background: #AEF1AE'>      }</span><span style=''>
+</span>217 <span style=''>    }
+</span>218 <span style=''>
+</span>219 <span style=''>    /** If `tree` refers to a locally defined symbol (either directly, or in a pickled type),
+</span>220 <span style=''>     *  check that its staging level matches the current level. References to types
+</span>221 <span style=''>     *  that are phase-incorrect can still be healed as follows:
+</span>222 <span style=''>     *
+</span>223 <span style=''>     *  If `T` is a reference to a type at the wrong level, heal it by setting things up
+</span>224 <span style=''>     *  so that we later add a type definition
+</span>225 <span style=''>     *
+</span>226 <span style=''>     *     type T' = ~quoted.Type[T]
+</span>227 <span style=''>     *
+</span>228 <span style=''>     *  to the quoted text and rename T to T' in it. This is done later in `reify` via
+</span>229 <span style=''>     *  `addTags`. `checkLevel` itself only records what needs to be done in the
+</span>230 <span style=''>     *  `typeTagOfRef` field of the current `Splice` structure.
+</span>231 <span style=''>     */
+</span>232 <span style=''>    private def checkLevel(tree: Tree)(implicit ctx: Context): Tree = {
+</span>233 <span style=''>      tree match {
+</span>234 <span style=''>        case (_: Ident) | (_: This) =&gt;
+</span>235 <span style=''>          </span><span style='background: #AEF1AE'>check(tree.symbol, tree.tpe, tree.pos)</span><span style=''>
+</span>236 <span style=''>        case (_: UnApply)  | (_: TypeTree) =&gt;
+</span>237 <span style=''>          </span><span style='background: #AEF1AE'>checkType(tree.pos).apply((), tree.tpe)</span><span style=''>
+</span>238 <span style=''>        case Select(qual, OuterSelectName(_, levels)) =&gt;
+</span>239 <span style=''>          </span><span style='background: #F0ADAD'>checkType(tree.pos).apply((), tree.tpe.widen)</span><span style=''>
+</span>240 <span style=''>        case _: Bind =&gt;
+</span>241 <span style=''>          </span><span style='background: #AEF1AE'>checkType(tree.pos).apply((), tree.symbol.info)</span><span style=''>
+</span>242 <span style=''>        case _: Template =&gt;
+</span>243 <span style=''>          </span><span style='background: #AEF1AE'>checkType(tree.pos).apply((), tree.symbol.owner.asClass.givenSelfType)</span><span style=''>
+</span>244 <span style=''>        case _ </span><span style='background: #AEF1AE'>=&gt;</span><span style=''>
+</span>245 <span style=''>      }
+</span>246 <span style=''>      tree
+</span>247 <span style=''>    }
+</span>248 <span style=''>
+</span>249 <span style=''>    /** Split `body` into a core and a list of embedded splices.
+</span>250 <span style=''>     *  Then if inside a splice, make a hole from these parts.
+</span>251 <span style=''>     *  If outside a splice, generate a call tp `scala.quoted.Unpickler.unpickleType` or
+</span>252 <span style=''>     *  `scala.quoted.Unpickler.unpickleExpr` that matches `tpe` with
+</span>253 <span style=''>     *  core and splices as arguments.
+</span>254 <span style=''>     */
+</span>255 <span style=''>    private def quotation(body: Tree, quote: Tree)(implicit ctx: Context) = </span><span style='background: #AEF1AE'>{
+</span>256 <span style=''></span><span style='background: #AEF1AE'>      val (body1, splices) = nested(isQuote = true).split(body)
+</span>257 <span style=''></span><span style='background: #AEF1AE'>      if (inSplice)
+</span>258 <span style=''></span><span style='background: #AEF1AE'>        makeHole(body1, splices, quote.tpe)
+</span>259 <span style=''></span><span style='background: #AEF1AE'>      else {
+</span>260 <span style=''></span><span style='background: #AEF1AE'>        def liftList(list: List[Tree], tpe: Type): Tree = {
+</span>261 <span style=''></span><span style='background: #AEF1AE'>          list.foldRight[Tree](ref(defn.NilModule)) { (x, acc) =&gt;
+</span>262 <span style=''></span><span style='background: #AEF1AE'>            acc.select(&quot;::&quot;.toTermName).appliedToType(tpe).appliedTo(x)
+</span>263 <span style=''></span><span style='background: #AEF1AE'>          }
+</span>264 <span style=''></span><span style='background: #AEF1AE'>        }
+</span>265 <span style=''></span><span style='background: #AEF1AE'>        val isType = quote.tpe.isRef(defn.QuotedTypeClass)
+</span>266 <span style=''></span><span style='background: #AEF1AE'>        ref(if (isType) defn.Unpickler_unpickleType else defn.Unpickler_unpickleExpr)
+</span>267 <span style=''></span><span style='background: #AEF1AE'>          .appliedToType(if (isType) body1.tpe else body1.tpe.widen)
+</span>268 <span style=''></span><span style='background: #AEF1AE'>          .appliedTo(
+</span>269 <span style=''></span><span style='background: #AEF1AE'>            liftList(PickledQuotes.pickleQuote(body1).map(x =&gt; Literal(Constant(x))), defn.StringType),
+</span>270 <span style=''></span><span style='background: #AEF1AE'>            liftList(splices, defn.AnyType))
+</span>271 <span style=''></span><span style='background: #AEF1AE'>      }
+</span>272 <span style=''></span><span style='background: #AEF1AE'>    }.withPos(quote.pos)</span><span style=''>
+</span>273 <span style=''>
+</span>274 <span style=''>    /** If inside a quote, split `body` into a core and a list of embedded quotes
+</span>275 <span style=''>     *  and make a hole from these parts. Otherwise issue an error, unless we
+</span>276 <span style=''>     *  are in the body of an inline method.
+</span>277 <span style=''>     */
+</span>278 <span style=''>    private def splice(body: Tree, splice: Tree)(implicit ctx: Context): Tree = {
+</span>279 <span style=''>      </span><span style='background: #AEF1AE'>if (inQuote) {
+</span>280 <span style=''></span><span style='background: #AEF1AE'>        val (body1, quotes) = nested(isQuote = false).split(body)
+</span>281 <span style=''></span><span style='background: #AEF1AE'>        makeHole(body1, quotes, splice.tpe)
+</span>282 <span style=''></span><span style='background: #AEF1AE'>      }
+</span>283 <span style=''></span><span style='background: #AEF1AE'>      else {
+</span>284 <span style=''></span><span style='background: #AEF1AE'>        spliceOutsideQuotes(splice.pos)
+</span>285 <span style=''></span><span style='background: #AEF1AE'>        splice
+</span>286 <span style=''></span><span style='background: #AEF1AE'>      }
+</span>287 <span style=''></span><span style='background: #AEF1AE'>    }.withPos(splice.pos)</span><span style=''>
+</span>288 <span style=''>
+</span>289 <span style=''>    /** Transform `tree` and return the resulting tree and all `embedded` quotes
+</span>290 <span style=''>     *  or splices as a pair, after performing the `addTags` transform.
+</span>291 <span style=''>     */
+</span>292 <span style=''>    private def split(tree: Tree)(implicit ctx: Context): (Tree, List[Tree]) = {
+</span>293 <span style=''>      val tree1 = </span><span style='background: #AEF1AE'>addTags(transform(tree))</span><span style=''>
+</span>294 <span style=''>      </span><span style='background: #AEF1AE'>(tree1, embedded.toList.map(elimHoles))</span><span style=''>
+</span>295 <span style=''>    }
+</span>296 <span style=''>
+</span>297 <span style=''>    /** Register `body` as an `embedded` quote or splice
+</span>298 <span style=''>     *  and return a hole with `splices` as arguments and the given type `tpe`.
+</span>299 <span style=''>     */
+</span>300 <span style=''>    private def makeHole(body: Tree, splices: List[Tree], tpe: Type)(implicit ctx: Context): Hole = {
+</span>301 <span style=''>      val idx = </span><span style='background: #AEF1AE'>embedded.length</span><span style=''>
+</span>302 <span style=''>      </span><span style='background: #AEF1AE'>embedded += body</span><span style=''>
+</span>303 <span style=''>      </span><span style='background: #AEF1AE'>Hole(idx, splices).withType(tpe).asInstanceOf[Hole]</span><span style=''>
+</span>304 <span style=''>    }
+</span>305 <span style=''>
+</span>306 <span style=''>    override def transform(tree: Tree)(implicit ctx: Context): Tree =
+</span>307 <span style=''>      </span><span style='background: #AEF1AE'>reporting.trace(i&quot;reify $tree at $level&quot;, show = true) {
+</span>308 <span style=''></span><span style='background: #AEF1AE'>        def mapOverTree(lastEntered: List[Symbol]) =
+</span>309 <span style=''></span><span style='background: #AEF1AE'>          try super.transform(tree)
+</span>310 <span style=''></span><span style='background: #AEF1AE'>          finally
+</span>311 <span style=''></span><span style='background: #AEF1AE'>            while (enteredSyms ne lastEntered) {
+</span>312 <span style=''></span><span style='background: #AEF1AE'>              levelOf -= enteredSyms.head
+</span>313 <span style=''></span><span style='background: #AEF1AE'>              enteredSyms = enteredSyms.tail
+</span>314 <span style=''></span><span style='background: #AEF1AE'>            }
+</span>315 <span style=''></span><span style='background: #AEF1AE'>        tree match {
+</span>316 <span style=''></span><span style='background: #AEF1AE'>          case Quoted(quotedTree) =&gt;
+</span>317 <span style=''></span><span style='background: #AEF1AE'>            quotation(quotedTree, tree)
+</span>318 <span style=''></span><span style='background: #AEF1AE'>          case Select(body, _) if tree.symbol.isSplice =&gt;
+</span>319 <span style=''></span><span style='background: #AEF1AE'>            splice(body, tree)
+</span>320 <span style=''></span><span style='background: #AEF1AE'>          case Block(stats, _) =&gt;
+</span>321 <span style=''></span><span style='background: #AEF1AE'>            val last = enteredSyms
+</span>322 <span style=''></span><span style='background: #AEF1AE'>            stats.foreach(markDef)
+</span>323 <span style=''></span><span style='background: #AEF1AE'>            mapOverTree(last)
+</span>324 <span style=''></span><span style='background: #AEF1AE'>          case Inlined(call, bindings, expansion @ Select(body, name)) if expansion.symbol.isSplice =&gt;
+</span>325 <span style=''></span><span style='background: #AEF1AE'>            // To maintain phase consistency, convert inlined expressions of the form
+</span>326 <span style=''></span><span style='background: #AEF1AE'>            // `{ bindings; ~expansion }` to `~{ bindings; expansion }`
+</span>327 <span style=''></span><span style='background: #AEF1AE'>            if (level == 0) transform(Splicer.splice(cpy.Inlined(tree)(call, bindings, body)))
+</span>328 <span style=''></span><span style='background: #AEF1AE'>            else transform(cpy.Select(expansion)(cpy.Inlined(tree)(call, bindings, body), name))
+</span>329 <span style=''></span><span style='background: #AEF1AE'>          case _: Import =&gt;
+</span>330 <span style=''></span><span style='background: #AEF1AE'>            tree
+</span>331 <span style=''></span><span style='background: #AEF1AE'>          case tree: DefDef if tree.symbol.is(Macro) &amp;&amp; level == 0 =&gt;
+</span>332 <span style=''></span><span style='background: #AEF1AE'>            markDef(tree)
+</span>333 <span style=''></span><span style='background: #AEF1AE'>            val tree1 = nested(isQuote = true).transform(tree)
+</span>334 <span style=''></span><span style='background: #AEF1AE'>              // check macro code as it if appeared in a quoted context
+</span>335 <span style=''></span><span style='background: #AEF1AE'>            cpy.DefDef(tree)(rhs = EmptyTree)
+</span>336 <span style=''></span><span style='background: #AEF1AE'>          case _ =&gt;
+</span>337 <span style=''></span><span style='background: #AEF1AE'>            markDef(tree)
+</span>338 <span style=''></span><span style='background: #AEF1AE'>            checkLevel(mapOverTree(enteredSyms))
+</span>339 <span style=''></span><span style='background: #AEF1AE'>        }
+</span>340 <span style=''></span><span style='background: #AEF1AE'>      }</span><span style=''>
+</span>341 <span style=''>  }
+</span>342 <span style=''>}
+</span></pre>
+          </div>
+          <div class="tab-pane" id="statementlist">
+            <table cellspacing="0" cellpadding="0" class="table statementlist">
+      <tr>
+        <th>Line</th>
+        <th>Stmt Id</th>
+        <th>Pos</th>
+        <th>Tree</th>
+        <th>Symbol</th>
+        <th>Code</th>
+      </tr><tr>
+        <td>
+          29
+        </td>
+        <td>
+          61943
+        </td>
+        <td>
+          752
+          -
+          765
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          &quot;reifyQuotes&quot;
+        </td>
+      </tr><tr>
+        <td>
+          32
+        </td>
+        <td>
+          61944
+        </td>
+        <td>
+          825
+          -
+          868
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.CompilationUnit.containsQuotesOrSplices
+        </td>
+        <td style="background: #AEF1AE">
+          ctx.compilationUnit.containsQuotesOrSplices
+        </td>
+      </tr><tr>
+        <td>
+          32
+        </td>
+        <td>
+          61947
+        </td>
+        <td>
+          821
+          -
+          821
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          ()
+        </td>
+      </tr><tr>
+        <td>
+          32
+        </td>
+        <td>
+          61946
+        </td>
+        <td>
+          870
+          -
+          879
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          dotty.tools.dotc.transform.MacroTransform.run
+        </td>
+        <td style="background: #AEF1AE">
+          ReifyQuotes.super.run(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          32
+        </td>
+        <td>
+          61945
+        </td>
+        <td>
+          870
+          -
+          879
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.transform.MacroTransform.run
+        </td>
+        <td style="background: #AEF1AE">
+          ReifyQuotes.super.run(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          32
+        </td>
+        <td>
+          61948
+        </td>
+        <td>
+          821
+          -
+          821
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          ()
+        </td>
+      </tr><tr>
+        <td>
+          35
+        </td>
+        <td>
+          61953
+        </td>
+        <td>
+          954
+          -
+          1006
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.transform.ReifyQuotes.Reifier.&lt;init&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          new ReifyQuotes.this.Reifier(false, null, 0, new ReifyQuotes.this.LevelInfo())
+        </td>
+      </tr><tr>
+        <td>
+          35
+        </td>
+        <td>
+          61949
+        </td>
+        <td>
+          976
+          -
+          981
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          false
+        </td>
+      </tr><tr>
+        <td>
+          35
+        </td>
+        <td>
+          61952
+        </td>
+        <td>
+          992
+          -
+          1005
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.transform.ReifyQuotes.LevelInfo.&lt;init&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          new ReifyQuotes.this.LevelInfo()
+        </td>
+      </tr><tr>
+        <td>
+          35
+        </td>
+        <td>
+          61951
+        </td>
+        <td>
+          989
+          -
+          990
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          0
+        </td>
+      </tr><tr>
+        <td>
+          35
+        </td>
+        <td>
+          61950
+        </td>
+        <td>
+          983
+          -
+          987
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          null
+        </td>
+      </tr><tr>
+        <td>
+          39
+        </td>
+        <td>
+          61954
+        </td>
+        <td>
+          1143
+          -
+          1175
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.mutable.HashMap.&lt;init&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          new scala.collection.mutable.HashMap[dotty.tools.dotc.core.Symbols.Symbol,Int]()
+        </td>
+      </tr><tr>
+        <td>
+          42
+        </td>
+        <td>
+          61955
+        </td>
+        <td>
+          1283
+          -
+          1286
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.collection.immutable.Nil
+        </td>
+        <td style="background: #AEF1AE">
+          scala.collection.immutable.Nil
+        </td>
+      </tr><tr>
+        <td>
+          49
+        </td>
+        <td>
+          61962
+        </td>
+        <td>
+          1550
+          -
+          1553
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.transform.ReifyQuotes.$anon.&lt;init&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          new $anon()
+        </td>
+      </tr><tr>
+        <td>
+          54
+        </td>
+        <td>
+          61956
+        </td>
+        <td>
+          1734
+          -
+          1812
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.tpd.TreeOps.ensureConforms
+        </td>
+        <td style="background: #AEF1AE">
+          ast.tpd.TreeOps[dotty.tools.dotc.ast.tpd.Tree](ast.tpd.TreeOps[dotty.tools.dotc.ast.tpd.Select](ast.tpd.TreeOps[dotty.tools.dotc.ast.tpd.Tree]($anon.this.seq).select(dotty.tools.dotc.core.StdNames.nme.apply)(ctx)).appliedTo(ast.tpd.Literal(core.Constants.Constant.apply(n))(ctx))(ctx)).ensureConforms(tree.tpe)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          55
+        </td>
+        <td>
+          61958
+        </td>
+        <td>
+          1839
+          -
+          1842
+        </td>
+        <td>
+          Ident
+        </td>
+        <td>
+          dotty.tools.dotc.transform.ReifyQuotes.$anon.arg
+        </td>
+        <td style="background: #AEF1AE">
+          arg
+        </td>
+      </tr><tr>
+        <td>
+          55
+        </td>
+        <td>
+          61957
+        </td>
+        <td>
+          1825
+          -
+          1837
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.collection.SeqLike.isEmpty
+        </td>
+        <td style="background: #AEF1AE">
+          args.isEmpty
+        </td>
+      </tr><tr>
+        <td>
+          56
+        </td>
+        <td>
+          61960
+        </td>
+        <td>
+          1856
+          -
+          1929
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          dotty.tools.dotc.ast.tpd.TreeOps.appliedTo
+        </td>
+        <td style="background: #F0ADAD">
+          ast.tpd.TreeOps[dotty.tools.dotc.ast.tpd.Select](ast.tpd.TreeOps[dotty.tools.dotc.ast.tpd.Tree](arg).select(dotty.tools.dotc.core.StdNames.nme.apply)(ctx)).appliedTo(ast.tpd.SeqLiteral(args, ast.tpd.TypeTree(core.Symbols.defn(ctx).AnyType)(ctx))(ctx))(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          56
+        </td>
+        <td>
+          61959
+        </td>
+        <td>
+          1856
+          -
+          1929
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.tpd.TreeOps.appliedTo
+        </td>
+        <td style="background: #F0ADAD">
+          ast.tpd.TreeOps[dotty.tools.dotc.ast.tpd.Select](ast.tpd.TreeOps[dotty.tools.dotc.ast.tpd.Tree](arg).select(dotty.tools.dotc.core.StdNames.nme.apply)(ctx)).appliedTo(ast.tpd.SeqLiteral(args, ast.tpd.TypeTree(core.Symbols.defn(ctx).AnyType)(ctx))(ctx))(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          58
+        </td>
+        <td>
+          61961
+        </td>
+        <td>
+          1954
+          -
+          1975
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Trees.Instance.TreeMap.transform
+        </td>
+        <td style="background: #AEF1AE">
+          $anon.super.transform(tree)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          66
+        </td>
+        <td>
+          61963
+        </td>
+        <td>
+          2233
+          -
+          2273
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.tpd.TreeOps.existsSubTree
+        </td>
+        <td style="background: #AEF1AE">
+          ast.tpd.TreeOps[dotty.tools.dotc.ast.tpd.Tree](tree).existsSubTree(((x$1: dotty.tools.dotc.ast.tpd.Tree) =&gt; x$1.isInstanceOf[dotty.tools.dotc.core.tasty.TreePickler.Hole]))(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          67
+        </td>
+        <td>
+          61965
+        </td>
+        <td>
+          2281
+          -
+          2404
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          dotty.tools.dotc.ast.tpd.Lambda
+        </td>
+        <td style="background: #AEF1AE">
+          ast.tpd.Lambda(core.Types.MethodType.apply({
+  &lt;synthetic&gt; &lt;artifact&gt; val x$2: dotty.tools.dotc.core.Types.Type = core.Types.decorateTypeApplications(core.Symbols.defn(ctx).SeqType).appliedTo(core.Symbols.defn(ctx).AnyType)(ctx);
+  scala.collection.immutable.Nil.::[dotty.tools.dotc.core.Types.Type](x$2)
+}, tree.tpe)(ctx), ((x$3: List[dotty.tools.dotc.ast.tpd.Tree]) =&gt; ReifyQuotes.this.replaceHoles(x$3).transform(tree)(ctx)))(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          67
+        </td>
+        <td>
+          61964
+        </td>
+        <td>
+          2281
+          -
+          2404
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.tpd.Lambda
+        </td>
+        <td style="background: #AEF1AE">
+          ast.tpd.Lambda(core.Types.MethodType.apply({
+  &lt;synthetic&gt; &lt;artifact&gt; val x$2: dotty.tools.dotc.core.Types.Type = core.Types.decorateTypeApplications(core.Symbols.defn(ctx).SeqType).appliedTo(core.Symbols.defn(ctx).AnyType)(ctx);
+  scala.collection.immutable.Nil.::[dotty.tools.dotc.core.Types.Type](x$2)
+}, tree.tpe)(ctx), ((x$3: List[dotty.tools.dotc.ast.tpd.Tree]) =&gt; ReifyQuotes.this.replaceHoles(x$3).transform(tree)(ctx)))(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          70
+        </td>
+        <td>
+          61966
+        </td>
+        <td>
+          2414
+          -
+          2418
+        </td>
+        <td>
+          Ident
+        </td>
+        <td>
+          dotty.tools.dotc.transform.ReifyQuotes.tree
+        </td>
+        <td style="background: #AEF1AE">
+          tree
+        </td>
+      </tr><tr>
+        <td>
+          83
+        </td>
+        <td>
+          61971
+        </td>
+        <td>
+          3185
+          -
+          3191
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.transform.ReifyQuotes.Reifier.levels
+        </td>
+        <td style="background: #AEF1AE">
+          Reifier.this.levels
+        </td>
+      </tr><tr>
+        <td>
+          83
+        </td>
+        <td>
+          61967
+        </td>
+        <td>
+          3159
+          -
+          3168
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Int.+
+        </td>
+        <td style="background: #AEF1AE">
+          Reifier.this.level.+(1)
+        </td>
+      </tr><tr>
+        <td>
+          83
+        </td>
+        <td>
+          61970
+        </td>
+        <td>
+          3174
+          -
+          3183
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          scala.Int.-
+        </td>
+        <td style="background: #AEF1AE">
+          Reifier.this.level.-(1)
+        </td>
+      </tr><tr>
+        <td>
+          83
+        </td>
+        <td>
+          61972
+        </td>
+        <td>
+          3119
+          -
+          3192
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.transform.ReifyQuotes.Reifier.&lt;init&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          new ReifyQuotes.this.Reifier(isQuote, this, if (isQuote)
+  Reifier.this.level.+(1)
+else
+  Reifier.this.level.-(1), Reifier.this.levels)
+        </td>
+      </tr><tr>
+        <td>
+          83
+        </td>
+        <td>
+          61969
+        </td>
+        <td>
+          3174
+          -
+          3183
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Int.-
+        </td>
+        <td style="background: #AEF1AE">
+          Reifier.this.level.-(1)
+        </td>
+      </tr><tr>
+        <td>
+          83
+        </td>
+        <td>
+          61968
+        </td>
+        <td>
+          3159
+          -
+          3168
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          scala.Int.+
+        </td>
+        <td style="background: #AEF1AE">
+          Reifier.this.level.+(1)
+        </td>
+      </tr><tr>
+        <td>
+          86
+        </td>
+        <td>
+          61974
+        </td>
+        <td>
+          3312
+          -
+          3320
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.Boolean.unary_!
+        </td>
+        <td style="background: #AEF1AE">
+          Reifier.this.inQuote.unary_!
+        </td>
+      </tr><tr>
+        <td>
+          86
+        </td>
+        <td>
+          61973
+        </td>
+        <td>
+          3304
+          -
+          3308
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          null
+        </td>
+      </tr><tr>
+        <td>
+          86
+        </td>
+        <td>
+          61975
+        </td>
+        <td>
+          3295
+          -
+          3320
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Boolean.&amp;&amp;
+        </td>
+        <td style="background: #AEF1AE">
+          Reifier.this.outer.!=(null).&amp;&amp;(Reifier.this.inQuote.unary_!)
+        </td>
+      </tr><tr>
+        <td>
+          89
+        </td>
+        <td>
+          61976
+        </td>
+        <td>
+          3434
+          -
+          3462
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.mutable.ListBuffer.&lt;init&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          new scala.collection.mutable.ListBuffer[dotty.tools.dotc.ast.tpd.Tree]()
+        </td>
+      </tr><tr>
+        <td>
+          94
+        </td>
+        <td>
+          61977
+        </td>
+        <td>
+          3625
+          -
+          3667
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.mutable.LinkedHashMap.&lt;init&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          new scala.collection.mutable.LinkedHashMap[dotty.tools.dotc.core.Types.TypeRef,dotty.tools.dotc.ast.tpd.Tree]()
+        </td>
+      </tr><tr>
+        <td>
+          109
+        </td>
+        <td>
+          61979
+        </td>
+        <td>
+          4204
+          -
+          4208
+        </td>
+        <td>
+          Ident
+        </td>
+        <td>
+          dotty.tools.dotc.transform.ReifyQuotes.Reifier.expr
+        </td>
+        <td style="background: #AEF1AE">
+          expr
+        </td>
+      </tr><tr>
+        <td>
+          109
+        </td>
+        <td>
+          61978
+        </td>
+        <td>
+          4182
+          -
+          4202
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.collection.MapLike.isEmpty
+        </td>
+        <td style="background: #AEF1AE">
+          Reifier.this.importedTags.isEmpty
+        </td>
+      </tr><tr>
+        <td>
+          110
+        </td>
+        <td>
+          61998
+        </td>
+        <td>
+          4220
+          -
+          4947
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          {
+  val itags: List[(dotty.tools.dotc.core.Types.TypeRef, dotty.tools.dotc.ast.tpd.Tree)] = Reifier.this.importedTags.toList;
+  val typeDefs: List[dotty.tools.dotc.ast.Trees.TypeDef[dotty.tools.dotc.core.Types.Type]] = itags.withFilter(((check$ifrefutable$1: (dotty.tools.dotc.core.Types.TypeRef, dotty.tools.dotc.ast.tpd.Tree)) =&gt; (check$ifrefutable$1: (dotty.tools.dotc.core.Types.TypeRef, dotty.tools.dotc.ast.tpd.Tree) @unchecked) match {
+  case (_1: dotty.tools.dotc.core.Types.TypeRef, _2: dotty.tools.dotc.ast.tpd.Tree)(dotty.tools.dotc.core.Types.TypeRef, dotty.tools.dotc.ast.tpd.Tree)((tref @ _), (tag @ _)) =&gt; true
+  case _ =&gt; false
+})).map[dotty.tools.dotc.ast.Trees.TypeDef[dotty.tools.dotc.core.Types.Type], List[dotty.tools.dotc.ast.Trees.TypeDef[dotty.tools.dotc.core.Types.Type]]](((x$4: (dotty.tools.dotc.core.Types.TypeRef, dotty.tools.dotc.ast.tpd.Tree)) =&gt; (x$4: (dotty.tools.dotc.core.Types.TypeRef, dotty.tools.dotc.ast.tpd.Tree) @unchecked) match {
+    case (_1: dotty.tools.dotc.core.Types.TypeRef, _2: dotty.tools.dotc.ast.tpd.Tree)(dotty.tools.dotc.core.Types.TypeRef, dotty.tools.dotc.ast.tpd.Tree)((tref @ _), (tag @ _)) =&gt; {
+      val rhs: dotty.tools.dotc.ast.tpd.Tree = Reifier.this.transform(ast.tpd.TreeOps[dotty.tools.dotc.ast.tpd.Tree](tag).select(dotty.tools.dotc.core.StdNames.tpnme.UNARY_~)(ctx))(ctx);
+      val alias: dotty.tools.dotc.ast.Trees.TypeBoundsTree[dotty.tools.dotc.core.Types.Type] = ctx.typeAssigner.assignType(ast.untpd.TypeBoundsTree(rhs, rhs), rhs, rhs)(ctx);
+      val original: dotty.tools.dotc.core.Symbols.TypeSymbol = tref.symbol(ctx).asType(ctx);
+      val local: dotty.tools.dotc.core.Symbols.Symbol = {
+        &lt;artifact&gt; val qual$1: dotty.tools.dotc.core.Symbols.Copier[original.ThisName] = core.Symbols.Copier[original.ThisName](original)(ctx);
+        &lt;artifact&gt; val x$10: dotty.tools.dotc.core.Symbols.Symbol = ctx.owner;
+        &lt;artifact&gt; val x$11: dotty.tools.dotc.core.Flags.FlagSet = core.Flags.Synthetic;
+        &lt;artifact&gt; val x$12: dotty.tools.dotc.core.Types.CachedTypeAlias = core.Types.TypeAlias.apply(tag.tpe.select(dotty.tools.dotc.core.StdNames.tpnme.UNARY_~)(ctx))(ctx);
+        &lt;artifact&gt; val x$13: original.ThisName = qual$1.copy$default$2;
+        &lt;artifact&gt; val x$14: dotty.tools.dotc.core.Symbols.Symbol = qual$1.copy$default$5;
+        &lt;artifact&gt; val x$15: dotty.tools.dotc.util.Positions.Coord = qual$1.copy$default$6;
+        &lt;artifact&gt; val x$16: dotty.tools.io.AbstractFile = qual$1.copy$default$7;
+        qual$1.copy(x$10, x$13, x$11, x$12, x$14, x$15, x$16)
+      };
+      ctx.typeAssigner.assignType(ast.untpd.TypeDef(original.name(ctx), alias), local)(ctx)
+    }
+  }))(immutable.this.List.canBuildFrom[dotty.tools.dotc.ast.Trees.TypeDef[dotty.tools.dotc.core.Types.Type]]);
+  Reifier.this.importedTags.clear();
+  ast.tpd.Block(typeDefs, {
+  &lt;artifact&gt; val x$17: List[dotty.tools.dotc.core.Symbols.Symbol] = itags.map[dotty.tools.dotc.core.Symbols.Symbol, List[dotty.tools.dotc.core.Symbols.Symbol]](((x$5: (dotty.tools.dotc.core.Types.TypeRef, dotty.tools.dotc.ast.tpd.Tree)) =&gt; x$5._1.symbol(ctx)))(immutable.this.List.canBuildFrom[dotty.tools.dotc.core.Symbols.Symbol]);
+  &lt;artifact&gt; val x$18: List[dotty.tools.dotc.core.Symbols.Symbol] = typeDefs.map[dotty.tools.dotc.core.Symbols.Symbol, List[dotty.tools.dotc.core.Symbols.Symbol]](((x$6: dotty.tools.dotc.ast.Trees.TypeDef[dotty.tools.dotc.core.Types.Type]) =&gt; x$6.symbol(ctx)))(immutable.this.List.canBuildFrom[dotty.tools.dotc.core.Symbols.Symbol]);
+  &lt;artifact&gt; val x$19: dotty.tools.dotc.core.Types.Type =&gt; dotty.tools.dotc.core.Types.Type = ast.this.TreeTypeMap.&lt;init&gt;$default$1;
+  &lt;artifact&gt; val x$20: dotty.tools.dotc.ast.tpd.Tree =&gt; dotty.tools.dotc.ast.tpd.Tree = ast.this.TreeTypeMap.&lt;init&gt;$default$2;
+  &lt;artifact&gt; val x$21: List[dotty.tools.dotc.core.Symbols.Symbol] = ast.this.TreeTypeMap.&lt;init&gt;$default$3;
+  &lt;artifact&gt; val x$22: List[dotty.tools.dotc.core.Symbols.Symbol] = ast.this.TreeTypeMap.&lt;init&gt;$default$4;
+  new ast.TreeTypeMap(x$19, x$20, x$21, x$22, x$17, x$18)(ctx)
+}.apply[dotty.tools.dotc.ast.tpd.Tree](expr))(ctx)
+}
+        </td>
+      </tr><tr>
+        <td>
+          111
+        </td>
+        <td>
+          61980
+        </td>
+        <td>
+          4242
+          -
+          4261
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.collection.TraversableOnce.toList
+        </td>
+        <td style="background: #AEF1AE">
+          Reifier.this.importedTags.toList
+        </td>
+      </tr><tr>
+        <td>
+          112
+        </td>
+        <td>
+          61994
+        </td>
+        <td>
+          4302
+          -
+          4302
+        </td>
+        <td>
+          TypeApply
+        </td>
+        <td>
+          scala.collection.immutable.List.canBuildFrom
+        </td>
+        <td style="background: #AEF1AE">
+          immutable.this.List.canBuildFrom[dotty.tools.dotc.ast.Trees.TypeDef[dotty.tools.dotc.core.Types.Type]]
+        </td>
+      </tr><tr>
+        <td>
+          112
+        </td>
+        <td>
+          61995
+        </td>
+        <td>
+          4285
+          -
+          4764
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          scala.collection.generic.FilterMonadic.map
+        </td>
+        <td style="background: #AEF1AE">
+          itags.withFilter(((check$ifrefutable$1: (dotty.tools.dotc.core.Types.TypeRef, dotty.tools.dotc.ast.tpd.Tree)) =&gt; (check$ifrefutable$1: (dotty.tools.dotc.core.Types.TypeRef, dotty.tools.dotc.ast.tpd.Tree) @unchecked) match {
+  case (_1: dotty.tools.dotc.core.Types.TypeRef, _2: dotty.tools.dotc.ast.tpd.Tree)(dotty.tools.dotc.core.Types.TypeRef, dotty.tools.dotc.ast.tpd.Tree)((tref @ _), (tag @ _)) =&gt; true
+  case _ =&gt; false
+})).map[dotty.tools.dotc.ast.Trees.TypeDef[dotty.tools.dotc.core.Types.Type], List[dotty.tools.dotc.ast.Trees.TypeDef[dotty.tools.dotc.core.Types.Type]]](((x$4: (dotty.tools.dotc.core.Types.TypeRef, dotty.tools.dotc.ast.tpd.Tree)) =&gt; (x$4: (dotty.tools.dotc.core.Types.TypeRef, dotty.tools.dotc.ast.tpd.Tree) @unchecked) match {
+  case (_1: dotty.tools.dotc.core.Types.TypeRef, _2: dotty.tools.dotc.ast.tpd.Tree)(dotty.tools.dotc.core.Types.TypeRef, dotty.tools.dotc.ast.tpd.Tree)((tref @ _), (tag @ _)) =&gt; {
+    val rhs: dotty.tools.dotc.ast.tpd.Tree = Reifier.this.transform(ast.tpd.TreeOps[dotty.tools.dotc.ast.tpd.Tree](tag).select(dotty.tools.dotc.core.StdNames.tpnme.UNARY_~)(ctx))(ctx);
+    val alias: dotty.tools.dotc.ast.Trees.TypeBoundsTree[dotty.tools.dotc.core.Types.Type] = ctx.typeAssigner.assignType(ast.untpd.TypeBoundsTree(rhs, rhs), rhs, rhs)(ctx);
+    val original: dotty.tools.dotc.core.Symbols.TypeSymbol = tref.symbol(ctx).asType(ctx);
+    val local: dotty.tools.dotc.core.Symbols.Symbol = {
+      &lt;artifact&gt; val qual$1: dotty.tools.dotc.core.Symbols.Copier[original.ThisName] = core.Symbols.Copier[original.ThisName](original)(ctx);
+      &lt;artifact&gt; val x$10: dotty.tools.dotc.core.Symbols.Symbol = ctx.owner;
+      &lt;artifact&gt; val x$11: dotty.tools.dotc.core.Flags.FlagSet = core.Flags.Synthetic;
+      &lt;artifact&gt; val x$12: dotty.tools.dotc.core.Types.CachedTypeAlias = core.Types.TypeAlias.apply(tag.tpe.select(dotty.tools.dotc.core.StdNames.tpnme.UNARY_~)(ctx))(ctx);
+      &lt;artifact&gt; val x$13: original.ThisName = qual$1.copy$default$2;
+      &lt;artifact&gt; val x$14: dotty.tools.dotc.core.Symbols.Symbol = qual$1.copy$default$5;
+      &lt;artifact&gt; val x$15: dotty.tools.dotc.util.Positions.Coord = qual$1.copy$default$6;
+      &lt;artifact&gt; val x$16: dotty.tools.io.AbstractFile = qual$1.copy$default$7;
+      qual$1.copy(x$10, x$13, x$11, x$12, x$14, x$15, x$16)
+    };
+    ctx.typeAssigner.assignType(ast.untpd.TypeDef(original.name(ctx), alias), local)(ctx)
+  }
+}))(immutable.this.List.canBuildFrom[dotty.tools.dotc.ast.Trees.TypeDef[dotty.tools.dotc.core.Types.Type]])
+        </td>
+      </tr><tr>
+        <td>
+          113
+        </td>
+        <td>
+          61981
+        </td>
+        <td>
+          4340
+          -
+          4376
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.transform.ReifyQuotes.Reifier.transform
+        </td>
+        <td style="background: #AEF1AE">
+          Reifier.this.transform(ast.tpd.TreeOps[dotty.tools.dotc.ast.tpd.Tree](tag).select(dotty.tools.dotc.core.StdNames.tpnme.UNARY_~)(ctx))(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          114
+        </td>
+        <td>
+          61982
+        </td>
+        <td>
+          4399
+          -
+          4468
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.typer.TypeAssigner.assignType
+        </td>
+        <td style="background: #AEF1AE">
+          ctx.typeAssigner.assignType(ast.untpd.TypeBoundsTree(rhs, rhs), rhs, rhs)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          115
+        </td>
+        <td>
+          61983
+        </td>
+        <td>
+          4494
+          -
+          4512
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.Symbols.Symbol.asType
+        </td>
+        <td style="background: #AEF1AE">
+          tref.symbol(ctx).asType(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          116
+        </td>
+        <td>
+          61989
+        </td>
+        <td>
+          4544
+          -
+          4544
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Symbols.Copier.copy$default$5
+        </td>
+        <td style="background: #AEF1AE">
+          qual$1.copy$default$5
+        </td>
+      </tr><tr>
+        <td>
+          116
+        </td>
+        <td>
+          61992
+        </td>
+        <td>
+          4535
+          -
+          4672
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.core.Symbols.Copier.copy
+        </td>
+        <td style="background: #AEF1AE">
+          qual$1.copy(x$10, x$13, x$11, x$12, x$14, x$15, x$16)
+        </td>
+      </tr><tr>
+        <td>
+          116
+        </td>
+        <td>
+          61991
+        </td>
+        <td>
+          4544
+          -
+          4544
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Symbols.Copier.copy$default$7
+        </td>
+        <td style="background: #AEF1AE">
+          qual$1.copy$default$7
+        </td>
+      </tr><tr>
+        <td>
+          116
+        </td>
+        <td>
+          61988
+        </td>
+        <td>
+          4544
+          -
+          4544
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Symbols.Copier.copy$default$2
+        </td>
+        <td style="background: #AEF1AE">
+          qual$1.copy$default$2
+        </td>
+      </tr><tr>
+        <td>
+          116
+        </td>
+        <td>
+          61990
+        </td>
+        <td>
+          4544
+          -
+          4544
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Symbols.Copier.copy$default$6
+        </td>
+        <td style="background: #AEF1AE">
+          qual$1.copy$default$6
+        </td>
+      </tr><tr>
+        <td>
+          116
+        </td>
+        <td>
+          61984
+        </td>
+        <td>
+          4535
+          -
+          4543
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.Symbols.Copier
+        </td>
+        <td style="background: #AEF1AE">
+          core.Symbols.Copier[original.ThisName](original)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          117
+        </td>
+        <td>
+          61985
+        </td>
+        <td>
+          4570
+          -
+          4579
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Contexts.Context.owner
+        </td>
+        <td style="background: #AEF1AE">
+          ctx.owner
+        </td>
+      </tr><tr>
+        <td>
+          118
+        </td>
+        <td>
+          61986
+        </td>
+        <td>
+          4601
+          -
+          4610
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Flags.Synthetic
+        </td>
+        <td style="background: #AEF1AE">
+          core.Flags.Synthetic
+        </td>
+      </tr><tr>
+        <td>
+          119
+        </td>
+        <td>
+          61987
+        </td>
+        <td>
+          4631
+          -
+          4671
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.Types.TypeAlias.apply
+        </td>
+        <td style="background: #AEF1AE">
+          core.Types.TypeAlias.apply(tag.tpe.select(dotty.tools.dotc.core.StdNames.tpnme.UNARY_~)(ctx))(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          120
+        </td>
+        <td>
+          61993
+        </td>
+        <td>
+          4683
+          -
+          4754
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.typer.TypeAssigner.assignType
+        </td>
+        <td style="background: #AEF1AE">
+          ctx.typeAssigner.assignType(ast.untpd.TypeDef(original.name(ctx), alias), local)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          122
+        </td>
+        <td>
+          61996
+        </td>
+        <td>
+          4773
+          -
+          4793
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.mutable.LinkedHashMap.clear
+        </td>
+        <td style="background: #AEF1AE">
+          Reifier.this.importedTags.clear()
+        </td>
+      </tr><tr>
+        <td>
+          123
+        </td>
+        <td>
+          61997
+        </td>
+        <td>
+          4802
+          -
+          4939
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.tpd.Block
+        </td>
+        <td style="background: #AEF1AE">
+          ast.tpd.Block(typeDefs, {
+  &lt;artifact&gt; val x$17: List[dotty.tools.dotc.core.Symbols.Symbol] = itags.map[dotty.tools.dotc.core.Symbols.Symbol, List[dotty.tools.dotc.core.Symbols.Symbol]](((x$5: (dotty.tools.dotc.core.Types.TypeRef, dotty.tools.dotc.ast.tpd.Tree)) =&gt; x$5._1.symbol(ctx)))(immutable.this.List.canBuildFrom[dotty.tools.dotc.core.Symbols.Symbol]);
+  &lt;artifact&gt; val x$18: List[dotty.tools.dotc.core.Symbols.Symbol] = typeDefs.map[dotty.tools.dotc.core.Symbols.Symbol, List[dotty.tools.dotc.core.Symbols.Symbol]](((x$6: dotty.tools.dotc.ast.Trees.TypeDef[dotty.tools.dotc.core.Types.Type]) =&gt; x$6.symbol(ctx)))(immutable.this.List.canBuildFrom[dotty.tools.dotc.core.Symbols.Symbol]);
+  &lt;artifact&gt; val x$19: dotty.tools.dotc.core.Types.Type =&gt; dotty.tools.dotc.core.Types.Type = ast.this.TreeTypeMap.&lt;init&gt;$default$1;
+  &lt;artifact&gt; val x$20: dotty.tools.dotc.ast.tpd.Tree =&gt; dotty.tools.dotc.ast.tpd.Tree = ast.this.TreeTypeMap.&lt;init&gt;$default$2;
+  &lt;artifact&gt; val x$21: List[dotty.tools.dotc.core.Symbols.Symbol] = ast.this.TreeTypeMap.&lt;init&gt;$default$3;
+  &lt;artifact&gt; val x$22: List[dotty.tools.dotc.core.Symbols.Symbol] = ast.this.TreeTypeMap.&lt;init&gt;$default$4;
+  new ast.TreeTypeMap(x$19, x$20, x$21, x$22, x$17, x$18)(ctx)
+}.apply[dotty.tools.dotc.ast.tpd.Tree](expr))(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          131
+        </td>
+        <td>
+          61999
+        </td>
+        <td>
+          5136
+          -
+          5147
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Trees.Tree.symbol
+        </td>
+        <td style="background: #AEF1AE">
+          tree.symbol(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          132
+        </td>
+        <td>
+          62007
+        </td>
+        <td>
+          5227
+          -
+          5312
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          {
+  Reifier.this.levels.levelOf.update(sym, Reifier.this.level);
+  Reifier.this.levels.enteredSyms_=({
+    &lt;synthetic&gt; &lt;artifact&gt; val x$7: dotty.tools.dotc.core.Symbols.Symbol = sym;
+    Reifier.this.levels.enteredSyms.::[dotty.tools.dotc.core.Symbols.Symbol](x$7)
+  })
+}
+        </td>
+      </tr><tr>
+        <td>
+          132
+        </td>
+        <td>
+          62000
+        </td>
+        <td>
+          5176
+          -
+          5198
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.Boolean.unary_!
+        </td>
+        <td style="background: #AEF1AE">
+          core.Symbols.toDenot(sym)(ctx).maybeOwner.isType(ctx).unary_!
+        </td>
+      </tr><tr>
+        <td>
+          132
+        </td>
+        <td>
+          62009
+        </td>
+        <td>
+          5156
+          -
+          5156
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          ()
+        </td>
+      </tr><tr>
+        <td>
+          132
+        </td>
+        <td>
+          62008
+        </td>
+        <td>
+          5156
+          -
+          5156
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          ()
+        </td>
+      </tr><tr>
+        <td>
+          132
+        </td>
+        <td>
+          62002
+        </td>
+        <td>
+          5160
+          -
+          5225
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Boolean.&amp;&amp;
+        </td>
+        <td style="background: #AEF1AE">
+          sym.isClass.||(core.Symbols.toDenot(sym)(ctx).maybeOwner.isType(ctx).unary_!).&amp;&amp;(Reifier.this.levels.levelOf.contains(sym).unary_!)
+        </td>
+      </tr><tr>
+        <td>
+          132
+        </td>
+        <td>
+          62001
+        </td>
+        <td>
+          5203
+          -
+          5225
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.Boolean.unary_!
+        </td>
+        <td style="background: #AEF1AE">
+          Reifier.this.levels.levelOf.contains(sym).unary_!
+        </td>
+      </tr><tr>
+        <td>
+          133
+        </td>
+        <td>
+          62003
+        </td>
+        <td>
+          5254
+          -
+          5259
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.transform.ReifyQuotes.Reifier.level
+        </td>
+        <td style="background: #AEF1AE">
+          Reifier.this.level
+        </td>
+      </tr><tr>
+        <td>
+          133
+        </td>
+        <td>
+          62004
+        </td>
+        <td>
+          5239
+          -
+          5259
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.mutable.HashMap.update
+        </td>
+        <td style="background: #AEF1AE">
+          Reifier.this.levels.levelOf.update(sym, Reifier.this.level)
+        </td>
+      </tr><tr>
+        <td>
+          134
+        </td>
+        <td>
+          62006
+        </td>
+        <td>
+          5270
+          -
+          5302
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.transform.ReifyQuotes.LevelInfo.enteredSyms_=
+        </td>
+        <td style="background: #AEF1AE">
+          Reifier.this.levels.enteredSyms_=({
+  &lt;synthetic&gt; &lt;artifact&gt; val x$7: dotty.tools.dotc.core.Symbols.Symbol = sym;
+  Reifier.this.levels.enteredSyms.::[dotty.tools.dotc.core.Symbols.Symbol](x$7)
+})
+        </td>
+      </tr><tr>
+        <td>
+          134
+        </td>
+        <td>
+          62005
+        </td>
+        <td>
+          5288
+          -
+          5302
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.immutable.List.::
+        </td>
+        <td style="background: #AEF1AE">
+          Reifier.this.levels.enteredSyms.::[dotty.tools.dotc.core.Symbols.Symbol](x$7)
+        </td>
+      </tr><tr>
+        <td>
+          136
+        </td>
+        <td>
+          62010
+        </td>
+        <td>
+          5326
+          -
+          5328
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          ()
+        </td>
+      </tr><tr>
+        <td>
+          144
+        </td>
+        <td>
+          62011
+        </td>
+        <td>
+          5718
+          -
+          5734
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.mutable.HashMap.get
+        </td>
+        <td style="background: #AEF1AE">
+          Reifier.this.levels.levelOf.get(sym)
+        </td>
+      </tr><tr>
+        <td>
+          146
+        </td>
+        <td>
+          62012
+        </td>
+        <td>
+          5778
+          -
+          5783
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.transform.ReifyQuotes.Reifier.level
+        </td>
+        <td style="background: #AEF1AE">
+          Reifier.this.level
+        </td>
+      </tr><tr>
+        <td>
+          146
+        </td>
+        <td>
+          62020
+        </td>
+        <td>
+          5773
+          -
+          5874
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Boolean.||
+        </td>
+        <td style="background: #AEF1AE">
+          l.==(Reifier.this.level).||(core.Symbols.toDenot(sym)(ctx).is(core.Flags.Inline)(ctx).&amp;&amp;(core.Symbols.toDenot(core.Symbols.toDenot(sym)(ctx).owner)(ctx).is(core.Flags.Macro)(ctx)).&amp;&amp;(core.Symbols.toDenot(sym)(ctx).info(ctx).isValueType).&amp;&amp;(l.-(1).==(Reifier.this.level)))
+        </td>
+      </tr><tr>
+        <td>
+          147
+        </td>
+        <td>
+          62016
+        </td>
+        <td>
+          5864
+          -
+          5865
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          1
+        </td>
+      </tr><tr>
+        <td>
+          147
+        </td>
+        <td>
+          62018
+        </td>
+        <td>
+          5860
+          -
+          5874
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Int.==
+        </td>
+        <td style="background: #AEF1AE">
+          l.-(1).==(Reifier.this.level)
+        </td>
+      </tr><tr>
+        <td>
+          147
+        </td>
+        <td>
+          62015
+        </td>
+        <td>
+          5836
+          -
+          5856
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Types.Type.isValueType
+        </td>
+        <td style="background: #AEF1AE">
+          core.Symbols.toDenot(sym)(ctx).info(ctx).isValueType
+        </td>
+      </tr><tr>
+        <td>
+          147
+        </td>
+        <td>
+          62014
+        </td>
+        <td>
+          5813
+          -
+          5832
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.SymDenotations.SymDenotation.is
+        </td>
+        <td style="background: #AEF1AE">
+          core.Symbols.toDenot(core.Symbols.toDenot(sym)(ctx).owner)(ctx).is(core.Flags.Macro)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          147
+        </td>
+        <td>
+          62017
+        </td>
+        <td>
+          5869
+          -
+          5874
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.transform.ReifyQuotes.Reifier.level
+        </td>
+        <td style="background: #AEF1AE">
+          Reifier.this.level
+        </td>
+      </tr><tr>
+        <td>
+          147
+        </td>
+        <td>
+          62019
+        </td>
+        <td>
+          5795
+          -
+          5874
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Boolean.&amp;&amp;
+        </td>
+        <td style="background: #AEF1AE">
+          core.Symbols.toDenot(sym)(ctx).is(core.Flags.Inline)(ctx).&amp;&amp;(core.Symbols.toDenot(core.Symbols.toDenot(sym)(ctx).owner)(ctx).is(core.Flags.Macro)(ctx)).&amp;&amp;(core.Symbols.toDenot(sym)(ctx).info(ctx).isValueType).&amp;&amp;(l.-(1).==(Reifier.this.level))
+        </td>
+      </tr><tr>
+        <td>
+          147
+        </td>
+        <td>
+          62013
+        </td>
+        <td>
+          5802
+          -
+          5808
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Flags.Inline
+        </td>
+        <td style="background: #AEF1AE">
+          core.Flags.Inline
+        </td>
+      </tr><tr>
+        <td>
+          149
+        </td>
+        <td>
+          62021
+        </td>
+        <td>
+          5902
+          -
+          5906
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          true
+        </td>
+      </tr><tr>
+        <td>
+          154
+        </td>
+        <td>
+          62025
+        </td>
+        <td>
+          6081
+          -
+          6121
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.reporting.Reporting.error
+        </td>
+        <td style="background: #AEF1AE">
+          ctx.error(diagnostic.this.Message.toNoExplanation(core.Decorators.StringInterpolators(scala.StringContext.apply(&quot;splice outside quotes&quot;)).i()(ctx)), core.Decorators.sourcePos(pos)(ctx))
+        </td>
+      </tr><tr>
+        <td>
+          154
+        </td>
+        <td>
+          62024
+        </td>
+        <td>
+          6117
+          -
+          6120
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.Decorators.sourcePos
+        </td>
+        <td style="background: #AEF1AE">
+          core.Decorators.sourcePos(pos)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          154
+        </td>
+        <td>
+          62023
+        </td>
+        <td>
+          6091
+          -
+          6115
+        </td>
+        <td>
+          ApplyImplicitView
+        </td>
+        <td>
+          dotty.tools.dotc.reporting.diagnostic.Message.toNoExplanation
+        </td>
+        <td style="background: #AEF1AE">
+          diagnostic.this.Message.toNoExplanation(core.Decorators.StringInterpolators(scala.StringContext.apply(&quot;splice outside quotes&quot;)).i()(ctx))
+        </td>
+      </tr><tr>
+        <td>
+          154
+        </td>
+        <td>
+          62022
+        </td>
+        <td>
+          6091
+          -
+          6115
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.Decorators.StringInterpolators.i
+        </td>
+        <td style="background: #AEF1AE">
+          core.Decorators.StringInterpolators(scala.StringContext.apply(&quot;splice outside quotes&quot;)).i()(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          163
+        </td>
+        <td>
+          62026
+        </td>
+        <td>
+          6570
+          -
+          6603
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.TypeApplications.appliedTo
+        </td>
+        <td style="background: #AEF1AE">
+          core.Types.decorateTypeApplications(core.Symbols.defn(ctx).QuotedTypeType).appliedTo(tp)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          164
+        </td>
+        <td>
+          62027
+        </td>
+        <td>
+          6622
+          -
+          6662
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.typer.Implicits.inferImplicitArg
+        </td>
+        <td style="background: #AEF1AE">
+          ctx.typer.inferImplicitArg(reqType, pos)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          165
+        </td>
+        <td>
+          62028
+        </td>
+        <td>
+          6671
+          -
+          6678
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Trees.Tree.tpe
+        </td>
+        <td style="background: #AEF1AE">
+          tag.tpe
+        </td>
+      </tr><tr>
+        <td>
+          167
+        </td>
+        <td>
+          62030
+        </td>
+        <td>
+          6741
+          -
+          6923
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Some.apply
+        </td>
+        <td style="background: #AEF1AE">
+          scala.Some.apply[String](core.Decorators.StringInterpolators(scala.StringContext.apply(&quot;\n                    |\n                    | The access would be accepted with the right type tag, but\n                    | &quot;, &quot;&quot;)).i(ctx.typer.missingArgMsg(tag, reqType, &quot;&quot;)(ctx))(ctx))
+        </td>
+      </tr><tr>
+        <td>
+          167
+        </td>
+        <td>
+          62029
+        </td>
+        <td>
+          6746
+          -
+          6922
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.Decorators.StringInterpolators.i
+        </td>
+        <td style="background: #AEF1AE">
+          core.Decorators.StringInterpolators(scala.StringContext.apply(&quot;\n                    |\n                    | The access would be accepted with the right type tag, but\n                    | &quot;, &quot;&quot;)).i(ctx.typer.missingArgMsg(tag, reqType, &quot;&quot;)(ctx))(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          172
+        </td>
+        <td>
+          62032
+        </td>
+        <td>
+          6956
+          -
+          7013
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.mutable.MapLike.update
+        </td>
+        <td style="background: #AEF1AE">
+          Reifier.this.importedTags.update(tp, Reifier.this.nested(false).transform(tag)(ctx))
+        </td>
+      </tr><tr>
+        <td>
+          172
+        </td>
+        <td>
+          62031
+        </td>
+        <td>
+          6975
+          -
+          7013
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.transform.ReifyQuotes.Reifier.transform
+        </td>
+        <td style="background: #AEF1AE">
+          Reifier.this.nested(false).transform(tag)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          173
+        </td>
+        <td>
+          62033
+        </td>
+        <td>
+          7026
+          -
+          7030
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.None
+        </td>
+        <td style="background: #AEF1AE">
+          scala.None
+        </td>
+      </tr><tr>
+        <td>
+          176
+        </td>
+        <td>
+          62034
+        </td>
+        <td>
+          7065
+          -
+          7073
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Some.apply
+        </td>
+        <td style="background: #AEF1AE">
+          scala.Some.apply[String](&quot;&quot;)
+        </td>
+      </tr><tr>
+        <td>
+          183
+        </td>
+        <td>
+          62035
+        </td>
+        <td>
+          7319
+          -
+          7344
+        </td>
+        <td>
+          TypeApply
+        </td>
+        <td>
+          scala.Any.isInstanceOf
+        </td>
+        <td style="background: #AEF1AE">
+          tp.isInstanceOf[dotty.tools.dotc.core.Types.ThisType]
+        </td>
+      </tr><tr>
+        <td>
+          185
+        </td>
+        <td>
+          62036
+        </td>
+        <td>
+          7376
+          -
+          7383
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.Boolean.unary_!
+        </td>
+        <td style="background: #AEF1AE">
+          isThis.unary_!
+        </td>
+      </tr><tr>
+        <td>
+          185
+        </td>
+        <td>
+          62038
+        </td>
+        <td>
+          7385
+          -
+          7393
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          dotty.tools.dotc.printing.Showable.show
+        </td>
+        <td style="background: #AEF1AE">
+          sym.show(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          185
+        </td>
+        <td>
+          62037
+        </td>
+        <td>
+          7385
+          -
+          7393
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.printing.Showable.show
+        </td>
+        <td style="background: #AEF1AE">
+          sym.show(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          186
+        </td>
+        <td>
+          62039
+        </td>
+        <td>
+          7411
+          -
+          7430
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.SymDenotations.SymDenotation.is
+        </td>
+        <td style="background: #AEF1AE">
+          core.Symbols.toDenot(sym)(ctx).is(core.Flags.ModuleClass)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          186
+        </td>
+        <td>
+          62041
+        </td>
+        <td>
+          7432
+          -
+          7453
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          dotty.tools.dotc.printing.Showable.show
+        </td>
+        <td style="background: #F0ADAD">
+          core.Symbols.toDenot(sym)(ctx).sourceModule(ctx).show(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          186
+        </td>
+        <td>
+          62044
+        </td>
+        <td>
+          7407
+          -
+          7486
+        </td>
+        <td>
+          If
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          if (core.Symbols.toDenot(sym)(ctx).is(core.Flags.ModuleClass)(ctx))
+  core.Symbols.toDenot(sym)(ctx).sourceModule(ctx).show(ctx)
+else
+  core.Decorators.StringInterpolators(scala.StringContext.apply(&quot;&quot;, &quot;.this&quot;)).i(sym.name(ctx))(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          186
+        </td>
+        <td>
+          62040
+        </td>
+        <td>
+          7432
+          -
+          7453
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.printing.Showable.show
+        </td>
+        <td style="background: #F0ADAD">
+          core.Symbols.toDenot(sym)(ctx).sourceModule(ctx).show(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          187
+        </td>
+        <td>
+          62043
+        </td>
+        <td>
+          7467
+          -
+          7486
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          dotty.tools.dotc.core.Decorators.StringInterpolators.i
+        </td>
+        <td style="background: #AEF1AE">
+          core.Decorators.StringInterpolators(scala.StringContext.apply(&quot;&quot;, &quot;.this&quot;)).i(sym.name(ctx))(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          187
+        </td>
+        <td>
+          62042
+        </td>
+        <td>
+          7467
+          -
+          7486
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.Decorators.StringInterpolators.i
+        </td>
+        <td style="background: #AEF1AE">
+          core.Decorators.StringInterpolators(scala.StringContext.apply(&quot;&quot;, &quot;.this&quot;)).i(sym.name(ctx))(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          188
+        </td>
+        <td>
+          62045
+        </td>
+        <td>
+          7508
+          -
+          7529
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.Symbols.Symbol.isType
+        </td>
+        <td style="background: #AEF1AE">
+          core.Symbols.toDenot(sym)(ctx).maybeOwner.isType(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          188
+        </td>
+        <td>
+          62046
+        </td>
+        <td>
+          7497
+          -
+          7529
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Boolean.&amp;&amp;
+        </td>
+        <td style="background: #AEF1AE">
+          isThis.unary_!.&amp;&amp;(core.Symbols.toDenot(sym)(ctx).maybeOwner.isType(ctx))
+        </td>
+      </tr><tr>
+        <td>
+          189
+        </td>
+        <td>
+          62048
+        </td>
+        <td>
+          7539
+          -
+          7580
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          dotty.tools.dotc.transform.ReifyQuotes.Reifier.check
+        </td>
+        <td style="background: #AEF1AE">
+          Reifier.this.check(core.Symbols.toDenot(sym)(ctx).owner, core.Symbols.toDenot(core.Symbols.toDenot(sym)(ctx).owner)(ctx).thisType(ctx), pos)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          189
+        </td>
+        <td>
+          62047
+        </td>
+        <td>
+          7539
+          -
+          7580
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.transform.ReifyQuotes.Reifier.check
+        </td>
+        <td style="background: #AEF1AE">
+          Reifier.this.check(core.Symbols.toDenot(sym)(ctx).owner, core.Symbols.toDenot(core.Symbols.toDenot(sym)(ctx).owner)(ctx).thisType(ctx), pos)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          190
+        </td>
+        <td>
+          62051
+        </td>
+        <td>
+          7596
+          -
+          7645
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Boolean.&amp;&amp;
+        </td>
+        <td style="background: #AEF1AE">
+          core.Symbols.toDenot(sym)(ctx).exists.&amp;&amp;(core.Symbols.toDenot(sym)(ctx).isStaticOwner(ctx).unary_!).&amp;&amp;(Reifier.this.levelOK(sym)(ctx).unary_!)
+        </td>
+      </tr><tr>
+        <td>
+          190
+        </td>
+        <td>
+          62060
+        </td>
+        <td>
+          7592
+          -
+          7907
+        </td>
+        <td>
+          If
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          if (core.Symbols.toDenot(sym)(ctx).exists.&amp;&amp;(core.Symbols.toDenot(sym)(ctx).isStaticOwner(ctx).unary_!).&amp;&amp;(Reifier.this.levelOK(sym)(ctx).unary_!))
+  Reifier.this.tryHeal(tp, pos)(ctx).foreach[Unit](((errMsg: String) =&gt; ctx.error(diagnostic.this.Message.toNoExplanation(core.Decorators.StringInterpolators(scala.StringContext.apply(&quot;access to &quot;, &quot; from wrong staging level:\n                        | - the definition is at level &quot;, &quot;,\n                        | - but the access is at level &quot;, &quot;.&quot;, &quot;&quot;)).em(symStr, Reifier.this.levels.levelOf.apply(sym), Reifier.this.level, errMsg)(ctx)), core.Decorators.sourcePos(pos)(ctx))))
+else
+  ()
+        </td>
+      </tr><tr>
+        <td>
+          190
+        </td>
+        <td>
+          62059
+        </td>
+        <td>
+          7592
+          -
+          7592
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          ()
+        </td>
+      </tr><tr>
+        <td>
+          190
+        </td>
+        <td>
+          62050
+        </td>
+        <td>
+          7632
+          -
+          7645
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.Boolean.unary_!
+        </td>
+        <td style="background: #AEF1AE">
+          Reifier.this.levelOK(sym)(ctx).unary_!
+        </td>
+      </tr><tr>
+        <td>
+          190
+        </td>
+        <td>
+          62058
+        </td>
+        <td>
+          7592
+          -
+          7592
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          ()
+        </td>
+      </tr><tr>
+        <td>
+          190
+        </td>
+        <td>
+          62049
+        </td>
+        <td>
+          7610
+          -
+          7628
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.Boolean.unary_!
+        </td>
+        <td style="background: #AEF1AE">
+          core.Symbols.toDenot(sym)(ctx).isStaticOwner(ctx).unary_!
+        </td>
+      </tr><tr>
+        <td>
+          191
+        </td>
+        <td>
+          62057
+        </td>
+        <td>
+          7655
+          -
+          7907
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          scala.Option.foreach
+        </td>
+        <td style="background: #AEF1AE">
+          Reifier.this.tryHeal(tp, pos)(ctx).foreach[Unit](((errMsg: String) =&gt; ctx.error(diagnostic.this.Message.toNoExplanation(core.Decorators.StringInterpolators(scala.StringContext.apply(&quot;access to &quot;, &quot; from wrong staging level:\n                        | - the definition is at level &quot;, &quot;,\n                        | - but the access is at level &quot;, &quot;.&quot;, &quot;&quot;)).em(symStr, Reifier.this.levels.levelOf.apply(sym), Reifier.this.level, errMsg)(ctx)), core.Decorators.sourcePos(pos)(ctx))))
+        </td>
+      </tr><tr>
+        <td>
+          191
+        </td>
+        <td>
+          62056
+        </td>
+        <td>
+          7655
+          -
+          7907
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Option.foreach
+        </td>
+        <td style="background: #AEF1AE">
+          Reifier.this.tryHeal(tp, pos)(ctx).foreach[Unit](((errMsg: String) =&gt; ctx.error(diagnostic.this.Message.toNoExplanation(core.Decorators.StringInterpolators(scala.StringContext.apply(&quot;access to &quot;, &quot; from wrong staging level:\n                        | - the definition is at level &quot;, &quot;,\n                        | - but the access is at level &quot;, &quot;.&quot;, &quot;&quot;)).em(symStr, Reifier.this.levels.levelOf.apply(sym), Reifier.this.level, errMsg)(ctx)), core.Decorators.sourcePos(pos)(ctx))))
+        </td>
+      </tr><tr>
+        <td>
+          192
+        </td>
+        <td>
+          62052
+        </td>
+        <td>
+          7708
+          -
+          7901
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.Decorators.StringInterpolators.em
+        </td>
+        <td style="background: #AEF1AE">
+          core.Decorators.StringInterpolators(scala.StringContext.apply(&quot;access to &quot;, &quot; from wrong staging level:\n                        | - the definition is at level &quot;, &quot;,\n                        | - but the access is at level &quot;, &quot;.&quot;, &quot;&quot;)).em(symStr, Reifier.this.levels.levelOf.apply(sym), Reifier.this.level, errMsg)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          192
+        </td>
+        <td>
+          62053
+        </td>
+        <td>
+          7708
+          -
+          7901
+        </td>
+        <td>
+          ApplyImplicitView
+        </td>
+        <td>
+          dotty.tools.dotc.reporting.diagnostic.Message.toNoExplanation
+        </td>
+        <td style="background: #AEF1AE">
+          diagnostic.this.Message.toNoExplanation(core.Decorators.StringInterpolators(scala.StringContext.apply(&quot;access to &quot;, &quot; from wrong staging level:\n                        | - the definition is at level &quot;, &quot;,\n                        | - but the access is at level &quot;, &quot;.&quot;, &quot;&quot;)).em(symStr, Reifier.this.levels.levelOf.apply(sym), Reifier.this.level, errMsg)(ctx))
+        </td>
+      </tr><tr>
+        <td>
+          192
+        </td>
+        <td>
+          62055
+        </td>
+        <td>
+          7698
+          -
+          7907
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.reporting.Reporting.error
+        </td>
+        <td style="background: #AEF1AE">
+          ctx.error(diagnostic.this.Message.toNoExplanation(core.Decorators.StringInterpolators(scala.StringContext.apply(&quot;access to &quot;, &quot; from wrong staging level:\n                        | - the definition is at level &quot;, &quot;,\n                        | - but the access is at level &quot;, &quot;.&quot;, &quot;&quot;)).em(symStr, Reifier.this.levels.levelOf.apply(sym), Reifier.this.level, errMsg)(ctx)), core.Decorators.sourcePos(pos)(ctx))
+        </td>
+      </tr><tr>
+        <td>
+          194
+        </td>
+        <td>
+          62054
+        </td>
+        <td>
+          7903
+          -
+          7906
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.Decorators.sourcePos
+        </td>
+        <td style="background: #AEF1AE">
+          core.Decorators.sourcePos(pos)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          198
+        </td>
+        <td>
+          62093
+        </td>
+        <td>
+          8083
+          -
+          8086
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.transform.ReifyQuotes.Reifier.$anon.&lt;init&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          new $anon()
+        </td>
+      </tr><tr>
+        <td>
+          199
+        </td>
+        <td>
+          62090
+        </td>
+        <td>
+          8207
+          -
+          8207
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Types.TypeAccumulator.ctx
+        </td>
+        <td style="background: #AEF1AE">
+          $anon.this.ctx
+        </td>
+      </tr><tr>
+        <td>
+          199
+        </td>
+        <td>
+          62063
+        </td>
+        <td>
+          8172
+          -
+          8172
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Types.TypeAccumulator.ctx
+        </td>
+        <td style="background: #F0ADAD">
+          $anon.this.ctx
+        </td>
+      </tr><tr>
+        <td>
+          199
+        </td>
+        <td>
+          62092
+        </td>
+        <td>
+          8207
+          -
+          8207
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          ()
+        </td>
+      </tr><tr>
+        <td>
+          199
+        </td>
+        <td>
+          62062
+        </td>
+        <td>
+          8199
+          -
+          8204
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.transform.ReifyQuotes.Reifier.level
+        </td>
+        <td style="background: #F0ADAD">
+          Reifier.this.level
+        </td>
+      </tr><tr>
+        <td>
+          199
+        </td>
+        <td>
+          62061
+        </td>
+        <td>
+          8172
+          -
+          8205
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.StringContext.apply
+        </td>
+        <td style="background: #F0ADAD">
+          scala.StringContext.apply(&quot;check type level &quot;, &quot; at &quot;, &quot;&quot;)
+        </td>
+      </tr><tr>
+        <td>
+          199
+        </td>
+        <td>
+          62064
+        </td>
+        <td>
+          8172
+          -
+          8205
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.Decorators.StringInterpolators.i
+        </td>
+        <td style="background: #F0ADAD">
+          core.Decorators.StringInterpolators(scala.StringContext.apply(&quot;check type level &quot;, &quot; at &quot;, &quot;&quot;)).i(tp, Reifier.this.level)($anon.this.ctx)
+        </td>
+      </tr><tr>
+        <td>
+          199
+        </td>
+        <td>
+          62091
+        </td>
+        <td>
+          8156
+          -
+          8713
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.reporting.trace.apply
+        </td>
+        <td style="background: #AEF1AE">
+          reporting.trace.apply[Any](core.Decorators.StringInterpolators(scala.StringContext.apply(&quot;check type level &quot;, &quot; at &quot;, &quot;&quot;)).i(tp, Reifier.this.level)($anon.this.ctx))(tp match {
+  case (tp @ (_: dotty.tools.dotc.core.Types.NamedType)) if SymUtils.decorateSymbol(tp.symbol($anon.this.ctx)).isSplice($anon.this.ctx) =&gt; if (Reifier.this.inQuote)
+    Reifier.this.outer.checkType(pos)($anon.this.ctx).foldOver(acc, tp)
+  else
+    {
+      if (tp.isTerm)
+        Reifier.this.spliceOutsideQuotes(pos)($anon.this.ctx)
+      else
+        ();
+      tp
+    }
+  case (tp @ (_: dotty.tools.dotc.core.Types.NamedType)) =&gt; {
+    Reifier.this.check(tp.symbol($anon.this.ctx), tp, pos)($anon.this.ctx);
+    $anon.this.foldOver(acc, tp)
+  }
+  case (tp @ (_: dotty.tools.dotc.core.Types.ThisType)) =&gt; {
+    Reifier.this.check(tp.cls($anon.this.ctx), tp, pos)($anon.this.ctx);
+    $anon.this.foldOver(acc, tp)
+  }
+  case _ =&gt; $anon.this.foldOver(acc, tp)
+})($anon.this.ctx)
+        </td>
+      </tr><tr>
+        <td>
+          201
+        </td>
+        <td>
+          62066
+        </td>
+        <td>
+          8260
+          -
+          8269
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.Types.NamedType.symbol
+        </td>
+        <td style="background: #AEF1AE">
+          tp.symbol($anon.this.ctx)
+        </td>
+      </tr><tr>
+        <td>
+          201
+        </td>
+        <td>
+          62065
+        </td>
+        <td>
+          8263
+          -
+          8263
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Types.TypeAccumulator.ctx
+        </td>
+        <td style="background: #AEF1AE">
+          $anon.this.ctx
+        </td>
+      </tr><tr>
+        <td>
+          201
+        </td>
+        <td>
+          62068
+        </td>
+        <td>
+          8260
+          -
+          8278
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.transform.SymUtils.isSplice
+        </td>
+        <td style="background: #AEF1AE">
+          SymUtils.decorateSymbol(tp.symbol($anon.this.ctx)).isSplice($anon.this.ctx)
+        </td>
+      </tr><tr>
+        <td>
+          201
+        </td>
+        <td>
+          62067
+        </td>
+        <td>
+          8270
+          -
+          8270
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Types.TypeAccumulator.ctx
+        </td>
+        <td style="background: #AEF1AE">
+          $anon.this.ctx
+        </td>
+      </tr><tr>
+        <td>
+          202
+        </td>
+        <td>
+          62069
+        </td>
+        <td>
+          8298
+          -
+          8305
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.transform.ReifyQuotes.Reifier.inQuote
+        </td>
+        <td style="background: #F0ADAD">
+          Reifier.this.inQuote
+        </td>
+      </tr><tr>
+        <td>
+          202
+        </td>
+        <td>
+          62071
+        </td>
+        <td>
+          8307
+          -
+          8345
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          dotty.tools.dotc.core.Types.TypeAccumulator.foldOver
+        </td>
+        <td style="background: #F0ADAD">
+          Reifier.this.outer.checkType(pos)($anon.this.ctx).foldOver(acc, tp)
+        </td>
+      </tr><tr>
+        <td>
+          202
+        </td>
+        <td>
+          62070
+        </td>
+        <td>
+          8307
+          -
+          8345
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.core.Types.TypeAccumulator.foldOver
+        </td>
+        <td style="background: #F0ADAD">
+          Reifier.this.outer.checkType(pos)($anon.this.ctx).foldOver(acc, tp)
+        </td>
+      </tr><tr>
+        <td>
+          203
+        </td>
+        <td>
+          62078
+        </td>
+        <td>
+          8363
+          -
+          8449
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          {
+  if (tp.isTerm)
+    Reifier.this.spliceOutsideQuotes(pos)($anon.this.ctx)
+  else
+    ();
+  tp
+}
+        </td>
+      </tr><tr>
+        <td>
+          204
+        </td>
+        <td>
+          62072
+        </td>
+        <td>
+          8383
+          -
+          8392
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Types.NamedType.isTerm
+        </td>
+        <td style="background: #F0ADAD">
+          tp.isTerm
+        </td>
+      </tr><tr>
+        <td>
+          204
+        </td>
+        <td>
+          62075
+        </td>
+        <td>
+          8394
+          -
+          8418
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          dotty.tools.dotc.transform.ReifyQuotes.Reifier.spliceOutsideQuotes
+        </td>
+        <td style="background: #F0ADAD">
+          Reifier.this.spliceOutsideQuotes(pos)($anon.this.ctx)
+        </td>
+      </tr><tr>
+        <td>
+          204
+        </td>
+        <td>
+          62074
+        </td>
+        <td>
+          8394
+          -
+          8418
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.transform.ReifyQuotes.Reifier.spliceOutsideQuotes
+        </td>
+        <td style="background: #F0ADAD">
+          Reifier.this.spliceOutsideQuotes(pos)($anon.this.ctx)
+        </td>
+      </tr><tr>
+        <td>
+          204
+        </td>
+        <td>
+          62077
+        </td>
+        <td>
+          8379
+          -
+          8379
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          ()
+        </td>
+      </tr><tr>
+        <td>
+          204
+        </td>
+        <td>
+          62073
+        </td>
+        <td>
+          8413
+          -
+          8413
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Types.TypeAccumulator.ctx
+        </td>
+        <td style="background: #F0ADAD">
+          $anon.this.ctx
+        </td>
+      </tr><tr>
+        <td>
+          204
+        </td>
+        <td>
+          62076
+        </td>
+        <td>
+          8379
+          -
+          8379
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          ()
+        </td>
+      </tr><tr>
+        <td>
+          208
+        </td>
+        <td>
+          62081
+        </td>
+        <td>
+          8499
+          -
+          8499
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Types.TypeAccumulator.ctx
+        </td>
+        <td style="background: #AEF1AE">
+          $anon.this.ctx
+        </td>
+      </tr><tr>
+        <td>
+          208
+        </td>
+        <td>
+          62080
+        </td>
+        <td>
+          8500
+          -
+          8509
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.Types.NamedType.symbol
+        </td>
+        <td style="background: #AEF1AE">
+          tp.symbol($anon.this.ctx)
+        </td>
+      </tr><tr>
+        <td>
+          208
+        </td>
+        <td>
+          62079
+        </td>
+        <td>
+          8503
+          -
+          8503
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Types.TypeAccumulator.ctx
+        </td>
+        <td style="background: #AEF1AE">
+          $anon.this.ctx
+        </td>
+      </tr><tr>
+        <td>
+          208
+        </td>
+        <td>
+          62082
+        </td>
+        <td>
+          8494
+          -
+          8519
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.transform.ReifyQuotes.Reifier.check
+        </td>
+        <td style="background: #AEF1AE">
+          Reifier.this.check(tp.symbol($anon.this.ctx), tp, pos)($anon.this.ctx)
+        </td>
+      </tr><tr>
+        <td>
+          209
+        </td>
+        <td>
+          62083
+        </td>
+        <td>
+          8532
+          -
+          8549
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.core.Types.TypeAccumulator.foldOver
+        </td>
+        <td style="background: #AEF1AE">
+          $anon.this.foldOver(acc, tp)
+        </td>
+      </tr><tr>
+        <td>
+          211
+        </td>
+        <td>
+          62084
+        </td>
+        <td>
+          8602
+          -
+          8602
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Types.TypeAccumulator.ctx
+        </td>
+        <td style="background: #AEF1AE">
+          $anon.this.ctx
+        </td>
+      </tr><tr>
+        <td>
+          211
+        </td>
+        <td>
+          62087
+        </td>
+        <td>
+          8593
+          -
+          8615
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.transform.ReifyQuotes.Reifier.check
+        </td>
+        <td style="background: #AEF1AE">
+          Reifier.this.check(tp.cls($anon.this.ctx), tp, pos)($anon.this.ctx)
+        </td>
+      </tr><tr>
+        <td>
+          211
+        </td>
+        <td>
+          62086
+        </td>
+        <td>
+          8598
+          -
+          8598
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Types.TypeAccumulator.ctx
+        </td>
+        <td style="background: #AEF1AE">
+          $anon.this.ctx
+        </td>
+      </tr><tr>
+        <td>
+          211
+        </td>
+        <td>
+          62085
+        </td>
+        <td>
+          8599
+          -
+          8605
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.Types.ThisType.cls
+        </td>
+        <td style="background: #AEF1AE">
+          tp.cls($anon.this.ctx)
+        </td>
+      </tr><tr>
+        <td>
+          212
+        </td>
+        <td>
+          62088
+        </td>
+        <td>
+          8628
+          -
+          8645
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.core.Types.TypeAccumulator.foldOver
+        </td>
+        <td style="background: #AEF1AE">
+          $anon.this.foldOver(acc, tp)
+        </td>
+      </tr><tr>
+        <td>
+          214
+        </td>
+        <td>
+          62089
+        </td>
+        <td>
+          8678
+          -
+          8695
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.core.Types.TypeAccumulator.foldOver
+        </td>
+        <td style="background: #AEF1AE">
+          $anon.this.foldOver(acc, tp)
+        </td>
+      </tr><tr>
+        <td>
+          235
+        </td>
+        <td>
+          62094
+        </td>
+        <td>
+          9538
+          -
+          9576
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.transform.ReifyQuotes.Reifier.check
+        </td>
+        <td style="background: #AEF1AE">
+          Reifier.this.check(tree.symbol(ctx), tree.tpe, tree.pos)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          237
+        </td>
+        <td>
+          62096
+        </td>
+        <td>
+          9659
+          -
+          9661
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          ()
+        </td>
+      </tr><tr>
+        <td>
+          237
+        </td>
+        <td>
+          62098
+        </td>
+        <td>
+          9633
+          -
+          9672
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.core.Types.TypeAccumulator.apply
+        </td>
+        <td style="background: #AEF1AE">
+          Reifier.this.checkType(tree.pos)(ctx).apply((), tree.tpe)
+        </td>
+      </tr><tr>
+        <td>
+          237
+        </td>
+        <td>
+          62095
+        </td>
+        <td>
+          9643
+          -
+          9651
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Positioned.pos
+        </td>
+        <td style="background: #AEF1AE">
+          tree.pos
+        </td>
+      </tr><tr>
+        <td>
+          237
+        </td>
+        <td>
+          62097
+        </td>
+        <td>
+          9663
+          -
+          9671
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Trees.Tree.tpe
+        </td>
+        <td style="background: #AEF1AE">
+          tree.tpe
+        </td>
+      </tr><tr>
+        <td>
+          239
+        </td>
+        <td>
+          62102
+        </td>
+        <td>
+          9740
+          -
+          9785
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.core.Types.TypeAccumulator.apply
+        </td>
+        <td style="background: #F0ADAD">
+          Reifier.this.checkType(tree.pos)(ctx).apply((), tree.tpe.widen(ctx))
+        </td>
+      </tr><tr>
+        <td>
+          239
+        </td>
+        <td>
+          62099
+        </td>
+        <td>
+          9750
+          -
+          9758
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Positioned.pos
+        </td>
+        <td style="background: #F0ADAD">
+          tree.pos
+        </td>
+      </tr><tr>
+        <td>
+          239
+        </td>
+        <td>
+          62101
+        </td>
+        <td>
+          9770
+          -
+          9784
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.Types.Type.widen
+        </td>
+        <td style="background: #F0ADAD">
+          tree.tpe.widen(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          239
+        </td>
+        <td>
+          62100
+        </td>
+        <td>
+          9766
+          -
+          9768
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          ()
+        </td>
+      </tr><tr>
+        <td>
+          241
+        </td>
+        <td>
+          62105
+        </td>
+        <td>
+          9850
+          -
+          9866
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.SymDenotations.SymDenotation.info
+        </td>
+        <td style="background: #AEF1AE">
+          core.Symbols.toDenot(tree.symbol(ctx))(ctx).info(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          241
+        </td>
+        <td>
+          62104
+        </td>
+        <td>
+          9846
+          -
+          9848
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          ()
+        </td>
+      </tr><tr>
+        <td>
+          241
+        </td>
+        <td>
+          62106
+        </td>
+        <td>
+          9820
+          -
+          9867
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.core.Types.TypeAccumulator.apply
+        </td>
+        <td style="background: #AEF1AE">
+          Reifier.this.checkType(tree.pos)(ctx).apply((), core.Symbols.toDenot(tree.symbol(ctx))(ctx).info(ctx))
+        </td>
+      </tr><tr>
+        <td>
+          241
+        </td>
+        <td>
+          62103
+        </td>
+        <td>
+          9830
+          -
+          9838
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Positioned.pos
+        </td>
+        <td style="background: #AEF1AE">
+          tree.pos
+        </td>
+      </tr><tr>
+        <td>
+          243
+        </td>
+        <td>
+          62108
+        </td>
+        <td>
+          9932
+          -
+          9934
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          ()
+        </td>
+      </tr><tr>
+        <td>
+          243
+        </td>
+        <td>
+          62107
+        </td>
+        <td>
+          9916
+          -
+          9924
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Positioned.pos
+        </td>
+        <td style="background: #AEF1AE">
+          tree.pos
+        </td>
+      </tr><tr>
+        <td>
+          243
+        </td>
+        <td>
+          62110
+        </td>
+        <td>
+          9906
+          -
+          9976
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.core.Types.TypeAccumulator.apply
+        </td>
+        <td style="background: #AEF1AE">
+          Reifier.this.checkType(tree.pos)(ctx).apply((), core.Symbols.toClassDenot(core.Symbols.toDenot(tree.symbol(ctx))(ctx).owner.asClass)(ctx).givenSelfType(ctx))
+        </td>
+      </tr><tr>
+        <td>
+          243
+        </td>
+        <td>
+          62109
+        </td>
+        <td>
+          9936
+          -
+          9975
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.SymDenotations.ClassDenotation.givenSelfType
+        </td>
+        <td style="background: #AEF1AE">
+          core.Symbols.toClassDenot(core.Symbols.toDenot(tree.symbol(ctx))(ctx).owner.asClass)(ctx).givenSelfType(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          244
+        </td>
+        <td>
+          62111
+        </td>
+        <td>
+          9992
+          -
+          9994
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          ()
+        </td>
+      </tr><tr>
+        <td>
+          256
+        </td>
+        <td>
+          62113
+        </td>
+        <td>
+          10451
+          -
+          10451
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.Tuple2._2
+        </td>
+        <td style="background: #AEF1AE">
+          x$8._2
+        </td>
+      </tr><tr>
+        <td>
+          256
+        </td>
+        <td>
+          62112
+        </td>
+        <td>
+          10444
+          -
+          10444
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.Tuple2._1
+        </td>
+        <td style="background: #AEF1AE">
+          x$8._1
+        </td>
+      </tr><tr>
+        <td>
+          257
+        </td>
+        <td>
+          62114
+        </td>
+        <td>
+          10507
+          -
+          10515
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.transform.ReifyQuotes.Reifier.inSplice
+        </td>
+        <td style="background: #AEF1AE">
+          Reifier.this.inSplice
+        </td>
+      </tr><tr>
+        <td>
+          258
+        </td>
+        <td>
+          62116
+        </td>
+        <td>
+          10525
+          -
+          10560
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          dotty.tools.dotc.transform.ReifyQuotes.Reifier.makeHole
+        </td>
+        <td style="background: #AEF1AE">
+          Reifier.this.makeHole(body1, splices, quote.tpe)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          258
+        </td>
+        <td>
+          62115
+        </td>
+        <td>
+          10525
+          -
+          10560
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.transform.ReifyQuotes.Reifier.makeHole
+        </td>
+        <td style="background: #AEF1AE">
+          Reifier.this.makeHole(body1, splices, quote.tpe)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          259
+        </td>
+        <td>
+          62122
+        </td>
+        <td>
+          10572
+          -
+          11186
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          {
+  def liftList(list: List[dotty.tools.dotc.ast.tpd.Tree], tpe: dotty.tools.dotc.core.Types.Type): dotty.tools.dotc.ast.tpd.Tree = list.foldRight[dotty.tools.dotc.ast.tpd.Tree](ast.tpd.ref(core.Symbols.defn(ctx).NilModule(ctx))(ctx))(((x: dotty.tools.dotc.ast.tpd.Tree, acc: dotty.tools.dotc.ast.tpd.Tree) =&gt; ast.tpd.TreeOps[dotty.tools.dotc.ast.tpd.Tree](ast.tpd.TreeOps[dotty.tools.dotc.ast.tpd.Select](ast.tpd.TreeOps[dotty.tools.dotc.ast.tpd.Tree](acc).select(core.Decorators.PreNamedString(&quot;::&quot;).toTermName)(ctx)).appliedToType(tpe)(ctx)).appliedTo(x)(ctx)));
+  val isType: Boolean = quote.tpe.isRef(core.Symbols.defn(ctx).QuotedTypeClass(ctx))(ctx);
+  ast.tpd.TreeOps[dotty.tools.dotc.ast.tpd.Tree](ast.tpd.TreeOps[dotty.tools.dotc.ast.tpd.Tree](ast.tpd.ref(if (isType)
+  core.Symbols.defn(ctx).Unpickler_unpickleType
+else
+  core.Symbols.defn(ctx).Unpickler_unpickleExpr)(ctx)).appliedToType(if (isType)
+  body1.tpe
+else
+  body1.tpe.widen(ctx))(ctx)).appliedTo(liftList(dotty.tools.dotc.core.quoted.PickledQuotes.pickleQuote(body1)(ctx).map[dotty.tools.dotc.ast.tpd.Literal, List[dotty.tools.dotc.ast.tpd.Tree]](((x: String) =&gt; ast.tpd.Literal(core.Constants.Constant.apply(x))(ctx)))(immutable.this.List.canBuildFrom[dotty.tools.dotc.ast.tpd.Literal]), core.Symbols.defn(ctx).StringType), liftList(splices, core.Symbols.defn(ctx).AnyType))(ctx)
+}
+        </td>
+      </tr><tr>
+        <td>
+          261
+        </td>
+        <td>
+          62117
+        </td>
+        <td>
+          10665
+          -
+          10684
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.tpd.ref
+        </td>
+        <td style="background: #AEF1AE">
+          ast.tpd.ref(core.Symbols.defn(ctx).NilModule(ctx))(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          261
+        </td>
+        <td>
+          62119
+        </td>
+        <td>
+          10644
+          -
+          10783
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.immutable.List.foldRight
+        </td>
+        <td style="background: #AEF1AE">
+          list.foldRight[dotty.tools.dotc.ast.tpd.Tree](ast.tpd.ref(core.Symbols.defn(ctx).NilModule(ctx))(ctx))(((x: dotty.tools.dotc.ast.tpd.Tree, acc: dotty.tools.dotc.ast.tpd.Tree) =&gt; ast.tpd.TreeOps[dotty.tools.dotc.ast.tpd.Tree](ast.tpd.TreeOps[dotty.tools.dotc.ast.tpd.Select](ast.tpd.TreeOps[dotty.tools.dotc.ast.tpd.Tree](acc).select(core.Decorators.PreNamedString(&quot;::&quot;).toTermName)(ctx)).appliedToType(tpe)(ctx)).appliedTo(x)(ctx)))
+        </td>
+      </tr><tr>
+        <td>
+          262
+        </td>
+        <td>
+          62118
+        </td>
+        <td>
+          10712
+          -
+          10771
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.tpd.TreeOps.appliedTo
+        </td>
+        <td style="background: #AEF1AE">
+          ast.tpd.TreeOps[dotty.tools.dotc.ast.tpd.Tree](ast.tpd.TreeOps[dotty.tools.dotc.ast.tpd.Select](ast.tpd.TreeOps[dotty.tools.dotc.ast.tpd.Tree](acc).select(core.Decorators.PreNamedString(&quot;::&quot;).toTermName)(ctx)).appliedToType(tpe)(ctx)).appliedTo(x)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          265
+        </td>
+        <td>
+          62120
+        </td>
+        <td>
+          10815
+          -
+          10852
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.Types.Type.isRef
+        </td>
+        <td style="background: #AEF1AE">
+          quote.tpe.isRef(core.Symbols.defn(ctx).QuotedTypeClass(ctx))(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          268
+        </td>
+        <td>
+          62121
+        </td>
+        <td>
+          10861
+          -
+          11178
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.tpd.TreeOps.appliedTo
+        </td>
+        <td style="background: #AEF1AE">
+          ast.tpd.TreeOps[dotty.tools.dotc.ast.tpd.Tree](ast.tpd.TreeOps[dotty.tools.dotc.ast.tpd.Tree](ast.tpd.ref(if (isType)
+  core.Symbols.defn(ctx).Unpickler_unpickleType
+else
+  core.Symbols.defn(ctx).Unpickler_unpickleExpr)(ctx)).appliedToType(if (isType)
+  body1.tpe
+else
+  body1.tpe.widen(ctx))(ctx)).appliedTo(liftList(dotty.tools.dotc.core.quoted.PickledQuotes.pickleQuote(body1)(ctx).map[dotty.tools.dotc.ast.tpd.Literal, List[dotty.tools.dotc.ast.tpd.Tree]](((x: String) =&gt; ast.tpd.Literal(core.Constants.Constant.apply(x))(ctx)))(immutable.this.List.canBuildFrom[dotty.tools.dotc.ast.tpd.Literal]), core.Symbols.defn(ctx).StringType), liftList(splices, core.Symbols.defn(ctx).AnyType))(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          272
+        </td>
+        <td>
+          62123
+        </td>
+        <td>
+          11201
+          -
+          11210
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Positioned.pos
+        </td>
+        <td style="background: #AEF1AE">
+          quote.pos
+        </td>
+      </tr><tr>
+        <td>
+          272
+        </td>
+        <td>
+          62124
+        </td>
+        <td>
+          10431
+          -
+          11211
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Positioned.withPos
+        </td>
+        <td style="background: #AEF1AE">
+          {
+  &lt;synthetic&gt; &lt;artifact&gt; private[this] val x$8: (dotty.tools.dotc.ast.tpd.Tree, List[dotty.tools.dotc.ast.tpd.Tree]) = (Reifier.this.nested(true).split(body)(ctx): (dotty.tools.dotc.ast.tpd.Tree, List[dotty.tools.dotc.ast.tpd.Tree]) @unchecked) match {
+    case (_1: dotty.tools.dotc.ast.tpd.Tree, _2: List[dotty.tools.dotc.ast.tpd.Tree])(dotty.tools.dotc.ast.tpd.Tree, List[dotty.tools.dotc.ast.tpd.Tree])((body1 @ _), (splices @ _)) =&gt; scala.Tuple2.apply[dotty.tools.dotc.ast.tpd.Tree, List[dotty.tools.dotc.ast.tpd.Tree]](body1, splices)
+  };
+  val body1: dotty.tools.dotc.ast.tpd.Tree = x$8._1;
+  val splices: List[dotty.tools.dotc.ast.tpd.Tree] = x$8._2;
+  if (Reifier.this.inSplice)
+    Reifier.this.makeHole(body1, splices, quote.tpe)(ctx)
+  else
+    {
+      def liftList(list: List[dotty.tools.dotc.ast.tpd.Tree], tpe: dotty.tools.dotc.core.Types.Type): dotty.tools.dotc.ast.tpd.Tree = list.foldRight[dotty.tools.dotc.ast.tpd.Tree](ast.tpd.ref(core.Symbols.defn(ctx).NilModule(ctx))(ctx))(((x: dotty.tools.dotc.ast.tpd.Tree, acc: dotty.tools.dotc.ast.tpd.Tree) =&gt; ast.tpd.TreeOps[dotty.tools.dotc.ast.tpd.Tree](ast.tpd.TreeOps[dotty.tools.dotc.ast.tpd.Select](ast.tpd.TreeOps[dotty.tools.dotc.ast.tpd.Tree](acc).select(core.Decorators.PreNamedString(&quot;::&quot;).toTermName)(ctx)).appliedToType(tpe)(ctx)).appliedTo(x)(ctx)));
+      val isType: Boolean = quote.tpe.isRef(core.Symbols.defn(ctx).QuotedTypeClass(ctx))(ctx);
+      ast.tpd.TreeOps[dotty.tools.dotc.ast.tpd.Tree](ast.tpd.TreeOps[dotty.tools.dotc.ast.tpd.Tree](ast.tpd.ref(if (isType)
+  core.Symbols.defn(ctx).Unpickler_unpickleType
+else
+  core.Symbols.defn(ctx).Unpickler_unpickleExpr)(ctx)).appliedToType(if (isType)
+  body1.tpe
+else
+  body1.tpe.widen(ctx))(ctx)).appliedTo(liftList(dotty.tools.dotc.core.quoted.PickledQuotes.pickleQuote(body1)(ctx).map[dotty.tools.dotc.ast.tpd.Literal, List[dotty.tools.dotc.ast.tpd.Tree]](((x: String) =&gt; ast.tpd.Literal(core.Constants.Constant.apply(x))(ctx)))(immutable.this.List.canBuildFrom[dotty.tools.dotc.ast.tpd.Literal]), core.Symbols.defn(ctx).StringType), liftList(splices, core.Symbols.defn(ctx).AnyType))(ctx)
+    }
+}.withPos(quote.pos)
+        </td>
+      </tr><tr>
+        <td>
+          279
+        </td>
+        <td>
+          62129
+        </td>
+        <td>
+          11527
+          -
+          11646
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          {
+  &lt;synthetic&gt; &lt;artifact&gt; private[this] val x$9: (dotty.tools.dotc.ast.tpd.Tree, List[dotty.tools.dotc.ast.tpd.Tree]) = (Reifier.this.nested(false).split(body)(ctx): (dotty.tools.dotc.ast.tpd.Tree, List[dotty.tools.dotc.ast.tpd.Tree]) @unchecked) match {
+    case (_1: dotty.tools.dotc.ast.tpd.Tree, _2: List[dotty.tools.dotc.ast.tpd.Tree])(dotty.tools.dotc.ast.tpd.Tree, List[dotty.tools.dotc.ast.tpd.Tree])((body1 @ _), (quotes @ _)) =&gt; scala.Tuple2.apply[dotty.tools.dotc.ast.tpd.Tree, List[dotty.tools.dotc.ast.tpd.Tree]](body1, quotes)
+  };
+  val body1: dotty.tools.dotc.ast.tpd.Tree = x$9._1;
+  val quotes: List[dotty.tools.dotc.ast.tpd.Tree] = x$9._2;
+  Reifier.this.makeHole(body1, quotes, splice.tpe)(ctx)
+}
+        </td>
+      </tr><tr>
+        <td>
+          279
+        </td>
+        <td>
+          62125
+        </td>
+        <td>
+          11518
+          -
+          11525
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.transform.ReifyQuotes.Reifier.inQuote
+        </td>
+        <td style="background: #AEF1AE">
+          Reifier.this.inQuote
+        </td>
+      </tr><tr>
+        <td>
+          280
+        </td>
+        <td>
+          62126
+        </td>
+        <td>
+          11542
+          -
+          11542
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.Tuple2._1
+        </td>
+        <td style="background: #AEF1AE">
+          x$9._1
+        </td>
+      </tr><tr>
+        <td>
+          280
+        </td>
+        <td>
+          62127
+        </td>
+        <td>
+          11549
+          -
+          11549
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.Tuple2._2
+        </td>
+        <td style="background: #AEF1AE">
+          x$9._2
+        </td>
+      </tr><tr>
+        <td>
+          281
+        </td>
+        <td>
+          62128
+        </td>
+        <td>
+          11603
+          -
+          11638
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.transform.ReifyQuotes.Reifier.makeHole
+        </td>
+        <td style="background: #AEF1AE">
+          Reifier.this.makeHole(body1, quotes, splice.tpe)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          283
+        </td>
+        <td>
+          62131
+        </td>
+        <td>
+          11658
+          -
+          11722
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          {
+  Reifier.this.spliceOutsideQuotes(splice.pos)(ctx);
+  splice
+}
+        </td>
+      </tr><tr>
+        <td>
+          284
+        </td>
+        <td>
+          62130
+        </td>
+        <td>
+          11668
+          -
+          11699
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.transform.ReifyQuotes.Reifier.spliceOutsideQuotes
+        </td>
+        <td style="background: #AEF1AE">
+          Reifier.this.spliceOutsideQuotes(splice.pos)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          287
+        </td>
+        <td>
+          62132
+        </td>
+        <td>
+          11737
+          -
+          11747
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Positioned.pos
+        </td>
+        <td style="background: #AEF1AE">
+          splice.pos
+        </td>
+      </tr><tr>
+        <td>
+          287
+        </td>
+        <td>
+          62133
+        </td>
+        <td>
+          11514
+          -
+          11748
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Positioned.withPos
+        </td>
+        <td style="background: #AEF1AE">
+          if (Reifier.this.inQuote)
+  {
+    &lt;synthetic&gt; &lt;artifact&gt; private[this] val x$9: (dotty.tools.dotc.ast.tpd.Tree, List[dotty.tools.dotc.ast.tpd.Tree]) = (Reifier.this.nested(false).split(body)(ctx): (dotty.tools.dotc.ast.tpd.Tree, List[dotty.tools.dotc.ast.tpd.Tree]) @unchecked) match {
+      case (_1: dotty.tools.dotc.ast.tpd.Tree, _2: List[dotty.tools.dotc.ast.tpd.Tree])(dotty.tools.dotc.ast.tpd.Tree, List[dotty.tools.dotc.ast.tpd.Tree])((body1 @ _), (quotes @ _)) =&gt; scala.Tuple2.apply[dotty.tools.dotc.ast.tpd.Tree, List[dotty.tools.dotc.ast.tpd.Tree]](body1, quotes)
+    };
+    val body1: dotty.tools.dotc.ast.tpd.Tree = x$9._1;
+    val quotes: List[dotty.tools.dotc.ast.tpd.Tree] = x$9._2;
+    Reifier.this.makeHole(body1, quotes, splice.tpe)(ctx)
+  }
+else
+  {
+    Reifier.this.spliceOutsideQuotes(splice.pos)(ctx);
+    splice
+  }.withPos(splice.pos)
+        </td>
+      </tr><tr>
+        <td>
+          293
+        </td>
+        <td>
+          62134
+        </td>
+        <td>
+          12010
+          -
+          12034
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.transform.ReifyQuotes.Reifier.addTags
+        </td>
+        <td style="background: #AEF1AE">
+          Reifier.this.addTags(Reifier.this.transform(tree)(ctx))(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          294
+        </td>
+        <td>
+          62138
+        </td>
+        <td>
+          12041
+          -
+          12080
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Tuple2.apply
+        </td>
+        <td style="background: #AEF1AE">
+          scala.Tuple2.apply[dotty.tools.dotc.ast.tpd.Tree, List[dotty.tools.dotc.ast.tpd.Tree]](tree1, Reifier.this.embedded.toList.map[dotty.tools.dotc.ast.tpd.Tree, List[dotty.tools.dotc.ast.tpd.Tree]]({
+  ((tree: dotty.tools.dotc.ast.tpd.Tree) =&gt; ReifyQuotes.this.elimHoles(tree)(ctx))
+})(immutable.this.List.canBuildFrom[dotty.tools.dotc.ast.tpd.Tree]))
+        </td>
+      </tr><tr>
+        <td>
+          294
+        </td>
+        <td>
+          62135
+        </td>
+        <td>
+          12069
+          -
+          12078
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.transform.ReifyQuotes.elimHoles
+        </td>
+        <td style="background: #AEF1AE">
+          ReifyQuotes.this.elimHoles(tree)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          294
+        </td>
+        <td>
+          62137
+        </td>
+        <td>
+          12049
+          -
+          12079
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          scala.collection.immutable.List.map
+        </td>
+        <td style="background: #AEF1AE">
+          Reifier.this.embedded.toList.map[dotty.tools.dotc.ast.tpd.Tree, List[dotty.tools.dotc.ast.tpd.Tree]]({
+  ((tree: dotty.tools.dotc.ast.tpd.Tree) =&gt; ReifyQuotes.this.elimHoles(tree)(ctx))
+})(immutable.this.List.canBuildFrom[dotty.tools.dotc.ast.tpd.Tree])
+        </td>
+      </tr><tr>
+        <td>
+          294
+        </td>
+        <td>
+          62136
+        </td>
+        <td>
+          12068
+          -
+          12068
+        </td>
+        <td>
+          TypeApply
+        </td>
+        <td>
+          scala.collection.immutable.List.canBuildFrom
+        </td>
+        <td style="background: #AEF1AE">
+          immutable.this.List.canBuildFrom[dotty.tools.dotc.ast.tpd.Tree]
+        </td>
+      </tr><tr>
+        <td>
+          301
+        </td>
+        <td>
+          62139
+        </td>
+        <td>
+          12351
+          -
+          12366
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.collection.mutable.ListBuffer.length
+        </td>
+        <td style="background: #AEF1AE">
+          Reifier.this.embedded.length
+        </td>
+      </tr><tr>
+        <td>
+          302
+        </td>
+        <td>
+          62140
+        </td>
+        <td>
+          12373
+          -
+          12389
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.mutable.ListBuffer.+=
+        </td>
+        <td style="background: #AEF1AE">
+          Reifier.this.embedded.+=(body)
+        </td>
+      </tr><tr>
+        <td>
+          303
+        </td>
+        <td>
+          62141
+        </td>
+        <td>
+          12396
+          -
+          12447
+        </td>
+        <td>
+          TypeApply
+        </td>
+        <td>
+          scala.Any.asInstanceOf
+        </td>
+        <td style="background: #AEF1AE">
+          core.tasty.TreePickler.Hole.apply(idx, splices).withType(tpe)(ctx).asInstanceOf[dotty.tools.dotc.core.tasty.TreePickler.Hole]
+        </td>
+      </tr><tr>
+        <td>
+          307
+        </td>
+        <td>
+          62142
+        </td>
+        <td>
+          12531
+          -
+          14053
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.reporting.trace.apply
+        </td>
+        <td style="background: #AEF1AE">
+          reporting.trace.apply[dotty.tools.dotc.ast.tpd.Tree](core.Decorators.StringInterpolators(scala.StringContext.apply(&quot;reify &quot;, &quot; at &quot;, &quot;&quot;)).i(tree, Reifier.this.level)(ctx), true)({
+  def mapOverTree(lastEntered: List[dotty.tools.dotc.core.Symbols.Symbol]): dotty.tools.dotc.ast.tpd.Tree = try {
+    Reifier.super.transform(tree)(ctx)
+  } finally while$1(){
+    if (Reifier.this.levels.enteredSyms.ne(lastEntered))
+      {
+        {
+          Reifier.this.levels.levelOf.-=(Reifier.this.levels.enteredSyms.head);
+          Reifier.this.levels.enteredSyms_=(Reifier.this.levels.enteredSyms.tail)
+        };
+        while$1()
+      }
+    else
+      ()
+  };
+  tree match {
+    case dotty.tools.dotc.core.quoted.Quoted.unapply(&lt;unapply-selector&gt;)(ctx) &lt;unapply&gt; ((quotedTree @ _)) =&gt; Reifier.this.quotation(quotedTree, tree)(ctx)
+    case (qualifier: dotty.tools.dotc.ast.Trees.Tree[dotty.tools.dotc.core.Types.Type], name: dotty.tools.dotc.core.Names.Name)dotty.tools.dotc.ast.Trees.Select[dotty.tools.dotc.core.Types.Type]((body @ _), _) if SymUtils.decorateSymbol(tree.symbol(ctx)).isSplice(ctx) =&gt; Reifier.this.splice(body, tree)(ctx)
+    case (stats: List[dotty.tools.dotc.ast.Trees.Tree[dotty.tools.dotc.core.Types.Type]], expr: dotty.tools.dotc.ast.Trees.Tree[dotty.tools.dotc.core.Types.Type])dotty.tools.dotc.ast.Trees.Block[dotty.tools.dotc.core.Types.Type]((stats @ _), _) =&gt; {
+      val last: List[dotty.tools.dotc.core.Symbols.Symbol] = Reifier.this.levels.enteredSyms;
+      stats.foreach[Unit]({
+        ((tree: dotty.tools.dotc.ast.tpd.Tree) =&gt; Reifier.this.markDef(tree)(ctx))
+      });
+      mapOverTree(last)
+    }
+    case (call: dotty.tools.dotc.ast.tpd.Tree, bindings: List[dotty.tools.dotc.ast.Trees.MemberDef[dotty.tools.dotc.core.Types.Type]], expansion: dotty.tools.dotc.ast.Trees.Tree[dotty.tools.dotc.core.Types.Type])dotty.tools.dotc.ast.Trees.Inlined[dotty.tools.dotc.core.Types.Type]((call @ _), (bindings @ _), (expansion @ (qualifier: dotty.tools.dotc.ast.Trees.Tree[dotty.tools.dotc.core.Types.Type], name: dotty.tools.dotc.core.Names.Name)dotty.tools.dotc.ast.Trees.Select[dotty.tools.dotc.core.Types.Type]((body @ _), (name @ _)))) if SymUtils.decorateSymbol(expansion.symbol(ctx)).isSplice(ctx) =&gt; if (Reifier.this.level.==(0))
+      Reifier.this.transform(Splicer.splice(Reifier.this.cpy.Inlined(tree)(call, bindings, body)(ctx))(ctx))(ctx)
+    else
+      Reifier.this.transform(Reifier.this.cpy.Select(expansion)(Reifier.this.cpy.Inlined(tree)(call, bindings, body)(ctx), name)(ctx))(ctx)
+    case (_: dotty.tools.dotc.ast.tpd.Import) =&gt; tree
+    case (tree @ (_: dotty.tools.dotc.ast.tpd.DefDef)) if core.Symbols.toDenot(tree.symbol(ctx))(ctx).is(core.Flags.Macro)(ctx).&amp;&amp;(Reifier.this.level.==(0)) =&gt; {
+      Reifier.this.markDef(tree)(ctx);
+      val tree1: dotty.tools.dotc.ast.tpd.Tree = Reifier.this.nested(true).transform(tree)(ctx);
+      {
+        &lt;artifact&gt; val x$23: dotty.tools.dotc.ast.tpd.DefDef = tree;
+        &lt;artifact&gt; val x$24: dotty.tools.dotc.ast.tpd.Thicket = ast.tpd.EmptyTree;
+        &lt;artifact&gt; val x$25: dotty.tools.dotc.core.Names.TermName = Reifier.this.cpy.DefDef$default$2(x$23);
+        &lt;artifact&gt; val x$26: List[dotty.tools.dotc.ast.tpd.TypeDef] = Reifier.this.cpy.DefDef$default$3(x$23);
+        &lt;artifact&gt; val x$27: List[List[dotty.tools.dotc.ast.tpd.ValDef]] = Reifier.this.cpy.DefDef$default$4(x$23);
+        &lt;artifact&gt; val x$28: dotty.tools.dotc.ast.tpd.Tree = Reifier.this.cpy.DefDef$default$5(x$23);
+        Reifier.this.cpy.DefDef(x$23)(x$25, x$26, x$27, x$28, x$24)
+      }
+    }
+    case _ =&gt; {
+      Reifier.this.markDef(tree)(ctx);
+      Reifier.this.checkLevel(mapOverTree(Reifier.this.levels.enteredSyms))(ctx)
+    }
+  }
+})(ctx)
+        </td>
+      </tr>
+    </table>
+          </div>
+        </div>
+      </body>
+    </html>

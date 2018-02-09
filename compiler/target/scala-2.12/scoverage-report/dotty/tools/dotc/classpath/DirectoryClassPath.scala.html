@@ -1,0 +1,4650 @@
+<html>
+      <head>
+        <meta http-equiv="Content-Type" content="text/html; charset=utf-8"/>
+        <title id="title">
+          dotty/tools/dotc/classpath/DirectoryClassPath.scala.html
+        </title>
+        <script src="https://ajax.googleapis.com/ajax/libs/jquery/1.10.2/jquery.min.js"></script><link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/jquery.tablesorter/2.20.1/css/theme.default.min.css" type="text/css"/><script src="https://cdnjs.cloudflare.com/ajax/libs/jquery.tablesorter/2.20.1/js/jquery.tablesorter.min.js"></script><link rel="stylesheet" href="https://netdna.bootstrapcdn.com/bootstrap/3.0.3/css/bootstrap.min.css" type="text/css"/><script src="https://netdna.bootstrapcdn.com/bootstrap/3.0.3/js/bootstrap.min.js"></script><script type="text/javascript">
+        $(document).ready(function() {$(".tablesorter").tablesorter();});
+      </script>
+        <style>
+          table.codegrid { font-family: monospace; font-size: 12px; width: auto!important; }table.statementlist { width: auto!important; font-size: 13px; } table.codegrid td { padding: 0!important; border: 0!important } table td.linenumber { width: 40px!important; } 
+        </style>
+      </head>
+      <body style="font-family: monospace;">
+        <ul class="nav nav-tabs">
+          <li>
+            <a href="#codegrid" data-toggle="tab">Codegrid</a>
+          </li>
+          <li>
+            <a href="#statementlist" data-toggle="tab">Statement List</a>
+          </li>
+        </ul>
+        <div class="tab-content">
+          <div class="tab-pane active" id="codegrid">
+            <pre style='font-size: 12pt; font-family: courier;'>1 <span style=''>/*
+</span>2 <span style=''> * Copyright (c) 2014 Contributor. All rights reserved.
+</span>3 <span style=''> */
+</span>4 <span style=''>package dotty.tools.dotc.classpath
+</span>5 <span style=''>
+</span>6 <span style=''>import java.io.{File =&gt; JFile}
+</span>7 <span style=''>import java.net.{URI, URL}
+</span>8 <span style=''>import java.nio.file.{FileSystems, Files, SimpleFileVisitor}
+</span>9 <span style=''>import java.util.function.IntFunction
+</span>10 <span style=''>import java.util
+</span>11 <span style=''>import java.util.Comparator
+</span>12 <span style=''>
+</span>13 <span style=''>import dotty.tools.io.{AbstractFile, PlainFile, ClassPath, ClassRepresentation}
+</span>14 <span style=''>import FileUtils._
+</span>15 <span style=''>import scala.collection.JavaConverters._
+</span>16 <span style=''>
+</span>17 <span style=''>/**
+</span>18 <span style=''> * A trait allowing to look for classpath entries in directories. It provides common logic for
+</span>19 <span style=''> * classes handling class and source files.
+</span>20 <span style=''> * It makes use of the fact that in the case of nested directories it's easy to find a file
+</span>21 <span style=''> * when we have a name of a package.
+</span>22 <span style=''> * It abstracts over the file representation to work with both JFile and AbstractFile.
+</span>23 <span style=''> */
+</span>24 <span style=''>trait DirectoryLookup[FileEntryType &lt;: ClassRepresentation] extends ClassPath {
+</span>25 <span style=''>  type F
+</span>26 <span style=''>
+</span>27 <span style=''>  val dir: F
+</span>28 <span style=''>
+</span>29 <span style=''>  protected def emptyFiles: Array[F] // avoids reifying ClassTag[F]
+</span>30 <span style=''>  protected def getSubDir(dirName: String): Option[F]
+</span>31 <span style=''>  protected def listChildren(dir: F, filter: Option[F =&gt; Boolean] = None): Array[F]
+</span>32 <span style=''>  protected def getName(f: F): String
+</span>33 <span style=''>  protected def toAbstractFile(f: F): AbstractFile
+</span>34 <span style=''>  protected def isPackage(f: F): Boolean
+</span>35 <span style=''>
+</span>36 <span style=''>  protected def createFileEntry(file: AbstractFile): FileEntryType
+</span>37 <span style=''>  protected def isMatchingFile(f: F): Boolean
+</span>38 <span style=''>
+</span>39 <span style=''>  private def getDirectory(forPackage: String): Option[F] = {
+</span>40 <span style=''>    if (</span><span style='background: #AEF1AE'>forPackage == ClassPath.RootPackage</span><span style=''>) {
+</span>41 <span style=''>      </span><span style='background: #AEF1AE'>Some(dir)</span><span style=''>
+</span>42 <span style=''>    } else </span><span style='background: #AEF1AE'>{
+</span>43 <span style=''></span><span style='background: #AEF1AE'>      val packageDirName = FileUtils.dirPath(forPackage)
+</span>44 <span style=''></span><span style='background: #AEF1AE'>      getSubDir(packageDirName)
+</span>45 <span style=''></span><span style='background: #AEF1AE'>    }</span><span style=''>
+</span>46 <span style=''>  }
+</span>47 <span style=''>
+</span>48 <span style=''>  override private[dotty] def hasPackage(pkg: String) = </span><span style='background: #AEF1AE'>getDirectory(pkg).isDefined</span><span style=''>
+</span>49 <span style=''>
+</span>50 <span style=''>  private[dotty] def packages(inPackage: String): Seq[PackageEntry] = {
+</span>51 <span style=''>    val dirForPackage = </span><span style='background: #AEF1AE'>getDirectory(inPackage)</span><span style=''>
+</span>52 <span style=''>    val nestedDirs: Array[F] = dirForPackage match {
+</span>53 <span style=''>      case None =&gt; </span><span style='background: #AEF1AE'>emptyFiles</span><span style=''>
+</span>54 <span style=''>      case Some(directory) =&gt; </span><span style='background: #AEF1AE'>listChildren(directory, Some(isPackage))</span><span style=''>
+</span>55 <span style=''>    }
+</span>56 <span style=''>    val prefix = </span><span style='background: #AEF1AE'>PackageNameUtils.packagePrefix(inPackage)</span><span style=''>
+</span>57 <span style=''>    </span><span style='background: #AEF1AE'>nestedDirs.map(f =&gt; PackageEntryImpl(prefix + getName(f)))</span><span style=''>
+</span>58 <span style=''>  }
+</span>59 <span style=''>
+</span>60 <span style=''>  protected def files(inPackage: String): Seq[FileEntryType] = {
+</span>61 <span style=''>    val dirForPackage = </span><span style='background: #F0ADAD'>getDirectory(inPackage)</span><span style=''>
+</span>62 <span style=''>    val files: Array[F] = dirForPackage match {
+</span>63 <span style=''>      case None =&gt; </span><span style='background: #F0ADAD'>emptyFiles</span><span style=''>
+</span>64 <span style=''>      case Some(directory) =&gt; </span><span style='background: #F0ADAD'>listChildren(directory, Some(isMatchingFile))</span><span style=''>
+</span>65 <span style=''>    }
+</span>66 <span style=''>    </span><span style='background: #F0ADAD'>files.map(f =&gt; createFileEntry(toAbstractFile(f)))</span><span style=''>
+</span>67 <span style=''>  }
+</span>68 <span style=''>
+</span>69 <span style=''>  private[dotty] def list(inPackage: String): ClassPathEntries = {
+</span>70 <span style=''>    val dirForPackage = </span><span style='background: #AEF1AE'>getDirectory(inPackage)</span><span style=''>
+</span>71 <span style=''>    val files: Array[F] = dirForPackage match {
+</span>72 <span style=''>      case None =&gt; </span><span style='background: #AEF1AE'>emptyFiles</span><span style=''>
+</span>73 <span style=''>      case Some(directory) =&gt; </span><span style='background: #AEF1AE'>listChildren(directory)</span><span style=''>
+</span>74 <span style=''>    }
+</span>75 <span style=''>    val packagePrefix = </span><span style='background: #AEF1AE'>PackageNameUtils.packagePrefix(inPackage)</span><span style=''>
+</span>76 <span style=''>    val packageBuf = </span><span style='background: #AEF1AE'>collection.mutable.ArrayBuffer.empty[PackageEntry]</span><span style=''>
+</span>77 <span style=''>    val fileBuf = </span><span style='background: #AEF1AE'>collection.mutable.ArrayBuffer.empty[FileEntryType]</span><span style=''>
+</span>78 <span style=''>    </span><span style='background: #AEF1AE'>for (file &lt;- files) {
+</span>79 <span style=''></span><span style='background: #AEF1AE'>      if (isPackage(file))
+</span>80 <span style=''></span><span style='background: #AEF1AE'>        packageBuf += PackageEntryImpl(packagePrefix + getName(file))
+</span>81 <span style=''></span><span style='background: #AEF1AE'>      else if (isMatchingFile(file))
+</span>82 <span style=''></span><span style='background: #AEF1AE'>        fileBuf += createFileEntry(toAbstractFile(file))</span><span style=''>
+</span>83 <span style=''>    }
+</span>84 <span style=''>    </span><span style='background: #AEF1AE'>ClassPathEntries(packageBuf, fileBuf)</span><span style=''>
+</span>85 <span style=''>  }
+</span>86 <span style=''>}
+</span>87 <span style=''>
+</span>88 <span style=''>trait JFileDirectoryLookup[FileEntryType &lt;: ClassRepresentation] extends DirectoryLookup[FileEntryType] {
+</span>89 <span style=''>  type F = JFile
+</span>90 <span style=''>
+</span>91 <span style=''>  protected def emptyFiles: Array[JFile] = </span><span style='background: #AEF1AE'>Array.empty</span><span style=''>
+</span>92 <span style=''>  protected def getSubDir(packageDirName: String): Option[JFile] = {
+</span>93 <span style=''>    val packageDir = </span><span style='background: #AEF1AE'>new JFile(dir, packageDirName)</span><span style=''>
+</span>94 <span style=''>    if (</span><span style='background: #AEF1AE'>packageDir.exists &amp;&amp; packageDir.isDirectory</span><span style=''>) </span><span style='background: #AEF1AE'>Some(packageDir)</span><span style=''>
+</span>95 <span style=''>    else </span><span style='background: #AEF1AE'>None</span><span style=''>
+</span>96 <span style=''>  }
+</span>97 <span style=''>  protected def listChildren(dir: JFile, filter: Option[JFile =&gt; Boolean]): Array[JFile] = {
+</span>98 <span style=''>    val listing = filter match {
+</span>99 <span style=''>      case Some(f) =&gt; </span><span style='background: #AEF1AE'>dir.listFiles(mkFileFilter(f))</span><span style=''>
+</span>100 <span style=''>      case None =&gt; </span><span style='background: #AEF1AE'>dir.listFiles()</span><span style=''>
+</span>101 <span style=''>    }
+</span>102 <span style=''>
+</span>103 <span style=''>    if (</span><span style='background: #AEF1AE'>listing != null</span><span style=''>) </span><span style='background: #AEF1AE'>{
+</span>104 <span style=''></span><span style='background: #AEF1AE'>      // Sort by file name for stable order of directory .class entries in package scope.
+</span>105 <span style=''></span><span style='background: #AEF1AE'>      // This gives stable results ordering of base type sequences for unrelated classes
+</span>106 <span style=''></span><span style='background: #AEF1AE'>      // with the same base type depth.
+</span>107 <span style=''></span><span style='background: #AEF1AE'>      //
+</span>108 <span style=''></span><span style='background: #AEF1AE'>      // Notably, this will stably infer`Product with Serializable`
+</span>109 <span style=''></span><span style='background: #AEF1AE'>      // as the type of `case class C(); case class D(); List(C(), D()).head`, rather than the opposite order.
+</span>110 <span style=''></span><span style='background: #AEF1AE'>      // On Mac, the HFS performs this sorting transparently, but on Linux the order is unspecified.
+</span>111 <span style=''></span><span style='background: #AEF1AE'>      //
+</span>112 <span style=''></span><span style='background: #AEF1AE'>      // Note this behaviour can be enabled in javac with `javac -XDsortfiles`, but that's only
+</span>113 <span style=''></span><span style='background: #AEF1AE'>      // intended to improve determinism of the compiler for compiler hackers.
+</span>114 <span style=''></span><span style='background: #AEF1AE'>      java.util.Arrays.sort(listing,
+</span>115 <span style=''></span><span style='background: #AEF1AE'>        new java.util.Comparator[JFile] {
+</span>116 <span style=''></span><span style='background: #AEF1AE'>          def compare(o1: JFile, o2: JFile) = o1.getName.compareTo(o2.getName)
+</span>117 <span style=''></span><span style='background: #AEF1AE'>        })
+</span>118 <span style=''></span><span style='background: #AEF1AE'>      listing
+</span>119 <span style=''></span><span style='background: #AEF1AE'>    }</span><span style=''> else </span><span style='background: #F0ADAD'>Array()</span><span style=''>
+</span>120 <span style=''>  }
+</span>121 <span style=''>  protected def getName(f: JFile): String = </span><span style='background: #AEF1AE'>f.getName</span><span style=''>
+</span>122 <span style=''>  protected def toAbstractFile(f: JFile): AbstractFile = </span><span style='background: #AEF1AE'>new PlainFile(new dotty.tools.io.File(f.toPath))</span><span style=''>
+</span>123 <span style=''>  protected def isPackage(f: JFile): Boolean = </span><span style='background: #AEF1AE'>f.isPackage</span><span style=''>
+</span>124 <span style=''>
+</span>125 <span style=''>  </span><span style='background: #AEF1AE'>assert(dir != null, </span><span style='background: #F0ADAD'>&quot;Directory file in DirectoryFileLookup cannot be null&quot;</span><span style='background: #AEF1AE'>)</span><span style=''>
+</span>126 <span style=''>
+</span>127 <span style=''>  def asURLs: Seq[URL] = </span><span style='background: #F0ADAD'>Seq(dir.toURI.toURL)</span><span style=''>
+</span>128 <span style=''>  def asClassPathStrings: Seq[String] = </span><span style='background: #F0ADAD'>Seq(dir.getPath)</span><span style=''>
+</span>129 <span style=''>}
+</span>130 <span style=''>
+</span>131 <span style=''>object JrtClassPath {
+</span>132 <span style=''>  import java.nio.file._, java.net.URI
+</span>133 <span style=''>  def apply(): Option[ClassPath] = {
+</span>134 <span style=''>    try {
+</span>135 <span style=''>      </span><span style='background: #F0ADAD'>val fs = FileSystems.getFileSystem(URI.create(&quot;jrt:/&quot;))
+</span>136 <span style=''></span><span style='background: #F0ADAD'>      Some(new JrtClassPath(fs))</span><span style=''>
+</span>137 <span style=''>    } catch {
+</span>138 <span style=''>      case _: ProviderNotFoundException | _: FileSystemNotFoundException =&gt;
+</span>139 <span style=''>        </span><span style='background: #F0ADAD'>None</span><span style=''>
+</span>140 <span style=''>    }
+</span>141 <span style=''>  }
+</span>142 <span style=''>}
+</span>143 <span style=''>
+</span>144 <span style=''>/**
+</span>145 <span style=''>  * Implementation `ClassPath` based on the JDK 9 encapsulated runtime modules (JEP-220)
+</span>146 <span style=''>  *
+</span>147 <span style=''>  * https://bugs.openjdk.java.net/browse/JDK-8066492 is the most up to date reference
+</span>148 <span style=''>  * for the structure of the jrt:// filesystem.
+</span>149 <span style=''>  *
+</span>150 <span style=''>  * The implementation assumes that no classes exist in the empty package.
+</span>151 <span style=''>  */
+</span>152 <span style=''>final class JrtClassPath(fs: java.nio.file.FileSystem) extends ClassPath with NoSourcePaths {
+</span>153 <span style=''>  import java.nio.file.Path, java.nio.file._
+</span>154 <span style=''>  type F = Path
+</span>155 <span style=''>  private val dir: Path = </span><span style='background: #F0ADAD'>fs.getPath(&quot;/packages&quot;)</span><span style=''>
+</span>156 <span style=''>
+</span>157 <span style=''>  // e.g. &quot;java.lang&quot; -&gt; Seq(&quot;/modules/java.base&quot;)
+</span>158 <span style=''>  private val packageToModuleBases: Map[String, Seq[Path]] = {
+</span>159 <span style=''>    val ps = </span><span style='background: #F0ADAD'>Files.newDirectoryStream(dir).iterator().asScala</span><span style=''>
+</span>160 <span style=''>    def lookup(pack: Path): Seq[Path] = {
+</span>161 <span style=''>      </span><span style='background: #F0ADAD'>Files.list(pack).iterator().asScala.map(l =&gt; if (Files.isSymbolicLink(l)) Files.readSymbolicLink(l) else l).toList</span><span style=''>
+</span>162 <span style=''>    }
+</span>163 <span style=''>    </span><span style='background: #F0ADAD'>ps.map(p =&gt; (p.toString.stripPrefix(&quot;/packages/&quot;), lookup(p))).toMap</span><span style=''>
+</span>164 <span style=''>  }
+</span>165 <span style=''>
+</span>166 <span style=''>  /** Empty string represents root package */
+</span>167 <span style=''>  override private[dotty] def hasPackage(pkg: String) = </span><span style='background: #F0ADAD'>packageToModuleBases.contains(pkg)</span><span style=''>
+</span>168 <span style=''>
+</span>169 <span style=''>  override private[dotty] def packages(inPackage: String): Seq[PackageEntry] = {
+</span>170 <span style=''>    def matches(packageDottedName: String) =
+</span>171 <span style=''>      if (</span><span style='background: #F0ADAD'>packageDottedName.contains(&quot;.&quot;)</span><span style=''>)
+</span>172 <span style=''>        </span><span style='background: #F0ADAD'>packageOf(packageDottedName) == inPackage</span><span style=''>
+</span>173 <span style=''>      else </span><span style='background: #F0ADAD'>inPackage == &quot;&quot;</span><span style=''>
+</span>174 <span style=''>    </span><span style='background: #F0ADAD'>packageToModuleBases.keysIterator.filter(matches).map(PackageEntryImpl(_)).toVector</span><span style=''>
+</span>175 <span style=''>  }
+</span>176 <span style=''>  private[dotty] def classes(inPackage: String): Seq[ClassFileEntry] = {
+</span>177 <span style=''>    if (</span><span style='background: #F0ADAD'>inPackage == &quot;&quot;</span><span style=''>) </span><span style='background: #F0ADAD'>Nil</span><span style=''>
+</span>178 <span style=''>    else {
+</span>179 <span style=''>      </span><span style='background: #F0ADAD'>packageToModuleBases.getOrElse(inPackage, Nil).flatMap(x =&gt;
+</span>180 <span style=''></span><span style='background: #F0ADAD'>        Files.list(x.resolve(inPackage.replace('.', '/'))).iterator().asScala.filter(_.getFileName.toString.endsWith(&quot;.class&quot;))).map(x =&gt;
+</span>181 <span style=''></span><span style='background: #F0ADAD'>        ClassFileEntryImpl(new PlainFile(new dotty.tools.io.File(x)))).toVector</span><span style=''>
+</span>182 <span style=''>    }
+</span>183 <span style=''>  }
+</span>184 <span style=''>
+</span>185 <span style=''>  override private[dotty] def list(inPackage: String): ClassPathEntries =
+</span>186 <span style=''>    if (</span><span style='background: #F0ADAD'>inPackage == &quot;&quot;</span><span style=''>) </span><span style='background: #F0ADAD'>ClassPathEntries(packages(inPackage), Nil)</span><span style=''>
+</span>187 <span style=''>    else </span><span style='background: #F0ADAD'>ClassPathEntries(packages(inPackage), classes(inPackage))</span><span style=''>
+</span>188 <span style=''>
+</span>189 <span style=''>  def asURLs: Seq[URL] = </span><span style='background: #F0ADAD'>Seq(dir.toUri.toURL)</span><span style=''>
+</span>190 <span style=''>  // We don't yet have a scheme to represent the JDK modules in our `-classpath`.
+</span>191 <span style=''>  // java models them as entries in the new &quot;module path&quot;, we'll probably need to follow this.
+</span>192 <span style=''>  def asClassPathStrings: Seq[String] = </span><span style='background: #F0ADAD'>Nil</span><span style=''>
+</span>193 <span style=''>
+</span>194 <span style=''>  def findClassFile(className: String): Option[AbstractFile] = {
+</span>195 <span style=''>    if (</span><span style='background: #F0ADAD'>!className.contains(&quot;.&quot;)</span><span style=''>) </span><span style='background: #F0ADAD'>None</span><span style=''>
+</span>196 <span style=''>    else </span><span style='background: #F0ADAD'>{
+</span>197 <span style=''></span><span style='background: #F0ADAD'>      val inPackage = packageOf(className)
+</span>198 <span style=''></span><span style='background: #F0ADAD'>      packageToModuleBases.getOrElse(inPackage, Nil).iterator.flatMap{x =&gt;
+</span>199 <span style=''></span><span style='background: #F0ADAD'>        val file = x.resolve(className.replace('.', '/') + &quot;.class&quot;)
+</span>200 <span style=''></span><span style='background: #F0ADAD'>        if (Files.exists(file)) new PlainFile(new dotty.tools.io.File(file)) :: Nil else Nil
+</span>201 <span style=''></span><span style='background: #F0ADAD'>      }.take(1).toList.headOption
+</span>202 <span style=''></span><span style='background: #F0ADAD'>    }</span><span style=''>
+</span>203 <span style=''>  }
+</span>204 <span style=''>  private def packageOf(dottedClassName: String): String =
+</span>205 <span style=''>    </span><span style='background: #F0ADAD'>dottedClassName.substring(0, dottedClassName.lastIndexOf(&quot;.&quot;))</span><span style=''>
+</span>206 <span style=''>}
+</span>207 <span style=''>
+</span>208 <span style=''>case class DirectoryClassPath(dir: JFile) extends JFileDirectoryLookup[ClassFileEntryImpl] with NoSourcePaths {
+</span>209 <span style=''>  override def findClass(className: String): Option[ClassRepresentation] = </span><span style='background: #F0ADAD'>findClassFile(className) map ClassFileEntryImpl</span><span style=''>
+</span>210 <span style=''>
+</span>211 <span style=''>  def findClassFile(className: String): Option[AbstractFile] = {
+</span>212 <span style=''>    val relativePath = </span><span style='background: #AEF1AE'>FileUtils.dirPath(className)</span><span style=''>
+</span>213 <span style=''>    val classFile = </span><span style='background: #AEF1AE'>new JFile(s&quot;$dir/$relativePath.class&quot;)</span><span style=''>
+</span>214 <span style=''>    if (</span><span style='background: #AEF1AE'>classFile.exists</span><span style=''>) </span><span style='background: #AEF1AE'>{
+</span>215 <span style=''></span><span style='background: #AEF1AE'>      val wrappedClassFile = new dotty.tools.io.File(classFile.toPath)
+</span>216 <span style=''></span><span style='background: #AEF1AE'>      val abstractClassFile = new PlainFile(wrappedClassFile)
+</span>217 <span style=''></span><span style='background: #AEF1AE'>      Some(abstractClassFile)
+</span>218 <span style=''></span><span style='background: #AEF1AE'>    }</span><span style=''> else </span><span style='background: #F0ADAD'>None</span><span style=''>
+</span>219 <span style=''>  }
+</span>220 <span style=''>
+</span>221 <span style=''>  protected def createFileEntry(file: AbstractFile): ClassFileEntryImpl = </span><span style='background: #AEF1AE'>ClassFileEntryImpl(file)</span><span style=''>
+</span>222 <span style=''>  protected def isMatchingFile(f: JFile): Boolean = </span><span style='background: #AEF1AE'>f.isClass</span><span style=''>
+</span>223 <span style=''>
+</span>224 <span style=''>  private[dotty] def classes(inPackage: String): Seq[ClassFileEntry] = </span><span style='background: #F0ADAD'>files(inPackage)</span><span style=''>
+</span>225 <span style=''>}
+</span>226 <span style=''>
+</span>227 <span style=''>case class DirectorySourcePath(dir: JFile) extends JFileDirectoryLookup[SourceFileEntryImpl] with NoClassPaths {
+</span>228 <span style=''>  def asSourcePathString: String = </span><span style='background: #F0ADAD'>asClassPathString</span><span style=''>
+</span>229 <span style=''>
+</span>230 <span style=''>  protected def createFileEntry(file: AbstractFile): SourceFileEntryImpl = </span><span style='background: #AEF1AE'>SourceFileEntryImpl(file)</span><span style=''>
+</span>231 <span style=''>  protected def isMatchingFile(f: JFile): Boolean = </span><span style='background: #AEF1AE'>endsScalaOrJava(f.getName)</span><span style=''>
+</span>232 <span style=''>
+</span>233 <span style=''>  override def findClass(className: String): Option[ClassRepresentation] = </span><span style='background: #F0ADAD'>findSourceFile(className) map SourceFileEntryImpl</span><span style=''>
+</span>234 <span style=''>
+</span>235 <span style=''>  private def findSourceFile(className: String): Option[AbstractFile] = {
+</span>236 <span style=''>    val relativePath = </span><span style='background: #F0ADAD'>FileUtils.dirPath(className)</span><span style=''>
+</span>237 <span style=''>    val sourceFile = </span><span style='background: #F0ADAD'>Stream(&quot;scala&quot;, &quot;java&quot;)
+</span>238 <span style=''></span><span style='background: #F0ADAD'>      .map(ext =&gt; new JFile(s&quot;$dir/$relativePath.$ext&quot;))
+</span>239 <span style=''></span><span style='background: #F0ADAD'>      .collectFirst { case file if file.exists() =&gt; file }</span><span style=''>
+</span>240 <span style=''>
+</span>241 <span style=''>    </span><span style='background: #F0ADAD'>sourceFile.map { file =&gt;
+</span>242 <span style=''></span><span style='background: #F0ADAD'>      val wrappedSourceFile = new dotty.tools.io.File(file.toPath)
+</span>243 <span style=''></span><span style='background: #F0ADAD'>      val abstractSourceFile = new PlainFile(wrappedSourceFile)
+</span>244 <span style=''></span><span style='background: #F0ADAD'>      abstractSourceFile
+</span>245 <span style=''></span><span style='background: #F0ADAD'>    }</span><span style=''>
+</span>246 <span style=''>  }
+</span>247 <span style=''>
+</span>248 <span style=''>  private[dotty] def sources(inPackage: String): Seq[SourceFileEntry] = </span><span style='background: #F0ADAD'>files(inPackage)</span><span style=''>
+</span>249 <span style=''>}
+</span></pre>
+          </div>
+          <div class="tab-pane" id="statementlist">
+            <table cellspacing="0" cellpadding="0" class="table statementlist">
+      <tr>
+        <th>Line</th>
+        <th>Stmt Id</th>
+        <th>Pos</th>
+        <th>Tree</th>
+        <th>Symbol</th>
+        <th>Code</th>
+      </tr><tr>
+        <td>
+          40
+        </td>
+        <td>
+          10765
+        </td>
+        <td>
+          1445
+          -
+          1466
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.io.ClassPath.RootPackage
+        </td>
+        <td style="background: #AEF1AE">
+          dotty.tools.io.ClassPath.RootPackage
+        </td>
+      </tr><tr>
+        <td>
+          40
+        </td>
+        <td>
+          10766
+        </td>
+        <td>
+          1431
+          -
+          1466
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.Object.==
+        </td>
+        <td style="background: #AEF1AE">
+          forPackage.==(dotty.tools.io.ClassPath.RootPackage)
+        </td>
+      </tr><tr>
+        <td>
+          41
+        </td>
+        <td>
+          10769
+        </td>
+        <td>
+          1476
+          -
+          1485
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          scala.Some.apply
+        </td>
+        <td style="background: #AEF1AE">
+          scala.Some.apply[DirectoryLookup.this.F](DirectoryLookup.this.dir)
+        </td>
+      </tr><tr>
+        <td>
+          41
+        </td>
+        <td>
+          10768
+        </td>
+        <td>
+          1476
+          -
+          1485
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Some.apply
+        </td>
+        <td style="background: #AEF1AE">
+          scala.Some.apply[DirectoryLookup.this.F](DirectoryLookup.this.dir)
+        </td>
+      </tr><tr>
+        <td>
+          41
+        </td>
+        <td>
+          10767
+        </td>
+        <td>
+          1481
+          -
+          1484
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.classpath.DirectoryLookup.dir
+        </td>
+        <td style="background: #AEF1AE">
+          DirectoryLookup.this.dir
+        </td>
+      </tr><tr>
+        <td>
+          42
+        </td>
+        <td>
+          10772
+        </td>
+        <td>
+          1497
+          -
+          1593
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          {
+  val packageDirName: String = FileUtils.dirPath(forPackage);
+  DirectoryLookup.this.getSubDir(packageDirName)
+}
+        </td>
+      </tr><tr>
+        <td>
+          43
+        </td>
+        <td>
+          10770
+        </td>
+        <td>
+          1526
+          -
+          1555
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.classpath.FileUtils.dirPath
+        </td>
+        <td style="background: #AEF1AE">
+          FileUtils.dirPath(forPackage)
+        </td>
+      </tr><tr>
+        <td>
+          44
+        </td>
+        <td>
+          10771
+        </td>
+        <td>
+          1562
+          -
+          1587
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.classpath.DirectoryLookup.getSubDir
+        </td>
+        <td style="background: #AEF1AE">
+          DirectoryLookup.this.getSubDir(packageDirName)
+        </td>
+      </tr><tr>
+        <td>
+          48
+        </td>
+        <td>
+          10773
+        </td>
+        <td>
+          1655
+          -
+          1682
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.Option.isDefined
+        </td>
+        <td style="background: #AEF1AE">
+          DirectoryLookup.this.getDirectory(pkg).isDefined
+        </td>
+      </tr><tr>
+        <td>
+          51
+        </td>
+        <td>
+          10774
+        </td>
+        <td>
+          1780
+          -
+          1803
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.classpath.DirectoryLookup.getDirectory
+        </td>
+        <td style="background: #AEF1AE">
+          DirectoryLookup.this.getDirectory(inPackage)
+        </td>
+      </tr><tr>
+        <td>
+          53
+        </td>
+        <td>
+          10775
+        </td>
+        <td>
+          1876
+          -
+          1886
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.classpath.DirectoryLookup.emptyFiles
+        </td>
+        <td style="background: #AEF1AE">
+          DirectoryLookup.this.emptyFiles
+        </td>
+      </tr><tr>
+        <td>
+          54
+        </td>
+        <td>
+          10777
+        </td>
+        <td>
+          1941
+          -
+          1956
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Some.apply
+        </td>
+        <td style="background: #AEF1AE">
+          scala.Some.apply[DirectoryLookup.this.F =&gt; Boolean]({
+  ((f: DirectoryLookup.this.F) =&gt; DirectoryLookup.this.isPackage(f))
+})
+        </td>
+      </tr><tr>
+        <td>
+          54
+        </td>
+        <td>
+          10776
+        </td>
+        <td>
+          1946
+          -
+          1955
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.classpath.DirectoryLookup.isPackage
+        </td>
+        <td style="background: #AEF1AE">
+          DirectoryLookup.this.isPackage(f)
+        </td>
+      </tr><tr>
+        <td>
+          54
+        </td>
+        <td>
+          10778
+        </td>
+        <td>
+          1917
+          -
+          1957
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.classpath.DirectoryLookup.listChildren
+        </td>
+        <td style="background: #AEF1AE">
+          DirectoryLookup.this.listChildren(directory, scala.Some.apply[DirectoryLookup.this.F =&gt; Boolean]({
+  ((f: DirectoryLookup.this.F) =&gt; DirectoryLookup.this.isPackage(f))
+}))
+        </td>
+      </tr><tr>
+        <td>
+          56
+        </td>
+        <td>
+          10779
+        </td>
+        <td>
+          1981
+          -
+          2022
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.classpath.PackageNameUtils.packagePrefix
+        </td>
+        <td style="background: #AEF1AE">
+          PackageNameUtils.packagePrefix(inPackage)
+        </td>
+      </tr><tr>
+        <td>
+          57
+        </td>
+        <td>
+          10780
+        </td>
+        <td>
+          2073
+          -
+          2083
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.classpath.DirectoryLookup.getName
+        </td>
+        <td style="background: #AEF1AE">
+          DirectoryLookup.this.getName(f)
+        </td>
+      </tr><tr>
+        <td>
+          57
+        </td>
+        <td>
+          10783
+        </td>
+        <td>
+          2041
+          -
+          2041
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.Predef.DummyImplicit.dummyImplicit
+        </td>
+        <td style="background: #AEF1AE">
+          Predef.this.DummyImplicit.dummyImplicit
+        </td>
+      </tr><tr>
+        <td>
+          57
+        </td>
+        <td>
+          10782
+        </td>
+        <td>
+          2047
+          -
+          2084
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.classpath.PackageEntryImpl.apply
+        </td>
+        <td style="background: #AEF1AE">
+          PackageEntryImpl.apply(prefix.+(DirectoryLookup.this.getName(f)))
+        </td>
+      </tr><tr>
+        <td>
+          57
+        </td>
+        <td>
+          10785
+        </td>
+        <td>
+          2027
+          -
+          2085
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          scala.collection.TraversableLike.map
+        </td>
+        <td style="background: #AEF1AE">
+          scala.Predef.genericArrayOps[DirectoryLookup.this.F](nestedDirs).map[dotty.tools.dotc.classpath.PackageEntryImpl, Seq[dotty.tools.dotc.classpath.PackageEntry]](((f: DirectoryLookup.this.F) =&gt; PackageEntryImpl.apply(prefix.+(DirectoryLookup.this.getName(f)))))(scala.this.Array.fallbackCanBuildFrom[dotty.tools.dotc.classpath.PackageEntryImpl](Predef.this.DummyImplicit.dummyImplicit))
+        </td>
+      </tr><tr>
+        <td>
+          57
+        </td>
+        <td>
+          10781
+        </td>
+        <td>
+          2064
+          -
+          2083
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.String.+
+        </td>
+        <td style="background: #AEF1AE">
+          prefix.+(DirectoryLookup.this.getName(f))
+        </td>
+      </tr><tr>
+        <td>
+          57
+        </td>
+        <td>
+          10784
+        </td>
+        <td>
+          2041
+          -
+          2041
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          scala.FallbackArrayBuilding.fallbackCanBuildFrom
+        </td>
+        <td style="background: #AEF1AE">
+          scala.this.Array.fallbackCanBuildFrom[dotty.tools.dotc.classpath.PackageEntryImpl](Predef.this.DummyImplicit.dummyImplicit)
+        </td>
+      </tr><tr>
+        <td>
+          61
+        </td>
+        <td>
+          10786
+        </td>
+        <td>
+          2180
+          -
+          2203
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.classpath.DirectoryLookup.getDirectory
+        </td>
+        <td style="background: #F0ADAD">
+          DirectoryLookup.this.getDirectory(inPackage)
+        </td>
+      </tr><tr>
+        <td>
+          63
+        </td>
+        <td>
+          10787
+        </td>
+        <td>
+          2271
+          -
+          2281
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.classpath.DirectoryLookup.emptyFiles
+        </td>
+        <td style="background: #F0ADAD">
+          DirectoryLookup.this.emptyFiles
+        </td>
+      </tr><tr>
+        <td>
+          64
+        </td>
+        <td>
+          10789
+        </td>
+        <td>
+          2336
+          -
+          2356
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Some.apply
+        </td>
+        <td style="background: #F0ADAD">
+          scala.Some.apply[DirectoryLookup.this.F =&gt; Boolean]({
+  ((f: DirectoryLookup.this.F) =&gt; DirectoryLookup.this.isMatchingFile(f))
+})
+        </td>
+      </tr><tr>
+        <td>
+          64
+        </td>
+        <td>
+          10788
+        </td>
+        <td>
+          2341
+          -
+          2355
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.classpath.DirectoryLookup.isMatchingFile
+        </td>
+        <td style="background: #F0ADAD">
+          DirectoryLookup.this.isMatchingFile(f)
+        </td>
+      </tr><tr>
+        <td>
+          64
+        </td>
+        <td>
+          10790
+        </td>
+        <td>
+          2312
+          -
+          2357
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.classpath.DirectoryLookup.listChildren
+        </td>
+        <td style="background: #F0ADAD">
+          DirectoryLookup.this.listChildren(directory, scala.Some.apply[DirectoryLookup.this.F =&gt; Boolean]({
+  ((f: DirectoryLookup.this.F) =&gt; DirectoryLookup.this.isMatchingFile(f))
+}))
+        </td>
+      </tr><tr>
+        <td>
+          66
+        </td>
+        <td>
+          10792
+        </td>
+        <td>
+          2383
+          -
+          2417
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.classpath.DirectoryLookup.createFileEntry
+        </td>
+        <td style="background: #F0ADAD">
+          DirectoryLookup.this.createFileEntry(DirectoryLookup.this.toAbstractFile(f))
+        </td>
+      </tr><tr>
+        <td>
+          66
+        </td>
+        <td>
+          10795
+        </td>
+        <td>
+          2368
+          -
+          2418
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          scala.collection.TraversableLike.map
+        </td>
+        <td style="background: #F0ADAD">
+          scala.Predef.genericArrayOps[DirectoryLookup.this.F](files).map[FileEntryType, Seq[FileEntryType]](((f: DirectoryLookup.this.F) =&gt; DirectoryLookup.this.createFileEntry(DirectoryLookup.this.toAbstractFile(f))))(scala.this.Array.fallbackCanBuildFrom[FileEntryType](Predef.this.DummyImplicit.dummyImplicit))
+        </td>
+      </tr><tr>
+        <td>
+          66
+        </td>
+        <td>
+          10791
+        </td>
+        <td>
+          2399
+          -
+          2416
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.classpath.DirectoryLookup.toAbstractFile
+        </td>
+        <td style="background: #F0ADAD">
+          DirectoryLookup.this.toAbstractFile(f)
+        </td>
+      </tr><tr>
+        <td>
+          66
+        </td>
+        <td>
+          10794
+        </td>
+        <td>
+          2377
+          -
+          2377
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          scala.FallbackArrayBuilding.fallbackCanBuildFrom
+        </td>
+        <td style="background: #F0ADAD">
+          scala.this.Array.fallbackCanBuildFrom[FileEntryType](Predef.this.DummyImplicit.dummyImplicit)
+        </td>
+      </tr><tr>
+        <td>
+          66
+        </td>
+        <td>
+          10793
+        </td>
+        <td>
+          2377
+          -
+          2377
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.Predef.DummyImplicit.dummyImplicit
+        </td>
+        <td style="background: #F0ADAD">
+          Predef.this.DummyImplicit.dummyImplicit
+        </td>
+      </tr><tr>
+        <td>
+          70
+        </td>
+        <td>
+          10796
+        </td>
+        <td>
+          2515
+          -
+          2538
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.classpath.DirectoryLookup.getDirectory
+        </td>
+        <td style="background: #AEF1AE">
+          DirectoryLookup.this.getDirectory(inPackage)
+        </td>
+      </tr><tr>
+        <td>
+          72
+        </td>
+        <td>
+          10797
+        </td>
+        <td>
+          2606
+          -
+          2616
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.classpath.DirectoryLookup.emptyFiles
+        </td>
+        <td style="background: #AEF1AE">
+          DirectoryLookup.this.emptyFiles
+        </td>
+      </tr><tr>
+        <td>
+          73
+        </td>
+        <td>
+          10798
+        </td>
+        <td>
+          2647
+          -
+          2647
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.classpath.DirectoryLookup.listChildren$default$2
+        </td>
+        <td style="background: #AEF1AE">
+          DirectoryLookup.this.listChildren$default$2
+        </td>
+      </tr><tr>
+        <td>
+          73
+        </td>
+        <td>
+          10799
+        </td>
+        <td>
+          2647
+          -
+          2670
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.classpath.DirectoryLookup.listChildren
+        </td>
+        <td style="background: #AEF1AE">
+          DirectoryLookup.this.listChildren(directory, DirectoryLookup.this.listChildren$default$2)
+        </td>
+      </tr><tr>
+        <td>
+          75
+        </td>
+        <td>
+          10800
+        </td>
+        <td>
+          2701
+          -
+          2742
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.classpath.PackageNameUtils.packagePrefix
+        </td>
+        <td style="background: #AEF1AE">
+          PackageNameUtils.packagePrefix(inPackage)
+        </td>
+      </tr><tr>
+        <td>
+          76
+        </td>
+        <td>
+          10801
+        </td>
+        <td>
+          2764
+          -
+          2814
+        </td>
+        <td>
+          TypeApply
+        </td>
+        <td>
+          scala.collection.generic.GenericCompanion.empty
+        </td>
+        <td style="background: #AEF1AE">
+          scala.collection.mutable.ArrayBuffer.empty[dotty.tools.dotc.classpath.PackageEntry]
+        </td>
+      </tr><tr>
+        <td>
+          77
+        </td>
+        <td>
+          10802
+        </td>
+        <td>
+          2833
+          -
+          2884
+        </td>
+        <td>
+          TypeApply
+        </td>
+        <td>
+          scala.collection.generic.GenericCompanion.empty
+        </td>
+        <td style="background: #AEF1AE">
+          scala.collection.mutable.ArrayBuffer.empty[FileEntryType]
+        </td>
+      </tr><tr>
+        <td>
+          78
+        </td>
+        <td>
+          10817
+        </td>
+        <td>
+          2889
+          -
+          3101
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.IndexedSeqOptimized.foreach
+        </td>
+        <td style="background: #AEF1AE">
+          scala.Predef.genericArrayOps[DirectoryLookup.this.F](files).foreach[Any](((file: DirectoryLookup.this.F) =&gt; if (DirectoryLookup.this.isPackage(file))
+  packageBuf.+=(PackageEntryImpl.apply(packagePrefix.+(DirectoryLookup.this.getName(file))))
+else
+  if (DirectoryLookup.this.isMatchingFile(file))
+    fileBuf.+=(DirectoryLookup.this.createFileEntry(DirectoryLookup.this.toAbstractFile(file)))
+  else
+    ()))
+        </td>
+      </tr><tr>
+        <td>
+          79
+        </td>
+        <td>
+          10803
+        </td>
+        <td>
+          2921
+          -
+          2936
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.classpath.DirectoryLookup.isPackage
+        </td>
+        <td style="background: #AEF1AE">
+          DirectoryLookup.this.isPackage(file)
+        </td>
+      </tr><tr>
+        <td>
+          80
+        </td>
+        <td>
+          10804
+        </td>
+        <td>
+          2993
+          -
+          3006
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.classpath.DirectoryLookup.getName
+        </td>
+        <td style="background: #AEF1AE">
+          DirectoryLookup.this.getName(file)
+        </td>
+      </tr><tr>
+        <td>
+          80
+        </td>
+        <td>
+          10807
+        </td>
+        <td>
+          2946
+          -
+          3007
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.mutable.ArrayBuffer.+=
+        </td>
+        <td style="background: #AEF1AE">
+          packageBuf.+=(PackageEntryImpl.apply(packagePrefix.+(DirectoryLookup.this.getName(file))))
+        </td>
+      </tr><tr>
+        <td>
+          80
+        </td>
+        <td>
+          10806
+        </td>
+        <td>
+          2960
+          -
+          3007
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.classpath.PackageEntryImpl.apply
+        </td>
+        <td style="background: #AEF1AE">
+          PackageEntryImpl.apply(packagePrefix.+(DirectoryLookup.this.getName(file)))
+        </td>
+      </tr><tr>
+        <td>
+          80
+        </td>
+        <td>
+          10805
+        </td>
+        <td>
+          2977
+          -
+          3006
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.String.+
+        </td>
+        <td style="background: #AEF1AE">
+          packagePrefix.+(DirectoryLookup.this.getName(file))
+        </td>
+      </tr><tr>
+        <td>
+          80
+        </td>
+        <td>
+          10808
+        </td>
+        <td>
+          2946
+          -
+          3007
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          scala.collection.mutable.ArrayBuffer.+=
+        </td>
+        <td style="background: #AEF1AE">
+          packageBuf.+=(PackageEntryImpl.apply(packagePrefix.+(DirectoryLookup.this.getName(file))))
+        </td>
+      </tr><tr>
+        <td>
+          81
+        </td>
+        <td>
+          10816
+        </td>
+        <td>
+          3019
+          -
+          3101
+        </td>
+        <td>
+          If
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          if (DirectoryLookup.this.isMatchingFile(file))
+  fileBuf.+=(DirectoryLookup.this.createFileEntry(DirectoryLookup.this.toAbstractFile(file)))
+else
+  ()
+        </td>
+      </tr><tr>
+        <td>
+          81
+        </td>
+        <td>
+          10815
+        </td>
+        <td>
+          3019
+          -
+          3019
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          ()
+        </td>
+      </tr><tr>
+        <td>
+          81
+        </td>
+        <td>
+          10809
+        </td>
+        <td>
+          3023
+          -
+          3043
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.classpath.DirectoryLookup.isMatchingFile
+        </td>
+        <td style="background: #AEF1AE">
+          DirectoryLookup.this.isMatchingFile(file)
+        </td>
+      </tr><tr>
+        <td>
+          81
+        </td>
+        <td>
+          10814
+        </td>
+        <td>
+          3019
+          -
+          3019
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          ()
+        </td>
+      </tr><tr>
+        <td>
+          82
+        </td>
+        <td>
+          10810
+        </td>
+        <td>
+          3080
+          -
+          3100
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.classpath.DirectoryLookup.toAbstractFile
+        </td>
+        <td style="background: #AEF1AE">
+          DirectoryLookup.this.toAbstractFile(file)
+        </td>
+      </tr><tr>
+        <td>
+          82
+        </td>
+        <td>
+          10813
+        </td>
+        <td>
+          3053
+          -
+          3101
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          scala.collection.mutable.ArrayBuffer.+=
+        </td>
+        <td style="background: #AEF1AE">
+          fileBuf.+=(DirectoryLookup.this.createFileEntry(DirectoryLookup.this.toAbstractFile(file)))
+        </td>
+      </tr><tr>
+        <td>
+          82
+        </td>
+        <td>
+          10812
+        </td>
+        <td>
+          3053
+          -
+          3101
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.mutable.ArrayBuffer.+=
+        </td>
+        <td style="background: #AEF1AE">
+          fileBuf.+=(DirectoryLookup.this.createFileEntry(DirectoryLookup.this.toAbstractFile(file)))
+        </td>
+      </tr><tr>
+        <td>
+          82
+        </td>
+        <td>
+          10811
+        </td>
+        <td>
+          3064
+          -
+          3101
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.classpath.DirectoryLookup.createFileEntry
+        </td>
+        <td style="background: #AEF1AE">
+          DirectoryLookup.this.createFileEntry(DirectoryLookup.this.toAbstractFile(file))
+        </td>
+      </tr><tr>
+        <td>
+          84
+        </td>
+        <td>
+          10818
+        </td>
+        <td>
+          3112
+          -
+          3149
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.classpath.ClassPathEntries.apply
+        </td>
+        <td style="background: #AEF1AE">
+          ClassPathEntries.apply(packageBuf, fileBuf)
+        </td>
+      </tr><tr>
+        <td>
+          91
+        </td>
+        <td>
+          10819
+        </td>
+        <td>
+          3324
+          -
+          3335
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          scala.Array.empty
+        </td>
+        <td style="background: #AEF1AE">
+          scala.Array.empty[java.io.File]((ClassTag.apply[java.io.File](classOf[java.io.File]): scala.reflect.ClassTag[java.io.File]))
+        </td>
+      </tr><tr>
+        <td>
+          93
+        </td>
+        <td>
+          10821
+        </td>
+        <td>
+          3426
+          -
+          3456
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.io.File.&lt;init&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          new java.io.File(JFileDirectoryLookup.this.dir, packageDirName)
+        </td>
+      </tr><tr>
+        <td>
+          93
+        </td>
+        <td>
+          10820
+        </td>
+        <td>
+          3436
+          -
+          3439
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.classpath.DirectoryLookup.dir
+        </td>
+        <td style="background: #AEF1AE">
+          JFileDirectoryLookup.this.dir
+        </td>
+      </tr><tr>
+        <td>
+          94
+        </td>
+        <td>
+          10822
+        </td>
+        <td>
+          3486
+          -
+          3508
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.io.File.isDirectory
+        </td>
+        <td style="background: #AEF1AE">
+          packageDir.isDirectory()
+        </td>
+      </tr><tr>
+        <td>
+          94
+        </td>
+        <td>
+          10825
+        </td>
+        <td>
+          3510
+          -
+          3526
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          scala.Some.apply
+        </td>
+        <td style="background: #AEF1AE">
+          scala.Some.apply[java.io.File](packageDir)
+        </td>
+      </tr><tr>
+        <td>
+          94
+        </td>
+        <td>
+          10824
+        </td>
+        <td>
+          3510
+          -
+          3526
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Some.apply
+        </td>
+        <td style="background: #AEF1AE">
+          scala.Some.apply[java.io.File](packageDir)
+        </td>
+      </tr><tr>
+        <td>
+          94
+        </td>
+        <td>
+          10823
+        </td>
+        <td>
+          3465
+          -
+          3508
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Boolean.&amp;&amp;
+        </td>
+        <td style="background: #AEF1AE">
+          packageDir.exists().&amp;&amp;(packageDir.isDirectory())
+        </td>
+      </tr><tr>
+        <td>
+          95
+        </td>
+        <td>
+          10827
+        </td>
+        <td>
+          3536
+          -
+          3540
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          scala.None
+        </td>
+        <td style="background: #AEF1AE">
+          scala.None
+        </td>
+      </tr><tr>
+        <td>
+          95
+        </td>
+        <td>
+          10826
+        </td>
+        <td>
+          3536
+          -
+          3540
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.None
+        </td>
+        <td style="background: #AEF1AE">
+          scala.None
+        </td>
+      </tr><tr>
+        <td>
+          99
+        </td>
+        <td>
+          10828
+        </td>
+        <td>
+          3707
+          -
+          3722
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.classpath.FileUtils.mkFileFilter
+        </td>
+        <td style="background: #AEF1AE">
+          FileUtils.mkFileFilter(f)
+        </td>
+      </tr><tr>
+        <td>
+          99
+        </td>
+        <td>
+          10829
+        </td>
+        <td>
+          3693
+          -
+          3723
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.io.File.listFiles
+        </td>
+        <td style="background: #AEF1AE">
+          dir.listFiles(FileUtils.mkFileFilter(f))
+        </td>
+      </tr><tr>
+        <td>
+          100
+        </td>
+        <td>
+          10830
+        </td>
+        <td>
+          3743
+          -
+          3758
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.io.File.listFiles
+        </td>
+        <td style="background: #AEF1AE">
+          dir.listFiles()
+        </td>
+      </tr><tr>
+        <td>
+          103
+        </td>
+        <td>
+          10831
+        </td>
+        <td>
+          3774
+          -
+          3789
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.Object.!=
+        </td>
+        <td style="background: #AEF1AE">
+          listing.!=(null)
+        </td>
+      </tr><tr>
+        <td>
+          103
+        </td>
+        <td>
+          10836
+        </td>
+        <td>
+          3791
+          -
+          4673
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          {
+  java.util.Arrays.sort[java.io.File](listing, {
+    final class $anon extends Object with java.util.Comparator[java.io.File] {
+      def &lt;init&gt;(): &lt;$anon: java.util.Comparator[java.io.File]&gt; = {
+        $anon.super.&lt;init&gt;();
+        ()
+      };
+      def compare(o1: java.io.File, o2: java.io.File): Int = o1.getName().compareTo(o2.getName())
+    };
+    new $anon()
+  });
+  listing
+}
+        </td>
+      </tr><tr>
+        <td>
+          114
+        </td>
+        <td>
+          10835
+        </td>
+        <td>
+          4491
+          -
+          4653
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.util.Arrays.sort
+        </td>
+        <td style="background: #AEF1AE">
+          java.util.Arrays.sort[java.io.File](listing, {
+  final class $anon extends Object with java.util.Comparator[java.io.File] {
+    def &lt;init&gt;(): &lt;$anon: java.util.Comparator[java.io.File]&gt; = {
+      $anon.super.&lt;init&gt;();
+      ()
+    };
+    def compare(o1: java.io.File, o2: java.io.File): Int = o1.getName().compareTo(o2.getName())
+  };
+  new $anon()
+})
+        </td>
+      </tr><tr>
+        <td>
+          115
+        </td>
+        <td>
+          10834
+        </td>
+        <td>
+          4530
+          -
+          4533
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.classpath.JFileDirectoryLookup.$anon.&lt;init&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          new $anon()
+        </td>
+      </tr><tr>
+        <td>
+          116
+        </td>
+        <td>
+          10833
+        </td>
+        <td>
+          4610
+          -
+          4642
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.String.compareTo
+        </td>
+        <td style="background: #AEF1AE">
+          o1.getName().compareTo(o2.getName())
+        </td>
+      </tr><tr>
+        <td>
+          116
+        </td>
+        <td>
+          10832
+        </td>
+        <td>
+          4631
+          -
+          4641
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.io.File.getName
+        </td>
+        <td style="background: #AEF1AE">
+          o2.getName()
+        </td>
+      </tr><tr>
+        <td>
+          119
+        </td>
+        <td>
+          10837
+        </td>
+        <td>
+          4679
+          -
+          4686
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          scala.Array.apply
+        </td>
+        <td style="background: #F0ADAD">
+          scala.Array.apply[java.io.File]()((ClassTag.apply[java.io.File](classOf[java.io.File]): scala.reflect.ClassTag[java.io.File]))
+        </td>
+      </tr><tr>
+        <td>
+          119
+        </td>
+        <td>
+          10838
+        </td>
+        <td>
+          4679
+          -
+          4686
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          scala.Array.apply
+        </td>
+        <td style="background: #F0ADAD">
+          scala.Array.apply[java.io.File]()((ClassTag.apply[java.io.File](classOf[java.io.File]): scala.reflect.ClassTag[java.io.File]))
+        </td>
+      </tr><tr>
+        <td>
+          121
+        </td>
+        <td>
+          10839
+        </td>
+        <td>
+          4735
+          -
+          4744
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.io.File.getName
+        </td>
+        <td style="background: #AEF1AE">
+          f.getName()
+        </td>
+      </tr><tr>
+        <td>
+          122
+        </td>
+        <td>
+          10840
+        </td>
+        <td>
+          4840
+          -
+          4848
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.io.File.toPath
+        </td>
+        <td style="background: #AEF1AE">
+          f.toPath()
+        </td>
+      </tr><tr>
+        <td>
+          122
+        </td>
+        <td>
+          10842
+        </td>
+        <td>
+          4802
+          -
+          4850
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.io.PlainFile.&lt;init&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          new dotty.tools.io.PlainFile(new dotty.tools.io.File(f.toPath())(io.this.Codec.fallbackSystemCodec))
+        </td>
+      </tr><tr>
+        <td>
+          122
+        </td>
+        <td>
+          10841
+        </td>
+        <td>
+          4816
+          -
+          4849
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.io.File.&lt;init&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          new dotty.tools.io.File(f.toPath())(io.this.Codec.fallbackSystemCodec)
+        </td>
+      </tr><tr>
+        <td>
+          123
+        </td>
+        <td>
+          10843
+        </td>
+        <td>
+          4898
+          -
+          4909
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.classpath.FileUtils.FileOps.isPackage
+        </td>
+        <td style="background: #AEF1AE">
+          FileUtils.FileOps(f).isPackage
+        </td>
+      </tr><tr>
+        <td>
+          125
+        </td>
+        <td>
+          10846
+        </td>
+        <td>
+          4913
+          -
+          4988
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Predef.assert
+        </td>
+        <td style="background: #AEF1AE">
+          scala.Predef.assert(JFileDirectoryLookup.this.dir.!=(null), &quot;Directory file in DirectoryFileLookup cannot be null&quot;)
+        </td>
+      </tr><tr>
+        <td>
+          125
+        </td>
+        <td>
+          10845
+        </td>
+        <td>
+          4933
+          -
+          4987
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          &quot;Directory file in DirectoryFileLookup cannot be null&quot;
+        </td>
+      </tr><tr>
+        <td>
+          125
+        </td>
+        <td>
+          10844
+        </td>
+        <td>
+          4920
+          -
+          4931
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.Object.!=
+        </td>
+        <td style="background: #AEF1AE">
+          JFileDirectoryLookup.this.dir.!=(null)
+        </td>
+      </tr><tr>
+        <td>
+          127
+        </td>
+        <td>
+          10848
+        </td>
+        <td>
+          5015
+          -
+          5035
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.generic.GenericCompanion.apply
+        </td>
+        <td style="background: #F0ADAD">
+          scala.collection.Seq.apply[java.net.URL](JFileDirectoryLookup.this.dir.toURI().toURL())
+        </td>
+      </tr><tr>
+        <td>
+          127
+        </td>
+        <td>
+          10847
+        </td>
+        <td>
+          5019
+          -
+          5034
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.net.URI.toURL
+        </td>
+        <td style="background: #F0ADAD">
+          JFileDirectoryLookup.this.dir.toURI().toURL()
+        </td>
+      </tr><tr>
+        <td>
+          128
+        </td>
+        <td>
+          10849
+        </td>
+        <td>
+          5080
+          -
+          5091
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.io.File.getPath
+        </td>
+        <td style="background: #F0ADAD">
+          JFileDirectoryLookup.this.dir.getPath()
+        </td>
+      </tr><tr>
+        <td>
+          128
+        </td>
+        <td>
+          10850
+        </td>
+        <td>
+          5076
+          -
+          5092
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.generic.GenericCompanion.apply
+        </td>
+        <td style="background: #F0ADAD">
+          scala.collection.Seq.apply[String](JFileDirectoryLookup.this.dir.getPath())
+        </td>
+      </tr><tr>
+        <td>
+          134
+        </td>
+        <td>
+          10855
+        </td>
+        <td>
+          5210
+          -
+          5298
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          {
+  val fs: java.nio.file.FileSystem = java.nio.file.FileSystems.getFileSystem(java.net.URI.create(&quot;jrt:/&quot;));
+  scala.Some.apply[dotty.tools.dotc.classpath.JrtClassPath](new JrtClassPath(fs))
+}
+        </td>
+      </tr><tr>
+        <td>
+          135
+        </td>
+        <td>
+          10852
+        </td>
+        <td>
+          5219
+          -
+          5265
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.nio.file.FileSystems.getFileSystem
+        </td>
+        <td style="background: #F0ADAD">
+          java.nio.file.FileSystems.getFileSystem(java.net.URI.create(&quot;jrt:/&quot;))
+        </td>
+      </tr><tr>
+        <td>
+          135
+        </td>
+        <td>
+          10851
+        </td>
+        <td>
+          5245
+          -
+          5264
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.net.URI.create
+        </td>
+        <td style="background: #F0ADAD">
+          java.net.URI.create(&quot;jrt:/&quot;)
+        </td>
+      </tr><tr>
+        <td>
+          136
+        </td>
+        <td>
+          10854
+        </td>
+        <td>
+          5272
+          -
+          5298
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Some.apply
+        </td>
+        <td style="background: #F0ADAD">
+          scala.Some.apply[dotty.tools.dotc.classpath.JrtClassPath](new JrtClassPath(fs))
+        </td>
+      </tr><tr>
+        <td>
+          136
+        </td>
+        <td>
+          10853
+        </td>
+        <td>
+          5277
+          -
+          5297
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.classpath.JrtClassPath.&lt;init&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          new JrtClassPath(fs)
+        </td>
+      </tr><tr>
+        <td>
+          139
+        </td>
+        <td>
+          10856
+        </td>
+        <td>
+          5397
+          -
+          5401
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.None
+        </td>
+        <td style="background: #F0ADAD">
+          scala.None
+        </td>
+      </tr><tr>
+        <td>
+          155
+        </td>
+        <td>
+          10857
+        </td>
+        <td>
+          5911
+          -
+          5934
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.nio.file.FileSystem.getPath
+        </td>
+        <td style="background: #F0ADAD">
+          JrtClassPath.this.fs.getPath(&quot;/packages&quot;)
+        </td>
+      </tr><tr>
+        <td>
+          159
+        </td>
+        <td>
+          10858
+        </td>
+        <td>
+          6063
+          -
+          6103
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.nio.file.DirectoryStream.iterator
+        </td>
+        <td style="background: #F0ADAD">
+          java.nio.file.Files.newDirectoryStream(JrtClassPath.this.dir).iterator()
+        </td>
+      </tr><tr>
+        <td>
+          159
+        </td>
+        <td>
+          10859
+        </td>
+        <td>
+          6063
+          -
+          6111
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.collection.convert.Decorators.AsScala.asScala
+        </td>
+        <td style="background: #F0ADAD">
+          scala.collection.JavaConverters.asScalaIteratorConverter[java.nio.file.Path](java.nio.file.Files.newDirectoryStream(JrtClassPath.this.dir).iterator()).asScala
+        </td>
+      </tr><tr>
+        <td>
+          161
+        </td>
+        <td>
+          10861
+        </td>
+        <td>
+          6209
+          -
+          6232
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.nio.file.Files.isSymbolicLink
+        </td>
+        <td style="background: #F0ADAD">
+          java.nio.file.Files.isSymbolicLink(l)
+        </td>
+      </tr><tr>
+        <td>
+          161
+        </td>
+        <td>
+          10864
+        </td>
+        <td>
+          6265
+          -
+          6266
+        </td>
+        <td>
+          Ident
+        </td>
+        <td>
+          dotty.tools.dotc.classpath.JrtClassPath.l
+        </td>
+        <td style="background: #F0ADAD">
+          l
+        </td>
+      </tr><tr>
+        <td>
+          161
+        </td>
+        <td>
+          10860
+        </td>
+        <td>
+          6160
+          -
+          6187
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.util.stream.BaseStream.iterator
+        </td>
+        <td style="background: #F0ADAD">
+          java.nio.file.Files.list(pack).iterator()
+        </td>
+      </tr><tr>
+        <td>
+          161
+        </td>
+        <td>
+          10863
+        </td>
+        <td>
+          6234
+          -
+          6259
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          java.nio.file.Files.readSymbolicLink
+        </td>
+        <td style="background: #F0ADAD">
+          java.nio.file.Files.readSymbolicLink(l)
+        </td>
+      </tr><tr>
+        <td>
+          161
+        </td>
+        <td>
+          10865
+        </td>
+        <td>
+          6160
+          -
+          6274
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.collection.TraversableOnce.toList
+        </td>
+        <td style="background: #F0ADAD">
+          scala.collection.JavaConverters.asScalaIteratorConverter[java.nio.file.Path](java.nio.file.Files.list(pack).iterator()).asScala.map[java.nio.file.Path](((l: java.nio.file.Path) =&gt; if (java.nio.file.Files.isSymbolicLink(l))
+  java.nio.file.Files.readSymbolicLink(l)
+else
+  l)).toList
+        </td>
+      </tr><tr>
+        <td>
+          161
+        </td>
+        <td>
+          10862
+        </td>
+        <td>
+          6234
+          -
+          6259
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.nio.file.Files.readSymbolicLink
+        </td>
+        <td style="background: #F0ADAD">
+          java.nio.file.Files.readSymbolicLink(l)
+        </td>
+      </tr><tr>
+        <td>
+          163
+        </td>
+        <td>
+          10870
+        </td>
+        <td>
+          6285
+          -
+          6353
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          scala.collection.TraversableOnce.toMap
+        </td>
+        <td style="background: #F0ADAD">
+          ps.map[(String, Seq[java.nio.file.Path])](((p: java.nio.file.Path) =&gt; scala.Tuple2.apply[String, Seq[java.nio.file.Path]](scala.Predef.augmentString(p.toString()).stripPrefix(&quot;/packages/&quot;), lookup(p)))).toMap[String, Seq[java.nio.file.Path]](scala.Predef.$conforms[(String, Seq[java.nio.file.Path])])
+        </td>
+      </tr><tr>
+        <td>
+          163
+        </td>
+        <td>
+          10867
+        </td>
+        <td>
+          6336
+          -
+          6345
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.classpath.JrtClassPath.lookup
+        </td>
+        <td style="background: #F0ADAD">
+          lookup(p)
+        </td>
+      </tr><tr>
+        <td>
+          163
+        </td>
+        <td>
+          10869
+        </td>
+        <td>
+          6348
+          -
+          6348
+        </td>
+        <td>
+          TypeApply
+        </td>
+        <td>
+          scala.Predef.$conforms
+        </td>
+        <td style="background: #F0ADAD">
+          scala.Predef.$conforms[(String, Seq[java.nio.file.Path])]
+        </td>
+      </tr><tr>
+        <td>
+          163
+        </td>
+        <td>
+          10866
+        </td>
+        <td>
+          6298
+          -
+          6334
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.immutable.StringLike.stripPrefix
+        </td>
+        <td style="background: #F0ADAD">
+          scala.Predef.augmentString(p.toString()).stripPrefix(&quot;/packages/&quot;)
+        </td>
+      </tr><tr>
+        <td>
+          163
+        </td>
+        <td>
+          10868
+        </td>
+        <td>
+          6297
+          -
+          6346
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Tuple2.apply
+        </td>
+        <td style="background: #F0ADAD">
+          scala.Tuple2.apply[String, Seq[java.nio.file.Path]](scala.Predef.augmentString(p.toString()).stripPrefix(&quot;/packages/&quot;), lookup(p))
+        </td>
+      </tr><tr>
+        <td>
+          167
+        </td>
+        <td>
+          10871
+        </td>
+        <td>
+          6461
+          -
+          6495
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.MapLike.contains
+        </td>
+        <td style="background: #F0ADAD">
+          JrtClassPath.this.packageToModuleBases.contains(pkg)
+        </td>
+      </tr><tr>
+        <td>
+          171
+        </td>
+        <td>
+          10872
+        </td>
+        <td>
+          6633
+          -
+          6664
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.String.contains
+        </td>
+        <td style="background: #F0ADAD">
+          packageDottedName.contains(&quot;.&quot;)
+        </td>
+      </tr><tr>
+        <td>
+          172
+        </td>
+        <td>
+          10873
+        </td>
+        <td>
+          6674
+          -
+          6715
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.Object.==
+        </td>
+        <td style="background: #F0ADAD">
+          JrtClassPath.this.packageOf(packageDottedName).==(inPackage)
+        </td>
+      </tr><tr>
+        <td>
+          172
+        </td>
+        <td>
+          10874
+        </td>
+        <td>
+          6674
+          -
+          6715
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          java.lang.Object.==
+        </td>
+        <td style="background: #F0ADAD">
+          JrtClassPath.this.packageOf(packageDottedName).==(inPackage)
+        </td>
+      </tr><tr>
+        <td>
+          173
+        </td>
+        <td>
+          10876
+        </td>
+        <td>
+          6727
+          -
+          6742
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          java.lang.Object.==
+        </td>
+        <td style="background: #F0ADAD">
+          inPackage.==(&quot;&quot;)
+        </td>
+      </tr><tr>
+        <td>
+          173
+        </td>
+        <td>
+          10875
+        </td>
+        <td>
+          6727
+          -
+          6742
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.Object.==
+        </td>
+        <td style="background: #F0ADAD">
+          inPackage.==(&quot;&quot;)
+        </td>
+      </tr><tr>
+        <td>
+          174
+        </td>
+        <td>
+          10879
+        </td>
+        <td>
+          6747
+          -
+          6830
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.collection.TraversableOnce.toVector
+        </td>
+        <td style="background: #F0ADAD">
+          JrtClassPath.this.packageToModuleBases.keysIterator.filter({
+  ((packageDottedName: String) =&gt; matches(packageDottedName))
+}).map[dotty.tools.dotc.classpath.PackageEntryImpl](((x$1: String) =&gt; PackageEntryImpl.apply(x$1))).toVector
+        </td>
+      </tr><tr>
+        <td>
+          174
+        </td>
+        <td>
+          10878
+        </td>
+        <td>
+          6801
+          -
+          6820
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.classpath.PackageEntryImpl.apply
+        </td>
+        <td style="background: #F0ADAD">
+          PackageEntryImpl.apply(x$1)
+        </td>
+      </tr><tr>
+        <td>
+          174
+        </td>
+        <td>
+          10877
+        </td>
+        <td>
+          6788
+          -
+          6795
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.classpath.JrtClassPath.matches
+        </td>
+        <td style="background: #F0ADAD">
+          matches(packageDottedName)
+        </td>
+      </tr><tr>
+        <td>
+          177
+        </td>
+        <td>
+          10882
+        </td>
+        <td>
+          6933
+          -
+          6936
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          scala.collection.immutable.Nil
+        </td>
+        <td style="background: #F0ADAD">
+          scala.collection.immutable.Nil
+        </td>
+      </tr><tr>
+        <td>
+          177
+        </td>
+        <td>
+          10881
+        </td>
+        <td>
+          6933
+          -
+          6936
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.collection.immutable.Nil
+        </td>
+        <td style="background: #F0ADAD">
+          scala.collection.immutable.Nil
+        </td>
+      </tr><tr>
+        <td>
+          177
+        </td>
+        <td>
+          10880
+        </td>
+        <td>
+          6916
+          -
+          6931
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.Object.==
+        </td>
+        <td style="background: #F0ADAD">
+          inPackage.==(&quot;&quot;)
+        </td>
+      </tr><tr>
+        <td>
+          179
+        </td>
+        <td>
+          10887
+        </td>
+        <td>
+          7008
+          -
+          7008
+        </td>
+        <td>
+          TypeApply
+        </td>
+        <td>
+          scala.collection.Seq.canBuildFrom
+        </td>
+        <td style="background: #F0ADAD">
+          collection.this.Seq.canBuildFrom[java.nio.file.Path]
+        </td>
+      </tr><tr>
+        <td>
+          179
+        </td>
+        <td>
+          10883
+        </td>
+        <td>
+          6996
+          -
+          6999
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.collection.immutable.Nil
+        </td>
+        <td style="background: #F0ADAD">
+          scala.collection.immutable.Nil
+        </td>
+      </tr><tr>
+        <td>
+          180
+        </td>
+        <td>
+          10891
+        </td>
+        <td>
+          7146
+          -
+          7146
+        </td>
+        <td>
+          TypeApply
+        </td>
+        <td>
+          scala.collection.Seq.canBuildFrom
+        </td>
+        <td style="background: #F0ADAD">
+          collection.this.Seq.canBuildFrom[dotty.tools.dotc.classpath.ClassFileEntryImpl]
+        </td>
+      </tr><tr>
+        <td>
+          180
+        </td>
+        <td>
+          10885
+        </td>
+        <td>
+          7099
+          -
+          7140
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.String.endsWith
+        </td>
+        <td style="background: #F0ADAD">
+          x$2.getFileName().toString().endsWith(&quot;.class&quot;)
+        </td>
+      </tr><tr>
+        <td>
+          180
+        </td>
+        <td>
+          10884
+        </td>
+        <td>
+          7022
+          -
+          7083
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.util.stream.BaseStream.iterator
+        </td>
+        <td style="background: #F0ADAD">
+          java.nio.file.Files.list(x.resolve(inPackage.replace('.', '/'))).iterator()
+        </td>
+      </tr><tr>
+        <td>
+          180
+        </td>
+        <td>
+          10886
+        </td>
+        <td>
+          7022
+          -
+          7141
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.Iterator.filter
+        </td>
+        <td style="background: #F0ADAD">
+          scala.collection.JavaConverters.asScalaIteratorConverter[java.nio.file.Path](java.nio.file.Files.list(x.resolve(inPackage.replace('.', '/'))).iterator()).asScala.filter(((x$2: java.nio.file.Path) =&gt; x$2.getFileName().toString().endsWith(&quot;.class&quot;)))
+        </td>
+      </tr><tr>
+        <td>
+          181
+        </td>
+        <td>
+          10888
+        </td>
+        <td>
+          7193
+          -
+          7219
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.io.File.&lt;init&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          new dotty.tools.io.File(x)(io.this.Codec.fallbackSystemCodec)
+        </td>
+      </tr><tr>
+        <td>
+          181
+        </td>
+        <td>
+          10893
+        </td>
+        <td>
+          6954
+          -
+          7231
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          scala.collection.TraversableOnce.toVector
+        </td>
+        <td style="background: #F0ADAD">
+          JrtClassPath.this.packageToModuleBases.getOrElse[Seq[java.nio.file.Path]](inPackage, scala.collection.immutable.Nil).flatMap[java.nio.file.Path, Seq[java.nio.file.Path]](((x: java.nio.file.Path) =&gt; scala.collection.JavaConverters.asScalaIteratorConverter[java.nio.file.Path](java.nio.file.Files.list(x.resolve(inPackage.replace('.', '/'))).iterator()).asScala.filter(((x$2: java.nio.file.Path) =&gt; x$2.getFileName().toString().endsWith(&quot;.class&quot;)))))(collection.this.Seq.canBuildFrom[java.nio.file.Path]).map[dotty.tools.dotc.classpath.ClassFileEntryImpl, Seq[dotty.tools.dotc.classpath.ClassFileEntryImpl]](((x: java.nio.file.Path) =&gt; ClassFileEntryImpl.apply(new dotty.tools.io.PlainFile(new dotty.tools.io.File(x)(io.this.Codec.fallbackSystemCodec)))))(collection.this.Seq.canBuildFrom[dotty.tools.dotc.classpath.ClassFileEntryImpl]).toVector
+        </td>
+      </tr><tr>
+        <td>
+          181
+        </td>
+        <td>
+          10890
+        </td>
+        <td>
+          7160
+          -
+          7221
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.classpath.ClassFileEntryImpl.apply
+        </td>
+        <td style="background: #F0ADAD">
+          ClassFileEntryImpl.apply(new dotty.tools.io.PlainFile(new dotty.tools.io.File(x)(io.this.Codec.fallbackSystemCodec)))
+        </td>
+      </tr><tr>
+        <td>
+          181
+        </td>
+        <td>
+          10892
+        </td>
+        <td>
+          6954
+          -
+          7231
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.collection.TraversableOnce.toVector
+        </td>
+        <td style="background: #F0ADAD">
+          JrtClassPath.this.packageToModuleBases.getOrElse[Seq[java.nio.file.Path]](inPackage, scala.collection.immutable.Nil).flatMap[java.nio.file.Path, Seq[java.nio.file.Path]](((x: java.nio.file.Path) =&gt; scala.collection.JavaConverters.asScalaIteratorConverter[java.nio.file.Path](java.nio.file.Files.list(x.resolve(inPackage.replace('.', '/'))).iterator()).asScala.filter(((x$2: java.nio.file.Path) =&gt; x$2.getFileName().toString().endsWith(&quot;.class&quot;)))))(collection.this.Seq.canBuildFrom[java.nio.file.Path]).map[dotty.tools.dotc.classpath.ClassFileEntryImpl, Seq[dotty.tools.dotc.classpath.ClassFileEntryImpl]](((x: java.nio.file.Path) =&gt; ClassFileEntryImpl.apply(new dotty.tools.io.PlainFile(new dotty.tools.io.File(x)(io.this.Codec.fallbackSystemCodec)))))(collection.this.Seq.canBuildFrom[dotty.tools.dotc.classpath.ClassFileEntryImpl]).toVector
+        </td>
+      </tr><tr>
+        <td>
+          181
+        </td>
+        <td>
+          10889
+        </td>
+        <td>
+          7179
+          -
+          7220
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.io.PlainFile.&lt;init&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          new dotty.tools.io.PlainFile(new dotty.tools.io.File(x)(io.this.Codec.fallbackSystemCodec))
+        </td>
+      </tr><tr>
+        <td>
+          186
+        </td>
+        <td>
+          10897
+        </td>
+        <td>
+          7342
+          -
+          7384
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.classpath.ClassPathEntries.apply
+        </td>
+        <td style="background: #F0ADAD">
+          ClassPathEntries.apply(JrtClassPath.this.packages(inPackage), scala.collection.immutable.Nil)
+        </td>
+      </tr><tr>
+        <td>
+          186
+        </td>
+        <td>
+          10894
+        </td>
+        <td>
+          7325
+          -
+          7340
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.Object.==
+        </td>
+        <td style="background: #F0ADAD">
+          inPackage.==(&quot;&quot;)
+        </td>
+      </tr><tr>
+        <td>
+          186
+        </td>
+        <td>
+          10896
+        </td>
+        <td>
+          7380
+          -
+          7383
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.collection.immutable.Nil
+        </td>
+        <td style="background: #F0ADAD">
+          scala.collection.immutable.Nil
+        </td>
+      </tr><tr>
+        <td>
+          186
+        </td>
+        <td>
+          10898
+        </td>
+        <td>
+          7342
+          -
+          7384
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          dotty.tools.dotc.classpath.ClassPathEntries.apply
+        </td>
+        <td style="background: #F0ADAD">
+          ClassPathEntries.apply(JrtClassPath.this.packages(inPackage), scala.collection.immutable.Nil)
+        </td>
+      </tr><tr>
+        <td>
+          186
+        </td>
+        <td>
+          10895
+        </td>
+        <td>
+          7359
+          -
+          7378
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.classpath.JrtClassPath.packages
+        </td>
+        <td style="background: #F0ADAD">
+          JrtClassPath.this.packages(inPackage)
+        </td>
+      </tr><tr>
+        <td>
+          187
+        </td>
+        <td>
+          10900
+        </td>
+        <td>
+          7432
+          -
+          7450
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.classpath.JrtClassPath.classes
+        </td>
+        <td style="background: #F0ADAD">
+          JrtClassPath.this.classes(inPackage)
+        </td>
+      </tr><tr>
+        <td>
+          187
+        </td>
+        <td>
+          10902
+        </td>
+        <td>
+          7394
+          -
+          7451
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          dotty.tools.dotc.classpath.ClassPathEntries.apply
+        </td>
+        <td style="background: #F0ADAD">
+          ClassPathEntries.apply(JrtClassPath.this.packages(inPackage), JrtClassPath.this.classes(inPackage))
+        </td>
+      </tr><tr>
+        <td>
+          187
+        </td>
+        <td>
+          10899
+        </td>
+        <td>
+          7411
+          -
+          7430
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.classpath.JrtClassPath.packages
+        </td>
+        <td style="background: #F0ADAD">
+          JrtClassPath.this.packages(inPackage)
+        </td>
+      </tr><tr>
+        <td>
+          187
+        </td>
+        <td>
+          10901
+        </td>
+        <td>
+          7394
+          -
+          7451
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.classpath.ClassPathEntries.apply
+        </td>
+        <td style="background: #F0ADAD">
+          ClassPathEntries.apply(JrtClassPath.this.packages(inPackage), JrtClassPath.this.classes(inPackage))
+        </td>
+      </tr><tr>
+        <td>
+          189
+        </td>
+        <td>
+          10903
+        </td>
+        <td>
+          7482
+          -
+          7497
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.net.URI.toURL
+        </td>
+        <td style="background: #F0ADAD">
+          JrtClassPath.this.dir.toUri().toURL()
+        </td>
+      </tr><tr>
+        <td>
+          189
+        </td>
+        <td>
+          10904
+        </td>
+        <td>
+          7478
+          -
+          7498
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.generic.GenericCompanion.apply
+        </td>
+        <td style="background: #F0ADAD">
+          scala.collection.Seq.apply[java.net.URL](JrtClassPath.this.dir.toUri().toURL())
+        </td>
+      </tr><tr>
+        <td>
+          192
+        </td>
+        <td>
+          10905
+        </td>
+        <td>
+          7716
+          -
+          7719
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.collection.immutable.Nil
+        </td>
+        <td style="background: #F0ADAD">
+          scala.collection.immutable.Nil
+        </td>
+      </tr><tr>
+        <td>
+          195
+        </td>
+        <td>
+          10906
+        </td>
+        <td>
+          7814
+          -
+          7817
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          &quot;.&quot;
+        </td>
+      </tr><tr>
+        <td>
+          195
+        </td>
+        <td>
+          10909
+        </td>
+        <td>
+          7820
+          -
+          7824
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          scala.None
+        </td>
+        <td style="background: #F0ADAD">
+          scala.None
+        </td>
+      </tr><tr>
+        <td>
+          195
+        </td>
+        <td>
+          10908
+        </td>
+        <td>
+          7820
+          -
+          7824
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.None
+        </td>
+        <td style="background: #F0ADAD">
+          scala.None
+        </td>
+      </tr><tr>
+        <td>
+          195
+        </td>
+        <td>
+          10907
+        </td>
+        <td>
+          7794
+          -
+          7818
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.Boolean.unary_!
+        </td>
+        <td style="background: #F0ADAD">
+          className.contains(&quot;.&quot;).unary_!
+        </td>
+      </tr><tr>
+        <td>
+          196
+        </td>
+        <td>
+          10921
+        </td>
+        <td>
+          7834
+          -
+          8155
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          {
+  val inPackage: String = JrtClassPath.this.packageOf(className);
+  JrtClassPath.this.packageToModuleBases.getOrElse[Seq[java.nio.file.Path]](inPackage, scala.collection.immutable.Nil).iterator.flatMap[dotty.tools.io.PlainFile](((x: java.nio.file.Path) =&gt; {
+  val file: java.nio.file.Path = x.resolve(className.replace('.', '/').+(&quot;.class&quot;));
+  if (java.nio.file.Files.exists(file))
+    {
+      &lt;synthetic&gt; &lt;artifact&gt; val x$3: dotty.tools.io.PlainFile = new dotty.tools.io.PlainFile(new dotty.tools.io.File(file)(io.this.Codec.fallbackSystemCodec));
+      scala.collection.immutable.Nil.::[dotty.tools.io.PlainFile](x$3)
+    }
+  else
+    scala.collection.immutable.Nil
+})).take(1).toList.headOption
+}
+        </td>
+      </tr><tr>
+        <td>
+          197
+        </td>
+        <td>
+          10910
+        </td>
+        <td>
+          7858
+          -
+          7878
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.classpath.JrtClassPath.packageOf
+        </td>
+        <td style="background: #F0ADAD">
+          JrtClassPath.this.packageOf(className)
+        </td>
+      </tr><tr>
+        <td>
+          198
+        </td>
+        <td>
+          10911
+        </td>
+        <td>
+          7927
+          -
+          7930
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.collection.immutable.Nil
+        </td>
+        <td style="background: #F0ADAD">
+          scala.collection.immutable.Nil
+        </td>
+      </tr><tr>
+        <td>
+          199
+        </td>
+        <td>
+          10912
+        </td>
+        <td>
+          7983
+          -
+          8021
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.String.+
+        </td>
+        <td style="background: #F0ADAD">
+          className.replace('.', '/').+(&quot;.class&quot;)
+        </td>
+      </tr><tr>
+        <td>
+          199
+        </td>
+        <td>
+          10913
+        </td>
+        <td>
+          7973
+          -
+          8022
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.nio.file.Path.resolve
+        </td>
+        <td style="background: #F0ADAD">
+          x.resolve(className.replace('.', '/').+(&quot;.class&quot;))
+        </td>
+      </tr><tr>
+        <td>
+          200
+        </td>
+        <td>
+          10915
+        </td>
+        <td>
+          8100
+          -
+          8106
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.immutable.List.::
+        </td>
+        <td style="background: #F0ADAD">
+          scala.collection.immutable.Nil.::[dotty.tools.io.PlainFile](x$3)
+        </td>
+      </tr><tr>
+        <td>
+          200
+        </td>
+        <td>
+          10918
+        </td>
+        <td>
+          8112
+          -
+          8115
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          scala.collection.immutable.Nil
+        </td>
+        <td style="background: #F0ADAD">
+          scala.collection.immutable.Nil
+        </td>
+      </tr><tr>
+        <td>
+          200
+        </td>
+        <td>
+          10914
+        </td>
+        <td>
+          8035
+          -
+          8053
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.nio.file.Files.exists
+        </td>
+        <td style="background: #F0ADAD">
+          java.nio.file.Files.exists(file)
+        </td>
+      </tr><tr>
+        <td>
+          200
+        </td>
+        <td>
+          10917
+        </td>
+        <td>
+          8112
+          -
+          8115
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.collection.immutable.Nil
+        </td>
+        <td style="background: #F0ADAD">
+          scala.collection.immutable.Nil
+        </td>
+      </tr><tr>
+        <td>
+          200
+        </td>
+        <td>
+          10916
+        </td>
+        <td>
+          8055
+          -
+          8106
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          {
+  &lt;synthetic&gt; &lt;artifact&gt; val x$3: dotty.tools.io.PlainFile = new dotty.tools.io.PlainFile(new dotty.tools.io.File(file)(io.this.Codec.fallbackSystemCodec));
+  scala.collection.immutable.Nil.::[dotty.tools.io.PlainFile](x$3)
+}
+        </td>
+      </tr><tr>
+        <td>
+          201
+        </td>
+        <td>
+          10920
+        </td>
+        <td>
+          7885
+          -
+          8149
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.collection.TraversableLike.headOption
+        </td>
+        <td style="background: #F0ADAD">
+          JrtClassPath.this.packageToModuleBases.getOrElse[Seq[java.nio.file.Path]](inPackage, scala.collection.immutable.Nil).iterator.flatMap[dotty.tools.io.PlainFile](((x: java.nio.file.Path) =&gt; {
+  val file: java.nio.file.Path = x.resolve(className.replace('.', '/').+(&quot;.class&quot;));
+  if (java.nio.file.Files.exists(file))
+    {
+      &lt;synthetic&gt; &lt;artifact&gt; val x$3: dotty.tools.io.PlainFile = new dotty.tools.io.PlainFile(new dotty.tools.io.File(file)(io.this.Codec.fallbackSystemCodec));
+      scala.collection.immutable.Nil.::[dotty.tools.io.PlainFile](x$3)
+    }
+  else
+    scala.collection.immutable.Nil
+})).take(1).toList.headOption
+        </td>
+      </tr><tr>
+        <td>
+          201
+        </td>
+        <td>
+          10919
+        </td>
+        <td>
+          8129
+          -
+          8130
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          1
+        </td>
+      </tr><tr>
+        <td>
+          205
+        </td>
+        <td>
+          10924
+        </td>
+        <td>
+          8223
+          -
+          8285
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.String.substring
+        </td>
+        <td style="background: #F0ADAD">
+          dottedClassName.substring(0, dottedClassName.lastIndexOf(&quot;.&quot;))
+        </td>
+      </tr><tr>
+        <td>
+          205
+        </td>
+        <td>
+          10923
+        </td>
+        <td>
+          8252
+          -
+          8284
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.String.lastIndexOf
+        </td>
+        <td style="background: #F0ADAD">
+          dottedClassName.lastIndexOf(&quot;.&quot;)
+        </td>
+      </tr><tr>
+        <td>
+          205
+        </td>
+        <td>
+          10922
+        </td>
+        <td>
+          8249
+          -
+          8250
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          0
+        </td>
+      </tr><tr>
+        <td>
+          209
+        </td>
+        <td>
+          10925
+        </td>
+        <td>
+          8476
+          -
+          8523
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Option.map
+        </td>
+        <td style="background: #F0ADAD">
+          DirectoryClassPath.this.findClassFile(className).map[dotty.tools.dotc.classpath.ClassFileEntryImpl](ClassFileEntryImpl)
+        </td>
+      </tr><tr>
+        <td>
+          212
+        </td>
+        <td>
+          10926
+        </td>
+        <td>
+          8613
+          -
+          8641
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.classpath.FileUtils.dirPath
+        </td>
+        <td style="background: #AEF1AE">
+          FileUtils.dirPath(className)
+        </td>
+      </tr><tr>
+        <td>
+          213
+        </td>
+        <td>
+          10930
+        </td>
+        <td>
+          8675
+          -
+          8678
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.classpath.DirectoryClassPath.dir
+        </td>
+        <td style="background: #AEF1AE">
+          DirectoryClassPath.this.dir
+        </td>
+      </tr><tr>
+        <td>
+          213
+        </td>
+        <td>
+          10927
+        </td>
+        <td>
+          8674
+          -
+          8675
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          &quot;&quot;
+        </td>
+      </tr><tr>
+        <td>
+          213
+        </td>
+        <td>
+          10929
+        </td>
+        <td>
+          8692
+          -
+          8699
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          &quot;.class&quot;
+        </td>
+      </tr><tr>
+        <td>
+          213
+        </td>
+        <td>
+          10932
+        </td>
+        <td>
+          8662
+          -
+          8700
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.io.File.&lt;init&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          new java.io.File(scala.StringContext.apply(&quot;&quot;, &quot;/&quot;, &quot;.class&quot;).s(DirectoryClassPath.this.dir, relativePath))
+        </td>
+      </tr><tr>
+        <td>
+          213
+        </td>
+        <td>
+          10928
+        </td>
+        <td>
+          8678
+          -
+          8680
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          &quot;/&quot;
+        </td>
+      </tr><tr>
+        <td>
+          213
+        </td>
+        <td>
+          10931
+        </td>
+        <td>
+          8672
+          -
+          8699
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.StringContext.s
+        </td>
+        <td style="background: #AEF1AE">
+          scala.StringContext.apply(&quot;&quot;, &quot;/&quot;, &quot;.class&quot;).s(DirectoryClassPath.this.dir, relativePath)
+        </td>
+      </tr><tr>
+        <td>
+          214
+        </td>
+        <td>
+          10933
+        </td>
+        <td>
+          8709
+          -
+          8725
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.io.File.exists
+        </td>
+        <td style="background: #AEF1AE">
+          classFile.exists()
+        </td>
+      </tr><tr>
+        <td>
+          214
+        </td>
+        <td>
+          10938
+        </td>
+        <td>
+          8727
+          -
+          8897
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          {
+  val wrappedClassFile: dotty.tools.io.File = new dotty.tools.io.File(classFile.toPath())(io.this.Codec.fallbackSystemCodec);
+  val abstractClassFile: dotty.tools.io.PlainFile = new dotty.tools.io.PlainFile(wrappedClassFile);
+  scala.Some.apply[dotty.tools.io.PlainFile](abstractClassFile)
+}
+        </td>
+      </tr><tr>
+        <td>
+          215
+        </td>
+        <td>
+          10935
+        </td>
+        <td>
+          8758
+          -
+          8799
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.io.File.&lt;init&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          new dotty.tools.io.File(classFile.toPath())(io.this.Codec.fallbackSystemCodec)
+        </td>
+      </tr><tr>
+        <td>
+          215
+        </td>
+        <td>
+          10934
+        </td>
+        <td>
+          8782
+          -
+          8798
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.io.File.toPath
+        </td>
+        <td style="background: #AEF1AE">
+          classFile.toPath()
+        </td>
+      </tr><tr>
+        <td>
+          216
+        </td>
+        <td>
+          10936
+        </td>
+        <td>
+          8830
+          -
+          8861
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.io.PlainFile.&lt;init&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          new dotty.tools.io.PlainFile(wrappedClassFile)
+        </td>
+      </tr><tr>
+        <td>
+          217
+        </td>
+        <td>
+          10937
+        </td>
+        <td>
+          8868
+          -
+          8891
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Some.apply
+        </td>
+        <td style="background: #AEF1AE">
+          scala.Some.apply[dotty.tools.io.PlainFile](abstractClassFile)
+        </td>
+      </tr><tr>
+        <td>
+          218
+        </td>
+        <td>
+          10939
+        </td>
+        <td>
+          8903
+          -
+          8907
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.None
+        </td>
+        <td style="background: #F0ADAD">
+          scala.None
+        </td>
+      </tr><tr>
+        <td>
+          218
+        </td>
+        <td>
+          10940
+        </td>
+        <td>
+          8903
+          -
+          8907
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          scala.None
+        </td>
+        <td style="background: #F0ADAD">
+          scala.None
+        </td>
+      </tr><tr>
+        <td>
+          221
+        </td>
+        <td>
+          10941
+        </td>
+        <td>
+          8987
+          -
+          9011
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.classpath.ClassFileEntryImpl.apply
+        </td>
+        <td style="background: #AEF1AE">
+          ClassFileEntryImpl.apply(file)
+        </td>
+      </tr><tr>
+        <td>
+          222
+        </td>
+        <td>
+          10942
+        </td>
+        <td>
+          9064
+          -
+          9073
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.classpath.FileUtils.FileOps.isClass
+        </td>
+        <td style="background: #AEF1AE">
+          FileUtils.FileOps(f).isClass
+        </td>
+      </tr><tr>
+        <td>
+          224
+        </td>
+        <td>
+          10943
+        </td>
+        <td>
+          9146
+          -
+          9162
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.classpath.DirectoryLookup.files
+        </td>
+        <td style="background: #F0ADAD">
+          DirectoryClassPath.this.files(inPackage)
+        </td>
+      </tr><tr>
+        <td>
+          228
+        </td>
+        <td>
+          10944
+        </td>
+        <td>
+          9314
+          -
+          9331
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.io.ClassPath.asClassPathString
+        </td>
+        <td style="background: #F0ADAD">
+          DirectorySourcePath.this.asClassPathString
+        </td>
+      </tr><tr>
+        <td>
+          230
+        </td>
+        <td>
+          10945
+        </td>
+        <td>
+          9408
+          -
+          9433
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.classpath.SourceFileEntryImpl.apply
+        </td>
+        <td style="background: #AEF1AE">
+          SourceFileEntryImpl.apply(file)
+        </td>
+      </tr><tr>
+        <td>
+          231
+        </td>
+        <td>
+          10947
+        </td>
+        <td>
+          9486
+          -
+          9512
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.classpath.FileUtils.endsScalaOrJava
+        </td>
+        <td style="background: #AEF1AE">
+          FileUtils.endsScalaOrJava(f.getName())
+        </td>
+      </tr><tr>
+        <td>
+          231
+        </td>
+        <td>
+          10946
+        </td>
+        <td>
+          9502
+          -
+          9511
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.io.File.getName
+        </td>
+        <td style="background: #AEF1AE">
+          f.getName()
+        </td>
+      </tr><tr>
+        <td>
+          233
+        </td>
+        <td>
+          10948
+        </td>
+        <td>
+          9589
+          -
+          9638
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Option.map
+        </td>
+        <td style="background: #F0ADAD">
+          DirectorySourcePath.this.findSourceFile(className).map[dotty.tools.dotc.classpath.SourceFileEntryImpl](SourceFileEntryImpl)
+        </td>
+      </tr><tr>
+        <td>
+          236
+        </td>
+        <td>
+          10949
+        </td>
+        <td>
+          9737
+          -
+          9765
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.classpath.FileUtils.dirPath
+        </td>
+        <td style="background: #F0ADAD">
+          FileUtils.dirPath(className)
+        </td>
+      </tr><tr>
+        <td>
+          237
+        </td>
+        <td>
+          10951
+        </td>
+        <td>
+          9803
+          -
+          9809
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          &quot;java&quot;
+        </td>
+      </tr><tr>
+        <td>
+          237
+        </td>
+        <td>
+          10950
+        </td>
+        <td>
+          9794
+          -
+          9801
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          &quot;scala&quot;
+        </td>
+      </tr><tr>
+        <td>
+          238
+        </td>
+        <td>
+          10957
+        </td>
+        <td>
+          9839
+          -
+          9865
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.StringContext.s
+        </td>
+        <td style="background: #F0ADAD">
+          scala.StringContext.apply(&quot;&quot;, &quot;/&quot;, &quot;.&quot;, &quot;&quot;).s(DirectorySourcePath.this.dir, relativePath, ext)
+        </td>
+      </tr><tr>
+        <td>
+          238
+        </td>
+        <td>
+          10954
+        </td>
+        <td>
+          9859
+          -
+          9861
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          &quot;.&quot;
+        </td>
+      </tr><tr>
+        <td>
+          238
+        </td>
+        <td>
+          10953
+        </td>
+        <td>
+          9845
+          -
+          9847
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          &quot;/&quot;
+        </td>
+      </tr><tr>
+        <td>
+          238
+        </td>
+        <td>
+          10956
+        </td>
+        <td>
+          9842
+          -
+          9845
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.classpath.DirectorySourcePath.dir
+        </td>
+        <td style="background: #F0ADAD">
+          DirectorySourcePath.this.dir
+        </td>
+      </tr><tr>
+        <td>
+          238
+        </td>
+        <td>
+          10959
+        </td>
+        <td>
+          9821
+          -
+          9821
+        </td>
+        <td>
+          TypeApply
+        </td>
+        <td>
+          scala.collection.immutable.Stream.canBuildFrom
+        </td>
+        <td style="background: #F0ADAD">
+          immutable.this.Stream.canBuildFrom[java.io.File]
+        </td>
+      </tr><tr>
+        <td>
+          238
+        </td>
+        <td>
+          10958
+        </td>
+        <td>
+          9829
+          -
+          9866
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.io.File.&lt;init&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          new java.io.File(scala.StringContext.apply(&quot;&quot;, &quot;/&quot;, &quot;.&quot;, &quot;&quot;).s(DirectorySourcePath.this.dir, relativePath, ext))
+        </td>
+      </tr><tr>
+        <td>
+          238
+        </td>
+        <td>
+          10952
+        </td>
+        <td>
+          9841
+          -
+          9842
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          &quot;&quot;
+        </td>
+      </tr><tr>
+        <td>
+          238
+        </td>
+        <td>
+          10955
+        </td>
+        <td>
+          9864
+          -
+          9865
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          &quot;&quot;
+        </td>
+      </tr><tr>
+        <td>
+          239
+        </td>
+        <td>
+          10960
+        </td>
+        <td>
+          9903
+          -
+          9916
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.io.File.exists
+        </td>
+        <td style="background: #F0ADAD">
+          file.exists()
+        </td>
+      </tr><tr>
+        <td>
+          239
+        </td>
+        <td>
+          10962
+        </td>
+        <td>
+          9787
+          -
+          9926
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.TraversableOnce.collectFirst
+        </td>
+        <td style="background: #F0ADAD">
+          scala.`package`.Stream.apply[String](&quot;scala&quot;, &quot;java&quot;).map[java.io.File, scala.collection.immutable.Stream[java.io.File]](((ext: String) =&gt; new java.io.File(scala.StringContext.apply(&quot;&quot;, &quot;/&quot;, &quot;.&quot;, &quot;&quot;).s(DirectorySourcePath.this.dir, relativePath, ext))))(immutable.this.Stream.canBuildFrom[java.io.File]).collectFirst[java.io.File](({
+  @SerialVersionUID(value = 0) final &lt;synthetic&gt; class $anonfun extends scala.runtime.AbstractPartialFunction[java.io.File,java.io.File] with Serializable {
+    def &lt;init&gt;(): &lt;$anon: java.io.File =&gt; java.io.File&gt; = {
+      $anonfun.super.&lt;init&gt;();
+      ()
+    };
+    final override def applyOrElse[A1 &lt;: java.io.File, B1 &gt;: java.io.File](x1: A1, default: A1 =&gt; B1): B1 = ((x1.asInstanceOf[java.io.File]: java.io.File): java.io.File @unchecked) match {
+      case (file @ _) if file.exists() =&gt; file
+      case (defaultCase$ @ _) =&gt; default.apply(x1)
+    };
+    final def isDefinedAt(x1: java.io.File): Boolean = ((x1.asInstanceOf[java.io.File]: java.io.File): java.io.File @unchecked) match {
+      case (file @ _) if file.exists() =&gt; true
+      case (defaultCase$ @ _) =&gt; false
+    }
+  };
+  new $anonfun()
+}: PartialFunction[java.io.File,java.io.File]))
+        </td>
+      </tr><tr>
+        <td>
+          239
+        </td>
+        <td>
+          10961
+        </td>
+        <td>
+          9888
+          -
+          9888
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.classpath.DirectorySourcePath.$anonfun.&lt;init&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          new $anonfun()
+        </td>
+      </tr><tr>
+        <td>
+          241
+        </td>
+        <td>
+          10966
+        </td>
+        <td>
+          9932
+          -
+          10118
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Option.map
+        </td>
+        <td style="background: #F0ADAD">
+          sourceFile.map[dotty.tools.io.PlainFile](((file: java.io.File) =&gt; {
+  val wrappedSourceFile: dotty.tools.io.File = new dotty.tools.io.File(file.toPath())(io.this.Codec.fallbackSystemCodec);
+  val abstractSourceFile: dotty.tools.io.PlainFile = new dotty.tools.io.PlainFile(wrappedSourceFile);
+  abstractSourceFile
+}))
+        </td>
+      </tr><tr>
+        <td>
+          242
+        </td>
+        <td>
+          10963
+        </td>
+        <td>
+          10011
+          -
+          10022
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.io.File.toPath
+        </td>
+        <td style="background: #F0ADAD">
+          file.toPath()
+        </td>
+      </tr><tr>
+        <td>
+          242
+        </td>
+        <td>
+          10964
+        </td>
+        <td>
+          9987
+          -
+          10023
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.io.File.&lt;init&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          new dotty.tools.io.File(file.toPath())(io.this.Codec.fallbackSystemCodec)
+        </td>
+      </tr><tr>
+        <td>
+          243
+        </td>
+        <td>
+          10965
+        </td>
+        <td>
+          10055
+          -
+          10087
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.io.PlainFile.&lt;init&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          new dotty.tools.io.PlainFile(wrappedSourceFile)
+        </td>
+      </tr><tr>
+        <td>
+          248
+        </td>
+        <td>
+          10967
+        </td>
+        <td>
+          10196
+          -
+          10212
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.classpath.DirectoryLookup.files
+        </td>
+        <td style="background: #F0ADAD">
+          DirectorySourcePath.this.files(inPackage)
+        </td>
+      </tr>
+    </table>
+          </div>
+        </div>
+      </body>
+    </html>

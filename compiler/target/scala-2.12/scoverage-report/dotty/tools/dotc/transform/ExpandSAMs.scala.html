@@ -1,0 +1,1263 @@
+<html>
+      <head>
+        <meta http-equiv="Content-Type" content="text/html; charset=utf-8"/>
+        <title id="title">
+          dotty/tools/dotc/transform/ExpandSAMs.scala.html
+        </title>
+        <script src="https://ajax.googleapis.com/ajax/libs/jquery/1.10.2/jquery.min.js"></script><link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/jquery.tablesorter/2.20.1/css/theme.default.min.css" type="text/css"/><script src="https://cdnjs.cloudflare.com/ajax/libs/jquery.tablesorter/2.20.1/js/jquery.tablesorter.min.js"></script><link rel="stylesheet" href="https://netdna.bootstrapcdn.com/bootstrap/3.0.3/css/bootstrap.min.css" type="text/css"/><script src="https://netdna.bootstrapcdn.com/bootstrap/3.0.3/js/bootstrap.min.js"></script><script type="text/javascript">
+        $(document).ready(function() {$(".tablesorter").tablesorter();});
+      </script>
+        <style>
+          table.codegrid { font-family: monospace; font-size: 12px; width: auto!important; }table.statementlist { width: auto!important; font-size: 13px; } table.codegrid td { padding: 0!important; border: 0!important } table td.linenumber { width: 40px!important; } 
+        </style>
+      </head>
+      <body style="font-family: monospace;">
+        <ul class="nav nav-tabs">
+          <li>
+            <a href="#codegrid" data-toggle="tab">Codegrid</a>
+          </li>
+          <li>
+            <a href="#statementlist" data-toggle="tab">Statement List</a>
+          </li>
+        </ul>
+        <div class="tab-content">
+          <div class="tab-pane active" id="codegrid">
+            <pre style='font-size: 12pt; font-family: courier;'>1 <span style=''>package dotty.tools.dotc
+</span>2 <span style=''>package transform
+</span>3 <span style=''>
+</span>4 <span style=''>import core._
+</span>5 <span style=''>import Contexts._, Symbols._, Types._, Flags._, Decorators._, StdNames._, Constants._
+</span>6 <span style=''>import SymDenotations.SymDenotation
+</span>7 <span style=''>import MegaPhase._
+</span>8 <span style=''>import SymUtils._
+</span>9 <span style=''>import ast.untpd
+</span>10 <span style=''>import ast.Trees._
+</span>11 <span style=''>import dotty.tools.dotc.util.Positions.Position
+</span>12 <span style=''>
+</span>13 <span style=''>/** Expand SAM closures that cannot be represented by the JVM as lambdas to anonymous classes.
+</span>14 <span style=''> *  These fall into five categories
+</span>15 <span style=''> *
+</span>16 <span style=''> *   1. Partial function closures, we need to generate a isDefinedAt method for these.
+</span>17 <span style=''> *   2. Closures implementing non-trait classes.
+</span>18 <span style=''> *   3. Closures implementing classes that inherit from a class other than Object
+</span>19 <span style=''> *      (a lambda cannot not be a run-time subtype of such a class)
+</span>20 <span style=''> *   4. Closures that implement traits which run initialization code.
+</span>21 <span style=''> *   5. Closures that get synthesized abstract methods in the transformation pipeline. These methods can be
+</span>22 <span style=''> *      (1) superaccessors, (2) outer references, (3) accessors for fields.
+</span>23 <span style=''> */
+</span>24 <span style=''>class ExpandSAMs extends MiniPhase {
+</span>25 <span style=''>  override def phaseName = </span><span style='background: #AEF1AE'>&quot;expandSAMs&quot;</span><span style=''>
+</span>26 <span style=''>
+</span>27 <span style=''>  import ast.tpd._
+</span>28 <span style=''>
+</span>29 <span style=''>  /** Is the SAMType `cls` also a SAM under the rules of the platform? */
+</span>30 <span style=''>  def isPlatformSam(cls: ClassSymbol)(implicit ctx: Context): Boolean =
+</span>31 <span style=''>    </span><span style='background: #AEF1AE'>ctx.platform.isSam(cls)</span><span style=''>
+</span>32 <span style=''>
+</span>33 <span style=''>  override def transformBlock(tree: Block)(implicit ctx: Context): Tree = tree match {
+</span>34 <span style=''>    case Block(stats @ (fn: DefDef) :: Nil, Closure(_, fnRef, tpt)) if </span><span style='background: #AEF1AE'>fnRef.symbol == fn.symbol</span><span style=''> =&gt;
+</span>35 <span style=''>      </span><span style='background: #AEF1AE'>tpt.tpe</span><span style=''> match {
+</span>36 <span style=''>        case NoType =&gt; tree // it's a plain function
+</span>37 <span style=''>        case tpe @ SAMType(_) if </span><span style='background: #AEF1AE'>tpe.isRef(defn.PartialFunctionClass)</span><span style=''> =&gt;
+</span>38 <span style=''>          </span><span style='background: #AEF1AE'>checkRefinements(tpe, fn.pos)</span><span style=''>
+</span>39 <span style=''>          </span><span style='background: #AEF1AE'>toPartialFunction(tree)</span><span style=''>
+</span>40 <span style=''>        case tpe @ SAMType(_) if </span><span style='background: #AEF1AE'>isPlatformSam(tpe.classSymbol.asClass)</span><span style=''> =&gt;
+</span>41 <span style=''>          </span><span style='background: #AEF1AE'>checkRefinements(tpe, fn.pos)</span><span style=''>
+</span>42 <span style=''>          tree
+</span>43 <span style=''>        case tpe =&gt;
+</span>44 <span style=''>          val tpe1 = </span><span style='background: #AEF1AE'>checkRefinements(tpe, fn.pos)</span><span style=''>
+</span>45 <span style=''>          val Seq(samDenot) = </span><span style='background: #AEF1AE'>tpe1.abstractTermMembers.filter(!_.symbol.isSuperAccessor)</span><span style=''>
+</span>46 <span style=''>          </span><span style='background: #AEF1AE'>cpy.Block(tree)(stats,
+</span>47 <span style=''></span><span style='background: #AEF1AE'>              AnonClass(tpe1 :: Nil, fn.symbol.asTerm :: Nil, samDenot.symbol.asTerm.name :: Nil))</span><span style=''>
+</span>48 <span style=''>      }
+</span>49 <span style=''>    case _ =&gt;
+</span>50 <span style=''>      tree
+</span>51 <span style=''>  }
+</span>52 <span style=''>
+</span>53 <span style=''>  private def toPartialFunction(tree: Block)(implicit ctx: Context): Tree = {
+</span>54 <span style=''>    val Block(
+</span>55 <span style=''>          (applyDef @ DefDef(nme.ANON_FUN, Nil, List(List(param)), _, _)) :: Nil,
+</span>56 <span style=''>          Closure(_, _, tpt)) = tree
+</span>57 <span style=''>    val applyRhs: Tree = </span><span style='background: #AEF1AE'>applyDef.rhs</span><span style=''>
+</span>58 <span style=''>    val applyFn = </span><span style='background: #AEF1AE'>applyDef.symbol.asTerm</span><span style=''>
+</span>59 <span style=''>
+</span>60 <span style=''>    val MethodTpe(paramNames, paramTypes, _) = applyFn.info
+</span>61 <span style=''>    val isDefinedAtFn = </span><span style='background: #AEF1AE'>applyFn.copy(
+</span>62 <span style=''></span><span style='background: #AEF1AE'>        name  = nme.isDefinedAt,
+</span>63 <span style=''></span><span style='background: #AEF1AE'>        flags = Synthetic | Method,
+</span>64 <span style=''></span><span style='background: #AEF1AE'>        info = MethodType(paramNames, paramTypes, defn.BooleanType)).asTerm</span><span style=''>
+</span>65 <span style=''>    val tru = </span><span style='background: #AEF1AE'>Literal(Constant(true))</span><span style=''>
+</span>66 <span style=''>    def isDefinedAtRhs(paramRefss: List[List[Tree]]) = applyRhs match {
+</span>67 <span style=''>      case Match(selector, cases) =&gt;
+</span>68 <span style=''>        </span><span style='background: #AEF1AE'>assert(selector.symbol == param.symbol)</span><span style=''>
+</span>69 <span style=''>        val paramRef = </span><span style='background: #AEF1AE'>paramRefss.head.head</span><span style=''>
+</span>70 <span style=''>        // Again, the alternative
+</span>71 <span style=''>        //     val List(List(paramRef)) = paramRefs
+</span>72 <span style=''>        // fails with a similar self instantiation error
+</span>73 <span style=''>        def translateCase(cdef: CaseDef): CaseDef =
+</span>74 <span style=''>          </span><span style='background: #AEF1AE'>cpy.CaseDef(cdef)(body = tru).changeOwner(applyFn, isDefinedAtFn)</span><span style=''>
+</span>75 <span style=''>        val defaultSym = </span><span style='background: #AEF1AE'>ctx.newSymbol(isDefinedAtFn, nme.WILDCARD, Synthetic, selector.tpe.widen)</span><span style=''>
+</span>76 <span style=''>        val defaultCase =
+</span>77 <span style=''>          </span><span style='background: #AEF1AE'>CaseDef(
+</span>78 <span style=''></span><span style='background: #AEF1AE'>            Bind(defaultSym, Underscore(selector.tpe.widen)),
+</span>79 <span style=''></span><span style='background: #AEF1AE'>            EmptyTree,
+</span>80 <span style=''></span><span style='background: #AEF1AE'>            Literal(Constant(false)))</span><span style=''>
+</span>81 <span style=''>        val annotated = </span><span style='background: #AEF1AE'>Annotated(paramRef, New(ref(defn.UncheckedAnnotType)))</span><span style=''>
+</span>82 <span style=''>        </span><span style='background: #AEF1AE'>cpy.Match(applyRhs)(annotated, cases.map(translateCase) :+ defaultCase)</span><span style=''>
+</span>83 <span style=''>      case _ =&gt;
+</span>84 <span style=''>        tru
+</span>85 <span style=''>    }
+</span>86 <span style=''>    val isDefinedAtDef = </span><span style='background: #AEF1AE'>transformFollowingDeep(DefDef(isDefinedAtFn, isDefinedAtRhs(_)))</span><span style=''>
+</span>87 <span style=''>    val anonCls = </span><span style='background: #AEF1AE'>AnonClass(tpt.tpe :: Nil, List(applyFn, isDefinedAtFn), List(nme.apply, nme.isDefinedAt))</span><span style=''>
+</span>88 <span style=''>    </span><span style='background: #AEF1AE'>cpy.Block(tree)(List(applyDef, isDefinedAtDef), anonCls)</span><span style=''>
+</span>89 <span style=''>  }
+</span>90 <span style=''>
+</span>91 <span style=''>  private def checkRefinements(tpe: Type, pos: Position)(implicit ctx: Context): Type = tpe match {
+</span>92 <span style=''>    case RefinedType(parent, name, _) =&gt;
+</span>93 <span style=''>      if (</span><span style='background: #AEF1AE'>name.isTermName &amp;&amp; tpe.member(name).symbol.ownersIterator.isEmpty</span><span style=''>) // if member defined in the refinement
+</span>94 <span style=''>        </span><span style='background: #AEF1AE'>ctx.error(&quot;Lambda does not define &quot; + name, pos)</span><span style=''>
+</span>95 <span style=''>      </span><span style='background: #AEF1AE'>checkRefinements(parent, pos)</span><span style=''>
+</span>96 <span style=''>    case _ =&gt;
+</span>97 <span style=''>      tpe
+</span>98 <span style=''>  }
+</span>99 <span style=''>
+</span>100 <span style=''>}
+</span></pre>
+          </div>
+          <div class="tab-pane" id="statementlist">
+            <table cellspacing="0" cellpadding="0" class="table statementlist">
+      <tr>
+        <th>Line</th>
+        <th>Stmt Id</th>
+        <th>Pos</th>
+        <th>Tree</th>
+        <th>Symbol</th>
+        <th>Code</th>
+      </tr><tr>
+        <td>
+          25
+        </td>
+        <td>
+          54219
+        </td>
+        <td>
+          1044
+          -
+          1056
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          &quot;expandSAMs&quot;
+        </td>
+      </tr><tr>
+        <td>
+          31
+        </td>
+        <td>
+          54220
+        </td>
+        <td>
+          1228
+          -
+          1251
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.config.Platform.isSam
+        </td>
+        <td style="background: #AEF1AE">
+          Contexts.this.Context.toBase(ctx).platform.isSam(cls)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          34
+        </td>
+        <td>
+          54222
+        </td>
+        <td>
+          1411
+          -
+          1436
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.Object.==
+        </td>
+        <td style="background: #AEF1AE">
+          fnRef.symbol(ctx).==(fn.symbol(ctx))
+        </td>
+      </tr><tr>
+        <td>
+          34
+        </td>
+        <td>
+          54221
+        </td>
+        <td>
+          1427
+          -
+          1436
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Trees.Tree.symbol
+        </td>
+        <td style="background: #AEF1AE">
+          fn.symbol(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          35
+        </td>
+        <td>
+          54223
+        </td>
+        <td>
+          1446
+          -
+          1453
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Trees.Tree.tpe
+        </td>
+        <td style="background: #AEF1AE">
+          tpt.tpe
+        </td>
+      </tr><tr>
+        <td>
+          37
+        </td>
+        <td>
+          54224
+        </td>
+        <td>
+          1548
+          -
+          1584
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.Types.Type.isRef
+        </td>
+        <td style="background: #AEF1AE">
+          tpe.isRef(core.Symbols.defn(ctx).PartialFunctionClass(ctx))(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          38
+        </td>
+        <td>
+          54225
+        </td>
+        <td>
+          1598
+          -
+          1627
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.transform.ExpandSAMs.checkRefinements
+        </td>
+        <td style="background: #AEF1AE">
+          ExpandSAMs.this.checkRefinements(tpe, fn.pos)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          39
+        </td>
+        <td>
+          54226
+        </td>
+        <td>
+          1638
+          -
+          1661
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.transform.ExpandSAMs.toPartialFunction
+        </td>
+        <td style="background: #AEF1AE">
+          ExpandSAMs.this.toPartialFunction(tree)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          40
+        </td>
+        <td>
+          54227
+        </td>
+        <td>
+          1695
+          -
+          1733
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.transform.ExpandSAMs.isPlatformSam
+        </td>
+        <td style="background: #AEF1AE">
+          ExpandSAMs.this.isPlatformSam(tpe.classSymbol(ctx).asClass)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          41
+        </td>
+        <td>
+          54228
+        </td>
+        <td>
+          1747
+          -
+          1776
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.transform.ExpandSAMs.checkRefinements
+        </td>
+        <td style="background: #AEF1AE">
+          ExpandSAMs.this.checkRefinements(tpe, fn.pos)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          44
+        </td>
+        <td>
+          54229
+        </td>
+        <td>
+          1833
+          -
+          1862
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.transform.ExpandSAMs.checkRefinements
+        </td>
+        <td style="background: #AEF1AE">
+          ExpandSAMs.this.checkRefinements(tpe, fn.pos)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          45
+        </td>
+        <td>
+          54231
+        </td>
+        <td>
+          1925
+          -
+          1950
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.Boolean.unary_!
+        </td>
+        <td style="background: #AEF1AE">
+          SymUtils.decorateSymbol(x$1.symbol).isSuperAccessor(ctx).unary_!
+        </td>
+      </tr><tr>
+        <td>
+          45
+        </td>
+        <td>
+          54230
+        </td>
+        <td>
+          1926
+          -
+          1934
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Denotations.Denotation.symbol
+        </td>
+        <td style="background: #AEF1AE">
+          x$1.symbol
+        </td>
+      </tr><tr>
+        <td>
+          45
+        </td>
+        <td>
+          54232
+        </td>
+        <td>
+          1893
+          -
+          1951
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.TraversableLike.filter
+        </td>
+        <td style="background: #AEF1AE">
+          tpe1.abstractTermMembers(ctx).filter(((x$1: dotty.tools.dotc.core.Denotations.SingleDenotation) =&gt; SymUtils.decorateSymbol(x$1.symbol).isSuperAccessor(ctx).unary_!))
+        </td>
+      </tr><tr>
+        <td>
+          46
+        </td>
+        <td>
+          54233
+        </td>
+        <td>
+          1962
+          -
+          2083
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.tpd.TypedTreeCopier.Block
+        </td>
+        <td style="background: #AEF1AE">
+          ExpandSAMs.this.cpy.Block(tree)(stats, ast.tpd.AnonClass({
+  &lt;synthetic&gt; &lt;artifact&gt; val x$2: dotty.tools.dotc.core.Types.Type = tpe1;
+  scala.collection.immutable.Nil.::[dotty.tools.dotc.core.Types.Type](x$2)
+}, {
+  &lt;synthetic&gt; &lt;artifact&gt; val x$3: dotty.tools.dotc.core.Symbols.TermSymbol = fn.symbol(ctx).asTerm(ctx);
+  scala.collection.immutable.Nil.::[dotty.tools.dotc.core.Symbols.TermSymbol](x$3)
+}, {
+  &lt;synthetic&gt; &lt;artifact&gt; val x$4: dotty.tools.dotc.core.Names.TermName = samDenot.symbol.asTerm(ctx).name(ctx);
+  scala.collection.immutable.Nil.::[dotty.tools.dotc.core.Names.TermName](x$4)
+})(ctx))(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          55
+        </td>
+        <td>
+          54234
+        </td>
+        <td>
+          2226
+          -
+          2226
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.Tuple3._1
+        </td>
+        <td style="background: #AEF1AE">
+          x$5._1
+        </td>
+      </tr><tr>
+        <td>
+          55
+        </td>
+        <td>
+          54235
+        </td>
+        <td>
+          2273
+          -
+          2273
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.Tuple3._2
+        </td>
+        <td style="background: #AEF1AE">
+          x$5._2
+        </td>
+      </tr><tr>
+        <td>
+          56
+        </td>
+        <td>
+          54236
+        </td>
+        <td>
+          2321
+          -
+          2321
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.Tuple3._3
+        </td>
+        <td style="background: #AEF1AE">
+          x$5._3
+        </td>
+      </tr><tr>
+        <td>
+          57
+        </td>
+        <td>
+          54237
+        </td>
+        <td>
+          2359
+          -
+          2371
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Trees.ValOrDefDef.rhs
+        </td>
+        <td style="background: #AEF1AE">
+          applyDef.rhs(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          58
+        </td>
+        <td>
+          54238
+        </td>
+        <td>
+          2390
+          -
+          2412
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.Symbols.Symbol.asTerm
+        </td>
+        <td style="background: #AEF1AE">
+          applyDef.symbol(ctx).asTerm(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          60
+        </td>
+        <td>
+          54240
+        </td>
+        <td>
+          2444
+          -
+          2444
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.Tuple2._2
+        </td>
+        <td style="background: #AEF1AE">
+          x$6._2
+        </td>
+      </tr><tr>
+        <td>
+          60
+        </td>
+        <td>
+          54239
+        </td>
+        <td>
+          2432
+          -
+          2432
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.Tuple2._1
+        </td>
+        <td style="background: #AEF1AE">
+          x$6._1
+        </td>
+      </tr><tr>
+        <td>
+          64
+        </td>
+        <td>
+          54241
+        </td>
+        <td>
+          2498
+          -
+          2656
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.Symbols.Symbol.asTerm
+        </td>
+        <td style="background: #AEF1AE">
+          {
+  &lt;artifact&gt; val qual$1: dotty.tools.dotc.core.Symbols.Copier[applyFn.ThisName] = core.Symbols.Copier[applyFn.ThisName](applyFn)(ctx);
+  &lt;artifact&gt; val x$9: dotty.tools.dotc.core.Names.TermName = core.StdNames.nme.isDefinedAt;
+  &lt;artifact&gt; val x$10: dotty.tools.dotc.core.Flags.FlagSet = core.Flags.Synthetic.|(core.Flags.Method);
+  &lt;artifact&gt; val x$11: dotty.tools.dotc.core.Types.MethodType = core.Types.MethodType.apply(paramNames, paramTypes, core.Symbols.defn(ctx).BooleanType)(ctx);
+  &lt;artifact&gt; val x$12: dotty.tools.dotc.core.Symbols.Symbol = qual$1.copy$default$1;
+  &lt;artifact&gt; val x$13: dotty.tools.dotc.core.Symbols.Symbol = qual$1.copy$default$5;
+  &lt;artifact&gt; val x$14: dotty.tools.dotc.util.Positions.Coord = qual$1.copy$default$6;
+  &lt;artifact&gt; val x$15: dotty.tools.io.AbstractFile = qual$1.copy$default$7;
+  qual$1.copy(x$12, x$9, x$10, x$11, x$13, x$14, x$15)
+}.asTerm(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          65
+        </td>
+        <td>
+          54242
+        </td>
+        <td>
+          2671
+          -
+          2694
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.tpd.Literal
+        </td>
+        <td style="background: #AEF1AE">
+          ast.tpd.Literal(core.Constants.Constant.apply(true))(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          68
+        </td>
+        <td>
+          54243
+        </td>
+        <td>
+          2838
+          -
+          2850
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Trees.Tree.symbol
+        </td>
+        <td style="background: #AEF1AE">
+          param.symbol(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          68
+        </td>
+        <td>
+          54245
+        </td>
+        <td>
+          2812
+          -
+          2851
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Predef.assert
+        </td>
+        <td style="background: #AEF1AE">
+          scala.Predef.assert(selector.symbol(ctx).==(param.symbol(ctx)))
+        </td>
+      </tr><tr>
+        <td>
+          68
+        </td>
+        <td>
+          54244
+        </td>
+        <td>
+          2819
+          -
+          2850
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.Object.==
+        </td>
+        <td style="background: #AEF1AE">
+          selector.symbol(ctx).==(param.symbol(ctx))
+        </td>
+      </tr><tr>
+        <td>
+          69
+        </td>
+        <td>
+          54246
+        </td>
+        <td>
+          2875
+          -
+          2895
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.collection.IterableLike.head
+        </td>
+        <td style="background: #AEF1AE">
+          paramRefss.head.head
+        </td>
+      </tr><tr>
+        <td>
+          74
+        </td>
+        <td>
+          54247
+        </td>
+        <td>
+          3101
+          -
+          3166
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.tpd.TreeOps.changeOwner
+        </td>
+        <td style="background: #AEF1AE">
+          ast.tpd.TreeOps[dotty.tools.dotc.ast.tpd.CaseDef]({
+  &lt;artifact&gt; val x$16: dotty.tools.dotc.ast.tpd.CaseDef = cdef;
+  &lt;artifact&gt; val x$17: dotty.tools.dotc.ast.tpd.Literal = tru;
+  &lt;artifact&gt; val x$18: dotty.tools.dotc.ast.tpd.Tree = ExpandSAMs.this.cpy.CaseDef$default$2(x$16);
+  &lt;artifact&gt; val x$19: dotty.tools.dotc.ast.tpd.Tree = ExpandSAMs.this.cpy.CaseDef$default$3(x$16);
+  ExpandSAMs.this.cpy.CaseDef(x$16)(x$18, x$19, x$17)(ctx)
+}).changeOwner(applyFn, isDefinedAtFn)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          75
+        </td>
+        <td>
+          54249
+        </td>
+        <td>
+          3235
+          -
+          3244
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Flags.Synthetic
+        </td>
+        <td style="background: #AEF1AE">
+          core.Flags.Synthetic
+        </td>
+      </tr><tr>
+        <td>
+          75
+        </td>
+        <td>
+          54252
+        </td>
+        <td>
+          3196
+          -
+          3196
+        </td>
+        <td>
+          TypeApply
+        </td>
+        <td>
+          dotty.tools.dotc.core.Symbols.newSymbol$default$6
+        </td>
+        <td style="background: #AEF1AE">
+          ctx.newSymbol$default$6[Nothing]
+        </td>
+      </tr><tr>
+        <td>
+          75
+        </td>
+        <td>
+          54248
+        </td>
+        <td>
+          3221
+          -
+          3233
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.StdNames.ScalaNames.WILDCARD
+        </td>
+        <td style="background: #AEF1AE">
+          core.StdNames.nme.WILDCARD
+        </td>
+      </tr><tr>
+        <td>
+          75
+        </td>
+        <td>
+          54251
+        </td>
+        <td>
+          3196
+          -
+          3196
+        </td>
+        <td>
+          TypeApply
+        </td>
+        <td>
+          dotty.tools.dotc.core.Symbols.newSymbol$default$5
+        </td>
+        <td style="background: #AEF1AE">
+          ctx.newSymbol$default$5[Nothing]
+        </td>
+      </tr><tr>
+        <td>
+          75
+        </td>
+        <td>
+          54250
+        </td>
+        <td>
+          3246
+          -
+          3264
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.Types.Type.widen
+        </td>
+        <td style="background: #AEF1AE">
+          selector.tpe.widen(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          75
+        </td>
+        <td>
+          54253
+        </td>
+        <td>
+          3192
+          -
+          3265
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.core.Symbols.newSymbol
+        </td>
+        <td style="background: #AEF1AE">
+          ctx.newSymbol[dotty.tools.dotc.core.Names.TermName](isDefinedAtFn, core.StdNames.nme.WILDCARD, core.Flags.Synthetic, selector.tpe.widen(ctx), ctx.newSymbol$default$5[Nothing], ctx.newSymbol$default$6[Nothing])
+        </td>
+      </tr><tr>
+        <td>
+          77
+        </td>
+        <td>
+          54254
+        </td>
+        <td>
+          3302
+          -
+          3433
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.tpd.CaseDef
+        </td>
+        <td style="background: #AEF1AE">
+          ast.tpd.CaseDef(ast.tpd.Bind(defaultSym, ast.tpd.Underscore(selector.tpe.widen(ctx))(ctx))(ctx), ast.tpd.EmptyTree, ast.tpd.Literal(core.Constants.Constant.apply(false))(ctx))(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          81
+        </td>
+        <td>
+          54255
+        </td>
+        <td>
+          3458
+          -
+          3512
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.tpd.Annotated
+        </td>
+        <td style="background: #AEF1AE">
+          ast.tpd.Annotated(paramRef, ast.tpd.New(ast.tpd.ref(core.Symbols.defn(ctx).UncheckedAnnotType)(ctx))(ctx))(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          82
+        </td>
+        <td>
+          54256
+        </td>
+        <td>
+          3521
+          -
+          3592
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.tpd.TypedTreeCopier.Match
+        </td>
+        <td style="background: #AEF1AE">
+          ExpandSAMs.this.cpy.Match(applyRhs)(annotated, cases.map[dotty.tools.dotc.ast.tpd.CaseDef, List[dotty.tools.dotc.ast.tpd.CaseDef]]({
+  ((cdef: dotty.tools.dotc.ast.tpd.CaseDef) =&gt; translateCase(cdef))
+})(immutable.this.List.canBuildFrom[dotty.tools.dotc.ast.tpd.CaseDef]).:+[dotty.tools.dotc.ast.tpd.CaseDef, List[dotty.tools.dotc.ast.tpd.CaseDef]](defaultCase)(immutable.this.List.canBuildFrom[dotty.tools.dotc.ast.tpd.CaseDef]))(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          86
+        </td>
+        <td>
+          54257
+        </td>
+        <td>
+          3652
+          -
+          3716
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.transform.MegaPhase.MiniPhase.transformFollowingDeep
+        </td>
+        <td style="background: #AEF1AE">
+          ExpandSAMs.this.transformFollowingDeep(ast.tpd.DefDef(isDefinedAtFn, ((x$7: List[List[dotty.tools.dotc.ast.tpd.Tree]]) =&gt; isDefinedAtRhs(x$7)))(ctx))(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          87
+        </td>
+        <td>
+          54258
+        </td>
+        <td>
+          3735
+          -
+          3824
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.tpd.AnonClass
+        </td>
+        <td style="background: #AEF1AE">
+          ast.tpd.AnonClass({
+  &lt;synthetic&gt; &lt;artifact&gt; val x$8: dotty.tools.dotc.core.Types.Type = tpt.tpe;
+  scala.collection.immutable.Nil.::[dotty.tools.dotc.core.Types.Type](x$8)
+}, scala.collection.immutable.List.apply[dotty.tools.dotc.core.Symbols.TermSymbol](applyFn, isDefinedAtFn), scala.collection.immutable.List.apply[dotty.tools.dotc.core.Names.TermName](core.StdNames.nme.apply, core.StdNames.nme.isDefinedAt))(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          88
+        </td>
+        <td>
+          54259
+        </td>
+        <td>
+          3829
+          -
+          3885
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.tpd.TypedTreeCopier.Block
+        </td>
+        <td style="background: #AEF1AE">
+          ExpandSAMs.this.cpy.Block(tree)(scala.collection.immutable.List.apply[dotty.tools.dotc.ast.tpd.Tree](applyDef, isDefinedAtDef), anonCls)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          93
+        </td>
+        <td>
+          54261
+        </td>
+        <td>
+          4061
+          -
+          4107
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.collection.Iterator.isEmpty
+        </td>
+        <td style="background: #AEF1AE">
+          core.Symbols.toDenot(tpe.member(name)(ctx).symbol)(ctx).ownersIterator(ctx).isEmpty
+        </td>
+      </tr><tr>
+        <td>
+          93
+        </td>
+        <td>
+          54260
+        </td>
+        <td>
+          4061
+          -
+          4084
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Denotations.Denotation.symbol
+        </td>
+        <td style="background: #AEF1AE">
+          tpe.member(name)(ctx).symbol
+        </td>
+      </tr><tr>
+        <td>
+          93
+        </td>
+        <td>
+          54269
+        </td>
+        <td>
+          4038
+          -
+          4038
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          ()
+        </td>
+      </tr><tr>
+        <td>
+          93
+        </td>
+        <td>
+          54268
+        </td>
+        <td>
+          4038
+          -
+          4038
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          ()
+        </td>
+      </tr><tr>
+        <td>
+          93
+        </td>
+        <td>
+          54262
+        </td>
+        <td>
+          4042
+          -
+          4107
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Boolean.&amp;&amp;
+        </td>
+        <td style="background: #AEF1AE">
+          name.isTermName.&amp;&amp;(core.Symbols.toDenot(tpe.member(name)(ctx).symbol)(ctx).ownersIterator(ctx).isEmpty)
+        </td>
+      </tr><tr>
+        <td>
+          94
+        </td>
+        <td>
+          54264
+        </td>
+        <td>
+          4166
+          -
+          4198
+        </td>
+        <td>
+          ApplyImplicitView
+        </td>
+        <td>
+          dotty.tools.dotc.reporting.diagnostic.Message.toNoExplanation
+        </td>
+        <td style="background: #AEF1AE">
+          diagnostic.this.Message.toNoExplanation(&quot;Lambda does not define &quot;.+(name))
+        </td>
+      </tr><tr>
+        <td>
+          94
+        </td>
+        <td>
+          54267
+        </td>
+        <td>
+          4156
+          -
+          4204
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          dotty.tools.dotc.reporting.Reporting.error
+        </td>
+        <td style="background: #AEF1AE">
+          ctx.error(diagnostic.this.Message.toNoExplanation(&quot;Lambda does not define &quot;.+(name)), core.Decorators.sourcePos(pos)(ctx))
+        </td>
+      </tr><tr>
+        <td>
+          94
+        </td>
+        <td>
+          54263
+        </td>
+        <td>
+          4166
+          -
+          4198
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.String.+
+        </td>
+        <td style="background: #AEF1AE">
+          &quot;Lambda does not define &quot;.+(name)
+        </td>
+      </tr><tr>
+        <td>
+          94
+        </td>
+        <td>
+          54266
+        </td>
+        <td>
+          4156
+          -
+          4204
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.reporting.Reporting.error
+        </td>
+        <td style="background: #AEF1AE">
+          ctx.error(diagnostic.this.Message.toNoExplanation(&quot;Lambda does not define &quot;.+(name)), core.Decorators.sourcePos(pos)(ctx))
+        </td>
+      </tr><tr>
+        <td>
+          94
+        </td>
+        <td>
+          54265
+        </td>
+        <td>
+          4200
+          -
+          4203
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.Decorators.sourcePos
+        </td>
+        <td style="background: #AEF1AE">
+          core.Decorators.sourcePos(pos)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          95
+        </td>
+        <td>
+          54270
+        </td>
+        <td>
+          4211
+          -
+          4240
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.transform.ExpandSAMs.checkRefinements
+        </td>
+        <td style="background: #AEF1AE">
+          ExpandSAMs.this.checkRefinements(parent, pos)(ctx)
+        </td>
+      </tr>
+    </table>
+          </div>
+        </div>
+      </body>
+    </html>

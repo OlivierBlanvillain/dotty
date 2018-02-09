@@ -1,0 +1,1642 @@
+<html>
+      <head>
+        <meta http-equiv="Content-Type" content="text/html; charset=utf-8"/>
+        <title id="title">
+          dotty/tools/dotc/transform/ElimErasedValueType.scala.html
+        </title>
+        <script src="https://ajax.googleapis.com/ajax/libs/jquery/1.10.2/jquery.min.js"></script><link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/jquery.tablesorter/2.20.1/css/theme.default.min.css" type="text/css"/><script src="https://cdnjs.cloudflare.com/ajax/libs/jquery.tablesorter/2.20.1/js/jquery.tablesorter.min.js"></script><link rel="stylesheet" href="https://netdna.bootstrapcdn.com/bootstrap/3.0.3/css/bootstrap.min.css" type="text/css"/><script src="https://netdna.bootstrapcdn.com/bootstrap/3.0.3/js/bootstrap.min.js"></script><script type="text/javascript">
+        $(document).ready(function() {$(".tablesorter").tablesorter();});
+      </script>
+        <style>
+          table.codegrid { font-family: monospace; font-size: 12px; width: auto!important; }table.statementlist { width: auto!important; font-size: 13px; } table.codegrid td { padding: 0!important; border: 0!important } table td.linenumber { width: 40px!important; } 
+        </style>
+      </head>
+      <body style="font-family: monospace;">
+        <ul class="nav nav-tabs">
+          <li>
+            <a href="#codegrid" data-toggle="tab">Codegrid</a>
+          </li>
+          <li>
+            <a href="#statementlist" data-toggle="tab">Statement List</a>
+          </li>
+        </ul>
+        <div class="tab-content">
+          <div class="tab-pane active" id="codegrid">
+            <pre style='font-size: 12pt; font-family: courier;'>1 <span style=''>package dotty.tools.dotc
+</span>2 <span style=''>package transform
+</span>3 <span style=''>
+</span>4 <span style=''>import ast.{Trees, tpd}
+</span>5 <span style=''>import core._, core.Decorators._
+</span>6 <span style=''>import MegaPhase._, Phases.Phase
+</span>7 <span style=''>import Types._, Contexts._, Constants._, Names._, NameOps._, Flags._, DenotTransformers._
+</span>8 <span style=''>import SymDenotations._, Symbols._, StdNames._, Annotations._, Trees._, Scopes._, Denotations._
+</span>9 <span style=''>import TypeErasure.ErasedValueType, ValueClasses._
+</span>10 <span style=''>
+</span>11 <span style=''>/** This phase erases ErasedValueType to their underlying type.
+</span>12 <span style=''> *  It also removes the synthetic cast methods u2evt$ and evt2u$ which are
+</span>13 <span style=''> *  no longer needed afterwards.
+</span>14 <span style=''> *  Finally, it checks that we don't introduce &quot;double definitions&quot; of pairs
+</span>15 <span style=''> *  of methods that now have the same signature but were not considered matching
+</span>16 <span style=''> *  before erasure.
+</span>17 <span style=''> */
+</span>18 <span style=''>class ElimErasedValueType extends MiniPhase with InfoTransformer {
+</span>19 <span style=''>
+</span>20 <span style=''>  import tpd._
+</span>21 <span style=''>
+</span>22 <span style=''>  override def phaseName: String = </span><span style='background: #AEF1AE'>&quot;elimErasedValueType&quot;</span><span style=''>
+</span>23 <span style=''>
+</span>24 <span style=''>  override def runsAfter: Set[Class[_ &lt;: Phase]] = </span><span style='background: #AEF1AE'>Set(classOf[Erasure])</span><span style=''>
+</span>25 <span style=''>
+</span>26 <span style=''>  def transformInfo(tp: Type, sym: Symbol)(implicit ctx: Context): Type = sym match {
+</span>27 <span style=''>    case sym: ClassSymbol if </span><span style='background: #AEF1AE'>sym is ModuleClass</span><span style=''> =&gt;
+</span>28 <span style=''>      </span><span style='background: #AEF1AE'>sym.companionClass</span><span style=''> match {
+</span>29 <span style=''>        case origClass: ClassSymbol if </span><span style='background: #AEF1AE'>isDerivedValueClass(origClass)</span><span style=''> =&gt;
+</span>30 <span style=''>          val cinfo = </span><span style='background: #AEF1AE'>tp.asInstanceOf[ClassInfo]</span><span style=''>
+</span>31 <span style=''>          val decls1 = </span><span style='background: #AEF1AE'>cinfo.decls.cloneScope</span><span style=''>
+</span>32 <span style=''>          </span><span style='background: #AEF1AE'>ctx.atPhase(this.next) { implicit ctx =&gt;
+</span>33 <span style=''></span><span style='background: #AEF1AE'>            // Remove synthetic cast methods introduced by ExtensionMethods,
+</span>34 <span style=''></span><span style='background: #AEF1AE'>            // they are no longer needed after this phase.
+</span>35 <span style=''></span><span style='background: #AEF1AE'>            decls1.unlink(cinfo.decl(nme.U2EVT).symbol)
+</span>36 <span style=''></span><span style='background: #AEF1AE'>            decls1.unlink(cinfo.decl(nme.EVT2U).symbol)
+</span>37 <span style=''></span><span style='background: #AEF1AE'>          }</span><span style=''>
+</span>38 <span style=''>          </span><span style='background: #AEF1AE'>cinfo.derivedClassInfo(decls = decls1)</span><span style=''>
+</span>39 <span style=''>        case _ =&gt;
+</span>40 <span style=''>          tp
+</span>41 <span style=''>      }
+</span>42 <span style=''>    case _ =&gt;
+</span>43 <span style=''>      </span><span style='background: #AEF1AE'>elimEVT(tp)</span><span style=''>
+</span>44 <span style=''>  }
+</span>45 <span style=''>
+</span>46 <span style=''>  def elimEVT(tp: Type)(implicit ctx: Context): Type = tp match {
+</span>47 <span style=''>    case ErasedValueType(_, underlying) =&gt;
+</span>48 <span style=''>      </span><span style='background: #AEF1AE'>elimEVT(underlying)</span><span style=''>
+</span>49 <span style=''>    case tp: MethodType =&gt;
+</span>50 <span style=''>      val paramTypes = </span><span style='background: #AEF1AE'>tp.paramInfos.mapConserve(elimEVT)</span><span style=''>
+</span>51 <span style=''>      val retType = </span><span style='background: #AEF1AE'>elimEVT(tp.resultType)</span><span style=''>
+</span>52 <span style=''>      </span><span style='background: #AEF1AE'>tp.derivedLambdaType(tp.paramNames, paramTypes, retType)</span><span style=''>
+</span>53 <span style=''>    case _ =&gt;
+</span>54 <span style=''>      tp
+</span>55 <span style=''>  }
+</span>56 <span style=''>
+</span>57 <span style=''>  def transformTypeOfTree(tree: Tree)(implicit ctx: Context): Tree =
+</span>58 <span style=''>    </span><span style='background: #AEF1AE'>tree.withType(elimEVT(tree.tpe))</span><span style=''>
+</span>59 <span style=''>
+</span>60 <span style=''>  override def transformApply(tree: Apply)(implicit ctx: Context): Tree = {
+</span>61 <span style=''>    val Apply(fun, args) = tree
+</span>62 <span style=''>
+</span>63 <span style=''>    // The casts to and from ErasedValueType are no longer needed once ErasedValueType
+</span>64 <span style=''>    // has been eliminated.
+</span>65 <span style=''>    val t =
+</span>66 <span style=''>      if (</span><span style='background: #AEF1AE'>fun.symbol.isValueClassConvertMethod</span><span style=''>)
+</span>67 <span style=''>        </span><span style='background: #AEF1AE'>args.head</span><span style=''>
+</span>68 <span style=''>      else
+</span>69 <span style=''>        </span><span style='background: #AEF1AE'>tree</span><span style=''>
+</span>70 <span style=''>    </span><span style='background: #AEF1AE'>transformTypeOfTree(t)</span><span style=''>
+</span>71 <span style=''>  }
+</span>72 <span style=''>
+</span>73 <span style=''>  /** Check that we don't have pairs of methods that override each other after
+</span>74 <span style=''>   *  this phase, yet do not have matching types before erasure.
+</span>75 <span style=''>   *  The before erasure test is performed after phase elimRepeated, so we
+</span>76 <span style=''>   *  do not need to special case pairs of `T* / Seq[T]` parameters.
+</span>77 <span style=''>   */
+</span>78 <span style=''>  private def checkNoClashes(root: Symbol)(implicit ctx: Context) = {
+</span>79 <span style=''>    val opc = </span><span style='background: #AEF1AE'>new</span><span style=''> OverridingPairs.Cursor(root) {
+</span>80 <span style=''>      override def exclude(sym: Symbol) =
+</span>81 <span style=''>        </span><span style='background: #AEF1AE'>!sym.is(Method) || sym.is(Bridge) || super.exclude(sym)</span><span style=''>
+</span>82 <span style=''>      override def matches(sym1: Symbol, sym2: Symbol) =
+</span>83 <span style=''>        </span><span style='background: #AEF1AE'>sym1.signature == sym2.signature</span><span style=''>
+</span>84 <span style=''>    }
+</span>85 <span style=''>    def checkNoConflict(sym1: Symbol, sym2: Symbol, info: Type)(implicit ctx: Context): Unit = {
+</span>86 <span style=''>      val site = </span><span style='background: #AEF1AE'>root.thisType</span><span style=''>
+</span>87 <span style=''>      val info1 = </span><span style='background: #AEF1AE'>site.memberInfo(sym1)</span><span style=''>
+</span>88 <span style=''>      val info2 = </span><span style='background: #AEF1AE'>site.memberInfo(sym2)</span><span style=''>
+</span>89 <span style=''>      def isDefined(sym: Symbol) = </span><span style='background: #AEF1AE'>sym.originDenotation.validFor.firstPhaseId &lt;= ctx.phaseId</span><span style=''>
+</span>90 <span style=''>      if (</span><span style='background: #AEF1AE'>isDefined(sym1) &amp;&amp; isDefined(sym2) &amp;&amp; !info1.matchesLoosely(info2)</span><span style=''>)
+</span>91 <span style=''>        // The reason for the `isDefined` condition is that we need to exclude mixin forwarders
+</span>92 <span style=''>        // from the tests. For instance, in compileStdLib, compiling scala.immutable.SetProxy, line 29:
+</span>93 <span style=''>        //    new AbstractSet[B] with SetProxy[B] { val self = newSelf }
+</span>94 <span style=''>        // This generates two forwarders, one in AbstractSet, the other in the anonymous class itself.
+</span>95 <span style=''>        // Their signatures are:
+</span>96 <span style=''>        // method map: [B, That]
+</span>97 <span style=''>        //   (f: B =&gt; B)(implicit bf: scala.collection.generic.CanBuildFrom[scala.collection.immutable.Set[B], B, That]): That override &lt;method&gt; &lt;touched&gt; in anonymous class scala.collection.AbstractSet[B] with scala.collection.immutable.SetProxy[B]{...} and
+</span>98 <span style=''>        // method map: [B, That](f: B =&gt; B)(implicit bf: scala.collection.generic.CanBuildFrom[scala.collection.Set[B], B, That]): That override &lt;method&gt; &lt;touched&gt; in class AbstractSet
+</span>99 <span style=''>        // These have same type after erasure:
+</span>100 <span style=''>        //   (f: Function1, bf: scala.collection.generic.CanBuildFrom): Object
+</span>101 <span style=''>        //
+</span>102 <span style=''>        // The problem is that `map` was forwarded twice, with different instantiated types.
+</span>103 <span style=''>        // Maybe we should move mixin forwarding after erasure to avoid redundant forwarders like these.
+</span>104 <span style=''>        </span><span style='background: #AEF1AE'>ctx.error(
+</span>105 <span style=''></span><span style='background: #AEF1AE'>            em&quot;&quot;&quot;double definition:
+</span>106 <span style=''></span><span style='background: #AEF1AE'>                |$sym1: $info1 in ${sym1.owner} and
+</span>107 <span style=''></span><span style='background: #AEF1AE'>                |$sym2: $info2 in ${sym2.owner}
+</span>108 <span style=''></span><span style='background: #AEF1AE'>                |have same type after erasure: $info&quot;&quot;&quot;,
+</span>109 <span style=''></span><span style='background: #AEF1AE'>            root.pos)</span><span style=''>
+</span>110 <span style=''>    }
+</span>111 <span style=''>    val earlyCtx = </span><span style='background: #AEF1AE'>ctx.withPhase(ctx.elimRepeatedPhase.next)</span><span style=''>
+</span>112 <span style=''>    while (</span><span style='background: #AEF1AE'>opc.hasNext</span><span style=''>) </span><span style='background: #AEF1AE'>{
+</span>113 <span style=''></span><span style='background: #AEF1AE'>      val sym1 = opc.overriding
+</span>114 <span style=''></span><span style='background: #AEF1AE'>      val sym2 = opc.overridden
+</span>115 <span style=''></span><span style='background: #AEF1AE'>      checkNoConflict(sym1, sym2, sym1.info)(earlyCtx)
+</span>116 <span style=''></span><span style='background: #AEF1AE'>      opc.next()
+</span>117 <span style=''></span><span style='background: #AEF1AE'>    }</span><span style=''>
+</span>118 <span style=''>  }
+</span>119 <span style=''>
+</span>120 <span style=''>  override def transformTypeDef(tree: TypeDef)(implicit ctx: Context): Tree = {
+</span>121 <span style=''>    </span><span style='background: #AEF1AE'>checkNoClashes(tree.symbol)</span><span style=''>
+</span>122 <span style=''>    tree
+</span>123 <span style=''>  }
+</span>124 <span style=''>
+</span>125 <span style=''>  override def transformInlined(tree: Inlined)(implicit ctx: Context): Tree =
+</span>126 <span style=''>    </span><span style='background: #AEF1AE'>transformTypeOfTree(tree)</span><span style=''>
+</span>127 <span style=''>
+</span>128 <span style=''>  // FIXME: transformIf and transformBlock won't be required anymore once #444 is fixed.
+</span>129 <span style=''>  override def transformIdent(tree: Ident)(implicit ctx: Context): Tree =
+</span>130 <span style=''>    </span><span style='background: #AEF1AE'>transformTypeOfTree(tree)</span><span style=''>
+</span>131 <span style=''>  override def transformSelect(tree: Select)(implicit ctx: Context): Tree =
+</span>132 <span style=''>    </span><span style='background: #AEF1AE'>transformTypeOfTree(tree)</span><span style=''>
+</span>133 <span style=''>  override def transformBlock(tree: Block)(implicit ctx: Context): Tree =
+</span>134 <span style=''>    </span><span style='background: #AEF1AE'>transformTypeOfTree(tree)</span><span style=''>
+</span>135 <span style=''>  override def transformIf(tree: If)(implicit ctx: Context): Tree =
+</span>136 <span style=''>    </span><span style='background: #AEF1AE'>transformTypeOfTree(tree)</span><span style=''>
+</span>137 <span style=''>  override def transformTypeTree(tree: TypeTree)(implicit ctx: Context): Tree =
+</span>138 <span style=''>    </span><span style='background: #AEF1AE'>transformTypeOfTree(tree)</span><span style=''>
+</span>139 <span style=''>}
+</span></pre>
+          </div>
+          <div class="tab-pane" id="statementlist">
+            <table cellspacing="0" cellpadding="0" class="table statementlist">
+      <tr>
+        <th>Line</th>
+        <th>Stmt Id</th>
+        <th>Pos</th>
+        <th>Tree</th>
+        <th>Symbol</th>
+        <th>Code</th>
+      </tr><tr>
+        <td>
+          22
+        </td>
+        <td>
+          53423
+        </td>
+        <td>
+          845
+          -
+          866
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          &quot;elimErasedValueType&quot;
+        </td>
+      </tr><tr>
+        <td>
+          24
+        </td>
+        <td>
+          53424
+        </td>
+        <td>
+          919
+          -
+          940
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.generic.GenericCompanion.apply
+        </td>
+        <td style="background: #AEF1AE">
+          scala.Predef.Set.apply[Class[_ &lt;: dotty.tools.dotc.core.Phases.Phase]](classOf[dotty.tools.dotc.transform.Erasure])
+        </td>
+      </tr><tr>
+        <td>
+          27
+        </td>
+        <td>
+          53425
+        </td>
+        <td>
+          1057
+          -
+          1075
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.SymDenotations.SymDenotation.is
+        </td>
+        <td style="background: #AEF1AE">
+          core.Symbols.toClassDenot(sym)(ctx).is(core.Flags.ModuleClass)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          28
+        </td>
+        <td>
+          53426
+        </td>
+        <td>
+          1085
+          -
+          1103
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.SymDenotations.SymDenotation.companionClass
+        </td>
+        <td style="background: #AEF1AE">
+          core.Symbols.toClassDenot(sym)(ctx).companionClass(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          29
+        </td>
+        <td>
+          53427
+        </td>
+        <td>
+          1151
+          -
+          1181
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.transform.ValueClasses.isDerivedValueClass
+        </td>
+        <td style="background: #AEF1AE">
+          ValueClasses.isDerivedValueClass(core.Symbols.toClassDenot(origClass)(ctx))(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          30
+        </td>
+        <td>
+          53428
+        </td>
+        <td>
+          1207
+          -
+          1233
+        </td>
+        <td>
+          TypeApply
+        </td>
+        <td>
+          scala.Any.asInstanceOf
+        </td>
+        <td style="background: #AEF1AE">
+          tp.asInstanceOf[dotty.tools.dotc.core.Types.ClassInfo]
+        </td>
+      </tr><tr>
+        <td>
+          31
+        </td>
+        <td>
+          53429
+        </td>
+        <td>
+          1257
+          -
+          1279
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.Scopes.Scope.cloneScope
+        </td>
+        <td style="background: #AEF1AE">
+          cinfo.decls.cloneScope(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          32
+        </td>
+        <td>
+          53430
+        </td>
+        <td>
+          1302
+          -
+          1311
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Phases.Phase.next
+        </td>
+        <td style="background: #AEF1AE">
+          this.next
+        </td>
+      </tr><tr>
+        <td>
+          32
+        </td>
+        <td>
+          53433
+        </td>
+        <td>
+          1290
+          -
+          1590
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.core.Phases.atPhase
+        </td>
+        <td style="background: #AEF1AE">
+          ctx.atPhase[Unit](this.next)(((implicit ctx: dotty.tools.dotc.core.Contexts.Context) =&gt; {
+  decls1.unlink(cinfo.decl(core.StdNames.nme.U2EVT)(ctx).symbol)(ctx);
+  decls1.unlink(cinfo.decl(core.StdNames.nme.EVT2U)(ctx).symbol)(ctx)
+}))
+        </td>
+      </tr><tr>
+        <td>
+          35
+        </td>
+        <td>
+          53431
+        </td>
+        <td>
+          1479
+          -
+          1522
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.Scopes.MutableScope.unlink
+        </td>
+        <td style="background: #AEF1AE">
+          decls1.unlink(cinfo.decl(core.StdNames.nme.U2EVT)(ctx).symbol)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          36
+        </td>
+        <td>
+          53432
+        </td>
+        <td>
+          1535
+          -
+          1578
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.Scopes.MutableScope.unlink
+        </td>
+        <td style="background: #AEF1AE">
+          decls1.unlink(cinfo.decl(core.StdNames.nme.EVT2U)(ctx).symbol)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          38
+        </td>
+        <td>
+          53435
+        </td>
+        <td>
+          1607
+          -
+          1607
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Types.ClassInfo.derivedClassInfo$default$2
+        </td>
+        <td style="background: #AEF1AE">
+          cinfo.derivedClassInfo$default$2
+        </td>
+      </tr><tr>
+        <td>
+          38
+        </td>
+        <td>
+          53437
+        </td>
+        <td>
+          1601
+          -
+          1639
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.core.Types.ClassInfo.derivedClassInfo
+        </td>
+        <td style="background: #AEF1AE">
+          cinfo.derivedClassInfo(x$3, x$4, x$2, x$5)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          38
+        </td>
+        <td>
+          53434
+        </td>
+        <td>
+          1607
+          -
+          1607
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Types.ClassInfo.derivedClassInfo$default$1
+        </td>
+        <td style="background: #AEF1AE">
+          cinfo.derivedClassInfo$default$1
+        </td>
+      </tr><tr>
+        <td>
+          38
+        </td>
+        <td>
+          53436
+        </td>
+        <td>
+          1607
+          -
+          1607
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Types.ClassInfo.derivedClassInfo$default$4
+        </td>
+        <td style="background: #AEF1AE">
+          cinfo.derivedClassInfo$default$4
+        </td>
+      </tr><tr>
+        <td>
+          43
+        </td>
+        <td>
+          53438
+        </td>
+        <td>
+          1699
+          -
+          1710
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.transform.ElimErasedValueType.elimEVT
+        </td>
+        <td style="background: #AEF1AE">
+          ElimErasedValueType.this.elimEVT(tp)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          48
+        </td>
+        <td>
+          53439
+        </td>
+        <td>
+          1831
+          -
+          1850
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.transform.ElimErasedValueType.elimEVT
+        </td>
+        <td style="background: #AEF1AE">
+          ElimErasedValueType.this.elimEVT(underlying)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          50
+        </td>
+        <td>
+          53441
+        </td>
+        <td>
+          1901
+          -
+          1935
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.immutable.List.mapConserve
+        </td>
+        <td style="background: #AEF1AE">
+          tp.paramInfos.mapConserve[dotty.tools.dotc.core.Types.Type]({
+  ((tp: dotty.tools.dotc.core.Types.Type) =&gt; ElimErasedValueType.this.elimEVT(tp)(ctx))
+})
+        </td>
+      </tr><tr>
+        <td>
+          50
+        </td>
+        <td>
+          53440
+        </td>
+        <td>
+          1927
+          -
+          1934
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.transform.ElimErasedValueType.elimEVT
+        </td>
+        <td style="background: #AEF1AE">
+          ElimErasedValueType.this.elimEVT(tp)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          51
+        </td>
+        <td>
+          53442
+        </td>
+        <td>
+          1956
+          -
+          1978
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.transform.ElimErasedValueType.elimEVT
+        </td>
+        <td style="background: #AEF1AE">
+          ElimErasedValueType.this.elimEVT(tp.resultType(ctx))(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          52
+        </td>
+        <td>
+          53443
+        </td>
+        <td>
+          1985
+          -
+          2041
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.Types.LambdaType.derivedLambdaType
+        </td>
+        <td style="background: #AEF1AE">
+          tp.derivedLambdaType(tp.paramNames, paramTypes, retType)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          58
+        </td>
+        <td>
+          53444
+        </td>
+        <td>
+          2143
+          -
+          2175
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Trees.Tree.withType
+        </td>
+        <td style="background: #AEF1AE">
+          tree.withType(ElimErasedValueType.this.elimEVT(tree.tpe)(ctx))(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          61
+        </td>
+        <td>
+          53446
+        </td>
+        <td>
+          2272
+          -
+          2272
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.Tuple2._2
+        </td>
+        <td style="background: #AEF1AE">
+          x$1._2
+        </td>
+      </tr><tr>
+        <td>
+          61
+        </td>
+        <td>
+          53445
+        </td>
+        <td>
+          2267
+          -
+          2267
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.Tuple2._1
+        </td>
+        <td style="background: #AEF1AE">
+          x$1._1
+        </td>
+      </tr><tr>
+        <td>
+          66
+        </td>
+        <td>
+          53447
+        </td>
+        <td>
+          2423
+          -
+          2459
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.SymDenotations.SymDenotation.isValueClassConvertMethod
+        </td>
+        <td style="background: #AEF1AE">
+          core.Symbols.toDenot(fun.symbol(ctx))(ctx).isValueClassConvertMethod(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          67
+        </td>
+        <td>
+          53448
+        </td>
+        <td>
+          2469
+          -
+          2478
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.collection.IterableLike.head
+        </td>
+        <td style="background: #AEF1AE">
+          args.head
+        </td>
+      </tr><tr>
+        <td>
+          67
+        </td>
+        <td>
+          53449
+        </td>
+        <td>
+          2469
+          -
+          2478
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          scala.collection.IterableLike.head
+        </td>
+        <td style="background: #AEF1AE">
+          args.head
+        </td>
+      </tr><tr>
+        <td>
+          69
+        </td>
+        <td>
+          53450
+        </td>
+        <td>
+          2498
+          -
+          2502
+        </td>
+        <td>
+          Ident
+        </td>
+        <td>
+          dotty.tools.dotc.transform.ElimErasedValueType.tree
+        </td>
+        <td style="background: #AEF1AE">
+          tree
+        </td>
+      </tr><tr>
+        <td>
+          70
+        </td>
+        <td>
+          53451
+        </td>
+        <td>
+          2507
+          -
+          2529
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.transform.ElimErasedValueType.transformTypeOfTree
+        </td>
+        <td style="background: #AEF1AE">
+          ElimErasedValueType.this.transformTypeOfTree(t)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          79
+        </td>
+        <td>
+          53458
+        </td>
+        <td>
+          2913
+          -
+          2916
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.transform.ElimErasedValueType.$anon.&lt;init&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          new $anon()
+        </td>
+      </tr><tr>
+        <td>
+          81
+        </td>
+        <td>
+          53453
+        </td>
+        <td>
+          3017
+          -
+          3031
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.SymDenotations.SymDenotation.is
+        </td>
+        <td style="background: #AEF1AE">
+          core.Symbols.toDenot(sym)(ctx).is(core.Flags.Bridge)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          81
+        </td>
+        <td>
+          53452
+        </td>
+        <td>
+          3006
+          -
+          3012
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Flags.Method
+        </td>
+        <td style="background: #AEF1AE">
+          core.Flags.Method
+        </td>
+      </tr><tr>
+        <td>
+          81
+        </td>
+        <td>
+          53455
+        </td>
+        <td>
+          2998
+          -
+          3053
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Boolean.||
+        </td>
+        <td style="background: #AEF1AE">
+          core.Symbols.toDenot(sym)(ctx).is(core.Flags.Method)(ctx).unary_!.||(core.Symbols.toDenot(sym)(ctx).is(core.Flags.Bridge)(ctx)).||($anon.super.exclude(sym))
+        </td>
+      </tr><tr>
+        <td>
+          81
+        </td>
+        <td>
+          53454
+        </td>
+        <td>
+          3035
+          -
+          3053
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.transform.OverridingPairs.Cursor.exclude
+        </td>
+        <td style="background: #AEF1AE">
+          $anon.super.exclude(sym)
+        </td>
+      </tr><tr>
+        <td>
+          83
+        </td>
+        <td>
+          53456
+        </td>
+        <td>
+          3137
+          -
+          3151
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.Symbols.Symbol.signature
+        </td>
+        <td style="background: #AEF1AE">
+          sym2.signature(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          83
+        </td>
+        <td>
+          53457
+        </td>
+        <td>
+          3119
+          -
+          3151
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.Object.==
+        </td>
+        <td style="background: #AEF1AE">
+          sym1.signature(ctx).==(sym2.signature(ctx))
+        </td>
+      </tr><tr>
+        <td>
+          86
+        </td>
+        <td>
+          53459
+        </td>
+        <td>
+          3272
+          -
+          3285
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.SymDenotations.SymDenotation.thisType
+        </td>
+        <td style="background: #AEF1AE">
+          core.Symbols.toDenot(root)(ctx).thisType(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          87
+        </td>
+        <td>
+          53460
+        </td>
+        <td>
+          3304
+          -
+          3325
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.Types.Type.memberInfo
+        </td>
+        <td style="background: #AEF1AE">
+          site.memberInfo(sym1)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          88
+        </td>
+        <td>
+          53461
+        </td>
+        <td>
+          3344
+          -
+          3365
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.Types.Type.memberInfo
+        </td>
+        <td style="background: #AEF1AE">
+          site.memberInfo(sym2)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          89
+        </td>
+        <td>
+          53462
+        </td>
+        <td>
+          3447
+          -
+          3458
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Periods.phaseId
+        </td>
+        <td style="background: #AEF1AE">
+          ctx.phaseId
+        </td>
+      </tr><tr>
+        <td>
+          89
+        </td>
+        <td>
+          53463
+        </td>
+        <td>
+          3401
+          -
+          3458
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Int.&lt;=
+        </td>
+        <td style="background: #AEF1AE">
+          sym.originDenotation.validFor.firstPhaseId.&lt;=(ctx.phaseId)
+        </td>
+      </tr><tr>
+        <td>
+          90
+        </td>
+        <td>
+          53465
+        </td>
+        <td>
+          3507
+          -
+          3535
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.Boolean.unary_!
+        </td>
+        <td style="background: #AEF1AE">
+          info1.matchesLoosely(info2)(ctx).unary_!
+        </td>
+      </tr><tr>
+        <td>
+          90
+        </td>
+        <td>
+          53464
+        </td>
+        <td>
+          3488
+          -
+          3503
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.transform.ElimErasedValueType.isDefined
+        </td>
+        <td style="background: #AEF1AE">
+          isDefined(sym2)
+        </td>
+      </tr><tr>
+        <td>
+          90
+        </td>
+        <td>
+          53473
+        </td>
+        <td>
+          3465
+          -
+          3465
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          ()
+        </td>
+      </tr><tr>
+        <td>
+          90
+        </td>
+        <td>
+          53466
+        </td>
+        <td>
+          3469
+          -
+          3535
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Boolean.&amp;&amp;
+        </td>
+        <td style="background: #AEF1AE">
+          isDefined(sym1).&amp;&amp;(isDefined(sym2)).&amp;&amp;(info1.matchesLoosely(info2)(ctx).unary_!)
+        </td>
+      </tr><tr>
+        <td>
+          90
+        </td>
+        <td>
+          53472
+        </td>
+        <td>
+          3465
+          -
+          3465
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          ()
+        </td>
+      </tr><tr>
+        <td>
+          104
+        </td>
+        <td>
+          53471
+        </td>
+        <td>
+          4766
+          -
+          4991
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          dotty.tools.dotc.reporting.Reporting.error
+        </td>
+        <td style="background: #AEF1AE">
+          ctx.error(diagnostic.this.Message.toNoExplanation(core.Decorators.StringInterpolators(scala.StringContext.apply(&quot;double definition:\n                |&quot;, &quot;: &quot;, &quot; in &quot;, &quot; and\n                |&quot;, &quot;: &quot;, &quot; in &quot;, &quot;\n                |have same type after erasure: &quot;, &quot;&quot;)).em(sym1, info1, core.Symbols.toDenot(sym1)(ctx).owner, sym2, info2, core.Symbols.toDenot(sym2)(ctx).owner, info)(ctx)), core.Decorators.sourcePos(root.pos)(ctx))
+        </td>
+      </tr><tr>
+        <td>
+          104
+        </td>
+        <td>
+          53470
+        </td>
+        <td>
+          4766
+          -
+          4991
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.reporting.Reporting.error
+        </td>
+        <td style="background: #AEF1AE">
+          ctx.error(diagnostic.this.Message.toNoExplanation(core.Decorators.StringInterpolators(scala.StringContext.apply(&quot;double definition:\n                |&quot;, &quot;: &quot;, &quot; in &quot;, &quot; and\n                |&quot;, &quot;: &quot;, &quot; in &quot;, &quot;\n                |have same type after erasure: &quot;, &quot;&quot;)).em(sym1, info1, core.Symbols.toDenot(sym1)(ctx).owner, sym2, info2, core.Symbols.toDenot(sym2)(ctx).owner, info)(ctx)), core.Decorators.sourcePos(root.pos)(ctx))
+        </td>
+      </tr><tr>
+        <td>
+          105
+        </td>
+        <td>
+          53468
+        </td>
+        <td>
+          4789
+          -
+          4968
+        </td>
+        <td>
+          ApplyImplicitView
+        </td>
+        <td>
+          dotty.tools.dotc.reporting.diagnostic.Message.toNoExplanation
+        </td>
+        <td style="background: #AEF1AE">
+          diagnostic.this.Message.toNoExplanation(core.Decorators.StringInterpolators(scala.StringContext.apply(&quot;double definition:\n                |&quot;, &quot;: &quot;, &quot; in &quot;, &quot; and\n                |&quot;, &quot;: &quot;, &quot; in &quot;, &quot;\n                |have same type after erasure: &quot;, &quot;&quot;)).em(sym1, info1, core.Symbols.toDenot(sym1)(ctx).owner, sym2, info2, core.Symbols.toDenot(sym2)(ctx).owner, info)(ctx))
+        </td>
+      </tr><tr>
+        <td>
+          105
+        </td>
+        <td>
+          53467
+        </td>
+        <td>
+          4789
+          -
+          4968
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.Decorators.StringInterpolators.em
+        </td>
+        <td style="background: #AEF1AE">
+          core.Decorators.StringInterpolators(scala.StringContext.apply(&quot;double definition:\n                |&quot;, &quot;: &quot;, &quot; in &quot;, &quot; and\n                |&quot;, &quot;: &quot;, &quot; in &quot;, &quot;\n                |have same type after erasure: &quot;, &quot;&quot;)).em(sym1, info1, core.Symbols.toDenot(sym1)(ctx).owner, sym2, info2, core.Symbols.toDenot(sym2)(ctx).owner, info)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          109
+        </td>
+        <td>
+          53469
+        </td>
+        <td>
+          4982
+          -
+          4990
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.Decorators.sourcePos
+        </td>
+        <td style="background: #AEF1AE">
+          core.Decorators.sourcePos(root.pos)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          111
+        </td>
+        <td>
+          53474
+        </td>
+        <td>
+          5031
+          -
+          5057
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Phases.Phase.next
+        </td>
+        <td style="background: #AEF1AE">
+          Contexts.this.Context.toBase(ctx).elimRepeatedPhase.next
+        </td>
+      </tr><tr>
+        <td>
+          111
+        </td>
+        <td>
+          53475
+        </td>
+        <td>
+          5017
+          -
+          5058
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.core.Contexts.Context.withPhase
+        </td>
+        <td style="background: #AEF1AE">
+          ctx.withPhase(Contexts.this.Context.toBase(ctx).elimRepeatedPhase.next)
+        </td>
+      </tr><tr>
+        <td>
+          112
+        </td>
+        <td>
+          53483
+        </td>
+        <td>
+          5063
+          -
+          5063
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          ()
+        </td>
+      </tr><tr>
+        <td>
+          112
+        </td>
+        <td>
+          53482
+        </td>
+        <td>
+          5083
+          -
+          5226
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          {
+  {
+    val sym1: dotty.tools.dotc.core.Symbols.Symbol = opc.overriding;
+    val sym2: dotty.tools.dotc.core.Symbols.Symbol = opc.overridden;
+    checkNoConflict(sym1, sym2, core.Symbols.toDenot(sym1)(ctx).info(ctx))(earlyCtx);
+    opc.next()
+  };
+  while$1()
+}
+        </td>
+      </tr><tr>
+        <td>
+          112
+        </td>
+        <td>
+          53476
+        </td>
+        <td>
+          5070
+          -
+          5081
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.transform.OverridingPairs.Cursor.hasNext
+        </td>
+        <td style="background: #AEF1AE">
+          opc.hasNext
+        </td>
+      </tr><tr>
+        <td>
+          112
+        </td>
+        <td>
+          53484
+        </td>
+        <td>
+          5063
+          -
+          5063
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          ()
+        </td>
+      </tr><tr>
+        <td>
+          112
+        </td>
+        <td>
+          53481
+        </td>
+        <td>
+          5083
+          -
+          5083
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.transform.ElimErasedValueType.while$1
+        </td>
+        <td style="background: #AEF1AE">
+          while$1()
+        </td>
+      </tr><tr>
+        <td>
+          113
+        </td>
+        <td>
+          53477
+        </td>
+        <td>
+          5102
+          -
+          5116
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.transform.OverridingPairs.Cursor.overriding
+        </td>
+        <td style="background: #AEF1AE">
+          opc.overriding
+        </td>
+      </tr><tr>
+        <td>
+          114
+        </td>
+        <td>
+          53478
+        </td>
+        <td>
+          5134
+          -
+          5148
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.transform.OverridingPairs.Cursor.overridden
+        </td>
+        <td style="background: #AEF1AE">
+          opc.overridden
+        </td>
+      </tr><tr>
+        <td>
+          115
+        </td>
+        <td>
+          53479
+        </td>
+        <td>
+          5155
+          -
+          5203
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.transform.ElimErasedValueType.checkNoConflict
+        </td>
+        <td style="background: #AEF1AE">
+          checkNoConflict(sym1, sym2, core.Symbols.toDenot(sym1)(ctx).info(ctx))(earlyCtx)
+        </td>
+      </tr><tr>
+        <td>
+          116
+        </td>
+        <td>
+          53480
+        </td>
+        <td>
+          5210
+          -
+          5220
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.transform.OverridingPairs.Cursor.next
+        </td>
+        <td style="background: #AEF1AE">
+          opc.next()
+        </td>
+      </tr><tr>
+        <td>
+          121
+        </td>
+        <td>
+          53485
+        </td>
+        <td>
+          5316
+          -
+          5343
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.transform.ElimErasedValueType.checkNoClashes
+        </td>
+        <td style="background: #AEF1AE">
+          ElimErasedValueType.this.checkNoClashes(tree.symbol(ctx))(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          126
+        </td>
+        <td>
+          53486
+        </td>
+        <td>
+          5440
+          -
+          5465
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.transform.ElimErasedValueType.transformTypeOfTree
+        </td>
+        <td style="background: #AEF1AE">
+          ElimErasedValueType.this.transformTypeOfTree(tree)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          130
+        </td>
+        <td>
+          53487
+        </td>
+        <td>
+          5634
+          -
+          5659
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.transform.ElimErasedValueType.transformTypeOfTree
+        </td>
+        <td style="background: #AEF1AE">
+          ElimErasedValueType.this.transformTypeOfTree(tree)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          132
+        </td>
+        <td>
+          53488
+        </td>
+        <td>
+          5740
+          -
+          5765
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.transform.ElimErasedValueType.transformTypeOfTree
+        </td>
+        <td style="background: #AEF1AE">
+          ElimErasedValueType.this.transformTypeOfTree(tree)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          134
+        </td>
+        <td>
+          53489
+        </td>
+        <td>
+          5844
+          -
+          5869
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.transform.ElimErasedValueType.transformTypeOfTree
+        </td>
+        <td style="background: #AEF1AE">
+          ElimErasedValueType.this.transformTypeOfTree(tree)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          136
+        </td>
+        <td>
+          53490
+        </td>
+        <td>
+          5942
+          -
+          5967
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.transform.ElimErasedValueType.transformTypeOfTree
+        </td>
+        <td style="background: #AEF1AE">
+          ElimErasedValueType.this.transformTypeOfTree(tree)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          138
+        </td>
+        <td>
+          53491
+        </td>
+        <td>
+          6052
+          -
+          6077
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.transform.ElimErasedValueType.transformTypeOfTree
+        </td>
+        <td style="background: #AEF1AE">
+          ElimErasedValueType.this.transformTypeOfTree(tree)(ctx)
+        </td>
+      </tr>
+    </table>
+          </div>
+        </div>
+      </body>
+    </html>

@@ -1,0 +1,3807 @@
+<html>
+      <head>
+        <meta http-equiv="Content-Type" content="text/html; charset=utf-8"/>
+        <title id="title">
+          dotty/tools/dotc/interactive/InteractiveDriver.scala.html
+        </title>
+        <script src="https://ajax.googleapis.com/ajax/libs/jquery/1.10.2/jquery.min.js"></script><link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/jquery.tablesorter/2.20.1/css/theme.default.min.css" type="text/css"/><script src="https://cdnjs.cloudflare.com/ajax/libs/jquery.tablesorter/2.20.1/js/jquery.tablesorter.min.js"></script><link rel="stylesheet" href="https://netdna.bootstrapcdn.com/bootstrap/3.0.3/css/bootstrap.min.css" type="text/css"/><script src="https://netdna.bootstrapcdn.com/bootstrap/3.0.3/js/bootstrap.min.js"></script><script type="text/javascript">
+        $(document).ready(function() {$(".tablesorter").tablesorter();});
+      </script>
+        <style>
+          table.codegrid { font-family: monospace; font-size: 12px; width: auto!important; }table.statementlist { width: auto!important; font-size: 13px; } table.codegrid td { padding: 0!important; border: 0!important } table td.linenumber { width: 40px!important; } 
+        </style>
+      </head>
+      <body style="font-family: monospace;">
+        <ul class="nav nav-tabs">
+          <li>
+            <a href="#codegrid" data-toggle="tab">Codegrid</a>
+          </li>
+          <li>
+            <a href="#statementlist" data-toggle="tab">Statement List</a>
+          </li>
+        </ul>
+        <div class="tab-content">
+          <div class="tab-pane active" id="codegrid">
+            <pre style='font-size: 12pt; font-family: courier;'>1 <span style=''>package dotty.tools
+</span>2 <span style=''>package dotc
+</span>3 <span style=''>package interactive
+</span>4 <span style=''>
+</span>5 <span style=''>import java.net.URI
+</span>6 <span style=''>import java.io._
+</span>7 <span style=''>import java.nio.file._
+</span>8 <span style=''>import java.nio.file.attribute.BasicFileAttributes
+</span>9 <span style=''>import java.util.stream._
+</span>10 <span style=''>import java.util.zip._
+</span>11 <span style=''>import java.util.function._
+</span>12 <span style=''>
+</span>13 <span style=''>import scala.collection._
+</span>14 <span style=''>import JavaConverters._
+</span>15 <span style=''>import scala.io.Codec
+</span>16 <span style=''>
+</span>17 <span style=''>import dotty.tools.io.{ ClassPath, ClassRepresentation, PlainFile, VirtualFile }
+</span>18 <span style=''>
+</span>19 <span style=''>import ast.{Trees, tpd}
+</span>20 <span style=''>import core._, core.Decorators._
+</span>21 <span style=''>import Contexts._, Flags._, Names._, NameOps._, Symbols._, SymDenotations._, Trees._, Types._
+</span>22 <span style=''>import classpath._
+</span>23 <span style=''>import reporting._, reporting.diagnostic.MessageContainer
+</span>24 <span style=''>import util._
+</span>25 <span style=''>
+</span>26 <span style=''>/** A Driver subclass designed to be used from IDEs */
+</span>27 <span style=''>class InteractiveDriver(settings: List[String]) extends Driver {
+</span>28 <span style=''>  import tpd._
+</span>29 <span style=''>  import InteractiveDriver._
+</span>30 <span style=''>
+</span>31 <span style=''>  override def sourcesRequired = </span><span style='background: #F0ADAD'>false</span><span style=''>
+</span>32 <span style=''>
+</span>33 <span style=''>  private val myInitCtx: Context = {
+</span>34 <span style=''>    val rootCtx = </span><span style='background: #F0ADAD'>initCtx.fresh.addMode(Mode.ReadPositions).addMode(Mode.Interactive)</span><span style=''>
+</span>35 <span style=''>    </span><span style='background: #F0ADAD'>rootCtx.setSetting(rootCtx.settings.YretainTrees, true)</span><span style=''>
+</span>36 <span style=''>    val ctx = </span><span style='background: #F0ADAD'>setup(settings.toArray, rootCtx)._2</span><span style=''>
+</span>37 <span style=''>    </span><span style='background: #F0ADAD'>ctx.initialize()(ctx)</span><span style=''>
+</span>38 <span style=''>    ctx
+</span>39 <span style=''>  }
+</span>40 <span style=''>
+</span>41 <span style=''>  private[this] var myCtx: Context = </span><span style='background: #F0ADAD'>myInitCtx</span><span style=''>
+</span>42 <span style=''>
+</span>43 <span style=''>  def currentCtx: Context = </span><span style='background: #F0ADAD'>myCtx</span><span style=''>
+</span>44 <span style=''>
+</span>45 <span style=''>  private val myOpenedFiles = </span><span style='background: #F0ADAD'>new</span><span style=''> mutable.LinkedHashMap[URI, SourceFile] {
+</span>46 <span style=''>    override def default(key: URI) = </span><span style='background: #F0ADAD'>NoSource</span><span style=''>
+</span>47 <span style=''>  }
+</span>48 <span style=''>
+</span>49 <span style=''>  private val myOpenedTrees = </span><span style='background: #F0ADAD'>new</span><span style=''> mutable.LinkedHashMap[URI, List[SourceTree]] {
+</span>50 <span style=''>    override def default(key: URI) = </span><span style='background: #F0ADAD'>Nil</span><span style=''>
+</span>51 <span style=''>  }
+</span>52 <span style=''>
+</span>53 <span style=''>  def openedFiles: Map[URI, SourceFile] = </span><span style='background: #F0ADAD'>myOpenedFiles</span><span style=''>
+</span>54 <span style=''>  def openedTrees: Map[URI, List[SourceTree]] = </span><span style='background: #F0ADAD'>myOpenedTrees</span><span style=''>
+</span>55 <span style=''>
+</span>56 <span style=''>  def allTrees(implicit ctx: Context): List[SourceTree] = {
+</span>57 <span style=''>    val fromSource = </span><span style='background: #F0ADAD'>openedTrees.values.flatten.toList</span><span style=''>
+</span>58 <span style=''>    val fromClassPath = (</span><span style='background: #F0ADAD'>dirClassPathClasses ++ zipClassPathClasses).flatMap { cls =&gt;
+</span>59 <span style=''></span><span style='background: #F0ADAD'>      val className = cls.toTypeName
+</span>60 <span style=''></span><span style='background: #F0ADAD'>      List(tree(className), tree(className.moduleClassName)).flatten
+</span>61 <span style=''></span><span style='background: #F0ADAD'>    }</span><span style=''>
+</span>62 <span style=''>    (</span><span style='background: #F0ADAD'>fromSource ++ fromClassPath).distinct</span><span style=''>
+</span>63 <span style=''>  }
+</span>64 <span style=''>
+</span>65 <span style=''>  private def tree(className: TypeName)(implicit ctx: Context): Option[SourceTree] = {
+</span>66 <span style=''>    val clsd = </span><span style='background: #F0ADAD'>ctx.base.staticRef(className)</span><span style=''>
+</span>67 <span style=''>    clsd match {
+</span>68 <span style=''>      case clsd: ClassDenotation =&gt;
+</span>69 <span style=''>        </span><span style='background: #F0ADAD'>SourceTree.fromSymbol(clsd.symbol.asClass)</span><span style=''>
+</span>70 <span style=''>      case _ =&gt;
+</span>71 <span style=''>        </span><span style='background: #F0ADAD'>sys.error(s&quot;class not found: $className&quot;)</span><span style=''>
+</span>72 <span style=''>    }
+</span>73 <span style=''>  }
+</span>74 <span style=''>
+</span>75 <span style=''>  // Presence of a file with one of these suffixes indicates that the
+</span>76 <span style=''>  // corresponding class has been pickled with TASTY.
+</span>77 <span style=''>  private val tastySuffixes = </span><span style='background: #F0ADAD'>List(&quot;.hasTasty&quot;, &quot;.tasty&quot;)</span><span style=''>
+</span>78 <span style=''>
+</span>79 <span style=''>  private def classNames(cp: ClassPath, packageName: String): List[String] = {
+</span>80 <span style=''>    def className(classSegments: List[String]) =
+</span>81 <span style=''>      </span><span style='background: #F0ADAD'>classSegments.mkString(&quot;.&quot;).stripSuffix(&quot;.class&quot;)</span><span style=''>
+</span>82 <span style=''>
+</span>83 <span style=''>    val ClassPathEntries(pkgs, classReps) = cp.list(packageName)
+</span>84 <span style=''>
+</span>85 <span style=''>    </span><span style='background: #F0ADAD'>classReps
+</span>86 <span style=''></span><span style='background: #F0ADAD'>      .filter((classRep: ClassRepresentation) =&gt; classRep.binary match {
+</span>87 <span style=''></span><span style='background: #F0ADAD'>        case None =&gt;
+</span>88 <span style=''></span><span style='background: #F0ADAD'>          true
+</span>89 <span style=''></span><span style='background: #F0ADAD'>        case Some(binFile) =&gt;
+</span>90 <span style=''></span><span style='background: #F0ADAD'>          val prefix =
+</span>91 <span style=''></span><span style='background: #F0ADAD'>            if (binFile.name.endsWith(&quot;.class&quot;))
+</span>92 <span style=''></span><span style='background: #F0ADAD'>              binFile.name.stripSuffix(&quot;.class&quot;)
+</span>93 <span style=''></span><span style='background: #F0ADAD'>            else
+</span>94 <span style=''></span><span style='background: #F0ADAD'>              null
+</span>95 <span style=''></span><span style='background: #F0ADAD'>          prefix != null &amp;&amp; {
+</span>96 <span style=''></span><span style='background: #F0ADAD'>            binFile match {
+</span>97 <span style=''></span><span style='background: #F0ADAD'>              case pf: PlainFile =&gt;
+</span>98 <span style=''></span><span style='background: #F0ADAD'>                tastySuffixes.map(suffix =&gt; pf.givenPath.parent / (prefix + suffix)).exists(_.exists)
+</span>99 <span style=''></span><span style='background: #F0ADAD'>              case _ =&gt;
+</span>100 <span style=''></span><span style='background: #F0ADAD'>                sys.error(s&quot;Unhandled file type: $binFile [getClass = ${binFile.getClass}]&quot;)
+</span>101 <span style=''></span><span style='background: #F0ADAD'>            }
+</span>102 <span style=''></span><span style='background: #F0ADAD'>          }
+</span>103 <span style=''></span><span style='background: #F0ADAD'>      })
+</span>104 <span style=''></span><span style='background: #F0ADAD'>      .map(classRep =&gt; (packageName ++ (if (packageName != &quot;&quot;) &quot;.&quot; else &quot;&quot;) ++ classRep.name)).toList ++
+</span>105 <span style=''></span><span style='background: #F0ADAD'>    pkgs.flatMap(pkg =&gt; classNames(cp, pkg.name))</span><span style=''>
+</span>106 <span style=''>  }
+</span>107 <span style=''>
+</span>108 <span style=''>  // FIXME: All the code doing classpath handling is very fragile and ugly,
+</span>109 <span style=''>  // improving this requires changing the dotty classpath APIs to handle our usecases.
+</span>110 <span style=''>  // We also need something like sbt server-mode to be informed of changes on
+</span>111 <span style=''>  // the classpath.
+</span>112 <span style=''>
+</span>113 <span style=''>  private val (zipClassPaths, dirClassPaths) = currentCtx.platform.classPath(currentCtx) match {
+</span>114 <span style=''>    case AggregateClassPath(cps) =&gt;
+</span>115 <span style=''>      val (zipCps, dirCps) = cps.partition(_.isInstanceOf[ZipArchiveFileLookup[_]])
+</span>116 <span style=''>      // This will be wrong if any other subclass of ClassPath is either used,
+</span>117 <span style=''>      // like `JrtClassPath` once we get Java 9 support
+</span>118 <span style=''>      (zipCps.asInstanceOf[Seq[ZipArchiveFileLookup[_]]], dirCps.asInstanceOf[Seq[JFileDirectoryLookup[_]]])
+</span>119 <span style=''>    case _ =&gt;
+</span>120 <span style=''>      (Seq(), Seq())
+</span>121 <span style=''>  }
+</span>122 <span style=''>
+</span>123 <span style=''>  // Like in `ZipArchiveFileLookup` we assume that zips are immutable
+</span>124 <span style=''>  private val zipClassPathClasses: Seq[String] = </span><span style='background: #F0ADAD'>zipClassPaths.flatMap { zipCp =&gt;
+</span>125 <span style=''></span><span style='background: #F0ADAD'>    // Working with Java 8 stream without SAMs and scala-java8-compat is awful.
+</span>126 <span style=''></span><span style='background: #F0ADAD'>    val entries = new ZipFile(zipCp.zipFile)
+</span>127 <span style=''></span><span style='background: #F0ADAD'>      .stream
+</span>128 <span style=''></span><span style='background: #F0ADAD'>      .toArray(new IntFunction[Array[ZipEntry]] { def apply(size: Int) = new Array(size) })
+</span>129 <span style=''></span><span style='background: #F0ADAD'>      .toSeq
+</span>130 <span style=''></span><span style='background: #F0ADAD'>    for {
+</span>131 <span style=''></span><span style='background: #F0ADAD'>      entry &lt;- entries
+</span>132 <span style=''></span><span style='background: #F0ADAD'>      name = entry.getName
+</span>133 <span style=''></span><span style='background: #F0ADAD'>      tastySuffix &lt;- tastySuffixes
+</span>134 <span style=''></span><span style='background: #F0ADAD'>      if name.endsWith(tastySuffix)
+</span>135 <span style=''></span><span style='background: #F0ADAD'>    } yield name.replace(&quot;/&quot;, &quot;.&quot;).stripSuffix(tastySuffix)
+</span>136 <span style=''></span><span style='background: #F0ADAD'>  }</span><span style=''>
+</span>137 <span style=''>
+</span>138 <span style=''>  // FIXME: classfiles in directories may change at any point, so we retraverse
+</span>139 <span style=''>  // the directories each time, if we knew when classfiles changed (sbt
+</span>140 <span style=''>  // server-mode might help here), we could do cache invalidation instead.
+</span>141 <span style=''>  private def dirClassPathClasses: Seq[String] = {
+</span>142 <span style=''>    val names = </span><span style='background: #F0ADAD'>new mutable.ListBuffer[String]</span><span style=''>
+</span>143 <span style=''>    </span><span style='background: #F0ADAD'>dirClassPaths.foreach { dirCp =&gt;
+</span>144 <span style=''></span><span style='background: #F0ADAD'>      val root = dirCp.dir.toPath
+</span>145 <span style=''></span><span style='background: #F0ADAD'>      Files.walkFileTree(root, new SimpleFileVisitor[Path] {
+</span>146 <span style=''></span><span style='background: #F0ADAD'>        override def visitFile(path: Path, attrs: BasicFileAttributes) = {
+</span>147 <span style=''></span><span style='background: #F0ADAD'>          if (!attrs.isDirectory) {
+</span>148 <span style=''></span><span style='background: #F0ADAD'>            val name = path.getFileName.toString
+</span>149 <span style=''></span><span style='background: #F0ADAD'>            for {
+</span>150 <span style=''></span><span style='background: #F0ADAD'>              tastySuffix &lt;- tastySuffixes
+</span>151 <span style=''></span><span style='background: #F0ADAD'>              if name.endsWith(tastySuffix)
+</span>152 <span style=''></span><span style='background: #F0ADAD'>            } {
+</span>153 <span style=''></span><span style='background: #F0ADAD'>              names += root.relativize(path).toString.replace(&quot;/&quot;, &quot;.&quot;).stripSuffix(tastySuffix)
+</span>154 <span style=''></span><span style='background: #F0ADAD'>            }
+</span>155 <span style=''></span><span style='background: #F0ADAD'>          }
+</span>156 <span style=''></span><span style='background: #F0ADAD'>          FileVisitResult.CONTINUE
+</span>157 <span style=''></span><span style='background: #F0ADAD'>        }
+</span>158 <span style=''></span><span style='background: #F0ADAD'>      })
+</span>159 <span style=''></span><span style='background: #F0ADAD'>    }</span><span style=''>
+</span>160 <span style=''>    </span><span style='background: #F0ADAD'>names.toList</span><span style=''>
+</span>161 <span style=''>  }
+</span>162 <span style=''>
+</span>163 <span style=''>  private def topLevelClassTrees(topTree: Tree, source: SourceFile): List[SourceTree] = {
+</span>164 <span style=''>    val trees = </span><span style='background: #F0ADAD'>new mutable.ListBuffer[SourceTree]</span><span style=''>
+</span>165 <span style=''>
+</span>166 <span style=''>    def addTrees(tree: Tree): Unit = tree match {
+</span>167 <span style=''>      case PackageDef(_, stats) =&gt;
+</span>168 <span style=''>        </span><span style='background: #F0ADAD'>stats.foreach(addTrees)</span><span style=''>
+</span>169 <span style=''>      case tree: TypeDef =&gt;
+</span>170 <span style=''>        </span><span style='background: #F0ADAD'>trees += SourceTree(tree, source)</span><span style=''>
+</span>171 <span style=''>      case _ </span><span style='background: #F0ADAD'>=&gt;</span><span style=''>
+</span>172 <span style=''>    }
+</span>173 <span style=''>    </span><span style='background: #F0ADAD'>addTrees(topTree)</span><span style=''>
+</span>174 <span style=''>
+</span>175 <span style=''>    </span><span style='background: #F0ADAD'>trees.toList</span><span style=''>
+</span>176 <span style=''>  }
+</span>177 <span style=''>
+</span>178 <span style=''>  private val compiler: Compiler = </span><span style='background: #F0ADAD'>new InteractiveCompiler</span><span style=''>
+</span>179 <span style=''>
+</span>180 <span style=''>  /** Remove attachments and error out completers. The goal is to avoid
+</span>181 <span style=''>   *  having a completer hanging in a typed tree which can capture the context
+</span>182 <span style=''>   *  of a previous run. Note that typed trees can have untyped or partially
+</span>183 <span style=''>   *  typed children if the source contains errors.
+</span>184 <span style=''>   */
+</span>185 <span style=''>  private def cleanup(tree: tpd.Tree)(implicit ctx: Context): Unit = {
+</span>186 <span style=''>    val seen = </span><span style='background: #F0ADAD'>mutable.Set.empty[tpd.Tree]</span><span style=''>
+</span>187 <span style=''>    def cleanupTree(tree: tpd.Tree): Unit = {
+</span>188 <span style=''>      </span><span style='background: #F0ADAD'>seen += tree</span><span style=''>
+</span>189 <span style=''>      </span><span style='background: #F0ADAD'>tree.foreachSubTree { t =&gt;
+</span>190 <span style=''></span><span style='background: #F0ADAD'>        if (t.symbol.exists &amp;&amp; t.hasType) {
+</span>191 <span style=''></span><span style='background: #F0ADAD'>          if (!t.symbol.isCompleted) t.symbol.info = UnspecifiedErrorType
+</span>192 <span style=''></span><span style='background: #F0ADAD'>          t.symbol.annotations.foreach { annot =&gt;
+</span>193 <span style=''></span><span style='background: #F0ADAD'>            /* In some cases annotations are are used on themself (possibly larger cycles).
+</span>194 <span style=''></span><span style='background: #F0ADAD'>            *  This is the case with the java.lang.annotation.Target annotation, would end
+</span>195 <span style=''></span><span style='background: #F0ADAD'>            *  in an infinite loop while cleaning. The `seen` is added to ensure that those
+</span>196 <span style=''></span><span style='background: #F0ADAD'>            *  trees are not cleand twice.
+</span>197 <span style=''></span><span style='background: #F0ADAD'>            *  TODO: Find a less expensive way to check for those cycles.
+</span>198 <span style=''></span><span style='background: #F0ADAD'>            */
+</span>199 <span style=''></span><span style='background: #F0ADAD'>            if (!seen(annot.tree))
+</span>200 <span style=''></span><span style='background: #F0ADAD'>              cleanupTree(annot.tree)
+</span>201 <span style=''></span><span style='background: #F0ADAD'>          }
+</span>202 <span style=''></span><span style='background: #F0ADAD'>        }
+</span>203 <span style=''></span><span style='background: #F0ADAD'>        t.removeAllAttachments()
+</span>204 <span style=''></span><span style='background: #F0ADAD'>      }</span><span style=''>
+</span>205 <span style=''>    }
+</span>206 <span style=''>    </span><span style='background: #F0ADAD'>cleanupTree(tree)</span><span style=''>
+</span>207 <span style=''>  }
+</span>208 <span style=''>
+</span>209 <span style=''>  def run(uri: URI, sourceCode: String): List[MessageContainer] = {
+</span>210 <span style=''>    val previousCtx = </span><span style='background: #F0ADAD'>myCtx</span><span style=''>
+</span>211 <span style=''>    try {
+</span>212 <span style=''>      </span><span style='background: #F0ADAD'>val reporter =
+</span>213 <span style=''></span><span style='background: #F0ADAD'>        new StoreReporter(null) with UniqueMessagePositions with HideNonSensicalMessages
+</span>214 <span style=''></span><span style='background: #F0ADAD'>
+</span>215 <span style=''></span><span style='background: #F0ADAD'>      val run = compiler.newRun(myInitCtx.fresh.setReporter(reporter))
+</span>216 <span style=''></span><span style='background: #F0ADAD'>      myCtx = run.runContext
+</span>217 <span style=''></span><span style='background: #F0ADAD'>
+</span>218 <span style=''></span><span style='background: #F0ADAD'>      implicit val ctx = myCtx
+</span>219 <span style=''></span><span style='background: #F0ADAD'>
+</span>220 <span style=''></span><span style='background: #F0ADAD'>      val virtualFile = new VirtualFile(uri.toString, Paths.get(uri).toString)
+</span>221 <span style=''></span><span style='background: #F0ADAD'>      val writer = new BufferedWriter(new OutputStreamWriter(virtualFile.output, &quot;UTF-8&quot;))
+</span>222 <span style=''></span><span style='background: #F0ADAD'>      writer.write(sourceCode)
+</span>223 <span style=''></span><span style='background: #F0ADAD'>      writer.close()
+</span>224 <span style=''></span><span style='background: #F0ADAD'>      val source = new SourceFile(virtualFile, Codec.UTF8)
+</span>225 <span style=''></span><span style='background: #F0ADAD'>      myOpenedFiles(uri) = source
+</span>226 <span style=''></span><span style='background: #F0ADAD'>
+</span>227 <span style=''></span><span style='background: #F0ADAD'>      run.compileSources(List(source))
+</span>228 <span style=''></span><span style='background: #F0ADAD'>      run.printSummary()
+</span>229 <span style=''></span><span style='background: #F0ADAD'>      val t = ctx.run.units.head.tpdTree
+</span>230 <span style=''></span><span style='background: #F0ADAD'>      cleanup(t)
+</span>231 <span style=''></span><span style='background: #F0ADAD'>      myOpenedTrees(uri) = topLevelClassTrees(t, source)
+</span>232 <span style=''></span><span style='background: #F0ADAD'>
+</span>233 <span style=''></span><span style='background: #F0ADAD'>      reporter.removeBufferedMessages</span><span style=''>
+</span>234 <span style=''>    }
+</span>235 <span style=''>    catch {
+</span>236 <span style=''>      case ex: FatalError  =&gt;
+</span>237 <span style=''>        myCtx = previousCtx
+</span>238 <span style=''>        </span><span style='background: #F0ADAD'>close(uri)</span><span style=''>
+</span>239 <span style=''>        </span><span style='background: #F0ADAD'>Nil</span><span style=''>
+</span>240 <span style=''>    }
+</span>241 <span style=''>  }
+</span>242 <span style=''>
+</span>243 <span style=''>  def close(uri: URI): Unit = {
+</span>244 <span style=''>    </span><span style='background: #F0ADAD'>myOpenedFiles.remove(uri)</span><span style=''>
+</span>245 <span style=''>    </span><span style='background: #F0ADAD'>myOpenedTrees.remove(uri)</span><span style=''>
+</span>246 <span style=''>  }
+</span>247 <span style=''>}
+</span>248 <span style=''>
+</span>249 <span style=''>object InteractiveDriver {
+</span>250 <span style=''>  def toUri(source: SourceFile) = </span><span style='background: #F0ADAD'>Paths.get(source.file.path).toUri</span><span style=''>
+</span>251 <span style=''>}
+</span></pre>
+          </div>
+          <div class="tab-pane" id="statementlist">
+            <table cellspacing="0" cellpadding="0" class="table statementlist">
+      <tr>
+        <th>Line</th>
+        <th>Stmt Id</th>
+        <th>Pos</th>
+        <th>Tree</th>
+        <th>Symbol</th>
+        <th>Code</th>
+      </tr><tr>
+        <td>
+          31
+        </td>
+        <td>
+          37043
+        </td>
+        <td>
+          839
+          -
+          844
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          false
+        </td>
+      </tr><tr>
+        <td>
+          34
+        </td>
+        <td>
+          37047
+        </td>
+        <td>
+          951
+          -
+          967
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Mode.Interactive
+        </td>
+        <td style="background: #F0ADAD">
+          core.Mode.Interactive
+        </td>
+      </tr><tr>
+        <td>
+          34
+        </td>
+        <td>
+          37044
+        </td>
+        <td>
+          901
+          -
+          914
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Contexts.Context.fresh
+        </td>
+        <td style="background: #F0ADAD">
+          InteractiveDriver.this.initCtx.fresh
+        </td>
+      </tr><tr>
+        <td>
+          34
+        </td>
+        <td>
+          37046
+        </td>
+        <td>
+          901
+          -
+          942
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.core.Contexts.FreshModeChanges.addMode
+        </td>
+        <td style="background: #F0ADAD">
+          core.Contexts.FreshModeChanges(InteractiveDriver.this.initCtx.fresh).addMode(core.Mode.ReadPositions)
+        </td>
+      </tr><tr>
+        <td>
+          34
+        </td>
+        <td>
+          37045
+        </td>
+        <td>
+          923
+          -
+          941
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Mode.ReadPositions
+        </td>
+        <td style="background: #F0ADAD">
+          core.Mode.ReadPositions
+        </td>
+      </tr><tr>
+        <td>
+          34
+        </td>
+        <td>
+          37048
+        </td>
+        <td>
+          901
+          -
+          968
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.core.Contexts.FreshModeChanges.addMode
+        </td>
+        <td style="background: #F0ADAD">
+          core.Contexts.FreshModeChanges(core.Contexts.FreshModeChanges(InteractiveDriver.this.initCtx.fresh).addMode(core.Mode.ReadPositions)).addMode(core.Mode.Interactive)
+        </td>
+      </tr><tr>
+        <td>
+          35
+        </td>
+        <td>
+          37050
+        </td>
+        <td>
+          1023
+          -
+          1027
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          true
+        </td>
+      </tr><tr>
+        <td>
+          35
+        </td>
+        <td>
+          37049
+        </td>
+        <td>
+          992
+          -
+          1021
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.config.ScalaSettings.YretainTrees
+        </td>
+        <td style="background: #F0ADAD">
+          Contexts.this.Context.toBase(rootCtx).settings.YretainTrees
+        </td>
+      </tr><tr>
+        <td>
+          35
+        </td>
+        <td>
+          37051
+        </td>
+        <td>
+          973
+          -
+          1028
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.core.Contexts.FreshContext.setSetting
+        </td>
+        <td style="background: #F0ADAD">
+          rootCtx.setSetting[Boolean](Contexts.this.Context.toBase(rootCtx).settings.YretainTrees, true)
+        </td>
+      </tr><tr>
+        <td>
+          36
+        </td>
+        <td>
+          37053
+        </td>
+        <td>
+          1043
+          -
+          1078
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.Tuple2._2
+        </td>
+        <td style="background: #F0ADAD">
+          InteractiveDriver.this.setup(InteractiveDriver.this.settings.toArray[String]((ClassTag.apply[String](classOf[java.lang.String]): scala.reflect.ClassTag[String])), rootCtx)._2
+        </td>
+      </tr><tr>
+        <td>
+          36
+        </td>
+        <td>
+          37052
+        </td>
+        <td>
+          1049
+          -
+          1065
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          scala.collection.TraversableOnce.toArray
+        </td>
+        <td style="background: #F0ADAD">
+          InteractiveDriver.this.settings.toArray[String]((ClassTag.apply[String](classOf[java.lang.String]): scala.reflect.ClassTag[String]))
+        </td>
+      </tr><tr>
+        <td>
+          37
+        </td>
+        <td>
+          37054
+        </td>
+        <td>
+          1083
+          -
+          1104
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.core.Contexts.ContextBase.initialize
+        </td>
+        <td style="background: #F0ADAD">
+          Contexts.this.Context.toBase(ctx).initialize()(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          41
+        </td>
+        <td>
+          37055
+        </td>
+        <td>
+          1155
+          -
+          1164
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.interactive.InteractiveDriver.myInitCtx
+        </td>
+        <td style="background: #F0ADAD">
+          InteractiveDriver.this.myInitCtx
+        </td>
+      </tr><tr>
+        <td>
+          43
+        </td>
+        <td>
+          37056
+        </td>
+        <td>
+          1194
+          -
+          1199
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.interactive.InteractiveDriver.myCtx
+        </td>
+        <td style="background: #F0ADAD">
+          InteractiveDriver.this.myCtx
+        </td>
+      </tr><tr>
+        <td>
+          45
+        </td>
+        <td>
+          37058
+        </td>
+        <td>
+          1231
+          -
+          1234
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.interactive.InteractiveDriver.$anon.&lt;init&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          new $anon()
+        </td>
+      </tr><tr>
+        <td>
+          46
+        </td>
+        <td>
+          37057
+        </td>
+        <td>
+          1313
+          -
+          1321
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.util.NoSource
+        </td>
+        <td style="background: #F0ADAD">
+          util.NoSource
+        </td>
+      </tr><tr>
+        <td>
+          49
+        </td>
+        <td>
+          37060
+        </td>
+        <td>
+          1357
+          -
+          1360
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.interactive.InteractiveDriver.$anon.&lt;init&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          new $anon()
+        </td>
+      </tr><tr>
+        <td>
+          50
+        </td>
+        <td>
+          37059
+        </td>
+        <td>
+          1445
+          -
+          1448
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.collection.immutable.Nil
+        </td>
+        <td style="background: #F0ADAD">
+          scala.collection.immutable.Nil
+        </td>
+      </tr><tr>
+        <td>
+          53
+        </td>
+        <td>
+          37061
+        </td>
+        <td>
+          1496
+          -
+          1509
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.interactive.InteractiveDriver.myOpenedFiles
+        </td>
+        <td style="background: #F0ADAD">
+          InteractiveDriver.this.myOpenedFiles
+        </td>
+      </tr><tr>
+        <td>
+          54
+        </td>
+        <td>
+          37062
+        </td>
+        <td>
+          1558
+          -
+          1571
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.interactive.InteractiveDriver.myOpenedTrees
+        </td>
+        <td style="background: #F0ADAD">
+          InteractiveDriver.this.myOpenedTrees
+        </td>
+      </tr><tr>
+        <td>
+          57
+        </td>
+        <td>
+          37064
+        </td>
+        <td>
+          1654
+          -
+          1687
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.collection.TraversableOnce.toList
+        </td>
+        <td style="background: #F0ADAD">
+          InteractiveDriver.this.openedTrees.values.flatten[dotty.tools.dotc.interactive.SourceTree](scala.Predef.$conforms[List[dotty.tools.dotc.interactive.SourceTree]]).toList
+        </td>
+      </tr><tr>
+        <td>
+          57
+        </td>
+        <td>
+          37063
+        </td>
+        <td>
+          1673
+          -
+          1673
+        </td>
+        <td>
+          TypeApply
+        </td>
+        <td>
+          scala.Predef.$conforms
+        </td>
+        <td style="background: #F0ADAD">
+          scala.Predef.$conforms[List[dotty.tools.dotc.interactive.SourceTree]]
+        </td>
+      </tr><tr>
+        <td>
+          58
+        </td>
+        <td>
+          37065
+        </td>
+        <td>
+          1736
+          -
+          1755
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.interactive.InteractiveDriver.zipClassPathClasses
+        </td>
+        <td style="background: #F0ADAD">
+          InteractiveDriver.this.zipClassPathClasses
+        </td>
+      </tr><tr>
+        <td>
+          58
+        </td>
+        <td>
+          37073
+        </td>
+        <td>
+          1713
+          -
+          1885
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          scala.collection.TraversableLike.flatMap
+        </td>
+        <td style="background: #F0ADAD">
+          InteractiveDriver.this.dirClassPathClasses.++[String, Seq[String]](InteractiveDriver.this.zipClassPathClasses)(collection.this.Seq.canBuildFrom[String]).flatMap[dotty.tools.dotc.interactive.SourceTree, Seq[dotty.tools.dotc.interactive.SourceTree]](((cls: String) =&gt; {
+  val className: dotty.tools.dotc.core.Names.TypeName = core.Decorators.PreNamedString(cls).toTypeName;
+  scala.collection.immutable.List.apply[Option[dotty.tools.dotc.interactive.SourceTree]](InteractiveDriver.this.tree(className)(ctx), InteractiveDriver.this.tree(core.NameOps.NameDecorator[dotty.tools.dotc.core.Names.TypeName](className).moduleClassName)(ctx)).flatten[dotty.tools.dotc.interactive.SourceTree]({
+    ((xo: Option[dotty.tools.dotc.interactive.SourceTree]) =&gt; scala.this.Option.option2Iterable[dotty.tools.dotc.interactive.SourceTree](xo))
+  })
+}))(collection.this.Seq.canBuildFrom[dotty.tools.dotc.interactive.SourceTree])
+        </td>
+      </tr><tr>
+        <td>
+          58
+        </td>
+        <td>
+          37072
+        </td>
+        <td>
+          1765
+          -
+          1765
+        </td>
+        <td>
+          TypeApply
+        </td>
+        <td>
+          scala.collection.Seq.canBuildFrom
+        </td>
+        <td style="background: #F0ADAD">
+          collection.this.Seq.canBuildFrom[dotty.tools.dotc.interactive.SourceTree]
+        </td>
+      </tr><tr>
+        <td>
+          58
+        </td>
+        <td>
+          37066
+        </td>
+        <td>
+          1733
+          -
+          1733
+        </td>
+        <td>
+          TypeApply
+        </td>
+        <td>
+          scala.collection.Seq.canBuildFrom
+        </td>
+        <td style="background: #F0ADAD">
+          collection.this.Seq.canBuildFrom[String]
+        </td>
+      </tr><tr>
+        <td>
+          59
+        </td>
+        <td>
+          37067
+        </td>
+        <td>
+          1796
+          -
+          1810
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Decorators.PreNamedString.toTypeName
+        </td>
+        <td style="background: #F0ADAD">
+          core.Decorators.PreNamedString(cls).toTypeName
+        </td>
+      </tr><tr>
+        <td>
+          60
+        </td>
+        <td>
+          37068
+        </td>
+        <td>
+          1822
+          -
+          1837
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.interactive.InteractiveDriver.tree
+        </td>
+        <td style="background: #F0ADAD">
+          InteractiveDriver.this.tree(className)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          60
+        </td>
+        <td>
+          37071
+        </td>
+        <td>
+          1817
+          -
+          1879
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          scala.collection.generic.GenericTraversableTemplate.flatten
+        </td>
+        <td style="background: #F0ADAD">
+          scala.collection.immutable.List.apply[Option[dotty.tools.dotc.interactive.SourceTree]](InteractiveDriver.this.tree(className)(ctx), InteractiveDriver.this.tree(core.NameOps.NameDecorator[dotty.tools.dotc.core.Names.TypeName](className).moduleClassName)(ctx)).flatten[dotty.tools.dotc.interactive.SourceTree]({
+  ((xo: Option[dotty.tools.dotc.interactive.SourceTree]) =&gt; scala.this.Option.option2Iterable[dotty.tools.dotc.interactive.SourceTree](xo))
+})
+        </td>
+      </tr><tr>
+        <td>
+          60
+        </td>
+        <td>
+          37070
+        </td>
+        <td>
+          1872
+          -
+          1872
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Option.option2Iterable
+        </td>
+        <td style="background: #F0ADAD">
+          scala.this.Option.option2Iterable[dotty.tools.dotc.interactive.SourceTree](xo)
+        </td>
+      </tr><tr>
+        <td>
+          60
+        </td>
+        <td>
+          37069
+        </td>
+        <td>
+          1839
+          -
+          1870
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.interactive.InteractiveDriver.tree
+        </td>
+        <td style="background: #F0ADAD">
+          InteractiveDriver.this.tree(core.NameOps.NameDecorator[dotty.tools.dotc.core.Names.TypeName](className).moduleClassName)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          62
+        </td>
+        <td>
+          37074
+        </td>
+        <td>
+          1902
+          -
+          1902
+        </td>
+        <td>
+          TypeApply
+        </td>
+        <td>
+          scala.collection.immutable.List.canBuildFrom
+        </td>
+        <td style="background: #F0ADAD">
+          immutable.this.List.canBuildFrom[dotty.tools.dotc.interactive.SourceTree]
+        </td>
+      </tr><tr>
+        <td>
+          62
+        </td>
+        <td>
+          37075
+        </td>
+        <td>
+          1891
+          -
+          1928
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.collection.SeqLike.distinct
+        </td>
+        <td style="background: #F0ADAD">
+          fromSource.++[dotty.tools.dotc.interactive.SourceTree, List[dotty.tools.dotc.interactive.SourceTree]](fromClassPath)(immutable.this.List.canBuildFrom[dotty.tools.dotc.interactive.SourceTree]).distinct
+        </td>
+      </tr><tr>
+        <td>
+          66
+        </td>
+        <td>
+          37076
+        </td>
+        <td>
+          2036
+          -
+          2065
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.Denotations.DenotationsBase.staticRef
+        </td>
+        <td style="background: #F0ADAD">
+          ctx.base.staticRef(className, ctx.base.staticRef$default$2, ctx.base.staticRef$default$3)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          69
+        </td>
+        <td>
+          37077
+        </td>
+        <td>
+          2127
+          -
+          2169
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.interactive.SourceTree.fromSymbol
+        </td>
+        <td style="background: #F0ADAD">
+          SourceTree.fromSymbol(clsd.symbol.asClass)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          71
+        </td>
+        <td>
+          37079
+        </td>
+        <td>
+          2194
+          -
+          2235
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.sys.error
+        </td>
+        <td style="background: #F0ADAD">
+          scala.sys.`package`.error(scala.StringContext.apply(&quot;class not found: &quot;, &quot;&quot;).s(className))
+        </td>
+      </tr><tr>
+        <td>
+          71
+        </td>
+        <td>
+          37078
+        </td>
+        <td>
+          2204
+          -
+          2234
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.StringContext.s
+        </td>
+        <td style="background: #F0ADAD">
+          scala.StringContext.apply(&quot;class not found: &quot;, &quot;&quot;).s(className)
+        </td>
+      </tr><tr>
+        <td>
+          77
+        </td>
+        <td>
+          37080
+        </td>
+        <td>
+          2401
+          -
+          2428
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.immutable.List.apply
+        </td>
+        <td style="background: #F0ADAD">
+          scala.collection.immutable.List.apply[String](&quot;.hasTasty&quot;, &quot;.tasty&quot;)
+        </td>
+      </tr><tr>
+        <td>
+          81
+        </td>
+        <td>
+          37081
+        </td>
+        <td>
+          2564
+          -
+          2613
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.immutable.StringLike.stripSuffix
+        </td>
+        <td style="background: #F0ADAD">
+          scala.Predef.augmentString(classSegments.mkString(&quot;.&quot;)).stripSuffix(&quot;.class&quot;)
+        </td>
+      </tr><tr>
+        <td>
+          83
+        </td>
+        <td>
+          37083
+        </td>
+        <td>
+          2646
+          -
+          2646
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.Tuple2._2
+        </td>
+        <td style="background: #F0ADAD">
+          x$1._2
+        </td>
+      </tr><tr>
+        <td>
+          83
+        </td>
+        <td>
+          37082
+        </td>
+        <td>
+          2640
+          -
+          2640
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.Tuple2._1
+        </td>
+        <td style="background: #F0ADAD">
+          x$1._1
+        </td>
+      </tr><tr>
+        <td>
+          86
+        </td>
+        <td>
+          37084
+        </td>
+        <td>
+          2744
+          -
+          2759
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.io.ClassRepresentation.binary
+        </td>
+        <td style="background: #F0ADAD">
+          classRep.binary
+        </td>
+      </tr><tr>
+        <td>
+          88
+        </td>
+        <td>
+          37085
+        </td>
+        <td>
+          2799
+          -
+          2803
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          true
+        </td>
+      </tr><tr>
+        <td>
+          91
+        </td>
+        <td>
+          37086
+        </td>
+        <td>
+          2873
+          -
+          2904
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.String.endsWith
+        </td>
+        <td style="background: #F0ADAD">
+          binFile.name.endsWith(&quot;.class&quot;)
+        </td>
+      </tr><tr>
+        <td>
+          92
+        </td>
+        <td>
+          37088
+        </td>
+        <td>
+          2920
+          -
+          2954
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          scala.collection.immutable.StringLike.stripSuffix
+        </td>
+        <td style="background: #F0ADAD">
+          scala.Predef.augmentString(binFile.name).stripSuffix(&quot;.class&quot;)
+        </td>
+      </tr><tr>
+        <td>
+          92
+        </td>
+        <td>
+          37087
+        </td>
+        <td>
+          2920
+          -
+          2954
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.immutable.StringLike.stripSuffix
+        </td>
+        <td style="background: #F0ADAD">
+          scala.Predef.augmentString(binFile.name).stripSuffix(&quot;.class&quot;)
+        </td>
+      </tr><tr>
+        <td>
+          94
+        </td>
+        <td>
+          37089
+        </td>
+        <td>
+          2986
+          -
+          2990
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          null
+        </td>
+      </tr><tr>
+        <td>
+          94
+        </td>
+        <td>
+          37090
+        </td>
+        <td>
+          2986
+          -
+          2990
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          null
+        </td>
+      </tr><tr>
+        <td>
+          95
+        </td>
+        <td>
+          37091
+        </td>
+        <td>
+          3011
+          -
+          3015
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          null
+        </td>
+      </tr><tr>
+        <td>
+          95
+        </td>
+        <td>
+          37103
+        </td>
+        <td>
+          3001
+          -
+          3317
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Boolean.&amp;&amp;
+        </td>
+        <td style="background: #F0ADAD">
+          prefix.!=(null).&amp;&amp;(binFile match {
+  case (pf @ (_: dotty.tools.io.PlainFile)) =&gt; InteractiveDriver.this.tastySuffixes.map[dotty.tools.io.Path, List[dotty.tools.io.Path]](((suffix: String) =&gt; pf.givenPath.parent./(prefix.+(suffix))))(immutable.this.List.canBuildFrom[dotty.tools.io.Path]).exists(((x$2: dotty.tools.io.Path) =&gt; x$2.exists))
+  case _ =&gt; scala.sys.`package`.error(scala.StringContext.apply(&quot;Unhandled file type: &quot;, &quot; [getClass = &quot;, &quot;]&quot;).s(binFile, binFile.getClass()))
+})
+        </td>
+      </tr><tr>
+        <td>
+          98
+        </td>
+        <td>
+          37092
+        </td>
+        <td>
+          3152
+          -
+          3167
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.String.+
+        </td>
+        <td style="background: #F0ADAD">
+          prefix.+(suffix)
+        </td>
+      </tr><tr>
+        <td>
+          98
+        </td>
+        <td>
+          37095
+        </td>
+        <td>
+          3177
+          -
+          3185
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.io.Path.exists
+        </td>
+        <td style="background: #F0ADAD">
+          x$2.exists
+        </td>
+      </tr><tr>
+        <td>
+          98
+        </td>
+        <td>
+          37094
+        </td>
+        <td>
+          3118
+          -
+          3118
+        </td>
+        <td>
+          TypeApply
+        </td>
+        <td>
+          scala.collection.immutable.List.canBuildFrom
+        </td>
+        <td style="background: #F0ADAD">
+          immutable.this.List.canBuildFrom[dotty.tools.io.Path]
+        </td>
+      </tr><tr>
+        <td>
+          98
+        </td>
+        <td>
+          37093
+        </td>
+        <td>
+          3129
+          -
+          3168
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.io.Path./
+        </td>
+        <td style="background: #F0ADAD">
+          pf.givenPath.parent./(prefix.+(suffix))
+        </td>
+      </tr><tr>
+        <td>
+          98
+        </td>
+        <td>
+          37096
+        </td>
+        <td>
+          3101
+          -
+          3186
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.LinearSeqOptimized.exists
+        </td>
+        <td style="background: #F0ADAD">
+          InteractiveDriver.this.tastySuffixes.map[dotty.tools.io.Path, List[dotty.tools.io.Path]](((suffix: String) =&gt; pf.givenPath.parent./(prefix.+(suffix))))(immutable.this.List.canBuildFrom[dotty.tools.io.Path]).exists(((x$2: dotty.tools.io.Path) =&gt; x$2.exists))
+        </td>
+      </tr><tr>
+        <td>
+          100
+        </td>
+        <td>
+          37101
+        </td>
+        <td>
+          3237
+          -
+          3302
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.StringContext.s
+        </td>
+        <td style="background: #F0ADAD">
+          scala.StringContext.apply(&quot;Unhandled file type: &quot;, &quot; [getClass = &quot;, &quot;]&quot;).s(binFile, binFile.getClass())
+        </td>
+      </tr><tr>
+        <td>
+          100
+        </td>
+        <td>
+          37097
+        </td>
+        <td>
+          3239
+          -
+          3261
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          &quot;Unhandled file type: &quot;
+        </td>
+      </tr><tr>
+        <td>
+          100
+        </td>
+        <td>
+          37100
+        </td>
+        <td>
+          3283
+          -
+          3299
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.Object.getClass
+        </td>
+        <td style="background: #F0ADAD">
+          binFile.getClass()
+        </td>
+      </tr><tr>
+        <td>
+          100
+        </td>
+        <td>
+          37102
+        </td>
+        <td>
+          3227
+          -
+          3303
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.sys.error
+        </td>
+        <td style="background: #F0ADAD">
+          scala.sys.`package`.error(scala.StringContext.apply(&quot;Unhandled file type: &quot;, &quot; [getClass = &quot;, &quot;]&quot;).s(binFile, binFile.getClass()))
+        </td>
+      </tr><tr>
+        <td>
+          100
+        </td>
+        <td>
+          37099
+        </td>
+        <td>
+          3300
+          -
+          3302
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          &quot;]&quot;
+        </td>
+      </tr><tr>
+        <td>
+          100
+        </td>
+        <td>
+          37098
+        </td>
+        <td>
+          3268
+          -
+          3282
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          &quot; [getClass = &quot;
+        </td>
+      </tr><tr>
+        <td>
+          104
+        </td>
+        <td>
+          37110
+        </td>
+        <td>
+          3363
+          -
+          3414
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          scala.collection.TraversableLike.++
+        </td>
+        <td style="background: #F0ADAD">
+          scala.Predef.augmentString(packageName).++[Char, String](if (packageName.!=(&quot;&quot;))
+  scala.Predef.augmentString(&quot;.&quot;)
+else
+  scala.Predef.augmentString(&quot;&quot;))(scala.Predef.StringCanBuildFrom)
+        </td>
+      </tr><tr>
+        <td>
+          104
+        </td>
+        <td>
+          37104
+        </td>
+        <td>
+          3383
+          -
+          3400
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.Object.!=
+        </td>
+        <td style="background: #F0ADAD">
+          packageName.!=(&quot;&quot;)
+        </td>
+      </tr><tr>
+        <td>
+          104
+        </td>
+        <td>
+          37113
+        </td>
+        <td>
+          3415
+          -
+          3415
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.Predef.StringCanBuildFrom
+        </td>
+        <td style="background: #F0ADAD">
+          scala.Predef.StringCanBuildFrom
+        </td>
+      </tr><tr>
+        <td>
+          104
+        </td>
+        <td>
+          37112
+        </td>
+        <td>
+          3418
+          -
+          3431
+        </td>
+        <td>
+          ApplyImplicitView
+        </td>
+        <td>
+          scala.Predef.augmentString
+        </td>
+        <td style="background: #F0ADAD">
+          scala.Predef.augmentString(classRep.name)
+        </td>
+      </tr><tr>
+        <td>
+          104
+        </td>
+        <td>
+          37121
+        </td>
+        <td>
+          2685
+          -
+          3493
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          scala.collection.immutable.List.++
+        </td>
+        <td style="background: #F0ADAD">
+          classReps.filter(((classRep: dotty.tools.io.ClassRepresentation) =&gt; classRep.binary match {
+  case scala.None =&gt; true
+  case (value: dotty.tools.io.AbstractFile)Some[dotty.tools.io.AbstractFile]((binFile @ _)) =&gt; {
+    val prefix: String = if (binFile.name.endsWith(&quot;.class&quot;))
+      scala.Predef.augmentString(binFile.name).stripSuffix(&quot;.class&quot;)
+    else
+      null;
+    prefix.!=(null).&amp;&amp;(binFile match {
+      case (pf @ (_: dotty.tools.io.PlainFile)) =&gt; InteractiveDriver.this.tastySuffixes.map[dotty.tools.io.Path, List[dotty.tools.io.Path]](((suffix: String) =&gt; pf.givenPath.parent./(prefix.+(suffix))))(immutable.this.List.canBuildFrom[dotty.tools.io.Path]).exists(((x$2: dotty.tools.io.Path) =&gt; x$2.exists))
+      case _ =&gt; scala.sys.`package`.error(scala.StringContext.apply(&quot;Unhandled file type: &quot;, &quot; [getClass = &quot;, &quot;]&quot;).s(binFile, binFile.getClass()))
+    })
+  }
+})).map[String, Seq[String]](((classRep: dotty.tools.io.ClassRepresentation) =&gt; scala.Predef.augmentString(scala.Predef.augmentString(packageName).++[Char, String](if (packageName.!=(&quot;&quot;))
+  scala.Predef.augmentString(&quot;.&quot;)
+else
+  scala.Predef.augmentString(&quot;&quot;))(scala.Predef.StringCanBuildFrom)).++[Char, String](scala.Predef.augmentString(classRep.name))(scala.Predef.StringCanBuildFrom)))(collection.this.Seq.canBuildFrom[String]).toList.++[String, List[String]](pkgs.flatMap[String, Seq[String]](((pkg: dotty.tools.dotc.classpath.PackageEntry) =&gt; InteractiveDriver.this.classNames(cp, pkg.name)))(collection.this.Seq.canBuildFrom[String]))(immutable.this.List.canBuildFrom[String])
+        </td>
+      </tr><tr>
+        <td>
+          104
+        </td>
+        <td>
+          37106
+        </td>
+        <td>
+          3402
+          -
+          3405
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          scala.Predef.augmentString
+        </td>
+        <td style="background: #F0ADAD">
+          scala.Predef.augmentString(&quot;.&quot;)
+        </td>
+      </tr><tr>
+        <td>
+          104
+        </td>
+        <td>
+          37115
+        </td>
+        <td>
+          3349
+          -
+          3349
+        </td>
+        <td>
+          TypeApply
+        </td>
+        <td>
+          scala.collection.Seq.canBuildFrom
+        </td>
+        <td style="background: #F0ADAD">
+          collection.this.Seq.canBuildFrom[String]
+        </td>
+      </tr><tr>
+        <td>
+          104
+        </td>
+        <td>
+          37109
+        </td>
+        <td>
+          3375
+          -
+          3375
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.Predef.StringCanBuildFrom
+        </td>
+        <td style="background: #F0ADAD">
+          scala.Predef.StringCanBuildFrom
+        </td>
+      </tr><tr>
+        <td>
+          104
+        </td>
+        <td>
+          37111
+        </td>
+        <td>
+          3418
+          -
+          3431
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.io.ClassRepresentation.name
+        </td>
+        <td style="background: #F0ADAD">
+          classRep.name
+        </td>
+      </tr><tr>
+        <td>
+          104
+        </td>
+        <td>
+          37120
+        </td>
+        <td>
+          3441
+          -
+          3441
+        </td>
+        <td>
+          TypeApply
+        </td>
+        <td>
+          scala.collection.immutable.List.canBuildFrom
+        </td>
+        <td style="background: #F0ADAD">
+          immutable.this.List.canBuildFrom[String]
+        </td>
+      </tr><tr>
+        <td>
+          104
+        </td>
+        <td>
+          37105
+        </td>
+        <td>
+          3402
+          -
+          3405
+        </td>
+        <td>
+          ApplyImplicitView
+        </td>
+        <td>
+          scala.Predef.augmentString
+        </td>
+        <td style="background: #F0ADAD">
+          scala.Predef.augmentString(&quot;.&quot;)
+        </td>
+      </tr><tr>
+        <td>
+          104
+        </td>
+        <td>
+          37114
+        </td>
+        <td>
+          3363
+          -
+          3431
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          scala.collection.TraversableLike.++
+        </td>
+        <td style="background: #F0ADAD">
+          scala.Predef.augmentString(scala.Predef.augmentString(packageName).++[Char, String](if (packageName.!=(&quot;&quot;))
+  scala.Predef.augmentString(&quot;.&quot;)
+else
+  scala.Predef.augmentString(&quot;&quot;))(scala.Predef.StringCanBuildFrom)).++[Char, String](scala.Predef.augmentString(classRep.name))(scala.Predef.StringCanBuildFrom)
+        </td>
+      </tr><tr>
+        <td>
+          104
+        </td>
+        <td>
+          37108
+        </td>
+        <td>
+          3411
+          -
+          3413
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          scala.Predef.augmentString
+        </td>
+        <td style="background: #F0ADAD">
+          scala.Predef.augmentString(&quot;&quot;)
+        </td>
+      </tr><tr>
+        <td>
+          104
+        </td>
+        <td>
+          37107
+        </td>
+        <td>
+          3411
+          -
+          3413
+        </td>
+        <td>
+          ApplyImplicitView
+        </td>
+        <td>
+          scala.Predef.augmentString
+        </td>
+        <td style="background: #F0ADAD">
+          scala.Predef.augmentString(&quot;&quot;)
+        </td>
+      </tr><tr>
+        <td>
+          105
+        </td>
+        <td>
+          37119
+        </td>
+        <td>
+          3448
+          -
+          3493
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          scala.collection.TraversableLike.flatMap
+        </td>
+        <td style="background: #F0ADAD">
+          pkgs.flatMap[String, Seq[String]](((pkg: dotty.tools.dotc.classpath.PackageEntry) =&gt; InteractiveDriver.this.classNames(cp, pkg.name)))(collection.this.Seq.canBuildFrom[String])
+        </td>
+      </tr><tr>
+        <td>
+          105
+        </td>
+        <td>
+          37118
+        </td>
+        <td>
+          3460
+          -
+          3460
+        </td>
+        <td>
+          TypeApply
+        </td>
+        <td>
+          scala.collection.Seq.canBuildFrom
+        </td>
+        <td style="background: #F0ADAD">
+          collection.this.Seq.canBuildFrom[String]
+        </td>
+      </tr><tr>
+        <td>
+          105
+        </td>
+        <td>
+          37117
+        </td>
+        <td>
+          3468
+          -
+          3492
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.interactive.InteractiveDriver.classNames
+        </td>
+        <td style="background: #F0ADAD">
+          InteractiveDriver.this.classNames(cp, pkg.name)
+        </td>
+      </tr><tr>
+        <td>
+          105
+        </td>
+        <td>
+          37116
+        </td>
+        <td>
+          3483
+          -
+          3491
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.classpath.PackageEntry.name
+        </td>
+        <td style="background: #F0ADAD">
+          pkg.name
+        </td>
+      </tr><tr>
+        <td>
+          113
+        </td>
+        <td>
+          37122
+        </td>
+        <td>
+          3776
+          -
+          3776
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.Tuple2._1
+        </td>
+        <td style="background: #F0ADAD">
+          InteractiveDriver.this.x$5._1
+        </td>
+      </tr><tr>
+        <td>
+          113
+        </td>
+        <td>
+          37123
+        </td>
+        <td>
+          3791
+          -
+          3791
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.Tuple2._2
+        </td>
+        <td style="background: #F0ADAD">
+          InteractiveDriver.this.x$5._2
+        </td>
+      </tr><tr>
+        <td>
+          124
+        </td>
+        <td>
+          37139
+        </td>
+        <td>
+          4381
+          -
+          4852
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          scala.collection.TraversableLike.flatMap
+        </td>
+        <td style="background: #F0ADAD">
+          InteractiveDriver.this.zipClassPaths.flatMap[String, Seq[String]](((zipCp: dotty.tools.dotc.classpath.ZipArchiveFileLookup[_]) =&gt; {
+  val entries: Seq[java.util.zip.ZipEntry] = scala.Predef.refArrayOps[java.util.zip.ZipEntry](new java.util.zip.ZipFile(zipCp.zipFile).stream().toArray[java.util.zip.ZipEntry]({
+  final class $anon extends Object with java.util.function.IntFunction[Array[java.util.zip.ZipEntry]] {
+    def &lt;init&gt;(): &lt;$anon: java.util.function.IntFunction[Array[java.util.zip.ZipEntry]]&gt; = {
+      $anon.super.&lt;init&gt;();
+      ()
+    };
+    def apply(size: Int): Array[java.util.zip.ZipEntry] = new Array[java.util.zip.ZipEntry](size)
+  };
+  new $anon()
+})).toSeq;
+  entries.map[(java.util.zip.ZipEntry, String), Seq[(java.util.zip.ZipEntry, String)]](((entry: java.util.zip.ZipEntry) =&gt; {
+  val name: String = entry.getName();
+  scala.Tuple2.apply[java.util.zip.ZipEntry, String](entry, name)
+}))(collection.this.Seq.canBuildFrom[(java.util.zip.ZipEntry, String)]).flatMap[String, Seq[String]](((x$6: (java.util.zip.ZipEntry, String)) =&gt; (x$6: (java.util.zip.ZipEntry, String) @unchecked) match {
+    case (_1: java.util.zip.ZipEntry, _2: String)(java.util.zip.ZipEntry, String)((entry @ _), (name @ _)) =&gt; InteractiveDriver.this.tastySuffixes.withFilter(((tastySuffix: String) =&gt; name.endsWith(tastySuffix))).map[String, List[String]](((tastySuffix: String) =&gt; scala.Predef.augmentString(name.replace(&quot;/&quot;, &quot;.&quot;)).stripSuffix(tastySuffix)))(immutable.this.List.canBuildFrom[String])
+  }))(collection.this.Seq.canBuildFrom[String])
+}))(collection.this.Seq.canBuildFrom[String])
+        </td>
+      </tr><tr>
+        <td>
+          124
+        </td>
+        <td>
+          37138
+        </td>
+        <td>
+          4403
+          -
+          4403
+        </td>
+        <td>
+          TypeApply
+        </td>
+        <td>
+          scala.collection.Seq.canBuildFrom
+        </td>
+        <td style="background: #F0ADAD">
+          collection.this.Seq.canBuildFrom[String]
+        </td>
+      </tr><tr>
+        <td>
+          126
+        </td>
+        <td>
+          37124
+        </td>
+        <td>
+          4524
+          -
+          4537
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.classpath.ZipArchiveFileLookup.zipFile
+        </td>
+        <td style="background: #F0ADAD">
+          zipCp.zipFile
+        </td>
+      </tr><tr>
+        <td>
+          128
+        </td>
+        <td>
+          37127
+        </td>
+        <td>
+          4512
+          -
+          4644
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.util.stream.Stream.toArray
+        </td>
+        <td style="background: #F0ADAD">
+          new java.util.zip.ZipFile(zipCp.zipFile).stream().toArray[java.util.zip.ZipEntry]({
+  final class $anon extends Object with java.util.function.IntFunction[Array[java.util.zip.ZipEntry]] {
+    def &lt;init&gt;(): &lt;$anon: java.util.function.IntFunction[Array[java.util.zip.ZipEntry]]&gt; = {
+      $anon.super.&lt;init&gt;();
+      ()
+    };
+    def apply(size: Int): Array[java.util.zip.ZipEntry] = new Array[java.util.zip.ZipEntry](size)
+  };
+  new $anon()
+})
+        </td>
+      </tr><tr>
+        <td>
+          128
+        </td>
+        <td>
+          37126
+        </td>
+        <td>
+          4568
+          -
+          4571
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.interactive.InteractiveDriver.$anon.&lt;init&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          new $anon()
+        </td>
+      </tr><tr>
+        <td>
+          128
+        </td>
+        <td>
+          37125
+        </td>
+        <td>
+          4626
+          -
+          4641
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Array.&lt;init&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          new Array[java.util.zip.ZipEntry](size)
+        </td>
+      </tr><tr>
+        <td>
+          129
+        </td>
+        <td>
+          37128
+        </td>
+        <td>
+          4512
+          -
+          4657
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.collection.SeqLike.toSeq
+        </td>
+        <td style="background: #F0ADAD">
+          scala.Predef.refArrayOps[java.util.zip.ZipEntry](new java.util.zip.ZipFile(zipCp.zipFile).stream().toArray[java.util.zip.ZipEntry]({
+  final class $anon extends Object with java.util.function.IntFunction[Array[java.util.zip.ZipEntry]] {
+    def &lt;init&gt;(): &lt;$anon: java.util.function.IntFunction[Array[java.util.zip.ZipEntry]]&gt; = {
+      $anon.super.&lt;init&gt;();
+      ()
+    };
+    def apply(size: Int): Array[java.util.zip.ZipEntry] = new Array[java.util.zip.ZipEntry](size)
+  };
+  new $anon()
+})).toSeq
+        </td>
+      </tr><tr>
+        <td>
+          131
+        </td>
+        <td>
+          37137
+        </td>
+        <td>
+          4662
+          -
+          4848
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          scala.collection.TraversableLike.flatMap
+        </td>
+        <td style="background: #F0ADAD">
+          entries.map[(java.util.zip.ZipEntry, String), Seq[(java.util.zip.ZipEntry, String)]](((entry: java.util.zip.ZipEntry) =&gt; {
+  val name: String = entry.getName();
+  scala.Tuple2.apply[java.util.zip.ZipEntry, String](entry, name)
+}))(collection.this.Seq.canBuildFrom[(java.util.zip.ZipEntry, String)]).flatMap[String, Seq[String]](((x$6: (java.util.zip.ZipEntry, String)) =&gt; (x$6: (java.util.zip.ZipEntry, String) @unchecked) match {
+  case (_1: java.util.zip.ZipEntry, _2: String)(java.util.zip.ZipEntry, String)((entry @ _), (name @ _)) =&gt; InteractiveDriver.this.tastySuffixes.withFilter(((tastySuffix: String) =&gt; name.endsWith(tastySuffix))).map[String, List[String]](((tastySuffix: String) =&gt; scala.Predef.augmentString(name.replace(&quot;/&quot;, &quot;.&quot;)).stripSuffix(tastySuffix)))(immutable.this.List.canBuildFrom[String])
+}))(collection.this.Seq.canBuildFrom[String])
+        </td>
+      </tr><tr>
+        <td>
+          131
+        </td>
+        <td>
+          37131
+        </td>
+        <td>
+          4680
+          -
+          4680
+        </td>
+        <td>
+          TypeApply
+        </td>
+        <td>
+          scala.collection.Seq.canBuildFrom
+        </td>
+        <td style="background: #F0ADAD">
+          collection.this.Seq.canBuildFrom[(java.util.zip.ZipEntry, String)]
+        </td>
+      </tr><tr>
+        <td>
+          131
+        </td>
+        <td>
+          37130
+        </td>
+        <td>
+          4674
+          -
+          4674
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Tuple2.apply
+        </td>
+        <td style="background: #F0ADAD">
+          scala.Tuple2.apply[java.util.zip.ZipEntry, String](entry, name)
+        </td>
+      </tr><tr>
+        <td>
+          131
+        </td>
+        <td>
+          37136
+        </td>
+        <td>
+          4680
+          -
+          4680
+        </td>
+        <td>
+          TypeApply
+        </td>
+        <td>
+          scala.collection.Seq.canBuildFrom
+        </td>
+        <td style="background: #F0ADAD">
+          collection.this.Seq.canBuildFrom[String]
+        </td>
+      </tr><tr>
+        <td>
+          132
+        </td>
+        <td>
+          37129
+        </td>
+        <td>
+          4704
+          -
+          4717
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.util.zip.ZipEntry.getName
+        </td>
+        <td style="background: #F0ADAD">
+          entry.getName()
+        </td>
+      </tr><tr>
+        <td>
+          133
+        </td>
+        <td>
+          37135
+        </td>
+        <td>
+          4724
+          -
+          4848
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          scala.collection.generic.FilterMonadic.map
+        </td>
+        <td style="background: #F0ADAD">
+          InteractiveDriver.this.tastySuffixes.withFilter(((tastySuffix: String) =&gt; name.endsWith(tastySuffix))).map[String, List[String]](((tastySuffix: String) =&gt; scala.Predef.augmentString(name.replace(&quot;/&quot;, &quot;.&quot;)).stripSuffix(tastySuffix)))(immutable.this.List.canBuildFrom[String])
+        </td>
+      </tr><tr>
+        <td>
+          133
+        </td>
+        <td>
+          37134
+        </td>
+        <td>
+          4736
+          -
+          4736
+        </td>
+        <td>
+          TypeApply
+        </td>
+        <td>
+          scala.collection.immutable.List.canBuildFrom
+        </td>
+        <td style="background: #F0ADAD">
+          immutable.this.List.canBuildFrom[String]
+        </td>
+      </tr><tr>
+        <td>
+          134
+        </td>
+        <td>
+          37132
+        </td>
+        <td>
+          4762
+          -
+          4788
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.String.endsWith
+        </td>
+        <td style="background: #F0ADAD">
+          name.endsWith(tastySuffix)
+        </td>
+      </tr><tr>
+        <td>
+          135
+        </td>
+        <td>
+          37133
+        </td>
+        <td>
+          4801
+          -
+          4848
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.immutable.StringLike.stripSuffix
+        </td>
+        <td style="background: #F0ADAD">
+          scala.Predef.augmentString(name.replace(&quot;/&quot;, &quot;.&quot;)).stripSuffix(tastySuffix)
+        </td>
+      </tr><tr>
+        <td>
+          142
+        </td>
+        <td>
+          37140
+        </td>
+        <td>
+          5148
+          -
+          5178
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.mutable.ListBuffer.&lt;init&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          new scala.collection.mutable.ListBuffer[String]()
+        </td>
+      </tr><tr>
+        <td>
+          143
+        </td>
+        <td>
+          37154
+        </td>
+        <td>
+          5183
+          -
+          5774
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.IterableLike.foreach
+        </td>
+        <td style="background: #F0ADAD">
+          InteractiveDriver.this.dirClassPaths.foreach[java.nio.file.Path](((dirCp: dotty.tools.dotc.classpath.JFileDirectoryLookup[_]) =&gt; {
+  val root: java.nio.file.Path = dirCp.dir.toPath();
+  java.nio.file.Files.walkFileTree(root, {
+    final class $anon extends java.nio.file.SimpleFileVisitor[java.nio.file.Path] {
+      def &lt;init&gt;(): &lt;$anon: java.nio.file.SimpleFileVisitor[java.nio.file.Path]&gt; = {
+        $anon.super.&lt;init&gt;();
+        ()
+      };
+      override def visitFile(path: java.nio.file.Path, attrs: java.nio.file.attribute.BasicFileAttributes): java.nio.file.FileVisitResult = {
+        if (attrs.isDirectory().unary_!)
+          {
+            val name: String = path.getFileName().toString();
+            InteractiveDriver.this.tastySuffixes.withFilter(((tastySuffix: String) =&gt; name.endsWith(tastySuffix))).foreach[scala.collection.mutable.ListBuffer[String]](((tastySuffix: String) =&gt; names.+=(scala.Predef.augmentString(root.relativize(path).toString().replace(&quot;/&quot;, &quot;.&quot;)).stripSuffix(tastySuffix))))
+          }
+        else
+          ();
+        CONTINUE
+      }
+    };
+    new $anon()
+  })
+}))
+        </td>
+      </tr><tr>
+        <td>
+          144
+        </td>
+        <td>
+          37141
+        </td>
+        <td>
+          5233
+          -
+          5249
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.io.File.toPath
+        </td>
+        <td style="background: #F0ADAD">
+          dirCp.dir.toPath()
+        </td>
+      </tr><tr>
+        <td>
+          145
+        </td>
+        <td>
+          37153
+        </td>
+        <td>
+          5256
+          -
+          5768
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.nio.file.Files.walkFileTree
+        </td>
+        <td style="background: #F0ADAD">
+          java.nio.file.Files.walkFileTree(root, {
+  final class $anon extends java.nio.file.SimpleFileVisitor[java.nio.file.Path] {
+    def &lt;init&gt;(): &lt;$anon: java.nio.file.SimpleFileVisitor[java.nio.file.Path]&gt; = {
+      $anon.super.&lt;init&gt;();
+      ()
+    };
+    override def visitFile(path: java.nio.file.Path, attrs: java.nio.file.attribute.BasicFileAttributes): java.nio.file.FileVisitResult = {
+      if (attrs.isDirectory().unary_!)
+        {
+          val name: String = path.getFileName().toString();
+          InteractiveDriver.this.tastySuffixes.withFilter(((tastySuffix: String) =&gt; name.endsWith(tastySuffix))).foreach[scala.collection.mutable.ListBuffer[String]](((tastySuffix: String) =&gt; names.+=(scala.Predef.augmentString(root.relativize(path).toString().replace(&quot;/&quot;, &quot;.&quot;)).stripSuffix(tastySuffix))))
+        }
+      else
+        ();
+      CONTINUE
+    }
+  };
+  new $anon()
+})
+        </td>
+      </tr><tr>
+        <td>
+          145
+        </td>
+        <td>
+          37152
+        </td>
+        <td>
+          5281
+          -
+          5284
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.interactive.InteractiveDriver.$anon.&lt;init&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          new $anon()
+        </td>
+      </tr><tr>
+        <td>
+          147
+        </td>
+        <td>
+          37149
+        </td>
+        <td>
+          5396
+          -
+          5396
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          ()
+        </td>
+      </tr><tr>
+        <td>
+          147
+        </td>
+        <td>
+          37148
+        </td>
+        <td>
+          5420
+          -
+          5714
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          {
+  val name: String = path.getFileName().toString();
+  InteractiveDriver.this.tastySuffixes.withFilter(((tastySuffix: String) =&gt; name.endsWith(tastySuffix))).foreach[scala.collection.mutable.ListBuffer[String]](((tastySuffix: String) =&gt; names.+=(scala.Predef.augmentString(root.relativize(path).toString().replace(&quot;/&quot;, &quot;.&quot;)).stripSuffix(tastySuffix))))
+}
+        </td>
+      </tr><tr>
+        <td>
+          147
+        </td>
+        <td>
+          37142
+        </td>
+        <td>
+          5400
+          -
+          5418
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.Boolean.unary_!
+        </td>
+        <td style="background: #F0ADAD">
+          attrs.isDirectory().unary_!
+        </td>
+      </tr><tr>
+        <td>
+          147
+        </td>
+        <td>
+          37150
+        </td>
+        <td>
+          5396
+          -
+          5396
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          ()
+        </td>
+      </tr><tr>
+        <td>
+          148
+        </td>
+        <td>
+          37143
+        </td>
+        <td>
+          5445
+          -
+          5470
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.Object.toString
+        </td>
+        <td style="background: #F0ADAD">
+          path.getFileName().toString()
+        </td>
+      </tr><tr>
+        <td>
+          150
+        </td>
+        <td>
+          37147
+        </td>
+        <td>
+          5483
+          -
+          5688
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.generic.FilterMonadic.foreach
+        </td>
+        <td style="background: #F0ADAD">
+          InteractiveDriver.this.tastySuffixes.withFilter(((tastySuffix: String) =&gt; name.endsWith(tastySuffix))).foreach[scala.collection.mutable.ListBuffer[String]](((tastySuffix: String) =&gt; names.+=(scala.Predef.augmentString(root.relativize(path).toString().replace(&quot;/&quot;, &quot;.&quot;)).stripSuffix(tastySuffix))))
+        </td>
+      </tr><tr>
+        <td>
+          151
+        </td>
+        <td>
+          37144
+        </td>
+        <td>
+          5549
+          -
+          5575
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.String.endsWith
+        </td>
+        <td style="background: #F0ADAD">
+          name.endsWith(tastySuffix)
+        </td>
+      </tr><tr>
+        <td>
+          153
+        </td>
+        <td>
+          37146
+        </td>
+        <td>
+          5606
+          -
+          5688
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.mutable.ListBuffer.+=
+        </td>
+        <td style="background: #F0ADAD">
+          names.+=(scala.Predef.augmentString(root.relativize(path).toString().replace(&quot;/&quot;, &quot;.&quot;)).stripSuffix(tastySuffix))
+        </td>
+      </tr><tr>
+        <td>
+          153
+        </td>
+        <td>
+          37145
+        </td>
+        <td>
+          5615
+          -
+          5688
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.immutable.StringLike.stripSuffix
+        </td>
+        <td style="background: #F0ADAD">
+          scala.Predef.augmentString(root.relativize(path).toString().replace(&quot;/&quot;, &quot;.&quot;)).stripSuffix(tastySuffix)
+        </td>
+      </tr><tr>
+        <td>
+          156
+        </td>
+        <td>
+          37151
+        </td>
+        <td>
+          5725
+          -
+          5749
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          CONTINUE
+        </td>
+      </tr><tr>
+        <td>
+          160
+        </td>
+        <td>
+          37155
+        </td>
+        <td>
+          5779
+          -
+          5791
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.collection.mutable.ListBuffer.toList
+        </td>
+        <td style="background: #F0ADAD">
+          names.toList
+        </td>
+      </tr><tr>
+        <td>
+          164
+        </td>
+        <td>
+          37156
+        </td>
+        <td>
+          5903
+          -
+          5937
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.mutable.ListBuffer.&lt;init&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          new scala.collection.mutable.ListBuffer[dotty.tools.dotc.interactive.SourceTree]()
+        </td>
+      </tr><tr>
+        <td>
+          168
+        </td>
+        <td>
+          37157
+        </td>
+        <td>
+          6046
+          -
+          6054
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.interactive.InteractiveDriver.addTrees
+        </td>
+        <td style="background: #F0ADAD">
+          addTrees(tree)
+        </td>
+      </tr><tr>
+        <td>
+          168
+        </td>
+        <td>
+          37158
+        </td>
+        <td>
+          6032
+          -
+          6055
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.immutable.List.foreach
+        </td>
+        <td style="background: #F0ADAD">
+          stats.foreach[Unit]({
+  ((tree: dotty.tools.dotc.ast.tpd.Tree) =&gt; addTrees(tree))
+})
+        </td>
+      </tr><tr>
+        <td>
+          170
+        </td>
+        <td>
+          37160
+        </td>
+        <td>
+          6092
+          -
+          6125
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.mutable.ListBuffer.+=
+        </td>
+        <td style="background: #F0ADAD">
+          trees.+=(SourceTree.apply(tree, source))
+        </td>
+      </tr><tr>
+        <td>
+          170
+        </td>
+        <td>
+          37159
+        </td>
+        <td>
+          6101
+          -
+          6125
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.interactive.SourceTree.apply
+        </td>
+        <td style="background: #F0ADAD">
+          SourceTree.apply(tree, source)
+        </td>
+      </tr><tr>
+        <td>
+          170
+        </td>
+        <td>
+          37161
+        </td>
+        <td>
+          6098
+          -
+          6098
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          ()
+        </td>
+      </tr><tr>
+        <td>
+          171
+        </td>
+        <td>
+          37162
+        </td>
+        <td>
+          6139
+          -
+          6141
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          ()
+        </td>
+      </tr><tr>
+        <td>
+          173
+        </td>
+        <td>
+          37163
+        </td>
+        <td>
+          6152
+          -
+          6169
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.interactive.InteractiveDriver.addTrees
+        </td>
+        <td style="background: #F0ADAD">
+          addTrees(topTree)
+        </td>
+      </tr><tr>
+        <td>
+          175
+        </td>
+        <td>
+          37164
+        </td>
+        <td>
+          6175
+          -
+          6187
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.collection.mutable.ListBuffer.toList
+        </td>
+        <td style="background: #F0ADAD">
+          trees.toList
+        </td>
+      </tr><tr>
+        <td>
+          178
+        </td>
+        <td>
+          37165
+        </td>
+        <td>
+          6228
+          -
+          6251
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.interactive.InteractiveCompiler.&lt;init&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          new InteractiveCompiler()
+        </td>
+      </tr><tr>
+        <td>
+          186
+        </td>
+        <td>
+          37166
+        </td>
+        <td>
+          6625
+          -
+          6652
+        </td>
+        <td>
+          TypeApply
+        </td>
+        <td>
+          scala.collection.mutable.Set.empty
+        </td>
+        <td style="background: #F0ADAD">
+          scala.collection.mutable.Set.empty[dotty.tools.dotc.ast.tpd.Tree]
+        </td>
+      </tr><tr>
+        <td>
+          188
+        </td>
+        <td>
+          37167
+        </td>
+        <td>
+          6705
+          -
+          6717
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.mutable.SetLike.+=
+        </td>
+        <td style="background: #F0ADAD">
+          seen.+=(tree)
+        </td>
+      </tr><tr>
+        <td>
+          189
+        </td>
+        <td>
+          37168
+        </td>
+        <td>
+          6724
+          -
+          7461
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.tpd.TreeOps.foreachSubTree
+        </td>
+        <td style="background: #F0ADAD">
+          ast.tpd.TreeOps[dotty.tools.dotc.ast.tpd.Tree](tree).foreachSubTree(((t: dotty.tools.dotc.ast.tpd.Tree) =&gt; {
+  if (core.Symbols.toDenot(t.symbol(ctx))(ctx).exists.&amp;&amp;(t.hasType))
+    {
+      if (core.Symbols.toDenot(t.symbol(ctx))(ctx).isCompleted.unary_!)
+        core.Symbols.toDenot(t.symbol(ctx))(ctx).info_=(core.Types.UnspecifiedErrorType)
+      else
+        ();
+      core.Symbols.toDenot(t.symbol(ctx))(ctx).annotations(ctx).foreach[Unit](((annot: dotty.tools.dotc.core.Annotations.Annotation) =&gt; if (seen.apply(annot.tree(ctx)).unary_!)
+        cleanupTree(annot.tree(ctx))
+      else
+        ()))
+    }
+  else
+    ();
+  t.removeAllAttachments()
+}))(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          206
+        </td>
+        <td>
+          37169
+        </td>
+        <td>
+          7472
+          -
+          7489
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.interactive.InteractiveDriver.cleanupTree
+        </td>
+        <td style="background: #F0ADAD">
+          cleanupTree(tree)
+        </td>
+      </tr><tr>
+        <td>
+          210
+        </td>
+        <td>
+          37170
+        </td>
+        <td>
+          7585
+          -
+          7590
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.interactive.InteractiveDriver.myCtx
+        </td>
+        <td style="background: #F0ADAD">
+          InteractiveDriver.this.myCtx
+        </td>
+      </tr><tr>
+        <td>
+          211
+        </td>
+        <td>
+          37196
+        </td>
+        <td>
+          7607
+          -
+          8378
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          {
+  val reporter: dotty.tools.dotc.reporting.StoreReporter with dotty.tools.dotc.reporting.UniqueMessagePositions with dotty.tools.dotc.reporting.HideNonSensicalMessages = {
+    final class $anon extends reporting.StoreReporter with dotty.tools.dotc.reporting.UniqueMessagePositions with dotty.tools.dotc.reporting.HideNonSensicalMessages {
+      def &lt;init&gt;(): &lt;$anon: dotty.tools.dotc.reporting.StoreReporter with dotty.tools.dotc.reporting.UniqueMessagePositions with dotty.tools.dotc.reporting.HideNonSensicalMessages&gt; = {
+        $anon.super.&lt;init&gt;(null);
+        ()
+      }
+    };
+    new $anon()
+  };
+  val run: dotty.tools.dotc.Run = InteractiveDriver.this.compiler.newRun(InteractiveDriver.this.myInitCtx.fresh.setReporter(reporter));
+  InteractiveDriver.this.myCtx = run.runContext;
+  implicit val ctx: dotty.tools.dotc.core.Contexts.Context = InteractiveDriver.this.myCtx;
+  val virtualFile: dotty.tools.io.VirtualFile = new dotty.tools.io.VirtualFile(uri.toString(), java.nio.file.Paths.get(uri).toString());
+  val writer: java.io.BufferedWriter = new java.io.BufferedWriter(new java.io.OutputStreamWriter(virtualFile.output, &quot;UTF-8&quot;));
+  writer.write(sourceCode);
+  writer.close();
+  val source: dotty.tools.dotc.util.SourceFile = new util.SourceFile(virtualFile, scala.io.Codec.UTF8);
+  InteractiveDriver.this.myOpenedFiles.update(uri, source);
+  run.compileSources(scala.collection.immutable.List.apply[dotty.tools.dotc.util.SourceFile](source));
+  run.printSummary();
+  val t: dotty.tools.dotc.ast.tpd.Tree = ctx.run.units.head.tpdTree;
+  InteractiveDriver.this.cleanup(t)(ctx);
+  InteractiveDriver.this.myOpenedTrees.update(uri, InteractiveDriver.this.topLevelClassTrees(t, source));
+  reporter.removeBufferedMessages(ctx)
+}
+        </td>
+      </tr><tr>
+        <td>
+          213
+        </td>
+        <td>
+          37171
+        </td>
+        <td>
+          7630
+          -
+          7633
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.interactive.InteractiveDriver.$anon.&lt;init&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          new $anon()
+        </td>
+      </tr><tr>
+        <td>
+          215
+        </td>
+        <td>
+          37173
+        </td>
+        <td>
+          7728
+          -
+          7782
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.Compiler.newRun
+        </td>
+        <td style="background: #F0ADAD">
+          InteractiveDriver.this.compiler.newRun(InteractiveDriver.this.myInitCtx.fresh.setReporter(reporter))
+        </td>
+      </tr><tr>
+        <td>
+          215
+        </td>
+        <td>
+          37172
+        </td>
+        <td>
+          7744
+          -
+          7781
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.core.Contexts.FreshContext.setReporter
+        </td>
+        <td style="background: #F0ADAD">
+          InteractiveDriver.this.myInitCtx.fresh.setReporter(reporter)
+        </td>
+      </tr><tr>
+        <td>
+          216
+        </td>
+        <td>
+          37174
+        </td>
+        <td>
+          7797
+          -
+          7811
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.Run.runContext
+        </td>
+        <td style="background: #F0ADAD">
+          run.runContext
+        </td>
+      </tr><tr>
+        <td>
+          218
+        </td>
+        <td>
+          37175
+        </td>
+        <td>
+          7838
+          -
+          7843
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.interactive.InteractiveDriver.myCtx
+        </td>
+        <td style="background: #F0ADAD">
+          InteractiveDriver.this.myCtx
+        </td>
+      </tr><tr>
+        <td>
+          220
+        </td>
+        <td>
+          37178
+        </td>
+        <td>
+          7869
+          -
+          7923
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.io.VirtualFile.&lt;init&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          new dotty.tools.io.VirtualFile(uri.toString(), java.nio.file.Paths.get(uri).toString())
+        </td>
+      </tr><tr>
+        <td>
+          220
+        </td>
+        <td>
+          37177
+        </td>
+        <td>
+          7899
+          -
+          7922
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.Object.toString
+        </td>
+        <td style="background: #F0ADAD">
+          java.nio.file.Paths.get(uri).toString()
+        </td>
+      </tr><tr>
+        <td>
+          220
+        </td>
+        <td>
+          37176
+        </td>
+        <td>
+          7885
+          -
+          7897
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.net.URI.toString
+        </td>
+        <td style="background: #F0ADAD">
+          uri.toString()
+        </td>
+      </tr><tr>
+        <td>
+          221
+        </td>
+        <td>
+          37182
+        </td>
+        <td>
+          7943
+          -
+          8014
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.io.BufferedWriter.&lt;init&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          new java.io.BufferedWriter(new java.io.OutputStreamWriter(virtualFile.output, &quot;UTF-8&quot;))
+        </td>
+      </tr><tr>
+        <td>
+          221
+        </td>
+        <td>
+          37181
+        </td>
+        <td>
+          7962
+          -
+          8013
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.io.OutputStreamWriter.&lt;init&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          new java.io.OutputStreamWriter(virtualFile.output, &quot;UTF-8&quot;)
+        </td>
+      </tr><tr>
+        <td>
+          221
+        </td>
+        <td>
+          37180
+        </td>
+        <td>
+          8005
+          -
+          8012
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          &quot;UTF-8&quot;
+        </td>
+      </tr><tr>
+        <td>
+          221
+        </td>
+        <td>
+          37179
+        </td>
+        <td>
+          7985
+          -
+          8003
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.io.VirtualFile.output
+        </td>
+        <td style="background: #F0ADAD">
+          virtualFile.output
+        </td>
+      </tr><tr>
+        <td>
+          222
+        </td>
+        <td>
+          37183
+        </td>
+        <td>
+          8021
+          -
+          8045
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.io.Writer.write
+        </td>
+        <td style="background: #F0ADAD">
+          writer.write(sourceCode)
+        </td>
+      </tr><tr>
+        <td>
+          223
+        </td>
+        <td>
+          37184
+        </td>
+        <td>
+          8052
+          -
+          8066
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.io.BufferedWriter.close
+        </td>
+        <td style="background: #F0ADAD">
+          writer.close()
+        </td>
+      </tr><tr>
+        <td>
+          224
+        </td>
+        <td>
+          37186
+        </td>
+        <td>
+          8086
+          -
+          8125
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.util.SourceFile.&lt;init&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          new util.SourceFile(virtualFile, scala.io.Codec.UTF8)
+        </td>
+      </tr><tr>
+        <td>
+          224
+        </td>
+        <td>
+          37185
+        </td>
+        <td>
+          8114
+          -
+          8124
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.io.Codec.UTF8
+        </td>
+        <td style="background: #F0ADAD">
+          scala.io.Codec.UTF8
+        </td>
+      </tr><tr>
+        <td>
+          225
+        </td>
+        <td>
+          37187
+        </td>
+        <td>
+          8132
+          -
+          8159
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.mutable.MapLike.update
+        </td>
+        <td style="background: #F0ADAD">
+          InteractiveDriver.this.myOpenedFiles.update(uri, source)
+        </td>
+      </tr><tr>
+        <td>
+          227
+        </td>
+        <td>
+          37189
+        </td>
+        <td>
+          8167
+          -
+          8199
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.Run.compileSources
+        </td>
+        <td style="background: #F0ADAD">
+          run.compileSources(scala.collection.immutable.List.apply[dotty.tools.dotc.util.SourceFile](source))
+        </td>
+      </tr><tr>
+        <td>
+          227
+        </td>
+        <td>
+          37188
+        </td>
+        <td>
+          8186
+          -
+          8198
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.immutable.List.apply
+        </td>
+        <td style="background: #F0ADAD">
+          scala.collection.immutable.List.apply[dotty.tools.dotc.util.SourceFile](source)
+        </td>
+      </tr><tr>
+        <td>
+          228
+        </td>
+        <td>
+          37190
+        </td>
+        <td>
+          8206
+          -
+          8224
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.Run.printSummary
+        </td>
+        <td style="background: #F0ADAD">
+          run.printSummary()
+        </td>
+      </tr><tr>
+        <td>
+          229
+        </td>
+        <td>
+          37191
+        </td>
+        <td>
+          8239
+          -
+          8265
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.CompilationUnit.tpdTree
+        </td>
+        <td style="background: #F0ADAD">
+          ctx.run.units.head.tpdTree
+        </td>
+      </tr><tr>
+        <td>
+          230
+        </td>
+        <td>
+          37192
+        </td>
+        <td>
+          8272
+          -
+          8282
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.interactive.InteractiveDriver.cleanup
+        </td>
+        <td style="background: #F0ADAD">
+          InteractiveDriver.this.cleanup(t)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          231
+        </td>
+        <td>
+          37193
+        </td>
+        <td>
+          8310
+          -
+          8339
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.interactive.InteractiveDriver.topLevelClassTrees
+        </td>
+        <td style="background: #F0ADAD">
+          InteractiveDriver.this.topLevelClassTrees(t, source)
+        </td>
+      </tr><tr>
+        <td>
+          231
+        </td>
+        <td>
+          37194
+        </td>
+        <td>
+          8289
+          -
+          8339
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.mutable.MapLike.update
+        </td>
+        <td style="background: #F0ADAD">
+          InteractiveDriver.this.myOpenedTrees.update(uri, InteractiveDriver.this.topLevelClassTrees(t, source))
+        </td>
+      </tr><tr>
+        <td>
+          233
+        </td>
+        <td>
+          37195
+        </td>
+        <td>
+          8347
+          -
+          8378
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.reporting.StoreReporter.removeBufferedMessages
+        </td>
+        <td style="background: #F0ADAD">
+          reporter.removeBufferedMessages(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          238
+        </td>
+        <td>
+          37197
+        </td>
+        <td>
+          8463
+          -
+          8473
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.interactive.InteractiveDriver.close
+        </td>
+        <td style="background: #F0ADAD">
+          InteractiveDriver.this.close(uri)
+        </td>
+      </tr><tr>
+        <td>
+          239
+        </td>
+        <td>
+          37198
+        </td>
+        <td>
+          8482
+          -
+          8485
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.collection.immutable.Nil
+        </td>
+        <td style="background: #F0ADAD">
+          scala.collection.immutable.Nil
+        </td>
+      </tr><tr>
+        <td>
+          244
+        </td>
+        <td>
+          37199
+        </td>
+        <td>
+          8533
+          -
+          8558
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.mutable.LinkedHashMap.remove
+        </td>
+        <td style="background: #F0ADAD">
+          InteractiveDriver.this.myOpenedFiles.remove(uri)
+        </td>
+      </tr><tr>
+        <td>
+          245
+        </td>
+        <td>
+          37200
+        </td>
+        <td>
+          8563
+          -
+          8588
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.mutable.LinkedHashMap.remove
+        </td>
+        <td style="background: #F0ADAD">
+          InteractiveDriver.this.myOpenedTrees.remove(uri)
+        </td>
+      </tr><tr>
+        <td>
+          245
+        </td>
+        <td>
+          37201
+        </td>
+        <td>
+          8583
+          -
+          8583
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          ()
+        </td>
+      </tr><tr>
+        <td>
+          250
+        </td>
+        <td>
+          37202
+        </td>
+        <td>
+          8657
+          -
+          8690
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.nio.file.Path.toUri
+        </td>
+        <td style="background: #F0ADAD">
+          java.nio.file.Paths.get(source.file.path).toUri()
+        </td>
+      </tr>
+    </table>
+          </div>
+        </div>
+      </body>
+    </html>

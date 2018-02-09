@@ -1,0 +1,3963 @@
+<html>
+      <head>
+        <meta http-equiv="Content-Type" content="text/html; charset=utf-8"/>
+        <title id="title">
+          dotty/tools/dotc/interpreter/Interpreter.scala.html
+        </title>
+        <script src="https://ajax.googleapis.com/ajax/libs/jquery/1.10.2/jquery.min.js"></script><link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/jquery.tablesorter/2.20.1/css/theme.default.min.css" type="text/css"/><script src="https://cdnjs.cloudflare.com/ajax/libs/jquery.tablesorter/2.20.1/js/jquery.tablesorter.min.js"></script><link rel="stylesheet" href="https://netdna.bootstrapcdn.com/bootstrap/3.0.3/css/bootstrap.min.css" type="text/css"/><script src="https://netdna.bootstrapcdn.com/bootstrap/3.0.3/js/bootstrap.min.js"></script><script type="text/javascript">
+        $(document).ready(function() {$(".tablesorter").tablesorter();});
+      </script>
+        <style>
+          table.codegrid { font-family: monospace; font-size: 12px; width: auto!important; }table.statementlist { width: auto!important; font-size: 13px; } table.codegrid td { padding: 0!important; border: 0!important } table td.linenumber { width: 40px!important; } 
+        </style>
+      </head>
+      <body style="font-family: monospace;">
+        <ul class="nav nav-tabs">
+          <li>
+            <a href="#codegrid" data-toggle="tab">Codegrid</a>
+          </li>
+          <li>
+            <a href="#statementlist" data-toggle="tab">Statement List</a>
+          </li>
+        </ul>
+        <div class="tab-content">
+          <div class="tab-pane active" id="codegrid">
+            <pre style='font-size: 12pt; font-family: courier;'>1 <span style=''>package dotty.tools.dotc
+</span>2 <span style=''>package interpreter
+</span>3 <span style=''>
+</span>4 <span style=''>import java.io.{PrintWriter, StringWriter}
+</span>5 <span style=''>
+</span>6 <span style=''>import dotty.tools.dotc.ast.tpd
+</span>7 <span style=''>import dotty.tools.dotc.ast.Trees._
+</span>8 <span style=''>import dotty.tools.dotc.core.Constants._
+</span>9 <span style=''>import dotty.tools.dotc.core.Contexts._
+</span>10 <span style=''>import dotty.tools.dotc.core.Decorators._
+</span>11 <span style=''>import dotty.tools.dotc.core.Flags._
+</span>12 <span style=''>import dotty.tools.dotc.core.Names._
+</span>13 <span style=''>import dotty.tools.dotc.core.Symbols._
+</span>14 <span style=''>import dotty.tools.dotc.core.quoted.Quoted
+</span>15 <span style=''>import dotty.tools.dotc.util.Positions.Position
+</span>16 <span style=''>
+</span>17 <span style=''>import scala.reflect.ClassTag
+</span>18 <span style=''>import java.net.URLClassLoader
+</span>19 <span style=''>import java.lang.reflect.Constructor
+</span>20 <span style=''>import java.lang.reflect.Method
+</span>21 <span style=''>
+</span>22 <span style=''>/** Tree interpreter that can interpret
+</span>23 <span style=''> *   * Literal constants
+</span>24 <span style=''> *   * Calls to static methods
+</span>25 <span style=''> *   * New objects with explicit `new` keyword
+</span>26 <span style=''> *   * Quoted code
+</span>27 <span style=''> *
+</span>28 <span style=''> *  The interpreter assumes that all calls in the trees are to code that was
+</span>29 <span style=''> *  previously compiled and is present in the classpath of the current context.
+</span>30 <span style=''> */
+</span>31 <span style=''>class Interpreter(implicit ctx: Context) {
+</span>32 <span style=''>  import tpd._
+</span>33 <span style=''>
+</span>34 <span style=''>  type Env = Map[Symbol, Object]
+</span>35 <span style=''>
+</span>36 <span style=''>  private[this] val classLoader = {
+</span>37 <span style=''>    val urls = </span><span style='background: #AEF1AE'>ctx.settings.classpath.value.split(':').map(cp =&gt; java.nio.file.Paths.get(cp).toUri.toURL)</span><span style=''>
+</span>38 <span style=''>    </span><span style='background: #AEF1AE'>new URLClassLoader(urls, getClass.getClassLoader)</span><span style=''>
+</span>39 <span style=''>  }
+</span>40 <span style=''>
+</span>41 <span style=''>  /** Returns the interpreted result of interpreting the code represented by the tree.
+</span>42 <span style=''>   *  Return Some of the result or None if some error happen during the interpretation.
+</span>43 <span style=''>   */
+</span>44 <span style=''>  def interpretTree[T](tree: Tree)(implicit ct: ClassTag[T]): Option[T] = {
+</span>45 <span style=''>    try {
+</span>46 <span style=''>      </span><span style='background: #AEF1AE'>interpretTreeImpl(tree, Map.empty) match {
+</span>47 <span style=''></span><span style='background: #AEF1AE'>        case obj: T =&gt; Some(obj)
+</span>48 <span style=''></span><span style='background: #AEF1AE'>        case obj =&gt;
+</span>49 <span style=''></span><span style='background: #AEF1AE'>          // TODO upgrade to a full type tag check or something similar
+</span>50 <span style=''></span><span style='background: #AEF1AE'>          </span><span style='background: #F0ADAD'>ctx.error(s&quot;Interpreted tree returned a result of an unexpected type. Expected ${ct.runtimeClass} but was ${obj.getClass}&quot;, tree.pos)</span><span style='background: #AEF1AE'>
+</span>51 <span style=''></span><span style='background: #AEF1AE'>          </span><span style='background: #F0ADAD'>None</span><span style='background: #AEF1AE'>
+</span>52 <span style=''></span><span style='background: #AEF1AE'>      }</span><span style=''>
+</span>53 <span style=''>    } catch {
+</span>54 <span style=''>      case ex: StopInterpretation =&gt;
+</span>55 <span style=''>        </span><span style='background: #F0ADAD'>ctx.error(ex.msg, ex.pos)</span><span style=''>
+</span>56 <span style=''>        </span><span style='background: #F0ADAD'>None</span><span style=''>
+</span>57 <span style=''>    }
+</span>58 <span style=''>  }
+</span>59 <span style=''>
+</span>60 <span style=''>  /** Returns the interpreted result of interpreting the code represented by the tree.
+</span>61 <span style=''>   *  Returns the result of the interpreted tree.
+</span>62 <span style=''>   *
+</span>63 <span style=''>   *  If some error is encountered while interpreting a ctx.error is emitted and a StopInterpretation is thrown.
+</span>64 <span style=''>   */
+</span>65 <span style=''>  private def interpretTreeImpl(tree: Tree, env: Env): Object = {
+</span>66 <span style=''>    </span><span style='background: #AEF1AE'>ctx.debuglog(
+</span>67 <span style=''></span><span style='background: #AEF1AE'>      </span><span style='background: #F0ADAD'>s&quot;&quot;&quot;Interpreting:
+</span>68 <span style=''></span><span style='background: #F0ADAD'>        |${tree.show}
+</span>69 <span style=''></span><span style='background: #F0ADAD'>        |$env
+</span>70 <span style=''></span><span style='background: #F0ADAD'>      &quot;&quot;&quot;.stripMargin</span><span style='background: #AEF1AE'>)</span><span style=''>
+</span>71 <span style=''>
+</span>72 <span style=''>    implicit val pos: Position = </span><span style='background: #AEF1AE'>tree.pos</span><span style=''>
+</span>73 <span style=''>
+</span>74 <span style=''>    tree match {
+</span>75 <span style=''>      case Quoted(quotedTree) =&gt; </span><span style='background: #AEF1AE'>RawQuoted(quotedTree)</span><span style=''>
+</span>76 <span style=''>
+</span>77 <span style=''>      case Literal(Constant(c)) =&gt; </span><span style='background: #AEF1AE'>c.asInstanceOf[Object]</span><span style=''>
+</span>78 <span style=''>
+</span>79 <span style=''>      case Apply(fn, args) if </span><span style='background: #AEF1AE'>fn.symbol.isConstructor</span><span style=''> =&gt;
+</span>80 <span style=''>        val clazz = </span><span style='background: #F0ADAD'>loadClass(fn.symbol.owner.symbol.fullName)</span><span style=''>
+</span>81 <span style=''>        val paramClasses = </span><span style='background: #F0ADAD'>paramsSig(fn.symbol)</span><span style=''>
+</span>82 <span style=''>        val interpretedArgs = </span><span style='background: #F0ADAD'>args.map(arg =&gt; interpretTreeImpl(arg, env))</span><span style=''>
+</span>83 <span style=''>        val constructor = </span><span style='background: #F0ADAD'>getConstructor(clazz, paramClasses)</span><span style=''>
+</span>84 <span style=''>        </span><span style='background: #F0ADAD'>interpreted(constructor.newInstance(interpretedArgs: _*))</span><span style=''>
+</span>85 <span style=''>
+</span>86 <span style=''>      case _: RefTree if </span><span style='background: #AEF1AE'>tree.symbol.isStatic</span><span style=''> =&gt;
+</span>87 <span style=''>        val clazz = </span><span style='background: #AEF1AE'>loadClass(tree.symbol.owner.companionModule.fullName)</span><span style=''>
+</span>88 <span style=''>        val method = </span><span style='background: #AEF1AE'>getMethod(clazz, tree.symbol.name, Nil)</span><span style=''>
+</span>89 <span style=''>        </span><span style='background: #AEF1AE'>interpreted(method.invoke(null))</span><span style=''>
+</span>90 <span style=''>
+</span>91 <span style=''>      case tree: Apply =&gt;
+</span>92 <span style=''>        val evaluatedPrefix = if (</span><span style='background: #AEF1AE'>tree.symbol.isStatic</span><span style=''>) </span><span style='background: #AEF1AE'>null</span><span style=''> else </span><span style='background: #AEF1AE'>interpretPrefix(tree, env)</span><span style=''>
+</span>93 <span style=''>        val clazz =
+</span>94 <span style=''>          if (</span><span style='background: #AEF1AE'>tree.symbol.isStatic</span><span style=''>) </span><span style='background: #AEF1AE'>loadClass(tree.symbol.owner.companionModule.fullName)</span><span style=''>
+</span>95 <span style=''>          else </span><span style='background: #AEF1AE'>evaluatedPrefix.getClass</span><span style=''>
+</span>96 <span style=''>        val paramClasses = </span><span style='background: #AEF1AE'>paramsSig(tree.symbol)</span><span style=''>
+</span>97 <span style=''>        val interpretedArgs = </span><span style='background: #AEF1AE'>interpretArgs(tree, env)</span><span style=''>
+</span>98 <span style=''>        val method = </span><span style='background: #AEF1AE'>getMethod(clazz, tree.symbol.name, paramClasses)</span><span style=''>
+</span>99 <span style=''>        </span><span style='background: #AEF1AE'>interpreted(method.invoke(evaluatedPrefix, interpretedArgs: _*))</span><span style=''>
+</span>100 <span style=''>
+</span>101 <span style=''>      case tree: Ident if </span><span style='background: #AEF1AE'>env.contains(tree.symbol)</span><span style=''> =&gt;
+</span>102 <span style=''>        </span><span style='background: #AEF1AE'>env(tree.symbol)</span><span style=''>
+</span>103 <span style=''>
+</span>104 <span style=''>      case Block(stats, expr) =&gt;
+</span>105 <span style=''>        val env2 = </span><span style='background: #AEF1AE'>stats.foldLeft(env)((acc, x) =&gt; interpretStat(x, acc))</span><span style=''>
+</span>106 <span style=''>        </span><span style='background: #AEF1AE'>interpretTreeImpl(expr, env2)</span><span style=''>
+</span>107 <span style=''>
+</span>108 <span style=''>      case tree: NamedArg =&gt;
+</span>109 <span style=''>        </span><span style='background: #AEF1AE'>interpretTreeImpl(tree.arg, env)</span><span style=''>
+</span>110 <span style=''>
+</span>111 <span style=''>      case Inlined(_, bindings, expansion) =&gt;
+</span>112 <span style=''>        val env2 = </span><span style='background: #AEF1AE'>bindings.foldLeft(env)((acc, x) =&gt; interpretStat(x, acc))</span><span style=''>
+</span>113 <span style=''>        </span><span style='background: #AEF1AE'>interpretTreeImpl(expansion, env2)</span><span style=''>
+</span>114 <span style=''>
+</span>115 <span style=''>      case Typed(expr, _) =&gt;
+</span>116 <span style=''>        </span><span style='background: #AEF1AE'>interpretTreeImpl(expr, env)</span><span style=''>
+</span>117 <span style=''>
+</span>118 <span style=''>      // Getting the underlying value of a value class. The value class is evaluated as its boxed representation
+</span>119 <span style=''>      // as values in the interpreter are `Object`s. Therefore we just get it from the enviroment as is.
+</span>120 <span style=''>      case Select(qualifier, _)
+</span>121 <span style=''>          if </span><span style='background: #AEF1AE'>tree.symbol.owner.isValueClass &amp;&amp; tree.symbol.is(ParamAccessor) &amp;&amp; env.contains(qualifier.symbol)</span><span style=''> =&gt;
+</span>122 <span style=''>        </span><span style='background: #AEF1AE'>env(qualifier.symbol)</span><span style=''>
+</span>123 <span style=''>
+</span>124 <span style=''>      case SeqLiteral(elems, _) =&gt;
+</span>125 <span style=''>        </span><span style='background: #AEF1AE'>elems.map(elem =&gt; interpretTreeImpl(elem, env))</span><span style=''>
+</span>126 <span style=''>
+</span>127 <span style=''>      case _ =&gt;
+</span>128 <span style=''>        // TODO Add more precise descriptions of why it could not be interpreted.
+</span>129 <span style=''>        // This should be done after the full interpreter is implemented.
+</span>130 <span style=''>        </span><span style='background: #F0ADAD'>throw new StopInterpretation(s&quot;Could not interpret ${tree.show}. Consider extracting logic into a helper def.&quot;, tree.pos)</span><span style=''>
+</span>131 <span style=''>    }
+</span>132 <span style=''>  }
+</span>133 <span style=''>
+</span>134 <span style=''>  private def interpretArgs(tree: Tree, env: Env): Seq[Object] = {
+</span>135 <span style=''>    val b = </span><span style='background: #AEF1AE'>Seq.newBuilder[Object]</span><span style=''>
+</span>136 <span style=''>    def interpretArgs(tree: Tree): Unit = tree match {
+</span>137 <span style=''>      case Apply(fn, args) =&gt;
+</span>138 <span style=''>        </span><span style='background: #AEF1AE'>interpretArgs(fn)</span><span style=''>
+</span>139 <span style=''>        </span><span style='background: #AEF1AE'>args.foreach(arg =&gt; b += interpretTreeImpl(arg, env))</span><span style=''>
+</span>140 <span style=''>      case _ </span><span style='background: #AEF1AE'>=&gt;</span><span style=''>
+</span>141 <span style=''>    }
+</span>142 <span style=''>    </span><span style='background: #AEF1AE'>interpretArgs(tree)</span><span style=''>
+</span>143 <span style=''>    </span><span style='background: #AEF1AE'>b.result()</span><span style=''>
+</span>144 <span style=''>  }
+</span>145 <span style=''>
+</span>146 <span style=''>  private def interpretPrefix(tree: Tree, env: Env): Object = tree match {
+</span>147 <span style=''>    case Apply(qual, _) =&gt; </span><span style='background: #AEF1AE'>interpretPrefix(qual, env)</span><span style=''>
+</span>148 <span style=''>    case TypeApply(qual, _) =&gt; </span><span style='background: #AEF1AE'>interpretPrefix(qual, env)</span><span style=''>
+</span>149 <span style=''>    case Select(qual, _) =&gt; </span><span style='background: #AEF1AE'>interpretTreeImpl(qual, env)</span><span style=''>
+</span>150 <span style=''>  }
+</span>151 <span style=''>
+</span>152 <span style=''>  /** Interprets the statement and returns the updated environment */
+</span>153 <span style=''>  private def interpretStat(stat: Tree, env: Env): Env = stat match {
+</span>154 <span style=''>    case tree: ValDef =&gt;
+</span>155 <span style=''>      val obj = </span><span style='background: #AEF1AE'>interpretTreeImpl(tree.rhs, env)</span><span style=''>
+</span>156 <span style=''>      </span><span style='background: #AEF1AE'>env.updated(tree.symbol, obj)</span><span style=''>
+</span>157 <span style=''>
+</span>158 <span style=''>    case _ =&gt;
+</span>159 <span style=''>      </span><span style='background: #F0ADAD'>interpretTreeImpl(stat, env)</span><span style=''>
+</span>160 <span style=''>      env
+</span>161 <span style=''>  }
+</span>162 <span style=''>
+</span>163 <span style=''>  private def loadClass(name: Name)(implicit pos: Position): Class[_] = {
+</span>164 <span style=''>    try </span><span style='background: #AEF1AE'>classLoader.loadClass(name.toString)</span><span style=''>
+</span>165 <span style=''>    catch {
+</span>166 <span style=''>      case _: ClassNotFoundException =&gt;
+</span>167 <span style=''>        val msg = </span><span style='background: #F0ADAD'>s&quot;Could not find interpreted class $name in classpath&quot;</span><span style=''>
+</span>168 <span style=''>        </span><span style='background: #F0ADAD'>throw new StopInterpretation(msg, pos)</span><span style=''>
+</span>169 <span style=''>    }
+</span>170 <span style=''>  }
+</span>171 <span style=''>
+</span>172 <span style=''>  private def getMethod(clazz: Class[_], name: Name, paramClasses: List[Class[_]])(implicit pos: Position): Method = {
+</span>173 <span style=''>    try </span><span style='background: #AEF1AE'>clazz.getMethod(name.toString, paramClasses: _*)</span><span style=''>
+</span>174 <span style=''>    catch {
+</span>175 <span style=''>      case _: NoSuchMethodException =&gt;
+</span>176 <span style=''>        val msg = </span><span style='background: #F0ADAD'>s&quot;Could not find interpreted method ${clazz.getCanonicalName}.$name with parameters $paramClasses&quot;</span><span style=''>
+</span>177 <span style=''>        </span><span style='background: #F0ADAD'>throw new StopInterpretation(msg, pos)</span><span style=''>
+</span>178 <span style=''>    }
+</span>179 <span style=''>  }
+</span>180 <span style=''>
+</span>181 <span style=''>  private def getConstructor(clazz: Class[_], paramClasses: List[Class[_]])(implicit pos: Position): Constructor[Object] = {
+</span>182 <span style=''>    try </span><span style='background: #F0ADAD'>clazz.getConstructor(paramClasses: _*).asInstanceOf[Constructor[Object]]</span><span style=''>
+</span>183 <span style=''>    catch {
+</span>184 <span style=''>      case _: NoSuchMethodException =&gt;
+</span>185 <span style=''>        val msg = </span><span style='background: #F0ADAD'>s&quot;Could not find interpreted constructor of ${clazz.getCanonicalName} with parameters $paramClasses&quot;</span><span style=''>
+</span>186 <span style=''>        </span><span style='background: #F0ADAD'>throw new StopInterpretation(msg, pos)</span><span style=''>
+</span>187 <span style=''>    }
+</span>188 <span style=''>  }
+</span>189 <span style=''>
+</span>190 <span style=''>  private def interpreted[T](thunk: =&gt; T)(implicit pos: Position): T = {
+</span>191 <span style=''>    try </span><span style='background: #AEF1AE'>thunk</span><span style=''>
+</span>192 <span style=''>    catch {
+</span>193 <span style=''>      case ex: RuntimeException =&gt;
+</span>194 <span style=''>        val sw = </span><span style='background: #F0ADAD'>new StringWriter()</span><span style=''>
+</span>195 <span style=''>        </span><span style='background: #F0ADAD'>sw.write(&quot;A runtime exception occurred while interpreting\n&quot;)</span><span style=''>
+</span>196 <span style=''>        </span><span style='background: #F0ADAD'>sw.write(ex.getMessage)</span><span style=''>
+</span>197 <span style=''>        </span><span style='background: #F0ADAD'>sw.write(&quot;\n&quot;)</span><span style=''>
+</span>198 <span style=''>        </span><span style='background: #F0ADAD'>ex.printStackTrace(new PrintWriter(sw))</span><span style=''>
+</span>199 <span style=''>        </span><span style='background: #F0ADAD'>sw.write(&quot;\n&quot;)</span><span style=''>
+</span>200 <span style=''>        </span><span style='background: #F0ADAD'>throw new StopInterpretation(sw.toString, pos)</span><span style=''>
+</span>201 <span style=''>    }
+</span>202 <span style=''>  }
+</span>203 <span style=''>
+</span>204 <span style=''>  /** List of classes of the parameters of the signature of `sym` */
+</span>205 <span style=''>  private def paramsSig(sym: Symbol): List[Class[_]] = {
+</span>206 <span style=''>    </span><span style='background: #AEF1AE'>sym.signature.paramsSig.map { param =&gt;
+</span>207 <span style=''></span><span style='background: #AEF1AE'>      defn.valueTypeNameToJavaType(param) match {
+</span>208 <span style=''></span><span style='background: #AEF1AE'>        case Some(clazz) =&gt; clazz
+</span>209 <span style=''></span><span style='background: #AEF1AE'>        case None =&gt; classLoader.loadClass(param.toString)
+</span>210 <span style=''></span><span style='background: #AEF1AE'>      }
+</span>211 <span style=''></span><span style='background: #AEF1AE'>    }</span><span style=''>
+</span>212 <span style=''>  }
+</span>213 <span style=''>
+</span>214 <span style=''>  /** Exception that stops interpretation if some issue is found */
+</span>215 <span style=''>  private class StopInterpretation(val msg: String, val pos: Position) extends Exception
+</span>216 <span style=''>
+</span>217 <span style=''>}
+</span></pre>
+          </div>
+          <div class="tab-pane" id="statementlist">
+            <table cellspacing="0" cellpadding="0" class="table statementlist">
+      <tr>
+        <th>Line</th>
+        <th>Stmt Id</th>
+        <th>Pos</th>
+        <th>Tree</th>
+        <th>Symbol</th>
+        <th>Code</th>
+      </tr><tr>
+        <td>
+          37
+        </td>
+        <td>
+          37235
+        </td>
+        <td>
+          1137
+          -
+          1176
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.net.URI.toURL
+        </td>
+        <td style="background: #AEF1AE">
+          java.nio.file.Paths.get(cp).toUri().toURL()
+        </td>
+      </tr><tr>
+        <td>
+          37
+        </td>
+        <td>
+          37234
+        </td>
+        <td>
+          1087
+          -
+          1126
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.immutable.StringLike.split
+        </td>
+        <td style="background: #AEF1AE">
+          scala.Predef.augmentString(Settings.this.Setting.SettingDecorator[String](Contexts.this.Context.toBase(Interpreter.this.ctx).settings.classpath).value(Interpreter.this.ctx)).split(':')
+        </td>
+      </tr><tr>
+        <td>
+          37
+        </td>
+        <td>
+          37237
+        </td>
+        <td>
+          1087
+          -
+          1177
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          scala.collection.TraversableLike.map
+        </td>
+        <td style="background: #AEF1AE">
+          scala.Predef.refArrayOps[String](scala.Predef.augmentString(Settings.this.Setting.SettingDecorator[String](Contexts.this.Context.toBase(Interpreter.this.ctx).settings.classpath).value(Interpreter.this.ctx)).split(':')).map[java.net.URL, Array[java.net.URL]](((cp: String) =&gt; java.nio.file.Paths.get(cp).toUri().toURL()))(scala.this.Array.canBuildFrom[java.net.URL]((ClassTag.apply[java.net.URL](classOf[java.net.URL]): scala.reflect.ClassTag[java.net.URL])))
+        </td>
+      </tr><tr>
+        <td>
+          37
+        </td>
+        <td>
+          37236
+        </td>
+        <td>
+          1130
+          -
+          1130
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          scala.Array.canBuildFrom
+        </td>
+        <td style="background: #AEF1AE">
+          scala.this.Array.canBuildFrom[java.net.URL]((ClassTag.apply[java.net.URL](classOf[java.net.URL]): scala.reflect.ClassTag[java.net.URL]))
+        </td>
+      </tr><tr>
+        <td>
+          38
+        </td>
+        <td>
+          37238
+        </td>
+        <td>
+          1207
+          -
+          1230
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.Class.getClassLoader
+        </td>
+        <td style="background: #AEF1AE">
+          Interpreter.this.getClass().getClassLoader()
+        </td>
+      </tr><tr>
+        <td>
+          38
+        </td>
+        <td>
+          37239
+        </td>
+        <td>
+          1182
+          -
+          1231
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.net.URLClassLoader.&lt;init&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          new java.net.URLClassLoader(urls, Interpreter.this.getClass().getClassLoader())
+        </td>
+      </tr><tr>
+        <td>
+          46
+        </td>
+        <td>
+          37241
+        </td>
+        <td>
+          1510
+          -
+          1544
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.interpreter.Interpreter.interpretTreeImpl
+        </td>
+        <td style="background: #AEF1AE">
+          Interpreter.this.interpretTreeImpl(tree, scala.Predef.Map.empty[dotty.tools.dotc.core.Symbols.Symbol, Nothing])
+        </td>
+      </tr><tr>
+        <td>
+          46
+        </td>
+        <td>
+          37255
+        </td>
+        <td>
+          1510
+          -
+          1844
+        </td>
+        <td>
+          Match
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          Interpreter.this.interpretTreeImpl(tree, scala.Predef.Map.empty[dotty.tools.dotc.core.Symbols.Symbol, Nothing]) match {
+  case (obj @ ct.unapply(&lt;unapply-selector&gt;) &lt;unapply&gt; ((_: T))) =&gt; scala.Some.apply[T](obj)
+  case (obj @ _) =&gt; {
+    Interpreter.this.ctx.error(diagnostic.this.Message.toNoExplanation(scala.StringContext.apply(&quot;Interpreted tree returned a result of an unexpected type. Expected &quot;, &quot; but was &quot;, &quot;&quot;).s(ct.runtimeClass, obj.getClass())), dotty.tools.dotc.core.Decorators.sourcePos(tree.pos)(Interpreter.this.ctx));
+    scala.None
+  }
+}
+        </td>
+      </tr><tr>
+        <td>
+          46
+        </td>
+        <td>
+          37240
+        </td>
+        <td>
+          1534
+          -
+          1543
+        </td>
+        <td>
+          TypeApply
+        </td>
+        <td>
+          scala.collection.immutable.Map.empty
+        </td>
+        <td style="background: #AEF1AE">
+          scala.Predef.Map.empty[dotty.tools.dotc.core.Symbols.Symbol, Nothing]
+        </td>
+      </tr><tr>
+        <td>
+          47
+        </td>
+        <td>
+          37242
+        </td>
+        <td>
+          1576
+          -
+          1585
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Some.apply
+        </td>
+        <td style="background: #AEF1AE">
+          scala.Some.apply[T](obj)
+        </td>
+      </tr><tr>
+        <td>
+          50
+        </td>
+        <td>
+          37250
+        </td>
+        <td>
+          1812
+          -
+          1820
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Positioned.pos
+        </td>
+        <td style="background: #F0ADAD">
+          tree.pos
+        </td>
+      </tr><tr>
+        <td>
+          50
+        </td>
+        <td>
+          37253
+        </td>
+        <td>
+          1688
+          -
+          1821
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.reporting.Reporting.error
+        </td>
+        <td style="background: #F0ADAD">
+          Interpreter.this.ctx.error(diagnostic.this.Message.toNoExplanation(scala.StringContext.apply(&quot;Interpreted tree returned a result of an unexpected type. Expected &quot;, &quot; but was &quot;, &quot;&quot;).s(ct.runtimeClass, obj.getClass())), dotty.tools.dotc.core.Decorators.sourcePos(tree.pos)(Interpreter.this.ctx))
+        </td>
+      </tr><tr>
+        <td>
+          50
+        </td>
+        <td>
+          37244
+        </td>
+        <td>
+          1785
+          -
+          1795
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          &quot; but was &quot;
+        </td>
+      </tr><tr>
+        <td>
+          50
+        </td>
+        <td>
+          37247
+        </td>
+        <td>
+          1796
+          -
+          1808
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.Object.getClass
+        </td>
+        <td style="background: #F0ADAD">
+          obj.getClass()
+        </td>
+      </tr><tr>
+        <td>
+          50
+        </td>
+        <td>
+          37249
+        </td>
+        <td>
+          1698
+          -
+          1810
+        </td>
+        <td>
+          ApplyImplicitView
+        </td>
+        <td>
+          dotty.tools.dotc.reporting.diagnostic.Message.toNoExplanation
+        </td>
+        <td style="background: #F0ADAD">
+          diagnostic.this.Message.toNoExplanation(scala.StringContext.apply(&quot;Interpreted tree returned a result of an unexpected type. Expected &quot;, &quot; but was &quot;, &quot;&quot;).s(ct.runtimeClass, obj.getClass()))
+        </td>
+      </tr><tr>
+        <td>
+          50
+        </td>
+        <td>
+          37252
+        </td>
+        <td>
+          1812
+          -
+          1820
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.Decorators.sourcePos
+        </td>
+        <td style="background: #F0ADAD">
+          dotty.tools.dotc.core.Decorators.sourcePos(tree.pos)(Interpreter.this.ctx)
+        </td>
+      </tr><tr>
+        <td>
+          50
+        </td>
+        <td>
+          37243
+        </td>
+        <td>
+          1700
+          -
+          1768
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          &quot;Interpreted tree returned a result of an unexpected type. Expected &quot;
+        </td>
+      </tr><tr>
+        <td>
+          50
+        </td>
+        <td>
+          37246
+        </td>
+        <td>
+          1769
+          -
+          1784
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.reflect.ClassTag.runtimeClass
+        </td>
+        <td style="background: #F0ADAD">
+          ct.runtimeClass
+        </td>
+      </tr><tr>
+        <td>
+          50
+        </td>
+        <td>
+          37245
+        </td>
+        <td>
+          1809
+          -
+          1810
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          &quot;&quot;
+        </td>
+      </tr><tr>
+        <td>
+          50
+        </td>
+        <td>
+          37248
+        </td>
+        <td>
+          1698
+          -
+          1810
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.StringContext.s
+        </td>
+        <td style="background: #F0ADAD">
+          scala.StringContext.apply(&quot;Interpreted tree returned a result of an unexpected type. Expected &quot;, &quot; but was &quot;, &quot;&quot;).s(ct.runtimeClass, obj.getClass())
+        </td>
+      </tr><tr>
+        <td>
+          50
+        </td>
+        <td>
+          37251
+        </td>
+        <td>
+          1817
+          -
+          1817
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.interpreter.Interpreter.ctx
+        </td>
+        <td style="background: #F0ADAD">
+          Interpreter.this.ctx
+        </td>
+      </tr><tr>
+        <td>
+          51
+        </td>
+        <td>
+          37254
+        </td>
+        <td>
+          1832
+          -
+          1836
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.None
+        </td>
+        <td style="background: #F0ADAD">
+          scala.None
+        </td>
+      </tr><tr>
+        <td>
+          55
+        </td>
+        <td>
+          37259
+        </td>
+        <td>
+          1925
+          -
+          1925
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.interpreter.Interpreter.ctx
+        </td>
+        <td style="background: #F0ADAD">
+          Interpreter.this.ctx
+        </td>
+      </tr><tr>
+        <td>
+          55
+        </td>
+        <td>
+          37256
+        </td>
+        <td>
+          1914
+          -
+          1920
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.interpreter.Interpreter.StopInterpretation.msg
+        </td>
+        <td style="background: #F0ADAD">
+          ex.msg
+        </td>
+      </tr><tr>
+        <td>
+          55
+        </td>
+        <td>
+          37258
+        </td>
+        <td>
+          1922
+          -
+          1928
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.interpreter.Interpreter.StopInterpretation.pos
+        </td>
+        <td style="background: #F0ADAD">
+          ex.pos
+        </td>
+      </tr><tr>
+        <td>
+          55
+        </td>
+        <td>
+          37261
+        </td>
+        <td>
+          1904
+          -
+          1929
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.reporting.Reporting.error
+        </td>
+        <td style="background: #F0ADAD">
+          Interpreter.this.ctx.error(diagnostic.this.Message.toNoExplanation(ex.msg), dotty.tools.dotc.core.Decorators.sourcePos(ex.pos)(Interpreter.this.ctx))
+        </td>
+      </tr><tr>
+        <td>
+          55
+        </td>
+        <td>
+          37257
+        </td>
+        <td>
+          1914
+          -
+          1920
+        </td>
+        <td>
+          ApplyImplicitView
+        </td>
+        <td>
+          dotty.tools.dotc.reporting.diagnostic.Message.toNoExplanation
+        </td>
+        <td style="background: #F0ADAD">
+          diagnostic.this.Message.toNoExplanation(ex.msg)
+        </td>
+      </tr><tr>
+        <td>
+          55
+        </td>
+        <td>
+          37260
+        </td>
+        <td>
+          1922
+          -
+          1928
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.Decorators.sourcePos
+        </td>
+        <td style="background: #F0ADAD">
+          dotty.tools.dotc.core.Decorators.sourcePos(ex.pos)(Interpreter.this.ctx)
+        </td>
+      </tr><tr>
+        <td>
+          56
+        </td>
+        <td>
+          37262
+        </td>
+        <td>
+          1938
+          -
+          1942
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.None
+        </td>
+        <td style="background: #F0ADAD">
+          scala.None
+        </td>
+      </tr><tr>
+        <td>
+          66
+        </td>
+        <td>
+          37270
+        </td>
+        <td>
+          2285
+          -
+          2381
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.reporting.Reporting.debuglog
+        </td>
+        <td style="background: #AEF1AE">
+          Interpreter.this.ctx.debuglog(scala.Predef.augmentString(scala.StringContext.apply(&quot;Interpreting:\n        |&quot;, &quot;\n        |&quot;, &quot;\n      &quot;).s(tree.show(Interpreter.this.ctx), env)).stripMargin)
+        </td>
+      </tr><tr>
+        <td>
+          67
+        </td>
+        <td>
+          37268
+        </td>
+        <td>
+          2305
+          -
+          2368
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.StringContext.s
+        </td>
+        <td style="background: #F0ADAD">
+          scala.StringContext.apply(&quot;Interpreting:\n        |&quot;, &quot;\n        |&quot;, &quot;\n      &quot;).s(tree.show(Interpreter.this.ctx), env)
+        </td>
+      </tr><tr>
+        <td>
+          67
+        </td>
+        <td>
+          37263
+        </td>
+        <td>
+          2309
+          -
+          2333
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          &quot;Interpreting:\n        |&quot;
+        </td>
+      </tr><tr>
+        <td>
+          68
+        </td>
+        <td>
+          37264
+        </td>
+        <td>
+          2344
+          -
+          2355
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          &quot;\n        |&quot;
+        </td>
+      </tr><tr>
+        <td>
+          68
+        </td>
+        <td>
+          37267
+        </td>
+        <td>
+          2334
+          -
+          2343
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.printing.Showable.show
+        </td>
+        <td style="background: #F0ADAD">
+          tree.show(Interpreter.this.ctx)
+        </td>
+      </tr><tr>
+        <td>
+          68
+        </td>
+        <td>
+          37266
+        </td>
+        <td>
+          2339
+          -
+          2339
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.interpreter.Interpreter.ctx
+        </td>
+        <td style="background: #F0ADAD">
+          Interpreter.this.ctx
+        </td>
+      </tr><tr>
+        <td>
+          69
+        </td>
+        <td>
+          37265
+        </td>
+        <td>
+          2358
+          -
+          2368
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          &quot;\n      &quot;
+        </td>
+      </tr><tr>
+        <td>
+          70
+        </td>
+        <td>
+          37269
+        </td>
+        <td>
+          2305
+          -
+          2380
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.collection.immutable.StringLike.stripMargin
+        </td>
+        <td style="background: #F0ADAD">
+          scala.Predef.augmentString(scala.StringContext.apply(&quot;Interpreting:\n        |&quot;, &quot;\n        |&quot;, &quot;\n      &quot;).s(tree.show(Interpreter.this.ctx), env)).stripMargin
+        </td>
+      </tr><tr>
+        <td>
+          72
+        </td>
+        <td>
+          37271
+        </td>
+        <td>
+          2416
+          -
+          2424
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Positioned.pos
+        </td>
+        <td style="background: #AEF1AE">
+          tree.pos
+        </td>
+      </tr><tr>
+        <td>
+          75
+        </td>
+        <td>
+          37272
+        </td>
+        <td>
+          2476
+          -
+          2497
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.interpreter.RawQuoted.apply
+        </td>
+        <td style="background: #AEF1AE">
+          RawQuoted.apply(quotedTree)
+        </td>
+      </tr><tr>
+        <td>
+          77
+        </td>
+        <td>
+          37273
+        </td>
+        <td>
+          2534
+          -
+          2556
+        </td>
+        <td>
+          TypeApply
+        </td>
+        <td>
+          scala.Any.asInstanceOf
+        </td>
+        <td style="background: #AEF1AE">
+          c.asInstanceOf[Object]
+        </td>
+      </tr><tr>
+        <td>
+          79
+        </td>
+        <td>
+          37277
+        </td>
+        <td>
+          2588
+          -
+          2611
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.SymDenotations.SymDenotation.isConstructor
+        </td>
+        <td style="background: #AEF1AE">
+          dotty.tools.dotc.core.Symbols.toDenot(fn.symbol(Interpreter.this.ctx))(Interpreter.this.ctx).isConstructor
+        </td>
+      </tr><tr>
+        <td>
+          79
+        </td>
+        <td>
+          37274
+        </td>
+        <td>
+          2591
+          -
+          2591
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.interpreter.Interpreter.ctx
+        </td>
+        <td style="background: #AEF1AE">
+          Interpreter.this.ctx
+        </td>
+      </tr><tr>
+        <td>
+          79
+        </td>
+        <td>
+          37276
+        </td>
+        <td>
+          2591
+          -
+          2591
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.interpreter.Interpreter.ctx
+        </td>
+        <td style="background: #AEF1AE">
+          Interpreter.this.ctx
+        </td>
+      </tr><tr>
+        <td>
+          79
+        </td>
+        <td>
+          37275
+        </td>
+        <td>
+          2588
+          -
+          2597
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Trees.Tree.symbol
+        </td>
+        <td style="background: #AEF1AE">
+          fn.symbol(Interpreter.this.ctx)
+        </td>
+      </tr><tr>
+        <td>
+          80
+        </td>
+        <td>
+          37278
+        </td>
+        <td>
+          2635
+          -
+          2677
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.interpreter.Interpreter.loadClass
+        </td>
+        <td style="background: #F0ADAD">
+          Interpreter.this.loadClass(dotty.tools.dotc.core.Symbols.toDenot(dotty.tools.dotc.core.Symbols.toDenot(dotty.tools.dotc.core.Symbols.toDenot(fn.symbol(Interpreter.this.ctx))(Interpreter.this.ctx).owner)(Interpreter.this.ctx).symbol)(Interpreter.this.ctx).fullName(Interpreter.this.ctx))(pos)
+        </td>
+      </tr><tr>
+        <td>
+          81
+        </td>
+        <td>
+          37280
+        </td>
+        <td>
+          2715
+          -
+          2724
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Trees.Tree.symbol
+        </td>
+        <td style="background: #F0ADAD">
+          fn.symbol(Interpreter.this.ctx)
+        </td>
+      </tr><tr>
+        <td>
+          81
+        </td>
+        <td>
+          37279
+        </td>
+        <td>
+          2718
+          -
+          2718
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.interpreter.Interpreter.ctx
+        </td>
+        <td style="background: #F0ADAD">
+          Interpreter.this.ctx
+        </td>
+      </tr><tr>
+        <td>
+          81
+        </td>
+        <td>
+          37281
+        </td>
+        <td>
+          2705
+          -
+          2725
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.interpreter.Interpreter.paramsSig
+        </td>
+        <td style="background: #F0ADAD">
+          Interpreter.this.paramsSig(fn.symbol(Interpreter.this.ctx))
+        </td>
+      </tr><tr>
+        <td>
+          82
+        </td>
+        <td>
+          37283
+        </td>
+        <td>
+          2764
+          -
+          2764
+        </td>
+        <td>
+          TypeApply
+        </td>
+        <td>
+          scala.collection.immutable.List.canBuildFrom
+        </td>
+        <td style="background: #F0ADAD">
+          immutable.this.List.canBuildFrom[Object]
+        </td>
+      </tr><tr>
+        <td>
+          82
+        </td>
+        <td>
+          37282
+        </td>
+        <td>
+          2772
+          -
+          2799
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.interpreter.Interpreter.interpretTreeImpl
+        </td>
+        <td style="background: #F0ADAD">
+          Interpreter.this.interpretTreeImpl(arg, env)
+        </td>
+      </tr><tr>
+        <td>
+          82
+        </td>
+        <td>
+          37284
+        </td>
+        <td>
+          2756
+          -
+          2800
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          scala.collection.immutable.List.map
+        </td>
+        <td style="background: #F0ADAD">
+          args.map[Object, List[Object]](((arg: dotty.tools.dotc.ast.Trees.Tree[dotty.tools.dotc.core.Types.Type]) =&gt; Interpreter.this.interpretTreeImpl(arg, env)))(immutable.this.List.canBuildFrom[Object])
+        </td>
+      </tr><tr>
+        <td>
+          83
+        </td>
+        <td>
+          37285
+        </td>
+        <td>
+          2827
+          -
+          2862
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.interpreter.Interpreter.getConstructor
+        </td>
+        <td style="background: #F0ADAD">
+          Interpreter.this.getConstructor(clazz, paramClasses)(pos)
+        </td>
+      </tr><tr>
+        <td>
+          84
+        </td>
+        <td>
+          37286
+        </td>
+        <td>
+          2871
+          -
+          2928
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.interpreter.Interpreter.interpreted
+        </td>
+        <td style="background: #F0ADAD">
+          Interpreter.this.interpreted[Object](constructor.newInstance((interpretedArgs: _*)))(pos)
+        </td>
+      </tr><tr>
+        <td>
+          86
+        </td>
+        <td>
+          37289
+        </td>
+        <td>
+          2955
+          -
+          2975
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.Symbols.Symbol.isStatic
+        </td>
+        <td style="background: #AEF1AE">
+          tree.symbol(Interpreter.this.ctx).isStatic(Interpreter.this.ctx)
+        </td>
+      </tr><tr>
+        <td>
+          86
+        </td>
+        <td>
+          37288
+        </td>
+        <td>
+          2967
+          -
+          2967
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.interpreter.Interpreter.ctx
+        </td>
+        <td style="background: #AEF1AE">
+          Interpreter.this.ctx
+        </td>
+      </tr><tr>
+        <td>
+          86
+        </td>
+        <td>
+          37287
+        </td>
+        <td>
+          2960
+          -
+          2960
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.interpreter.Interpreter.ctx
+        </td>
+        <td style="background: #AEF1AE">
+          Interpreter.this.ctx
+        </td>
+      </tr><tr>
+        <td>
+          87
+        </td>
+        <td>
+          37290
+        </td>
+        <td>
+          2999
+          -
+          3052
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.interpreter.Interpreter.loadClass
+        </td>
+        <td style="background: #AEF1AE">
+          Interpreter.this.loadClass(dotty.tools.dotc.core.Symbols.toDenot(dotty.tools.dotc.core.Symbols.toDenot(dotty.tools.dotc.core.Symbols.toDenot(tree.symbol(Interpreter.this.ctx))(Interpreter.this.ctx).owner)(Interpreter.this.ctx).companionModule(Interpreter.this.ctx))(Interpreter.this.ctx).fullName(Interpreter.this.ctx))(pos)
+        </td>
+      </tr><tr>
+        <td>
+          88
+        </td>
+        <td>
+          37291
+        </td>
+        <td>
+          3074
+          -
+          3113
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.interpreter.Interpreter.getMethod
+        </td>
+        <td style="background: #AEF1AE">
+          Interpreter.this.getMethod(clazz, tree.symbol(Interpreter.this.ctx).name(Interpreter.this.ctx), scala.collection.immutable.Nil)(pos)
+        </td>
+      </tr><tr>
+        <td>
+          89
+        </td>
+        <td>
+          37292
+        </td>
+        <td>
+          3122
+          -
+          3154
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.interpreter.Interpreter.interpreted
+        </td>
+        <td style="background: #AEF1AE">
+          Interpreter.this.interpreted[Object](method.invoke(null))(pos)
+        </td>
+      </tr><tr>
+        <td>
+          92
+        </td>
+        <td>
+          37295
+        </td>
+        <td>
+          3216
+          -
+          3236
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.Symbols.Symbol.isStatic
+        </td>
+        <td style="background: #AEF1AE">
+          tree.symbol(Interpreter.this.ctx).isStatic(Interpreter.this.ctx)
+        </td>
+      </tr><tr>
+        <td>
+          92
+        </td>
+        <td>
+          37298
+        </td>
+        <td>
+          3248
+          -
+          3274
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.interpreter.Interpreter.interpretPrefix
+        </td>
+        <td style="background: #AEF1AE">
+          Interpreter.this.interpretPrefix(tree, env)
+        </td>
+      </tr><tr>
+        <td>
+          92
+        </td>
+        <td>
+          37294
+        </td>
+        <td>
+          3228
+          -
+          3228
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.interpreter.Interpreter.ctx
+        </td>
+        <td style="background: #AEF1AE">
+          Interpreter.this.ctx
+        </td>
+      </tr><tr>
+        <td>
+          92
+        </td>
+        <td>
+          37297
+        </td>
+        <td>
+          3238
+          -
+          3242
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          null
+        </td>
+      </tr><tr>
+        <td>
+          92
+        </td>
+        <td>
+          37296
+        </td>
+        <td>
+          3238
+          -
+          3242
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          null
+        </td>
+      </tr><tr>
+        <td>
+          92
+        </td>
+        <td>
+          37299
+        </td>
+        <td>
+          3248
+          -
+          3274
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          dotty.tools.dotc.interpreter.Interpreter.interpretPrefix
+        </td>
+        <td style="background: #AEF1AE">
+          Interpreter.this.interpretPrefix(tree, env)
+        </td>
+      </tr><tr>
+        <td>
+          92
+        </td>
+        <td>
+          37293
+        </td>
+        <td>
+          3221
+          -
+          3221
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.interpreter.Interpreter.ctx
+        </td>
+        <td style="background: #AEF1AE">
+          Interpreter.this.ctx
+        </td>
+      </tr><tr>
+        <td>
+          94
+        </td>
+        <td>
+          37301
+        </td>
+        <td>
+          3321
+          -
+          3321
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.interpreter.Interpreter.ctx
+        </td>
+        <td style="background: #AEF1AE">
+          Interpreter.this.ctx
+        </td>
+      </tr><tr>
+        <td>
+          94
+        </td>
+        <td>
+          37304
+        </td>
+        <td>
+          3331
+          -
+          3384
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          dotty.tools.dotc.interpreter.Interpreter.loadClass
+        </td>
+        <td style="background: #AEF1AE">
+          Interpreter.this.loadClass(dotty.tools.dotc.core.Symbols.toDenot(dotty.tools.dotc.core.Symbols.toDenot(dotty.tools.dotc.core.Symbols.toDenot(tree.symbol(Interpreter.this.ctx))(Interpreter.this.ctx).owner)(Interpreter.this.ctx).companionModule(Interpreter.this.ctx))(Interpreter.this.ctx).fullName(Interpreter.this.ctx))(pos)
+        </td>
+      </tr><tr>
+        <td>
+          94
+        </td>
+        <td>
+          37300
+        </td>
+        <td>
+          3314
+          -
+          3314
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.interpreter.Interpreter.ctx
+        </td>
+        <td style="background: #AEF1AE">
+          Interpreter.this.ctx
+        </td>
+      </tr><tr>
+        <td>
+          94
+        </td>
+        <td>
+          37303
+        </td>
+        <td>
+          3331
+          -
+          3384
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.interpreter.Interpreter.loadClass
+        </td>
+        <td style="background: #AEF1AE">
+          Interpreter.this.loadClass(dotty.tools.dotc.core.Symbols.toDenot(dotty.tools.dotc.core.Symbols.toDenot(dotty.tools.dotc.core.Symbols.toDenot(tree.symbol(Interpreter.this.ctx))(Interpreter.this.ctx).owner)(Interpreter.this.ctx).companionModule(Interpreter.this.ctx))(Interpreter.this.ctx).fullName(Interpreter.this.ctx))(pos)
+        </td>
+      </tr><tr>
+        <td>
+          94
+        </td>
+        <td>
+          37302
+        </td>
+        <td>
+          3309
+          -
+          3329
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.Symbols.Symbol.isStatic
+        </td>
+        <td style="background: #AEF1AE">
+          tree.symbol(Interpreter.this.ctx).isStatic(Interpreter.this.ctx)
+        </td>
+      </tr><tr>
+        <td>
+          95
+        </td>
+        <td>
+          37306
+        </td>
+        <td>
+          3400
+          -
+          3424
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          java.lang.Object.getClass
+        </td>
+        <td style="background: #AEF1AE">
+          evaluatedPrefix.getClass()
+        </td>
+      </tr><tr>
+        <td>
+          95
+        </td>
+        <td>
+          37305
+        </td>
+        <td>
+          3400
+          -
+          3424
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.Object.getClass
+        </td>
+        <td style="background: #AEF1AE">
+          evaluatedPrefix.getClass()
+        </td>
+      </tr><tr>
+        <td>
+          96
+        </td>
+        <td>
+          37307
+        </td>
+        <td>
+          3467
+          -
+          3467
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.interpreter.Interpreter.ctx
+        </td>
+        <td style="background: #AEF1AE">
+          Interpreter.this.ctx
+        </td>
+      </tr><tr>
+        <td>
+          96
+        </td>
+        <td>
+          37309
+        </td>
+        <td>
+          3452
+          -
+          3474
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.interpreter.Interpreter.paramsSig
+        </td>
+        <td style="background: #AEF1AE">
+          Interpreter.this.paramsSig(tree.symbol(Interpreter.this.ctx))
+        </td>
+      </tr><tr>
+        <td>
+          96
+        </td>
+        <td>
+          37308
+        </td>
+        <td>
+          3462
+          -
+          3473
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Trees.Tree.symbol
+        </td>
+        <td style="background: #AEF1AE">
+          tree.symbol(Interpreter.this.ctx)
+        </td>
+      </tr><tr>
+        <td>
+          97
+        </td>
+        <td>
+          37310
+        </td>
+        <td>
+          3505
+          -
+          3529
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.interpreter.Interpreter.interpretArgs
+        </td>
+        <td style="background: #AEF1AE">
+          Interpreter.this.interpretArgs(tree, env)
+        </td>
+      </tr><tr>
+        <td>
+          98
+        </td>
+        <td>
+          37311
+        </td>
+        <td>
+          3551
+          -
+          3599
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.interpreter.Interpreter.getMethod
+        </td>
+        <td style="background: #AEF1AE">
+          Interpreter.this.getMethod(clazz, tree.symbol(Interpreter.this.ctx).name(Interpreter.this.ctx), paramClasses)(pos)
+        </td>
+      </tr><tr>
+        <td>
+          99
+        </td>
+        <td>
+          37312
+        </td>
+        <td>
+          3608
+          -
+          3672
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.interpreter.Interpreter.interpreted
+        </td>
+        <td style="background: #AEF1AE">
+          Interpreter.this.interpreted[Object](method.invoke(evaluatedPrefix, (interpretedArgs: _*)))(pos)
+        </td>
+      </tr><tr>
+        <td>
+          101
+        </td>
+        <td>
+          37313
+        </td>
+        <td>
+          3718
+          -
+          3718
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.interpreter.Interpreter.ctx
+        </td>
+        <td style="background: #AEF1AE">
+          Interpreter.this.ctx
+        </td>
+      </tr><tr>
+        <td>
+          101
+        </td>
+        <td>
+          37315
+        </td>
+        <td>
+          3700
+          -
+          3725
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.MapLike.contains
+        </td>
+        <td style="background: #AEF1AE">
+          env.contains(tree.symbol(Interpreter.this.ctx))
+        </td>
+      </tr><tr>
+        <td>
+          101
+        </td>
+        <td>
+          37314
+        </td>
+        <td>
+          3713
+          -
+          3724
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Trees.Tree.symbol
+        </td>
+        <td style="background: #AEF1AE">
+          tree.symbol(Interpreter.this.ctx)
+        </td>
+      </tr><tr>
+        <td>
+          102
+        </td>
+        <td>
+          37316
+        </td>
+        <td>
+          3746
+          -
+          3746
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.interpreter.Interpreter.ctx
+        </td>
+        <td style="background: #AEF1AE">
+          Interpreter.this.ctx
+        </td>
+      </tr><tr>
+        <td>
+          102
+        </td>
+        <td>
+          37318
+        </td>
+        <td>
+          3737
+          -
+          3753
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.MapLike.apply
+        </td>
+        <td style="background: #AEF1AE">
+          env.apply(tree.symbol(Interpreter.this.ctx))
+        </td>
+      </tr><tr>
+        <td>
+          102
+        </td>
+        <td>
+          37317
+        </td>
+        <td>
+          3741
+          -
+          3752
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Trees.Tree.symbol
+        </td>
+        <td style="background: #AEF1AE">
+          tree.symbol(Interpreter.this.ctx)
+        </td>
+      </tr><tr>
+        <td>
+          105
+        </td>
+        <td>
+          37319
+        </td>
+        <td>
+          3839
+          -
+          3860
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.interpreter.Interpreter.interpretStat
+        </td>
+        <td style="background: #AEF1AE">
+          Interpreter.this.interpretStat(x, acc)
+        </td>
+      </tr><tr>
+        <td>
+          105
+        </td>
+        <td>
+          37320
+        </td>
+        <td>
+          3807
+          -
+          3861
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.LinearSeqOptimized.foldLeft
+        </td>
+        <td style="background: #AEF1AE">
+          stats.foldLeft[Interpreter.this.Env](env)(((acc: Interpreter.this.Env, x: dotty.tools.dotc.ast.Trees.Tree[dotty.tools.dotc.core.Types.Type]) =&gt; Interpreter.this.interpretStat(x, acc)))
+        </td>
+      </tr><tr>
+        <td>
+          106
+        </td>
+        <td>
+          37321
+        </td>
+        <td>
+          3870
+          -
+          3899
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.interpreter.Interpreter.interpretTreeImpl
+        </td>
+        <td style="background: #AEF1AE">
+          Interpreter.this.interpretTreeImpl(expr, env2)
+        </td>
+      </tr><tr>
+        <td>
+          109
+        </td>
+        <td>
+          37322
+        </td>
+        <td>
+          3956
+          -
+          3964
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Trees.NamedArg.arg
+        </td>
+        <td style="background: #AEF1AE">
+          tree.arg
+        </td>
+      </tr><tr>
+        <td>
+          109
+        </td>
+        <td>
+          37323
+        </td>
+        <td>
+          3938
+          -
+          3970
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.interpreter.Interpreter.interpretTreeImpl
+        </td>
+        <td style="background: #AEF1AE">
+          Interpreter.this.interpretTreeImpl(tree.arg, env)
+        </td>
+      </tr><tr>
+        <td>
+          112
+        </td>
+        <td>
+          37325
+        </td>
+        <td>
+          4037
+          -
+          4094
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.LinearSeqOptimized.foldLeft
+        </td>
+        <td style="background: #AEF1AE">
+          bindings.foldLeft[Interpreter.this.Env](env)(((acc: Interpreter.this.Env, x: dotty.tools.dotc.ast.Trees.MemberDef[dotty.tools.dotc.core.Types.Type]) =&gt; Interpreter.this.interpretStat(x, acc)))
+        </td>
+      </tr><tr>
+        <td>
+          112
+        </td>
+        <td>
+          37324
+        </td>
+        <td>
+          4072
+          -
+          4093
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.interpreter.Interpreter.interpretStat
+        </td>
+        <td style="background: #AEF1AE">
+          Interpreter.this.interpretStat(x, acc)
+        </td>
+      </tr><tr>
+        <td>
+          113
+        </td>
+        <td>
+          37326
+        </td>
+        <td>
+          4103
+          -
+          4137
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.interpreter.Interpreter.interpretTreeImpl
+        </td>
+        <td style="background: #AEF1AE">
+          Interpreter.this.interpretTreeImpl(expansion, env2)
+        </td>
+      </tr><tr>
+        <td>
+          116
+        </td>
+        <td>
+          37327
+        </td>
+        <td>
+          4176
+          -
+          4204
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.interpreter.Interpreter.interpretTreeImpl
+        </td>
+        <td style="background: #AEF1AE">
+          Interpreter.this.interpretTreeImpl(expr, env)
+        </td>
+      </tr><tr>
+        <td>
+          121
+        </td>
+        <td>
+          37328
+        </td>
+        <td>
+          4474
+          -
+          4474
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.interpreter.Interpreter.ctx
+        </td>
+        <td style="background: #AEF1AE">
+          Interpreter.this.ctx
+        </td>
+      </tr><tr>
+        <td>
+          121
+        </td>
+        <td>
+          37337
+        </td>
+        <td>
+          4518
+          -
+          4531
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Flags.ParamAccessor
+        </td>
+        <td style="background: #AEF1AE">
+          dotty.tools.dotc.core.Flags.ParamAccessor
+        </td>
+      </tr><tr>
+        <td>
+          121
+        </td>
+        <td>
+          37331
+        </td>
+        <td>
+          4469
+          -
+          4486
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.SymDenotations.SymDenotation.owner
+        </td>
+        <td style="background: #AEF1AE">
+          dotty.tools.dotc.core.Symbols.toDenot(tree.symbol(Interpreter.this.ctx))(Interpreter.this.ctx).owner
+        </td>
+      </tr><tr>
+        <td>
+          121
+        </td>
+        <td>
+          37340
+        </td>
+        <td>
+          4559
+          -
+          4559
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.interpreter.Interpreter.ctx
+        </td>
+        <td style="background: #AEF1AE">
+          Interpreter.this.ctx
+        </td>
+      </tr><tr>
+        <td>
+          121
+        </td>
+        <td>
+          37334
+        </td>
+        <td>
+          4508
+          -
+          4508
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.interpreter.Interpreter.ctx
+        </td>
+        <td style="background: #AEF1AE">
+          Interpreter.this.ctx
+        </td>
+      </tr><tr>
+        <td>
+          121
+        </td>
+        <td>
+          37343
+        </td>
+        <td>
+          4469
+          -
+          4566
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Boolean.&amp;&amp;
+        </td>
+        <td style="background: #AEF1AE">
+          dotty.tools.dotc.core.Symbols.toDenot(dotty.tools.dotc.core.Symbols.toDenot(tree.symbol(Interpreter.this.ctx))(Interpreter.this.ctx).owner)(Interpreter.this.ctx).isValueClass(Interpreter.this.ctx).&amp;&amp;(dotty.tools.dotc.core.Symbols.toDenot(tree.symbol(Interpreter.this.ctx))(Interpreter.this.ctx).is(dotty.tools.dotc.core.Flags.ParamAccessor)(Interpreter.this.ctx)).&amp;&amp;(env.contains(qualifier.symbol(Interpreter.this.ctx)))
+        </td>
+      </tr><tr>
+        <td>
+          121
+        </td>
+        <td>
+          37333
+        </td>
+        <td>
+          4487
+          -
+          4487
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.interpreter.Interpreter.ctx
+        </td>
+        <td style="background: #AEF1AE">
+          Interpreter.this.ctx
+        </td>
+      </tr><tr>
+        <td>
+          121
+        </td>
+        <td>
+          37342
+        </td>
+        <td>
+          4536
+          -
+          4566
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.MapLike.contains
+        </td>
+        <td style="background: #AEF1AE">
+          env.contains(qualifier.symbol(Interpreter.this.ctx))
+        </td>
+      </tr><tr>
+        <td>
+          121
+        </td>
+        <td>
+          37336
+        </td>
+        <td>
+          4508
+          -
+          4508
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.interpreter.Interpreter.ctx
+        </td>
+        <td style="background: #AEF1AE">
+          Interpreter.this.ctx
+        </td>
+      </tr><tr>
+        <td>
+          121
+        </td>
+        <td>
+          37330
+        </td>
+        <td>
+          4474
+          -
+          4474
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.interpreter.Interpreter.ctx
+        </td>
+        <td style="background: #AEF1AE">
+          Interpreter.this.ctx
+        </td>
+      </tr><tr>
+        <td>
+          121
+        </td>
+        <td>
+          37339
+        </td>
+        <td>
+          4503
+          -
+          4532
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.SymDenotations.SymDenotation.is
+        </td>
+        <td style="background: #AEF1AE">
+          dotty.tools.dotc.core.Symbols.toDenot(tree.symbol(Interpreter.this.ctx))(Interpreter.this.ctx).is(dotty.tools.dotc.core.Flags.ParamAccessor)(Interpreter.this.ctx)
+        </td>
+      </tr><tr>
+        <td>
+          121
+        </td>
+        <td>
+          37338
+        </td>
+        <td>
+          4517
+          -
+          4517
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.interpreter.Interpreter.ctx
+        </td>
+        <td style="background: #AEF1AE">
+          Interpreter.this.ctx
+        </td>
+      </tr><tr>
+        <td>
+          121
+        </td>
+        <td>
+          37341
+        </td>
+        <td>
+          4549
+          -
+          4565
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Trees.Tree.symbol
+        </td>
+        <td style="background: #AEF1AE">
+          qualifier.symbol(Interpreter.this.ctx)
+        </td>
+      </tr><tr>
+        <td>
+          121
+        </td>
+        <td>
+          37332
+        </td>
+        <td>
+          4481
+          -
+          4481
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.interpreter.Interpreter.ctx
+        </td>
+        <td style="background: #AEF1AE">
+          Interpreter.this.ctx
+        </td>
+      </tr><tr>
+        <td>
+          121
+        </td>
+        <td>
+          37335
+        </td>
+        <td>
+          4503
+          -
+          4514
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Trees.Tree.symbol
+        </td>
+        <td style="background: #AEF1AE">
+          tree.symbol(Interpreter.this.ctx)
+        </td>
+      </tr><tr>
+        <td>
+          121
+        </td>
+        <td>
+          37329
+        </td>
+        <td>
+          4469
+          -
+          4480
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Trees.Tree.symbol
+        </td>
+        <td style="background: #AEF1AE">
+          tree.symbol(Interpreter.this.ctx)
+        </td>
+      </tr><tr>
+        <td>
+          122
+        </td>
+        <td>
+          37346
+        </td>
+        <td>
+          4578
+          -
+          4599
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.MapLike.apply
+        </td>
+        <td style="background: #AEF1AE">
+          env.apply(qualifier.symbol(Interpreter.this.ctx))
+        </td>
+      </tr><tr>
+        <td>
+          122
+        </td>
+        <td>
+          37345
+        </td>
+        <td>
+          4582
+          -
+          4598
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Trees.Tree.symbol
+        </td>
+        <td style="background: #AEF1AE">
+          qualifier.symbol(Interpreter.this.ctx)
+        </td>
+      </tr><tr>
+        <td>
+          122
+        </td>
+        <td>
+          37344
+        </td>
+        <td>
+          4592
+          -
+          4592
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.interpreter.Interpreter.ctx
+        </td>
+        <td style="background: #AEF1AE">
+          Interpreter.this.ctx
+        </td>
+      </tr><tr>
+        <td>
+          125
+        </td>
+        <td>
+          37349
+        </td>
+        <td>
+          4644
+          -
+          4691
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          scala.collection.immutable.List.map
+        </td>
+        <td style="background: #AEF1AE">
+          elems.map[Object, Object](((elem: dotty.tools.dotc.ast.Trees.Tree[dotty.tools.dotc.core.Types.Type]) =&gt; Interpreter.this.interpretTreeImpl(elem, env)))(immutable.this.List.canBuildFrom[Object])
+        </td>
+      </tr><tr>
+        <td>
+          125
+        </td>
+        <td>
+          37348
+        </td>
+        <td>
+          4653
+          -
+          4653
+        </td>
+        <td>
+          TypeApply
+        </td>
+        <td>
+          scala.collection.immutable.List.canBuildFrom
+        </td>
+        <td style="background: #AEF1AE">
+          immutable.this.List.canBuildFrom[Object]
+        </td>
+      </tr><tr>
+        <td>
+          125
+        </td>
+        <td>
+          37347
+        </td>
+        <td>
+          4662
+          -
+          4690
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.interpreter.Interpreter.interpretTreeImpl
+        </td>
+        <td style="background: #AEF1AE">
+          Interpreter.this.interpretTreeImpl(elem, env)
+        </td>
+      </tr><tr>
+        <td>
+          130
+        </td>
+        <td>
+          37350
+        </td>
+        <td>
+          4873
+          -
+          4994
+        </td>
+        <td>
+          Throw
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          throw new Interpreter.this.StopInterpretation(scala.StringContext.apply(&quot;Could not interpret &quot;, &quot;. Consider extracting logic into a helper def.&quot;).s(tree.show(Interpreter.this.ctx)), tree.pos)
+        </td>
+      </tr><tr>
+        <td>
+          135
+        </td>
+        <td>
+          37351
+        </td>
+        <td>
+          5085
+          -
+          5107
+        </td>
+        <td>
+          TypeApply
+        </td>
+        <td>
+          scala.collection.Seq.newBuilder
+        </td>
+        <td style="background: #AEF1AE">
+          scala.collection.Seq.newBuilder[Object]
+        </td>
+      </tr><tr>
+        <td>
+          138
+        </td>
+        <td>
+          37352
+        </td>
+        <td>
+          5201
+          -
+          5218
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.interpreter.Interpreter.interpretArgs
+        </td>
+        <td style="background: #AEF1AE">
+          interpretArgs(fn)
+        </td>
+      </tr><tr>
+        <td>
+          139
+        </td>
+        <td>
+          37355
+        </td>
+        <td>
+          5227
+          -
+          5280
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.immutable.List.foreach
+        </td>
+        <td style="background: #AEF1AE">
+          args.foreach[scala.collection.mutable.Builder[Object,Seq[Object]]](((arg: dotty.tools.dotc.ast.Trees.Tree[dotty.tools.dotc.core.Types.Type]) =&gt; b.+=(Interpreter.this.interpretTreeImpl(arg, env))))
+        </td>
+      </tr><tr>
+        <td>
+          139
+        </td>
+        <td>
+          37354
+        </td>
+        <td>
+          5247
+          -
+          5279
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.mutable.Builder.+=
+        </td>
+        <td style="background: #AEF1AE">
+          b.+=(Interpreter.this.interpretTreeImpl(arg, env))
+        </td>
+      </tr><tr>
+        <td>
+          139
+        </td>
+        <td>
+          37353
+        </td>
+        <td>
+          5252
+          -
+          5279
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.interpreter.Interpreter.interpretTreeImpl
+        </td>
+        <td style="background: #AEF1AE">
+          Interpreter.this.interpretTreeImpl(arg, env)
+        </td>
+      </tr><tr>
+        <td>
+          140
+        </td>
+        <td>
+          37356
+        </td>
+        <td>
+          5294
+          -
+          5296
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          ()
+        </td>
+      </tr><tr>
+        <td>
+          142
+        </td>
+        <td>
+          37357
+        </td>
+        <td>
+          5307
+          -
+          5326
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.interpreter.Interpreter.interpretArgs
+        </td>
+        <td style="background: #AEF1AE">
+          interpretArgs(tree)
+        </td>
+      </tr><tr>
+        <td>
+          143
+        </td>
+        <td>
+          37358
+        </td>
+        <td>
+          5331
+          -
+          5341
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.mutable.Builder.result
+        </td>
+        <td style="background: #AEF1AE">
+          b.result()
+        </td>
+      </tr><tr>
+        <td>
+          147
+        </td>
+        <td>
+          37359
+        </td>
+        <td>
+          5449
+          -
+          5475
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.interpreter.Interpreter.interpretPrefix
+        </td>
+        <td style="background: #AEF1AE">
+          Interpreter.this.interpretPrefix(qual, env)
+        </td>
+      </tr><tr>
+        <td>
+          148
+        </td>
+        <td>
+          37360
+        </td>
+        <td>
+          5507
+          -
+          5533
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.interpreter.Interpreter.interpretPrefix
+        </td>
+        <td style="background: #AEF1AE">
+          Interpreter.this.interpretPrefix(qual, env)
+        </td>
+      </tr><tr>
+        <td>
+          149
+        </td>
+        <td>
+          37361
+        </td>
+        <td>
+          5562
+          -
+          5590
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.interpreter.Interpreter.interpretTreeImpl
+        </td>
+        <td style="background: #AEF1AE">
+          Interpreter.this.interpretTreeImpl(qual, env)
+        </td>
+      </tr><tr>
+        <td>
+          155
+        </td>
+        <td>
+          37364
+        </td>
+        <td>
+          5777
+          -
+          5809
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.interpreter.Interpreter.interpretTreeImpl
+        </td>
+        <td style="background: #AEF1AE">
+          Interpreter.this.interpretTreeImpl(tree.rhs(Interpreter.this.ctx), env)
+        </td>
+      </tr><tr>
+        <td>
+          155
+        </td>
+        <td>
+          37363
+        </td>
+        <td>
+          5795
+          -
+          5803
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Trees.ValOrDefDef.rhs
+        </td>
+        <td style="background: #AEF1AE">
+          tree.rhs(Interpreter.this.ctx)
+        </td>
+      </tr><tr>
+        <td>
+          155
+        </td>
+        <td>
+          37362
+        </td>
+        <td>
+          5800
+          -
+          5800
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.interpreter.Interpreter.ctx
+        </td>
+        <td style="background: #AEF1AE">
+          Interpreter.this.ctx
+        </td>
+      </tr><tr>
+        <td>
+          156
+        </td>
+        <td>
+          37367
+        </td>
+        <td>
+          5816
+          -
+          5845
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.immutable.MapLike.updated
+        </td>
+        <td style="background: #AEF1AE">
+          env.updated[Object](tree.symbol(Interpreter.this.ctx), obj)
+        </td>
+      </tr><tr>
+        <td>
+          156
+        </td>
+        <td>
+          37366
+        </td>
+        <td>
+          5828
+          -
+          5839
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Trees.Tree.symbol
+        </td>
+        <td style="background: #AEF1AE">
+          tree.symbol(Interpreter.this.ctx)
+        </td>
+      </tr><tr>
+        <td>
+          156
+        </td>
+        <td>
+          37365
+        </td>
+        <td>
+          5833
+          -
+          5833
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.interpreter.Interpreter.ctx
+        </td>
+        <td style="background: #AEF1AE">
+          Interpreter.this.ctx
+        </td>
+      </tr><tr>
+        <td>
+          159
+        </td>
+        <td>
+          37368
+        </td>
+        <td>
+          5867
+          -
+          5895
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.interpreter.Interpreter.interpretTreeImpl
+        </td>
+        <td style="background: #F0ADAD">
+          Interpreter.this.interpretTreeImpl(stat, env)
+        </td>
+      </tr><tr>
+        <td>
+          164
+        </td>
+        <td>
+          37370
+        </td>
+        <td>
+          5993
+          -
+          6029
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.ClassLoader.loadClass
+        </td>
+        <td style="background: #AEF1AE">
+          Interpreter.this.classLoader.loadClass(name.toString())
+        </td>
+      </tr><tr>
+        <td>
+          164
+        </td>
+        <td>
+          37369
+        </td>
+        <td>
+          6015
+          -
+          6028
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.Object.toString
+        </td>
+        <td style="background: #AEF1AE">
+          name.toString()
+        </td>
+      </tr><tr>
+        <td>
+          164
+        </td>
+        <td>
+          37371
+        </td>
+        <td>
+          5993
+          -
+          6029
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          java.lang.ClassLoader.loadClass
+        </td>
+        <td style="background: #AEF1AE">
+          Interpreter.this.classLoader.loadClass(name.toString())
+        </td>
+      </tr><tr>
+        <td>
+          167
+        </td>
+        <td>
+          37372
+        </td>
+        <td>
+          6100
+          -
+          6154
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.StringContext.s
+        </td>
+        <td style="background: #F0ADAD">
+          scala.StringContext.apply(&quot;Could not find interpreted class &quot;, &quot; in classpath&quot;).s(name)
+        </td>
+      </tr><tr>
+        <td>
+          168
+        </td>
+        <td>
+          37373
+        </td>
+        <td>
+          6163
+          -
+          6201
+        </td>
+        <td>
+          Throw
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          throw new Interpreter.this.StopInterpretation(msg, pos)
+        </td>
+      </tr><tr>
+        <td>
+          173
+        </td>
+        <td>
+          37376
+        </td>
+        <td>
+          6340
+          -
+          6388
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          java.lang.Class.getMethod
+        </td>
+        <td style="background: #AEF1AE">
+          clazz.getMethod(name.toString(), (paramClasses: _*))
+        </td>
+      </tr><tr>
+        <td>
+          173
+        </td>
+        <td>
+          37375
+        </td>
+        <td>
+          6340
+          -
+          6388
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.Class.getMethod
+        </td>
+        <td style="background: #AEF1AE">
+          clazz.getMethod(name.toString(), (paramClasses: _*))
+        </td>
+      </tr><tr>
+        <td>
+          173
+        </td>
+        <td>
+          37374
+        </td>
+        <td>
+          6356
+          -
+          6369
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.Object.toString
+        </td>
+        <td style="background: #AEF1AE">
+          name.toString()
+        </td>
+      </tr><tr>
+        <td>
+          176
+        </td>
+        <td>
+          37379
+        </td>
+        <td>
+          6525
+          -
+          6543
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          &quot; with parameters &quot;
+        </td>
+      </tr><tr>
+        <td>
+          176
+        </td>
+        <td>
+          37382
+        </td>
+        <td>
+          6458
+          -
+          6556
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.StringContext.s
+        </td>
+        <td style="background: #F0ADAD">
+          scala.StringContext.apply(&quot;Could not find interpreted method &quot;, &quot;.&quot;, &quot; with parameters &quot;, &quot;&quot;).s(clazz.getCanonicalName(), name, paramClasses)
+        </td>
+      </tr><tr>
+        <td>
+          176
+        </td>
+        <td>
+          37378
+        </td>
+        <td>
+          6519
+          -
+          6521
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          &quot;.&quot;
+        </td>
+      </tr><tr>
+        <td>
+          176
+        </td>
+        <td>
+          37381
+        </td>
+        <td>
+          6496
+          -
+          6518
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.Class.getCanonicalName
+        </td>
+        <td style="background: #F0ADAD">
+          clazz.getCanonicalName()
+        </td>
+      </tr><tr>
+        <td>
+          176
+        </td>
+        <td>
+          37377
+        </td>
+        <td>
+          6460
+          -
+          6495
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          &quot;Could not find interpreted method &quot;
+        </td>
+      </tr><tr>
+        <td>
+          176
+        </td>
+        <td>
+          37380
+        </td>
+        <td>
+          6555
+          -
+          6556
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          &quot;&quot;
+        </td>
+      </tr><tr>
+        <td>
+          177
+        </td>
+        <td>
+          37383
+        </td>
+        <td>
+          6565
+          -
+          6603
+        </td>
+        <td>
+          Throw
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          throw new Interpreter.this.StopInterpretation(msg, pos)
+        </td>
+      </tr><tr>
+        <td>
+          182
+        </td>
+        <td>
+          37385
+        </td>
+        <td>
+          6748
+          -
+          6820
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          scala.Any.asInstanceOf
+        </td>
+        <td style="background: #F0ADAD">
+          clazz.getConstructor((paramClasses: _*)).asInstanceOf[java.lang.reflect.Constructor[Object]]
+        </td>
+      </tr><tr>
+        <td>
+          182
+        </td>
+        <td>
+          37384
+        </td>
+        <td>
+          6748
+          -
+          6820
+        </td>
+        <td>
+          TypeApply
+        </td>
+        <td>
+          scala.Any.asInstanceOf
+        </td>
+        <td style="background: #F0ADAD">
+          clazz.getConstructor((paramClasses: _*)).asInstanceOf[java.lang.reflect.Constructor[Object]]
+        </td>
+      </tr><tr>
+        <td>
+          185
+        </td>
+        <td>
+          37388
+        </td>
+        <td>
+          6989
+          -
+          6990
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          &quot;&quot;
+        </td>
+      </tr><tr>
+        <td>
+          185
+        </td>
+        <td>
+          37387
+        </td>
+        <td>
+          6959
+          -
+          6977
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          &quot; with parameters &quot;
+        </td>
+      </tr><tr>
+        <td>
+          185
+        </td>
+        <td>
+          37390
+        </td>
+        <td>
+          6890
+          -
+          6990
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.StringContext.s
+        </td>
+        <td style="background: #F0ADAD">
+          scala.StringContext.apply(&quot;Could not find interpreted constructor of &quot;, &quot; with parameters &quot;, &quot;&quot;).s(clazz.getCanonicalName(), paramClasses)
+        </td>
+      </tr><tr>
+        <td>
+          185
+        </td>
+        <td>
+          37389
+        </td>
+        <td>
+          6936
+          -
+          6958
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.Class.getCanonicalName
+        </td>
+        <td style="background: #F0ADAD">
+          clazz.getCanonicalName()
+        </td>
+      </tr><tr>
+        <td>
+          185
+        </td>
+        <td>
+          37386
+        </td>
+        <td>
+          6892
+          -
+          6935
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          &quot;Could not find interpreted constructor of &quot;
+        </td>
+      </tr><tr>
+        <td>
+          186
+        </td>
+        <td>
+          37391
+        </td>
+        <td>
+          6999
+          -
+          7037
+        </td>
+        <td>
+          Throw
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          throw new Interpreter.this.StopInterpretation(msg, pos)
+        </td>
+      </tr><tr>
+        <td>
+          191
+        </td>
+        <td>
+          37392
+        </td>
+        <td>
+          7130
+          -
+          7135
+        </td>
+        <td>
+          Ident
+        </td>
+        <td>
+          dotty.tools.dotc.interpreter.Interpreter.thunk
+        </td>
+        <td style="background: #AEF1AE">
+          thunk
+        </td>
+      </tr><tr>
+        <td>
+          194
+        </td>
+        <td>
+          37393
+        </td>
+        <td>
+          7200
+          -
+          7218
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.io.StringWriter.&lt;init&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          new java.io.StringWriter()
+        </td>
+      </tr><tr>
+        <td>
+          195
+        </td>
+        <td>
+          37394
+        </td>
+        <td>
+          7227
+          -
+          7288
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.io.StringWriter.write
+        </td>
+        <td style="background: #F0ADAD">
+          sw.write(&quot;A runtime exception occurred while interpreting\n&quot;)
+        </td>
+      </tr><tr>
+        <td>
+          196
+        </td>
+        <td>
+          37396
+        </td>
+        <td>
+          7297
+          -
+          7320
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.io.StringWriter.write
+        </td>
+        <td style="background: #F0ADAD">
+          sw.write(ex.getMessage())
+        </td>
+      </tr><tr>
+        <td>
+          196
+        </td>
+        <td>
+          37395
+        </td>
+        <td>
+          7306
+          -
+          7319
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.Throwable.getMessage
+        </td>
+        <td style="background: #F0ADAD">
+          ex.getMessage()
+        </td>
+      </tr><tr>
+        <td>
+          197
+        </td>
+        <td>
+          37397
+        </td>
+        <td>
+          7329
+          -
+          7343
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.io.StringWriter.write
+        </td>
+        <td style="background: #F0ADAD">
+          sw.write(&quot;\n&quot;)
+        </td>
+      </tr><tr>
+        <td>
+          198
+        </td>
+        <td>
+          37399
+        </td>
+        <td>
+          7352
+          -
+          7391
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.Throwable.printStackTrace
+        </td>
+        <td style="background: #F0ADAD">
+          ex.printStackTrace(new java.io.PrintWriter(sw))
+        </td>
+      </tr><tr>
+        <td>
+          198
+        </td>
+        <td>
+          37398
+        </td>
+        <td>
+          7371
+          -
+          7390
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.io.PrintWriter.&lt;init&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          new java.io.PrintWriter(sw)
+        </td>
+      </tr><tr>
+        <td>
+          199
+        </td>
+        <td>
+          37400
+        </td>
+        <td>
+          7400
+          -
+          7414
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.io.StringWriter.write
+        </td>
+        <td style="background: #F0ADAD">
+          sw.write(&quot;\n&quot;)
+        </td>
+      </tr><tr>
+        <td>
+          200
+        </td>
+        <td>
+          37401
+        </td>
+        <td>
+          7423
+          -
+          7469
+        </td>
+        <td>
+          Throw
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          throw new Interpreter.this.StopInterpretation(sw.toString(), pos)
+        </td>
+      </tr><tr>
+        <td>
+          206
+        </td>
+        <td>
+          37409
+        </td>
+        <td>
+          7611
+          -
+          7806
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          scala.collection.immutable.List.map
+        </td>
+        <td style="background: #AEF1AE">
+          sym.signature(Interpreter.this.ctx).paramsSig.map[Class[_], List[Class[_]]](((param: dotty.tools.dotc.core.Names.TypeName) =&gt; dotty.tools.dotc.core.Symbols.defn(Interpreter.this.ctx).valueTypeNameToJavaType(param)(Interpreter.this.ctx) match {
+  case (value: Class[_])Some[Class[_]]((clazz @ _)) =&gt; clazz
+  case scala.None =&gt; Interpreter.this.classLoader.loadClass(param.toString())
+}))(immutable.this.List.canBuildFrom[Class[_]])
+        </td>
+      </tr><tr>
+        <td>
+          206
+        </td>
+        <td>
+          37402
+        </td>
+        <td>
+          7615
+          -
+          7615
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.interpreter.Interpreter.ctx
+        </td>
+        <td style="background: #AEF1AE">
+          Interpreter.this.ctx
+        </td>
+      </tr><tr>
+        <td>
+          206
+        </td>
+        <td>
+          37408
+        </td>
+        <td>
+          7639
+          -
+          7639
+        </td>
+        <td>
+          TypeApply
+        </td>
+        <td>
+          scala.collection.immutable.List.canBuildFrom
+        </td>
+        <td style="background: #AEF1AE">
+          immutable.this.List.canBuildFrom[Class[_]]
+        </td>
+      </tr><tr>
+        <td>
+          207
+        </td>
+        <td>
+          37403
+        </td>
+        <td>
+          7656
+          -
+          7656
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.interpreter.Interpreter.ctx
+        </td>
+        <td style="background: #AEF1AE">
+          Interpreter.this.ctx
+        </td>
+      </tr><tr>
+        <td>
+          207
+        </td>
+        <td>
+          37405
+        </td>
+        <td>
+          7656
+          -
+          7691
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.Definitions.valueTypeNameToJavaType
+        </td>
+        <td style="background: #AEF1AE">
+          dotty.tools.dotc.core.Symbols.defn(Interpreter.this.ctx).valueTypeNameToJavaType(param)(Interpreter.this.ctx)
+        </td>
+      </tr><tr>
+        <td>
+          207
+        </td>
+        <td>
+          37404
+        </td>
+        <td>
+          7684
+          -
+          7684
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.interpreter.Interpreter.ctx
+        </td>
+        <td style="background: #AEF1AE">
+          Interpreter.this.ctx
+        </td>
+      </tr><tr>
+        <td>
+          209
+        </td>
+        <td>
+          37406
+        </td>
+        <td>
+          7777
+          -
+          7791
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.core.Names.TypeName.toString
+        </td>
+        <td style="background: #AEF1AE">
+          param.toString()
+        </td>
+      </tr><tr>
+        <td>
+          209
+        </td>
+        <td>
+          37407
+        </td>
+        <td>
+          7755
+          -
+          7792
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.ClassLoader.loadClass
+        </td>
+        <td style="background: #AEF1AE">
+          Interpreter.this.classLoader.loadClass(param.toString())
+        </td>
+      </tr>
+    </table>
+          </div>
+        </div>
+      </body>
+    </html>

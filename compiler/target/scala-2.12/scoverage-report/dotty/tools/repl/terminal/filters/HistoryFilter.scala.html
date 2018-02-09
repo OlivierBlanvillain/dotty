@@ -1,0 +1,4523 @@
+<html>
+      <head>
+        <meta http-equiv="Content-Type" content="text/html; charset=utf-8"/>
+        <title id="title">
+          dotty/tools/repl/terminal/filters/HistoryFilter.scala.html
+        </title>
+        <script src="https://ajax.googleapis.com/ajax/libs/jquery/1.10.2/jquery.min.js"></script><link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/jquery.tablesorter/2.20.1/css/theme.default.min.css" type="text/css"/><script src="https://cdnjs.cloudflare.com/ajax/libs/jquery.tablesorter/2.20.1/js/jquery.tablesorter.min.js"></script><link rel="stylesheet" href="https://netdna.bootstrapcdn.com/bootstrap/3.0.3/css/bootstrap.min.css" type="text/css"/><script src="https://netdna.bootstrapcdn.com/bootstrap/3.0.3/js/bootstrap.min.js"></script><script type="text/javascript">
+        $(document).ready(function() {$(".tablesorter").tablesorter();});
+      </script>
+        <style>
+          table.codegrid { font-family: monospace; font-size: 12px; width: auto!important; }table.statementlist { width: auto!important; font-size: 13px; } table.codegrid td { padding: 0!important; border: 0!important } table td.linenumber { width: 40px!important; } 
+        </style>
+      </head>
+      <body style="font-family: monospace;">
+        <ul class="nav nav-tabs">
+          <li>
+            <a href="#codegrid" data-toggle="tab">Codegrid</a>
+          </li>
+          <li>
+            <a href="#statementlist" data-toggle="tab">Statement List</a>
+          </li>
+        </ul>
+        <div class="tab-content">
+          <div class="tab-pane active" id="codegrid">
+            <pre style='font-size: 12pt; font-family: courier;'>1 <span style=''>package dotty.tools
+</span>2 <span style=''>package repl
+</span>3 <span style=''>package terminal
+</span>4 <span style=''>package filters
+</span>5 <span style=''>
+</span>6 <span style=''>import terminal.FilterTools._
+</span>7 <span style=''>import terminal.LazyList._
+</span>8 <span style=''>import terminal._
+</span>9 <span style=''>
+</span>10 <span style=''>/**
+</span>11 <span style=''>  * Provides history navigation up and down, saving the current line, a well
+</span>12 <span style=''>  * as history-search functionality (`Ctrl R` in bash) letting you quickly find
+</span>13 <span style=''>  * &amp; filter previous commands by entering a sub-string.
+</span>14 <span style=''>  */
+</span>15 <span style=''>class HistoryFilter(
+</span>16 <span style=''>  history: () =&gt; IndexedSeq[String],
+</span>17 <span style=''>  commentStartColor: String,
+</span>18 <span style=''>  commentEndColor: String
+</span>19 <span style=''>) extends DelegateFilter(&quot;HistoryFilter&quot;) {
+</span>20 <span style=''>
+</span>21 <span style=''>  /**
+</span>22 <span style=''>    * `-1` means we haven't started looking at history, `n &gt;= 0` means we're
+</span>23 <span style=''>    * currently at history command `n`
+</span>24 <span style=''>    */
+</span>25 <span style=''>  var historyIndex = </span><span style='background: #F0ADAD'>-1</span><span style=''>
+</span>26 <span style=''>
+</span>27 <span style=''>  /**
+</span>28 <span style=''>    * The term we're searching for, if any.
+</span>29 <span style=''>    *
+</span>30 <span style=''>    * - `None` means we're not searching for anything, e.g. we're just
+</span>31 <span style=''>    *   browsing history
+</span>32 <span style=''>    *
+</span>33 <span style=''>    * - `Some(term)` where `term` is not empty is what it normally looks
+</span>34 <span style=''>    *   like when we're searching for something
+</span>35 <span style=''>    *
+</span>36 <span style=''>    * - `Some(term)` where `term` is empty only really happens when you
+</span>37 <span style=''>    *   start searching and delete things, or if you `Ctrl-R` on an empty
+</span>38 <span style=''>    *   prompt
+</span>39 <span style=''>    */
+</span>40 <span style=''>  var searchTerm: Option[Vector[Char]] = </span><span style='background: #F0ADAD'>None</span><span style=''>
+</span>41 <span style=''>
+</span>42 <span style=''>  /**
+</span>43 <span style=''>    * Records the last buffer that the filter has observed while it's in
+</span>44 <span style=''>    * search/history mode. If the new buffer differs from this, assume that
+</span>45 <span style=''>    * some other filter modified the buffer and drop out of search/history
+</span>46 <span style=''>    */
+</span>47 <span style=''>  var prevBuffer: Option[Vector[Char]] = </span><span style='background: #F0ADAD'>None</span><span style=''>
+</span>48 <span style=''>
+</span>49 <span style=''>  /**
+</span>50 <span style=''>    * Kicks the HistoryFilter from passive-mode into search-history mode
+</span>51 <span style=''>    */
+</span>52 <span style=''>  def startHistory(b: Vector[Char], c: Int): (Vector[Char], Int, String) = {
+</span>53 <span style=''>    if (</span><span style='background: #F0ADAD'>b.nonEmpty</span><span style=''>) </span><span style='background: #F0ADAD'>searchTerm = Some(b)</span><span style=''>
+</span>54 <span style=''>    </span><span style='background: #F0ADAD'>up(Vector(), c)</span><span style=''>
+</span>55 <span style=''>  }
+</span>56 <span style=''>
+</span>57 <span style=''>  def searchHistory(
+</span>58 <span style=''>    start: Int,
+</span>59 <span style=''>    increment: Int,
+</span>60 <span style=''>    buffer: Vector[Char],
+</span>61 <span style=''>    skipped: Vector[Char]
+</span>62 <span style=''>  ) = {
+</span>63 <span style=''>
+</span>64 <span style=''>    def nextHistoryIndexFor(v: Vector[Char]) = {
+</span>65 <span style=''>      </span><span style='background: #F0ADAD'>HistoryFilter.findNewHistoryIndex(start, v, history(), increment, skipped)</span><span style=''>
+</span>66 <span style=''>    }
+</span>67 <span style=''>
+</span>68 <span style=''>    val (newHistoryIndex, newBuffer, newMsg, newCursor) = searchTerm match {
+</span>69 <span style=''>      // We're not searching for anything, just browsing history.
+</span>70 <span style=''>      // Pass in Vector.empty so we scroll through all items
+</span>71 <span style=''>      case None =&gt;
+</span>72 <span style=''>        val (i, b, c) = nextHistoryIndexFor(Vector.empty)
+</span>73 <span style=''>        (i, b, &quot;&quot;, 99999)
+</span>74 <span style=''>
+</span>75 <span style=''>      // We're searching for some item with a particular search term
+</span>76 <span style=''>      case Some(b) if b.nonEmpty =&gt;
+</span>77 <span style=''>        val (i, b1, c) = nextHistoryIndexFor(b)
+</span>78 <span style=''>
+</span>79 <span style=''>        val msg =
+</span>80 <span style=''>          if (i.nonEmpty) &quot;&quot;
+</span>81 <span style=''>          else commentStartColor + HistoryFilter.cannotFindSearchMessage + commentEndColor
+</span>82 <span style=''>
+</span>83 <span style=''>        (i, b1, msg, c)
+</span>84 <span style=''>
+</span>85 <span style=''>      // We're searching for nothing in particular; in this case,
+</span>86 <span style=''>      // show a help message instead of an unhelpful, empty buffer
+</span>87 <span style=''>      case Some(b) if b.isEmpty =&gt;
+</span>88 <span style=''>        val msg = commentStartColor + HistoryFilter.emptySearchMessage + commentEndColor
+</span>89 <span style=''>        // The cursor in this case always goes to zero
+</span>90 <span style=''>        (Some(start), Vector(), msg, 0)
+</span>91 <span style=''>
+</span>92 <span style=''>    }
+</span>93 <span style=''>
+</span>94 <span style=''>    </span><span style='background: #F0ADAD'>historyIndex = newHistoryIndex.getOrElse(-1)</span><span style=''>
+</span>95 <span style=''>
+</span>96 <span style=''>    </span><span style='background: #F0ADAD'>(newBuffer, newCursor, newMsg)</span><span style=''>
+</span>97 <span style=''>  }
+</span>98 <span style=''>
+</span>99 <span style=''>  def activeHistory = </span><span style='background: #F0ADAD'>searchTerm.nonEmpty || historyIndex != -1</span><span style=''>
+</span>100 <span style=''>  def activeSearch = </span><span style='background: #F0ADAD'>searchTerm.nonEmpty</span><span style=''>
+</span>101 <span style=''>
+</span>102 <span style=''>  def up(b: Vector[Char], c: Int) =
+</span>103 <span style=''>    </span><span style='background: #F0ADAD'>searchHistory(historyIndex + 1, 1, b, b)</span><span style=''>
+</span>104 <span style=''>
+</span>105 <span style=''>  def down(b: Vector[Char], c: Int) =
+</span>106 <span style=''>    </span><span style='background: #F0ADAD'>searchHistory(historyIndex - 1, -1, b, b)</span><span style=''>
+</span>107 <span style=''>
+</span>108 <span style=''>  def wrap(rest: LazyList[Int], out: (Vector[Char], Int, String)) =
+</span>109 <span style=''>    </span><span style='background: #F0ADAD'>TS(rest, out._1, out._2, out._3)</span><span style=''>
+</span>110 <span style=''>
+</span>111 <span style=''>  def ctrlR(b: Vector[Char], c: Int) =
+</span>112 <span style=''>    if (</span><span style='background: #F0ADAD'>activeSearch</span><span style=''>) </span><span style='background: #F0ADAD'>up(b, c)</span><span style=''>
+</span>113 <span style=''>    else </span><span style='background: #F0ADAD'>{
+</span>114 <span style=''></span><span style='background: #F0ADAD'>      searchTerm = Some(b)
+</span>115 <span style=''></span><span style='background: #F0ADAD'>      up(Vector(), c)
+</span>116 <span style=''></span><span style='background: #F0ADAD'>    }</span><span style=''>
+</span>117 <span style=''>
+</span>118 <span style=''>  def printableChar(char: Char)(b: Vector[Char], c: Int) = {
+</span>119 <span style=''>    </span><span style='background: #F0ADAD'>searchTerm = searchTerm.map(_ :+ char)</span><span style=''>
+</span>120 <span style=''>    </span><span style='background: #F0ADAD'>searchHistory(historyIndex.max(0), 1, b :+ char, Vector())</span><span style=''>
+</span>121 <span style=''>  }
+</span>122 <span style=''>
+</span>123 <span style=''>  def backspace(b: Vector[Char], c: Int) = {
+</span>124 <span style=''>    </span><span style='background: #F0ADAD'>searchTerm = searchTerm.map(_.dropRight(1))</span><span style=''>
+</span>125 <span style=''>    </span><span style='background: #F0ADAD'>searchHistory(historyIndex, 1, b, Vector())</span><span style=''>
+</span>126 <span style=''>  }
+</span>127 <span style=''>
+</span>128 <span style=''>  /**
+</span>129 <span style=''>    * Predicate to check if either we're searching for a term or if we're in
+</span>130 <span style=''>    * history-browsing mode and some predicate is true.
+</span>131 <span style=''>    *
+</span>132 <span style=''>    * Very often we want to capture keystrokes in search-mode more aggressively
+</span>133 <span style=''>    * than in history-mode, e.g. search-mode drops you out more aggressively
+</span>134 <span style=''>    * than history-mode does, and its up/down keys cycle through history more
+</span>135 <span style=''>    * aggressively on every keystroke while history-mode only cycles when you
+</span>136 <span style=''>    * reach the top/bottom line of the multi-line input.
+</span>137 <span style=''>    */
+</span>138 <span style=''>  def searchOrHistoryAnd(cond: Boolean) =
+</span>139 <span style=''>    </span><span style='background: #F0ADAD'>activeSearch || (activeHistory &amp;&amp; cond)</span><span style=''>
+</span>140 <span style=''>
+</span>141 <span style=''>  val dropHistoryChars = </span><span style='background: #F0ADAD'>Set(9, 13, 10)</span><span style=''> // Tab or Enter
+</span>142 <span style=''>
+</span>143 <span style=''>  def endHistory() = {
+</span>144 <span style=''>    </span><span style='background: #F0ADAD'>historyIndex = -1</span><span style=''>
+</span>145 <span style=''>    </span><span style='background: #F0ADAD'>searchTerm = None</span><span style=''>
+</span>146 <span style=''>  }
+</span>147 <span style=''>
+</span>148 <span style=''>  def filter = </span><span style='background: #F0ADAD'>Filter.wrap(&quot;historyFilterWrap1&quot;) {
+</span>149 <span style=''></span><span style='background: #F0ADAD'>    (ti: TermInfo) =&gt; {
+</span>150 <span style=''></span><span style='background: #F0ADAD'>      prelude.op(ti) match {
+</span>151 <span style=''></span><span style='background: #F0ADAD'>        case None =&gt;
+</span>152 <span style=''></span><span style='background: #F0ADAD'>          prevBuffer = Some(ti.ts.buffer)
+</span>153 <span style=''></span><span style='background: #F0ADAD'>          filter0.op(ti) match {
+</span>154 <span style=''></span><span style='background: #F0ADAD'>            case Some(ts: TermState) =&gt;
+</span>155 <span style=''></span><span style='background: #F0ADAD'>              prevBuffer = Some(ts.buffer)
+</span>156 <span style=''></span><span style='background: #F0ADAD'>              Some(ts)
+</span>157 <span style=''></span><span style='background: #F0ADAD'>            case x =&gt; x
+</span>158 <span style=''></span><span style='background: #F0ADAD'>          }
+</span>159 <span style=''></span><span style='background: #F0ADAD'>        case some =&gt; some
+</span>160 <span style=''></span><span style='background: #F0ADAD'>      }
+</span>161 <span style=''></span><span style='background: #F0ADAD'>    }
+</span>162 <span style=''></span><span style='background: #F0ADAD'>  }</span><span style=''>
+</span>163 <span style=''>
+</span>164 <span style=''>  def prelude: Filter = </span><span style='background: #F0ADAD'>Filter.partial(&quot;historyPrelude&quot;) {
+</span>165 <span style=''></span><span style='background: #F0ADAD'>    case TS(inputs, b, c, _) if activeHistory &amp;&amp; prevBuffer.exists(_ != b) =&gt;
+</span>166 <span style=''></span><span style='background: #F0ADAD'>      endHistory()
+</span>167 <span style=''></span><span style='background: #F0ADAD'>      prevBuffer = None
+</span>168 <span style=''></span><span style='background: #F0ADAD'>      TS(inputs, b, c)
+</span>169 <span style=''></span><span style='background: #F0ADAD'>  }</span><span style=''>
+</span>170 <span style=''>
+</span>171 <span style=''>  def filter0: Filter = </span><span style='background: #F0ADAD'>Filter.partial(&quot;filter0&quot;) {
+</span>172 <span style=''></span><span style='background: #F0ADAD'>    // Ways to kick off the history/search if you're not already in it
+</span>173 <span style=''></span><span style='background: #F0ADAD'>
+</span>174 <span style=''></span><span style='background: #F0ADAD'>    // `Ctrl-R`
+</span>175 <span style=''></span><span style='background: #F0ADAD'>    case TS(18 ~: rest, b, c, _) =&gt; wrap(rest, ctrlR(b, c))
+</span>176 <span style=''></span><span style='background: #F0ADAD'>
+</span>177 <span style=''></span><span style='background: #F0ADAD'>    // `Up` from the first line in the input
+</span>178 <span style=''></span><span style='background: #F0ADAD'>    case TermInfo(TS(p&quot;\u001b[A$rest&quot;, b, c, _), w) if firstRow(c, b, w) &amp;&amp; !activeHistory =&gt;
+</span>179 <span style=''></span><span style='background: #F0ADAD'>      wrap(rest, startHistory(b, c))
+</span>180 <span style=''></span><span style='background: #F0ADAD'>
+</span>181 <span style=''></span><span style='background: #F0ADAD'>    // `Ctrl P`
+</span>182 <span style=''></span><span style='background: #F0ADAD'>    case TermInfo(TS(p&quot;\u0010$rest&quot;, b, c, _), w) if firstRow(c, b, w) &amp;&amp; !activeHistory =&gt;
+</span>183 <span style=''></span><span style='background: #F0ADAD'>      wrap(rest, startHistory(b, c))
+</span>184 <span style=''></span><span style='background: #F0ADAD'>
+</span>185 <span style=''></span><span style='background: #F0ADAD'>    // `Page-Up` from first character starts history
+</span>186 <span style=''></span><span style='background: #F0ADAD'>    case TermInfo(TS(p&quot;\u001b[5~$rest&quot;, b, c, _), w) if c == 0 &amp;&amp; !activeHistory =&gt;
+</span>187 <span style=''></span><span style='background: #F0ADAD'>      wrap(rest, startHistory(b, c))
+</span>188 <span style=''></span><span style='background: #F0ADAD'>
+</span>189 <span style=''></span><span style='background: #F0ADAD'>    // Things you can do when you're already in the history search
+</span>190 <span style=''></span><span style='background: #F0ADAD'>
+</span>191 <span style=''></span><span style='background: #F0ADAD'>    // Navigating up and down the history. Each up or down searches for
+</span>192 <span style=''></span><span style='background: #F0ADAD'>    // the next thing that matches your current searchTerm
+</span>193 <span style=''></span><span style='background: #F0ADAD'>    // Up
+</span>194 <span style=''></span><span style='background: #F0ADAD'>    case TermInfo(TS(p&quot;\u001b[A$rest&quot;, b, c, _), w) if searchOrHistoryAnd(firstRow(c, b, w)) =&gt;
+</span>195 <span style=''></span><span style='background: #F0ADAD'>      wrap(rest, up(b, c))
+</span>196 <span style=''></span><span style='background: #F0ADAD'>
+</span>197 <span style=''></span><span style='background: #F0ADAD'>    // Ctrl P
+</span>198 <span style=''></span><span style='background: #F0ADAD'>    case TermInfo(TS(p&quot;\u0010$rest&quot;, b, c, _), w) if searchOrHistoryAnd(firstRow(c, b, w)) =&gt;
+</span>199 <span style=''></span><span style='background: #F0ADAD'>      wrap(rest, up(b, c))
+</span>200 <span style=''></span><span style='background: #F0ADAD'>
+</span>201 <span style=''></span><span style='background: #F0ADAD'>    // `Page-Up` from first character cycles history up
+</span>202 <span style=''></span><span style='background: #F0ADAD'>    case TermInfo(TS(p&quot;\u001b[5~$rest&quot;, b, c, _), w) if searchOrHistoryAnd(c == 0) =&gt;
+</span>203 <span style=''></span><span style='background: #F0ADAD'>      wrap(rest, up(b, c))
+</span>204 <span style=''></span><span style='background: #F0ADAD'>
+</span>205 <span style=''></span><span style='background: #F0ADAD'>    // Down
+</span>206 <span style=''></span><span style='background: #F0ADAD'>    case TermInfo(TS(p&quot;\u001b[B$rest&quot;, b, c, _), w) if searchOrHistoryAnd(lastRow(c, b, w))  =&gt;
+</span>207 <span style=''></span><span style='background: #F0ADAD'>      wrap(rest, down(b, c))
+</span>208 <span style=''></span><span style='background: #F0ADAD'>
+</span>209 <span style=''></span><span style='background: #F0ADAD'>    // `Ctrl N`
+</span>210 <span style=''></span><span style='background: #F0ADAD'>
+</span>211 <span style=''></span><span style='background: #F0ADAD'>    case TermInfo(TS(p&quot;\u000e$rest&quot;, b, c, _), w) if searchOrHistoryAnd(lastRow(c, b, w))  =&gt;
+</span>212 <span style=''></span><span style='background: #F0ADAD'>      wrap(rest, down(b, c))
+</span>213 <span style=''></span><span style='background: #F0ADAD'>    // `Page-Down` from last character cycles history down
+</span>214 <span style=''></span><span style='background: #F0ADAD'>    case TermInfo(TS(p&quot;\u001b[6~$rest&quot;, b, c, _), w) if searchOrHistoryAnd(c == b.length - 1) =&gt;
+</span>215 <span style=''></span><span style='background: #F0ADAD'>      wrap(rest, down(b, c))
+</span>216 <span style=''></span><span style='background: #F0ADAD'>
+</span>217 <span style=''></span><span style='background: #F0ADAD'>
+</span>218 <span style=''></span><span style='background: #F0ADAD'>    // Intercept Backspace and delete a character in search-mode, preserving it, but
+</span>219 <span style=''></span><span style='background: #F0ADAD'>    // letting it fall through and dropping you out of history-mode if you try to make
+</span>220 <span style=''></span><span style='background: #F0ADAD'>    // edits
+</span>221 <span style=''></span><span style='background: #F0ADAD'>    case TS(127 ~: rest, buffer, cursor, _) if activeSearch =&gt;
+</span>222 <span style=''></span><span style='background: #F0ADAD'>      wrap(rest, backspace(buffer, cursor))
+</span>223 <span style=''></span><span style='background: #F0ADAD'>
+</span>224 <span style=''></span><span style='background: #F0ADAD'>    // Any other control characters drop you out of search mode, but only the
+</span>225 <span style=''></span><span style='background: #F0ADAD'>    // set of `dropHistoryChars` drops you out of history mode
+</span>226 <span style=''></span><span style='background: #F0ADAD'>    case TS(char ~: inputs, buffer, cursor, _)
+</span>227 <span style=''></span><span style='background: #F0ADAD'>      if char.toChar.isControl &amp;&amp; searchOrHistoryAnd(dropHistoryChars(char)) =&gt;
+</span>228 <span style=''></span><span style='background: #F0ADAD'>      val newBuffer =
+</span>229 <span style=''></span><span style='background: #F0ADAD'>      // If we're back to -1, it means we've wrapped around and are
+</span>230 <span style=''></span><span style='background: #F0ADAD'>      // displaying the original search term with a wrap-around message
+</span>231 <span style=''></span><span style='background: #F0ADAD'>      // in the terminal. Drop the message and just preserve the search term
+</span>232 <span style=''></span><span style='background: #F0ADAD'>        if (historyIndex == -1) searchTerm.get
+</span>233 <span style=''></span><span style='background: #F0ADAD'>        // If we're searching for an empty string, special-case this and return
+</span>234 <span style=''></span><span style='background: #F0ADAD'>        // an empty buffer rather than the first history item (which would be
+</span>235 <span style=''></span><span style='background: #F0ADAD'>        // the default) because that wouldn't make much sense
+</span>236 <span style=''></span><span style='background: #F0ADAD'>        else if (searchTerm.exists(_.isEmpty)) Vector()
+</span>237 <span style=''></span><span style='background: #F0ADAD'>        // Otherwise, pick whatever history entry we're at and use that
+</span>238 <span style=''></span><span style='background: #F0ADAD'>        else history()(historyIndex).toVector
+</span>239 <span style=''></span><span style='background: #F0ADAD'>      endHistory()
+</span>240 <span style=''></span><span style='background: #F0ADAD'>
+</span>241 <span style=''></span><span style='background: #F0ADAD'>      TS(char ~: inputs, newBuffer, cursor)
+</span>242 <span style=''></span><span style='background: #F0ADAD'>
+</span>243 <span style=''></span><span style='background: #F0ADAD'>    // Intercept every other printable character when search is on and
+</span>244 <span style=''></span><span style='background: #F0ADAD'>    // enter it into the current search
+</span>245 <span style=''></span><span style='background: #F0ADAD'>    case TS(char ~: rest, buffer, cursor, _) if activeSearch =&gt;
+</span>246 <span style=''></span><span style='background: #F0ADAD'>      wrap(rest, printableChar(char.toChar)(buffer, cursor))
+</span>247 <span style=''></span><span style='background: #F0ADAD'>
+</span>248 <span style=''></span><span style='background: #F0ADAD'>    // If you're not in search but are in history, entering any printable
+</span>249 <span style=''></span><span style='background: #F0ADAD'>    // characters kicks you out of it and preserves the current buffer. This
+</span>250 <span style=''></span><span style='background: #F0ADAD'>    // makes it harder for you to accidentally lose work due to history-moves
+</span>251 <span style=''></span><span style='background: #F0ADAD'>    case TS(char ~: rest, buffer, cursor, _) if activeHistory &amp;&amp; !char.toChar.isControl =&gt;
+</span>252 <span style=''></span><span style='background: #F0ADAD'>      historyIndex = -1
+</span>253 <span style=''></span><span style='background: #F0ADAD'>      TS(char ~: rest, buffer, cursor)
+</span>254 <span style=''></span><span style='background: #F0ADAD'>  }</span><span style=''>
+</span>255 <span style=''>}
+</span>256 <span style=''>
+</span>257 <span style=''>object HistoryFilter {
+</span>258 <span style=''>
+</span>259 <span style=''>  def mangleBuffer(
+</span>260 <span style=''>    historyFilter: HistoryFilter,
+</span>261 <span style=''>    buffer: Ansi.Str,
+</span>262 <span style=''>    cursor: Int,
+</span>263 <span style=''>    startColor: Ansi.Attr
+</span>264 <span style=''>  ) = {
+</span>265 <span style=''>    if (</span><span style='background: #F0ADAD'>!historyFilter.activeSearch</span><span style=''>) </span><span style='background: #F0ADAD'>buffer</span><span style=''>
+</span>266 <span style=''>    else </span><span style='background: #F0ADAD'>{
+</span>267 <span style=''></span><span style='background: #F0ADAD'>      val (searchStart, searchEnd) =
+</span>268 <span style=''></span><span style='background: #F0ADAD'>        if (historyFilter.searchTerm.get.isEmpty) (cursor, cursor+1)
+</span>269 <span style=''></span><span style='background: #F0ADAD'>        else {
+</span>270 <span style=''></span><span style='background: #F0ADAD'>          val start = buffer.plainText.indexOfSlice(historyFilter.searchTerm.get)
+</span>271 <span style=''></span><span style='background: #F0ADAD'>
+</span>272 <span style=''></span><span style='background: #F0ADAD'>          val end = start + (historyFilter.searchTerm.get.length max 1)
+</span>273 <span style=''></span><span style='background: #F0ADAD'>          (start, end)
+</span>274 <span style=''></span><span style='background: #F0ADAD'>        }
+</span>275 <span style=''></span><span style='background: #F0ADAD'>
+</span>276 <span style=''></span><span style='background: #F0ADAD'>      val newStr = buffer.overlay(startColor, searchStart, searchEnd)
+</span>277 <span style=''></span><span style='background: #F0ADAD'>      newStr
+</span>278 <span style=''></span><span style='background: #F0ADAD'>    }</span><span style=''>
+</span>279 <span style=''>  }
+</span>280 <span style=''>
+</span>281 <span style=''>  /**
+</span>282 <span style=''>    * @param startIndex The first index to start looking from
+</span>283 <span style=''>    * @param searchTerm The term we're searching from; can be empty
+</span>284 <span style=''>    * @param history The history we're searching through
+</span>285 <span style=''>    * @param indexIncrement Which direction to search, +1 or -1
+</span>286 <span style=''>    * @param skipped Any buffers which we should skip in our search results,
+</span>287 <span style=''>    *                e.g. because the user has seen them before.
+</span>288 <span style=''>    */
+</span>289 <span style=''>  def findNewHistoryIndex(
+</span>290 <span style=''>    startIndex: Int,
+</span>291 <span style=''>    searchTerm: Vector[Char],
+</span>292 <span style=''>    history: IndexedSeq[String],
+</span>293 <span style=''>    indexIncrement: Int,
+</span>294 <span style=''>    skipped: Vector[Char]
+</span>295 <span style=''>  ) = {
+</span>296 <span style=''>    /**
+</span>297 <span style=''>      * `Some(i)` means we found a reasonable result at history element `i`
+</span>298 <span style=''>      * `None` means we couldn't find anything, and should show a not-found
+</span>299 <span style=''>      * error to the user
+</span>300 <span style=''>      */
+</span>301 <span style=''>    def rec(i: Int): Option[Int] = </span><span style='background: #F0ADAD'>history.lift(i)</span><span style=''> match {
+</span>302 <span style=''>      // If i &lt; 0, it means the user is pressing `down` too many times, which
+</span>303 <span style=''>      // means it doesn't show anything but we shouldn't show an error
+</span>304 <span style=''>      case None if </span><span style='background: #F0ADAD'>i &lt; 0</span><span style=''> =&gt; </span><span style='background: #F0ADAD'>Some(-1)</span><span style=''>
+</span>305 <span style=''>      case None =&gt; </span><span style='background: #F0ADAD'>None</span><span style=''>
+</span>306 <span style=''>      case Some(s) if </span><span style='background: #F0ADAD'>s.contains(searchTerm) &amp;&amp; !s.contentEquals(skipped)</span><span style=''> =&gt;
+</span>307 <span style=''>        </span><span style='background: #F0ADAD'>Some(i)</span><span style=''>
+</span>308 <span style=''>      case _ =&gt; </span><span style='background: #F0ADAD'>rec(i + indexIncrement)</span><span style=''>
+</span>309 <span style=''>    }
+</span>310 <span style=''>
+</span>311 <span style=''>    val newHistoryIndex = </span><span style='background: #F0ADAD'>rec(startIndex)</span><span style=''>
+</span>312 <span style=''>    val foundIndex = </span><span style='background: #F0ADAD'>newHistoryIndex.find(_ != -1)</span><span style=''>
+</span>313 <span style=''>    val newBuffer = foundIndex match {
+</span>314 <span style=''>      case None =&gt; searchTerm
+</span>315 <span style=''>      case Some(i) =&gt; </span><span style='background: #F0ADAD'>history(i).toVector</span><span style=''>
+</span>316 <span style=''>    }
+</span>317 <span style=''>
+</span>318 <span style=''>    val newCursor = foundIndex match {
+</span>319 <span style=''>      case None =&gt; </span><span style='background: #F0ADAD'>newBuffer.length</span><span style=''>
+</span>320 <span style=''>      case Some(i) =&gt; </span><span style='background: #F0ADAD'>history(i).indexOfSlice(searchTerm) + searchTerm.length</span><span style=''>
+</span>321 <span style=''>    }
+</span>322 <span style=''>
+</span>323 <span style=''>    </span><span style='background: #F0ADAD'>(newHistoryIndex, newBuffer, newCursor)</span><span style=''>
+</span>324 <span style=''>  }
+</span>325 <span style=''>
+</span>326 <span style=''>  val emptySearchMessage =
+</span>327 <span style=''>    </span><span style='background: #F0ADAD'>s&quot; ...enter the string to search for, then `up` for more&quot;</span><span style=''>
+</span>328 <span style=''>  val cannotFindSearchMessage =
+</span>329 <span style=''>    </span><span style='background: #F0ADAD'>s&quot; ...can't be found in history; re-starting search&quot;</span><span style=''>
+</span>330 <span style=''>}
+</span></pre>
+          </div>
+          <div class="tab-pane" id="statementlist">
+            <table cellspacing="0" cellpadding="0" class="table statementlist">
+      <tr>
+        <th>Line</th>
+        <th>Stmt Id</th>
+        <th>Pos</th>
+        <th>Tree</th>
+        <th>Symbol</th>
+        <th>Code</th>
+      </tr><tr>
+        <td>
+          25
+        </td>
+        <td>
+          82320
+        </td>
+        <td>
+          674
+          -
+          676
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          -1
+        </td>
+      </tr><tr>
+        <td>
+          40
+        </td>
+        <td>
+          82321
+        </td>
+        <td>
+          1172
+          -
+          1176
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.None
+        </td>
+        <td style="background: #F0ADAD">
+          scala.None
+        </td>
+      </tr><tr>
+        <td>
+          47
+        </td>
+        <td>
+          82322
+        </td>
+        <td>
+          1456
+          -
+          1460
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.None
+        </td>
+        <td style="background: #F0ADAD">
+          scala.None
+        </td>
+      </tr><tr>
+        <td>
+          53
+        </td>
+        <td>
+          82328
+        </td>
+        <td>
+          1629
+          -
+          1629
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          ()
+        </td>
+      </tr><tr>
+        <td>
+          53
+        </td>
+        <td>
+          82324
+        </td>
+        <td>
+          1658
+          -
+          1665
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Some.apply
+        </td>
+        <td style="background: #F0ADAD">
+          scala.Some.apply[Vector[Char]](b)
+        </td>
+      </tr><tr>
+        <td>
+          53
+        </td>
+        <td>
+          82327
+        </td>
+        <td>
+          1629
+          -
+          1629
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          ()
+        </td>
+      </tr><tr>
+        <td>
+          53
+        </td>
+        <td>
+          82323
+        </td>
+        <td>
+          1633
+          -
+          1643
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.collection.TraversableOnce.nonEmpty
+        </td>
+        <td style="background: #F0ADAD">
+          b.nonEmpty
+        </td>
+      </tr><tr>
+        <td>
+          53
+        </td>
+        <td>
+          82326
+        </td>
+        <td>
+          1645
+          -
+          1665
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          dotty.tools.repl.terminal.filters.HistoryFilter.searchTerm_=
+        </td>
+        <td style="background: #F0ADAD">
+          HistoryFilter.this.searchTerm_=(scala.Some.apply[Vector[Char]](b))
+        </td>
+      </tr><tr>
+        <td>
+          53
+        </td>
+        <td>
+          82325
+        </td>
+        <td>
+          1645
+          -
+          1665
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.repl.terminal.filters.HistoryFilter.searchTerm_=
+        </td>
+        <td style="background: #F0ADAD">
+          HistoryFilter.this.searchTerm_=(scala.Some.apply[Vector[Char]](b))
+        </td>
+      </tr><tr>
+        <td>
+          54
+        </td>
+        <td>
+          82330
+        </td>
+        <td>
+          1670
+          -
+          1685
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.repl.terminal.filters.HistoryFilter.up
+        </td>
+        <td style="background: #F0ADAD">
+          HistoryFilter.this.up(scala.`package`.Vector.apply[Nothing](), c)
+        </td>
+      </tr><tr>
+        <td>
+          54
+        </td>
+        <td>
+          82329
+        </td>
+        <td>
+          1673
+          -
+          1681
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.generic.GenericCompanion.apply
+        </td>
+        <td style="background: #F0ADAD">
+          scala.`package`.Vector.apply[Nothing]()
+        </td>
+      </tr><tr>
+        <td>
+          65
+        </td>
+        <td>
+          82331
+        </td>
+        <td>
+          1908
+          -
+          1917
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Function0.apply
+        </td>
+        <td style="background: #F0ADAD">
+          HistoryFilter.this.history.apply()
+        </td>
+      </tr><tr>
+        <td>
+          65
+        </td>
+        <td>
+          82332
+        </td>
+        <td>
+          1864
+          -
+          1938
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.repl.terminal.filters.HistoryFilter.findNewHistoryIndex
+        </td>
+        <td style="background: #F0ADAD">
+          HistoryFilter.findNewHistoryIndex(start, v, HistoryFilter.this.history.apply(), increment, skipped)
+        </td>
+      </tr><tr>
+        <td>
+          68
+        </td>
+        <td>
+          82333
+        </td>
+        <td>
+          1955
+          -
+          1955
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.Tuple4._1
+        </td>
+        <td style="background: #F0ADAD">
+          x$3._1
+        </td>
+      </tr><tr>
+        <td>
+          68
+        </td>
+        <td>
+          82336
+        </td>
+        <td>
+          1991
+          -
+          1991
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.Tuple4._4
+        </td>
+        <td style="background: #F0ADAD">
+          x$3._4
+        </td>
+      </tr><tr>
+        <td>
+          68
+        </td>
+        <td>
+          82335
+        </td>
+        <td>
+          1983
+          -
+          1983
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.Tuple4._3
+        </td>
+        <td style="background: #F0ADAD">
+          x$3._3
+        </td>
+      </tr><tr>
+        <td>
+          68
+        </td>
+        <td>
+          82334
+        </td>
+        <td>
+          1972
+          -
+          1972
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.Tuple4._2
+        </td>
+        <td style="background: #F0ADAD">
+          x$3._2
+        </td>
+      </tr><tr>
+        <td>
+          94
+        </td>
+        <td>
+          82337
+        </td>
+        <td>
+          2951
+          -
+          2980
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Option.getOrElse
+        </td>
+        <td style="background: #F0ADAD">
+          newHistoryIndex.getOrElse[Int](-1)
+        </td>
+      </tr><tr>
+        <td>
+          94
+        </td>
+        <td>
+          82338
+        </td>
+        <td>
+          2936
+          -
+          2980
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.repl.terminal.filters.HistoryFilter.historyIndex_=
+        </td>
+        <td style="background: #F0ADAD">
+          HistoryFilter.this.historyIndex_=(newHistoryIndex.getOrElse[Int](-1))
+        </td>
+      </tr><tr>
+        <td>
+          96
+        </td>
+        <td>
+          82339
+        </td>
+        <td>
+          2986
+          -
+          3016
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Tuple3.apply
+        </td>
+        <td style="background: #F0ADAD">
+          scala.Tuple3.apply[Vector[Char], Int, String](newBuffer, newCursor, newMsg)
+        </td>
+      </tr><tr>
+        <td>
+          99
+        </td>
+        <td>
+          82340
+        </td>
+        <td>
+          3067
+          -
+          3085
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Int.!=
+        </td>
+        <td style="background: #F0ADAD">
+          HistoryFilter.this.historyIndex.!=(-1)
+        </td>
+      </tr><tr>
+        <td>
+          99
+        </td>
+        <td>
+          82341
+        </td>
+        <td>
+          3044
+          -
+          3085
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Boolean.||
+        </td>
+        <td style="background: #F0ADAD">
+          HistoryFilter.this.searchTerm.nonEmpty.||(HistoryFilter.this.historyIndex.!=(-1))
+        </td>
+      </tr><tr>
+        <td>
+          100
+        </td>
+        <td>
+          82342
+        </td>
+        <td>
+          3107
+          -
+          3126
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.Option.nonEmpty
+        </td>
+        <td style="background: #F0ADAD">
+          HistoryFilter.this.searchTerm.nonEmpty
+        </td>
+      </tr><tr>
+        <td>
+          103
+        </td>
+        <td>
+          82345
+        </td>
+        <td>
+          3168
+          -
+          3208
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.repl.terminal.filters.HistoryFilter.searchHistory
+        </td>
+        <td style="background: #F0ADAD">
+          HistoryFilter.this.searchHistory(HistoryFilter.this.historyIndex.+(1), 1, b, b)
+        </td>
+      </tr><tr>
+        <td>
+          103
+        </td>
+        <td>
+          82344
+        </td>
+        <td>
+          3200
+          -
+          3201
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          1
+        </td>
+      </tr><tr>
+        <td>
+          103
+        </td>
+        <td>
+          82343
+        </td>
+        <td>
+          3182
+          -
+          3198
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Int.+
+        </td>
+        <td style="background: #F0ADAD">
+          HistoryFilter.this.historyIndex.+(1)
+        </td>
+      </tr><tr>
+        <td>
+          106
+        </td>
+        <td>
+          82346
+        </td>
+        <td>
+          3266
+          -
+          3282
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Int.-
+        </td>
+        <td style="background: #F0ADAD">
+          HistoryFilter.this.historyIndex.-(1)
+        </td>
+      </tr><tr>
+        <td>
+          106
+        </td>
+        <td>
+          82348
+        </td>
+        <td>
+          3252
+          -
+          3293
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.repl.terminal.filters.HistoryFilter.searchHistory
+        </td>
+        <td style="background: #F0ADAD">
+          HistoryFilter.this.searchHistory(HistoryFilter.this.historyIndex.-(1), -1, b, b)
+        </td>
+      </tr><tr>
+        <td>
+          106
+        </td>
+        <td>
+          82347
+        </td>
+        <td>
+          3284
+          -
+          3286
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          -1
+        </td>
+      </tr><tr>
+        <td>
+          109
+        </td>
+        <td>
+          82349
+        </td>
+        <td>
+          3376
+          -
+          3382
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.Tuple3._1
+        </td>
+        <td style="background: #F0ADAD">
+          out._1
+        </td>
+      </tr><tr>
+        <td>
+          109
+        </td>
+        <td>
+          82351
+        </td>
+        <td>
+          3392
+          -
+          3398
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.Tuple3._3
+        </td>
+        <td style="background: #F0ADAD">
+          out._3
+        </td>
+      </tr><tr>
+        <td>
+          109
+        </td>
+        <td>
+          82350
+        </td>
+        <td>
+          3384
+          -
+          3390
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.Tuple3._2
+        </td>
+        <td style="background: #F0ADAD">
+          out._2
+        </td>
+      </tr><tr>
+        <td>
+          109
+        </td>
+        <td>
+          82353
+        </td>
+        <td>
+          3367
+          -
+          3399
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.repl.terminal.TermState.apply
+        </td>
+        <td style="background: #F0ADAD">
+          terminal.FilterTools.TS.apply(rest, out._1, out._2, Ansi.this.Str.parse(out._3))
+        </td>
+      </tr><tr>
+        <td>
+          109
+        </td>
+        <td>
+          82352
+        </td>
+        <td>
+          3392
+          -
+          3398
+        </td>
+        <td>
+          ApplyImplicitView
+        </td>
+        <td>
+          dotty.tools.repl.terminal.Ansi.Str.parse
+        </td>
+        <td style="background: #F0ADAD">
+          Ansi.this.Str.parse(out._3)
+        </td>
+      </tr><tr>
+        <td>
+          112
+        </td>
+        <td>
+          82355
+        </td>
+        <td>
+          3462
+          -
+          3470
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.repl.terminal.filters.HistoryFilter.up
+        </td>
+        <td style="background: #F0ADAD">
+          HistoryFilter.this.up(b, c)
+        </td>
+      </tr><tr>
+        <td>
+          112
+        </td>
+        <td>
+          82354
+        </td>
+        <td>
+          3448
+          -
+          3460
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.repl.terminal.filters.HistoryFilter.activeSearch
+        </td>
+        <td style="background: #F0ADAD">
+          HistoryFilter.this.activeSearch
+        </td>
+      </tr><tr>
+        <td>
+          112
+        </td>
+        <td>
+          82356
+        </td>
+        <td>
+          3462
+          -
+          3470
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          dotty.tools.repl.terminal.filters.HistoryFilter.up
+        </td>
+        <td style="background: #F0ADAD">
+          HistoryFilter.this.up(b, c)
+        </td>
+      </tr><tr>
+        <td>
+          113
+        </td>
+        <td>
+          82361
+        </td>
+        <td>
+          3480
+          -
+          3536
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          {
+  HistoryFilter.this.searchTerm_=(scala.Some.apply[Vector[Char]](b));
+  HistoryFilter.this.up(scala.`package`.Vector.apply[Nothing](), c)
+}
+        </td>
+      </tr><tr>
+        <td>
+          114
+        </td>
+        <td>
+          82358
+        </td>
+        <td>
+          3488
+          -
+          3508
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.repl.terminal.filters.HistoryFilter.searchTerm_=
+        </td>
+        <td style="background: #F0ADAD">
+          HistoryFilter.this.searchTerm_=(scala.Some.apply[Vector[Char]](b))
+        </td>
+      </tr><tr>
+        <td>
+          114
+        </td>
+        <td>
+          82357
+        </td>
+        <td>
+          3501
+          -
+          3508
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Some.apply
+        </td>
+        <td style="background: #F0ADAD">
+          scala.Some.apply[Vector[Char]](b)
+        </td>
+      </tr><tr>
+        <td>
+          115
+        </td>
+        <td>
+          82360
+        </td>
+        <td>
+          3515
+          -
+          3530
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.repl.terminal.filters.HistoryFilter.up
+        </td>
+        <td style="background: #F0ADAD">
+          HistoryFilter.this.up(scala.`package`.Vector.apply[Nothing](), c)
+        </td>
+      </tr><tr>
+        <td>
+          115
+        </td>
+        <td>
+          82359
+        </td>
+        <td>
+          3518
+          -
+          3526
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.generic.GenericCompanion.apply
+        </td>
+        <td style="background: #F0ADAD">
+          scala.`package`.Vector.apply[Nothing]()
+        </td>
+      </tr><tr>
+        <td>
+          119
+        </td>
+        <td>
+          82364
+        </td>
+        <td>
+          3616
+          -
+          3641
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Option.map
+        </td>
+        <td style="background: #F0ADAD">
+          HistoryFilter.this.searchTerm.map[Vector[Char]](((x$4: Vector[Char]) =&gt; x$4.:+[Char, Vector[Char]](char)(immutable.this.Vector.canBuildFrom[Char])))
+        </td>
+      </tr><tr>
+        <td>
+          119
+        </td>
+        <td>
+          82363
+        </td>
+        <td>
+          3631
+          -
+          3640
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          scala.collection.immutable.Vector.:+
+        </td>
+        <td style="background: #F0ADAD">
+          x$4.:+[Char, Vector[Char]](char)(immutable.this.Vector.canBuildFrom[Char])
+        </td>
+      </tr><tr>
+        <td>
+          119
+        </td>
+        <td>
+          82365
+        </td>
+        <td>
+          3603
+          -
+          3641
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.repl.terminal.filters.HistoryFilter.searchTerm_=
+        </td>
+        <td style="background: #F0ADAD">
+          HistoryFilter.this.searchTerm_=(HistoryFilter.this.searchTerm.map[Vector[Char]](((x$4: Vector[Char]) =&gt; x$4.:+[Char, Vector[Char]](char)(immutable.this.Vector.canBuildFrom[Char]))))
+        </td>
+      </tr><tr>
+        <td>
+          119
+        </td>
+        <td>
+          82362
+        </td>
+        <td>
+          3633
+          -
+          3633
+        </td>
+        <td>
+          TypeApply
+        </td>
+        <td>
+          scala.collection.immutable.Vector.canBuildFrom
+        </td>
+        <td style="background: #F0ADAD">
+          immutable.this.Vector.canBuildFrom[Char]
+        </td>
+      </tr><tr>
+        <td>
+          120
+        </td>
+        <td>
+          82367
+        </td>
+        <td>
+          3681
+          -
+          3682
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          1
+        </td>
+      </tr><tr>
+        <td>
+          120
+        </td>
+        <td>
+          82366
+        </td>
+        <td>
+          3660
+          -
+          3679
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.runtime.RichInt.max
+        </td>
+        <td style="background: #F0ADAD">
+          scala.Predef.intWrapper(HistoryFilter.this.historyIndex).max(0)
+        </td>
+      </tr><tr>
+        <td>
+          120
+        </td>
+        <td>
+          82369
+        </td>
+        <td>
+          3684
+          -
+          3693
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          scala.collection.immutable.Vector.:+
+        </td>
+        <td style="background: #F0ADAD">
+          b.:+[Char, Vector[Char]](char)(immutable.this.Vector.canBuildFrom[Char])
+        </td>
+      </tr><tr>
+        <td>
+          120
+        </td>
+        <td>
+          82371
+        </td>
+        <td>
+          3646
+          -
+          3704
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.repl.terminal.filters.HistoryFilter.searchHistory
+        </td>
+        <td style="background: #F0ADAD">
+          HistoryFilter.this.searchHistory(scala.Predef.intWrapper(HistoryFilter.this.historyIndex).max(0), 1, b.:+[Char, Vector[Char]](char)(immutable.this.Vector.canBuildFrom[Char]), scala.`package`.Vector.apply[Nothing]())
+        </td>
+      </tr><tr>
+        <td>
+          120
+        </td>
+        <td>
+          82368
+        </td>
+        <td>
+          3686
+          -
+          3686
+        </td>
+        <td>
+          TypeApply
+        </td>
+        <td>
+          scala.collection.immutable.Vector.canBuildFrom
+        </td>
+        <td style="background: #F0ADAD">
+          immutable.this.Vector.canBuildFrom[Char]
+        </td>
+      </tr><tr>
+        <td>
+          120
+        </td>
+        <td>
+          82370
+        </td>
+        <td>
+          3695
+          -
+          3703
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.generic.GenericCompanion.apply
+        </td>
+        <td style="background: #F0ADAD">
+          scala.`package`.Vector.apply[Nothing]()
+        </td>
+      </tr><tr>
+        <td>
+          124
+        </td>
+        <td>
+          82373
+        </td>
+        <td>
+          3772
+          -
+          3802
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Option.map
+        </td>
+        <td style="background: #F0ADAD">
+          HistoryFilter.this.searchTerm.map[scala.collection.immutable.Vector[Char]](((x$5: Vector[Char]) =&gt; x$5.dropRight(1)))
+        </td>
+      </tr><tr>
+        <td>
+          124
+        </td>
+        <td>
+          82372
+        </td>
+        <td>
+          3787
+          -
+          3801
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.immutable.Vector.dropRight
+        </td>
+        <td style="background: #F0ADAD">
+          x$5.dropRight(1)
+        </td>
+      </tr><tr>
+        <td>
+          124
+        </td>
+        <td>
+          82374
+        </td>
+        <td>
+          3759
+          -
+          3802
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.repl.terminal.filters.HistoryFilter.searchTerm_=
+        </td>
+        <td style="background: #F0ADAD">
+          HistoryFilter.this.searchTerm_=(HistoryFilter.this.searchTerm.map[scala.collection.immutable.Vector[Char]](((x$5: Vector[Char]) =&gt; x$5.dropRight(1))))
+        </td>
+      </tr><tr>
+        <td>
+          125
+        </td>
+        <td>
+          82376
+        </td>
+        <td>
+          3835
+          -
+          3836
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          1
+        </td>
+      </tr><tr>
+        <td>
+          125
+        </td>
+        <td>
+          82375
+        </td>
+        <td>
+          3821
+          -
+          3833
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.repl.terminal.filters.HistoryFilter.historyIndex
+        </td>
+        <td style="background: #F0ADAD">
+          HistoryFilter.this.historyIndex
+        </td>
+      </tr><tr>
+        <td>
+          125
+        </td>
+        <td>
+          82378
+        </td>
+        <td>
+          3807
+          -
+          3850
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.repl.terminal.filters.HistoryFilter.searchHistory
+        </td>
+        <td style="background: #F0ADAD">
+          HistoryFilter.this.searchHistory(HistoryFilter.this.historyIndex, 1, b, scala.`package`.Vector.apply[Nothing]())
+        </td>
+      </tr><tr>
+        <td>
+          125
+        </td>
+        <td>
+          82377
+        </td>
+        <td>
+          3841
+          -
+          3849
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.generic.GenericCompanion.apply
+        </td>
+        <td style="background: #F0ADAD">
+          scala.`package`.Vector.apply[Nothing]()
+        </td>
+      </tr><tr>
+        <td>
+          139
+        </td>
+        <td>
+          82380
+        </td>
+        <td>
+          4424
+          -
+          4463
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Boolean.||
+        </td>
+        <td style="background: #F0ADAD">
+          HistoryFilter.this.activeSearch.||(HistoryFilter.this.activeHistory.&amp;&amp;(cond))
+        </td>
+      </tr><tr>
+        <td>
+          139
+        </td>
+        <td>
+          82379
+        </td>
+        <td>
+          4441
+          -
+          4462
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Boolean.&amp;&amp;
+        </td>
+        <td style="background: #F0ADAD">
+          HistoryFilter.this.activeHistory.&amp;&amp;(cond)
+        </td>
+      </tr><tr>
+        <td>
+          141
+        </td>
+        <td>
+          82381
+        </td>
+        <td>
+          4490
+          -
+          4504
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.generic.GenericCompanion.apply
+        </td>
+        <td style="background: #F0ADAD">
+          scala.Predef.Set.apply[Int](9, 13, 10)
+        </td>
+      </tr><tr>
+        <td>
+          144
+        </td>
+        <td>
+          82382
+        </td>
+        <td>
+          4549
+          -
+          4566
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.repl.terminal.filters.HistoryFilter.historyIndex_=
+        </td>
+        <td style="background: #F0ADAD">
+          HistoryFilter.this.historyIndex_=(-1)
+        </td>
+      </tr><tr>
+        <td>
+          145
+        </td>
+        <td>
+          82384
+        </td>
+        <td>
+          4571
+          -
+          4588
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.repl.terminal.filters.HistoryFilter.searchTerm_=
+        </td>
+        <td style="background: #F0ADAD">
+          HistoryFilter.this.searchTerm_=(scala.None)
+        </td>
+      </tr><tr>
+        <td>
+          145
+        </td>
+        <td>
+          82383
+        </td>
+        <td>
+          4584
+          -
+          4588
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.None
+        </td>
+        <td style="background: #F0ADAD">
+          scala.None
+        </td>
+      </tr><tr>
+        <td>
+          148
+        </td>
+        <td>
+          82395
+        </td>
+        <td>
+          4609
+          -
+          4979
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.repl.terminal.Filter.wrap
+        </td>
+        <td style="background: #F0ADAD">
+          terminal.Filter.wrap(&quot;historyFilterWrap1&quot;)(((ti: dotty.tools.repl.terminal.TermInfo) =&gt; HistoryFilter.this.prelude.op(ti) match {
+  case scala.None =&gt; {
+    HistoryFilter.this.prevBuffer_=(scala.Some.apply[Vector[Char]](ti.ts.buffer));
+    HistoryFilter.this.filter0.op(ti) match {
+      case (value: dotty.tools.repl.terminal.TermAction)Some[dotty.tools.repl.terminal.TermAction]((ts @ (_: dotty.tools.repl.terminal.TermState))) =&gt; {
+        HistoryFilter.this.prevBuffer_=(scala.Some.apply[Vector[Char]](ts.buffer));
+        scala.Some.apply[dotty.tools.repl.terminal.TermState](ts)
+      }
+      case (x @ _) =&gt; x
+    }
+  }
+  case (some @ _) =&gt; some
+}))
+        </td>
+      </tr><tr>
+        <td>
+          148
+        </td>
+        <td>
+          82385
+        </td>
+        <td>
+          4621
+          -
+          4641
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          &quot;historyFilterWrap1&quot;
+        </td>
+      </tr><tr>
+        <td>
+          150
+        </td>
+        <td>
+          82386
+        </td>
+        <td>
+          4675
+          -
+          4689
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.repl.terminal.Filter.op
+        </td>
+        <td style="background: #F0ADAD">
+          HistoryFilter.this.prelude.op(ti)
+        </td>
+      </tr><tr>
+        <td>
+          152
+        </td>
+        <td>
+          82387
+        </td>
+        <td>
+          4747
+          -
+          4759
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.repl.terminal.TermState.buffer
+        </td>
+        <td style="background: #F0ADAD">
+          ti.ts.buffer
+        </td>
+      </tr><tr>
+        <td>
+          152
+        </td>
+        <td>
+          82389
+        </td>
+        <td>
+          4729
+          -
+          4760
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.repl.terminal.filters.HistoryFilter.prevBuffer_=
+        </td>
+        <td style="background: #F0ADAD">
+          HistoryFilter.this.prevBuffer_=(scala.Some.apply[Vector[Char]](ti.ts.buffer))
+        </td>
+      </tr><tr>
+        <td>
+          152
+        </td>
+        <td>
+          82388
+        </td>
+        <td>
+          4742
+          -
+          4760
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Some.apply
+        </td>
+        <td style="background: #F0ADAD">
+          scala.Some.apply[Vector[Char]](ti.ts.buffer)
+        </td>
+      </tr><tr>
+        <td>
+          153
+        </td>
+        <td>
+          82390
+        </td>
+        <td>
+          4771
+          -
+          4785
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.repl.terminal.Filter.op
+        </td>
+        <td style="background: #F0ADAD">
+          HistoryFilter.this.filter0.op(ti)
+        </td>
+      </tr><tr>
+        <td>
+          155
+        </td>
+        <td>
+          82391
+        </td>
+        <td>
+          4866
+          -
+          4875
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.repl.terminal.TermState.buffer
+        </td>
+        <td style="background: #F0ADAD">
+          ts.buffer
+        </td>
+      </tr><tr>
+        <td>
+          155
+        </td>
+        <td>
+          82393
+        </td>
+        <td>
+          4848
+          -
+          4876
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.repl.terminal.filters.HistoryFilter.prevBuffer_=
+        </td>
+        <td style="background: #F0ADAD">
+          HistoryFilter.this.prevBuffer_=(scala.Some.apply[Vector[Char]](ts.buffer))
+        </td>
+      </tr><tr>
+        <td>
+          155
+        </td>
+        <td>
+          82392
+        </td>
+        <td>
+          4861
+          -
+          4876
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Some.apply
+        </td>
+        <td style="background: #F0ADAD">
+          scala.Some.apply[Vector[Char]](ts.buffer)
+        </td>
+      </tr><tr>
+        <td>
+          156
+        </td>
+        <td>
+          82394
+        </td>
+        <td>
+          4891
+          -
+          4899
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Some.apply
+        </td>
+        <td style="background: #F0ADAD">
+          scala.Some.apply[dotty.tools.repl.terminal.TermState](ts)
+        </td>
+      </tr><tr>
+        <td>
+          164
+        </td>
+        <td>
+          82396
+        </td>
+        <td>
+          5020
+          -
+          5036
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          &quot;historyPrelude&quot;
+        </td>
+      </tr><tr>
+        <td>
+          164
+        </td>
+        <td>
+          82405
+        </td>
+        <td>
+          5038
+          -
+          5038
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.repl.terminal.filters.HistoryFilter.$anonfun.&lt;init&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          new $anonfun()
+        </td>
+      </tr><tr>
+        <td>
+          164
+        </td>
+        <td>
+          82406
+        </td>
+        <td>
+          5005
+          -
+          5187
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.repl.terminal.Filter.partial
+        </td>
+        <td style="background: #F0ADAD">
+          terminal.Filter.partial(&quot;historyPrelude&quot;)(({
+  @SerialVersionUID(value = 0) final &lt;synthetic&gt; class $anonfun extends scala.runtime.AbstractPartialFunction[dotty.tools.repl.terminal.TermInfo,dotty.tools.repl.terminal.TermAction] with Serializable {
+    def &lt;init&gt;(): &lt;$anon: dotty.tools.repl.terminal.TermInfo =&gt; dotty.tools.repl.terminal.TermAction&gt; = {
+      $anonfun.super.&lt;init&gt;();
+      ()
+    };
+    final override def applyOrElse[A1 &lt;: dotty.tools.repl.terminal.TermInfo, B1 &gt;: dotty.tools.repl.terminal.TermAction](x1: A1, default: A1 =&gt; B1): B1 = ((x1.asInstanceOf[dotty.tools.repl.terminal.TermInfo]: dotty.tools.repl.terminal.TermInfo): dotty.tools.repl.terminal.TermInfo @unchecked) match {
+      case terminal.FilterTools.TS.unapply(&lt;unapply-selector&gt;) &lt;unapply&gt; ((inputs @ _), (b @ _), (c @ _), _) if HistoryFilter.this.activeHistory.&amp;&amp;(HistoryFilter.this.prevBuffer.exists(((x$6: Vector[Char]) =&gt; x$6.!=(b)))) =&gt; {
+        HistoryFilter.this.endHistory();
+        HistoryFilter.this.prevBuffer_=(scala.None);
+        terminal.FilterTools.TS.apply(inputs, b, c, terminal.FilterTools.TS.apply$default$4)
+      }
+      case (defaultCase$ @ _) =&gt; default.apply(x1)
+    };
+    final def isDefinedAt(x1: dotty.tools.repl.terminal.TermInfo): Boolean = ((x1.asInstanceOf[dotty.tools.repl.terminal.TermInfo]: dotty.tools.repl.terminal.TermInfo): dotty.tools.repl.terminal.TermInfo @unchecked) match {
+      case terminal.FilterTools.TS.unapply(&lt;unapply-selector&gt;) &lt;unapply&gt; ((inputs @ _), (b @ _), (c @ _), _) if HistoryFilter.this.activeHistory.&amp;&amp;(HistoryFilter.this.prevBuffer.exists(((x$6: Vector[Char]) =&gt; x$6.!=(b)))) =&gt; true
+      case (defaultCase$ @ _) =&gt; false
+    }
+  };
+  new $anonfun()
+}: PartialFunction[dotty.tools.repl.terminal.TermInfo,dotty.tools.repl.terminal.TermAction]))
+        </td>
+      </tr><tr>
+        <td>
+          165
+        </td>
+        <td>
+          82399
+        </td>
+        <td>
+          5072
+          -
+          5114
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Boolean.&amp;&amp;
+        </td>
+        <td style="background: #F0ADAD">
+          HistoryFilter.this.activeHistory.&amp;&amp;(HistoryFilter.this.prevBuffer.exists(((x$6: Vector[Char]) =&gt; x$6.!=(b))))
+        </td>
+      </tr><tr>
+        <td>
+          165
+        </td>
+        <td>
+          82398
+        </td>
+        <td>
+          5089
+          -
+          5114
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Option.exists
+        </td>
+        <td style="background: #F0ADAD">
+          HistoryFilter.this.prevBuffer.exists(((x$6: Vector[Char]) =&gt; x$6.!=(b)))
+        </td>
+      </tr><tr>
+        <td>
+          165
+        </td>
+        <td>
+          82397
+        </td>
+        <td>
+          5107
+          -
+          5113
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.Object.!=
+        </td>
+        <td style="background: #F0ADAD">
+          x$6.!=(b)
+        </td>
+      </tr><tr>
+        <td>
+          166
+        </td>
+        <td>
+          82400
+        </td>
+        <td>
+          5124
+          -
+          5136
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.repl.terminal.filters.HistoryFilter.endHistory
+        </td>
+        <td style="background: #F0ADAD">
+          HistoryFilter.this.endHistory()
+        </td>
+      </tr><tr>
+        <td>
+          167
+        </td>
+        <td>
+          82402
+        </td>
+        <td>
+          5143
+          -
+          5160
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.repl.terminal.filters.HistoryFilter.prevBuffer_=
+        </td>
+        <td style="background: #F0ADAD">
+          HistoryFilter.this.prevBuffer_=(scala.None)
+        </td>
+      </tr><tr>
+        <td>
+          167
+        </td>
+        <td>
+          82401
+        </td>
+        <td>
+          5156
+          -
+          5160
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.None
+        </td>
+        <td style="background: #F0ADAD">
+          scala.None
+        </td>
+      </tr><tr>
+        <td>
+          168
+        </td>
+        <td>
+          82404
+        </td>
+        <td>
+          5167
+          -
+          5183
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.repl.terminal.TermState.apply
+        </td>
+        <td style="background: #F0ADAD">
+          terminal.FilterTools.TS.apply(inputs, b, c, terminal.FilterTools.TS.apply$default$4)
+        </td>
+      </tr><tr>
+        <td>
+          168
+        </td>
+        <td>
+          82403
+        </td>
+        <td>
+          5167
+          -
+          5167
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.repl.terminal.TermState.apply$default$4
+        </td>
+        <td style="background: #F0ADAD">
+          terminal.FilterTools.TS.apply$default$4
+        </td>
+      </tr><tr>
+        <td>
+          171
+        </td>
+        <td>
+          82407
+        </td>
+        <td>
+          5228
+          -
+          5237
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          &quot;filter0&quot;
+        </td>
+      </tr><tr>
+        <td>
+          171
+        </td>
+        <td>
+          82482
+        </td>
+        <td>
+          5213
+          -
+          8921
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.repl.terminal.Filter.partial
+        </td>
+        <td style="background: #F0ADAD">
+          terminal.Filter.partial(&quot;filter0&quot;)(({
+  @SerialVersionUID(value = 0) final &lt;synthetic&gt; class $anonfun extends scala.runtime.AbstractPartialFunction[dotty.tools.repl.terminal.TermInfo,dotty.tools.repl.terminal.TermAction] with Serializable {
+    def &lt;init&gt;(): &lt;$anon: dotty.tools.repl.terminal.TermInfo =&gt; dotty.tools.repl.terminal.TermAction&gt; = {
+      $anonfun.super.&lt;init&gt;();
+      ()
+    };
+    final override def applyOrElse[A1 &lt;: dotty.tools.repl.terminal.TermInfo, B1 &gt;: dotty.tools.repl.terminal.TermAction](x2: A1, default: A1 =&gt; B1): B1 = ((x2.asInstanceOf[dotty.tools.repl.terminal.TermInfo]: dotty.tools.repl.terminal.TermInfo): dotty.tools.repl.terminal.TermInfo @unchecked) match {
+      case terminal.FilterTools.TS.unapply(&lt;unapply-selector&gt;) &lt;unapply&gt; (terminal.LazyList.~:.unapply[Int](&lt;unapply-selector&gt;) &lt;unapply&gt; (18, (rest @ _)), (b @ _), (c @ _), _) =&gt; HistoryFilter.this.wrap(rest, HistoryFilter.this.ctrlR(b, c))
+      case (ts: dotty.tools.repl.terminal.TermState, width: Int)dotty.tools.repl.terminal.TermInfo(terminal.FilterTools.TS.unapply(&lt;unapply-selector&gt;) &lt;unapply&gt; (terminal.LazyList.CS(scala.StringContext.apply(&quot;\u001B[A&quot;, &quot;&quot;)).p.unapply(&lt;unapply-selector&gt;) &lt;unapply&gt; ((rest @ _)), (b @ _), (c @ _), _), (w @ _)) if terminal.FilterTools.firstRow(c, b, w).&amp;&amp;(HistoryFilter.this.activeHistory.unary_!) =&gt; HistoryFilter.this.wrap(rest, HistoryFilter.this.startHistory(b, c))
+      case (ts: dotty.tools.repl.terminal.TermState, width: Int)dotty.tools.repl.terminal.TermInfo(terminal.FilterTools.TS.unapply(&lt;unapply-selector&gt;) &lt;unapply&gt; (terminal.LazyList.CS(scala.StringContext.apply(&quot;\u0010&quot;, &quot;&quot;)).p.unapply(&lt;unapply-selector&gt;) &lt;unapply&gt; ((rest @ _)), (b @ _), (c @ _), _), (w @ _)) if terminal.FilterTools.firstRow(c, b, w).&amp;&amp;(HistoryFilter.this.activeHistory.unary_!) =&gt; HistoryFilter.this.wrap(rest, HistoryFilter.this.startHistory(b, c))
+      case (ts: dotty.tools.repl.terminal.TermState, width: Int)dotty.tools.repl.terminal.TermInfo(terminal.FilterTools.TS.unapply(&lt;unapply-selector&gt;) &lt;unapply&gt; (terminal.LazyList.CS(scala.StringContext.apply(&quot;\u001B[5~&quot;, &quot;&quot;)).p.unapply(&lt;unapply-selector&gt;) &lt;unapply&gt; ((rest @ _)), (b @ _), (c @ _), _), (w @ _)) if c.==(0).&amp;&amp;(HistoryFilter.this.activeHistory.unary_!) =&gt; HistoryFilter.this.wrap(rest, HistoryFilter.this.startHistory(b, c))
+      case (ts: dotty.tools.repl.terminal.TermState, width: Int)dotty.tools.repl.terminal.TermInfo(terminal.FilterTools.TS.unapply(&lt;unapply-selector&gt;) &lt;unapply&gt; (terminal.LazyList.CS(scala.StringContext.apply(&quot;\u001B[A&quot;, &quot;&quot;)).p.unapply(&lt;unapply-selector&gt;) &lt;unapply&gt; ((rest @ _)), (b @ _), (c @ _), _), (w @ _)) if HistoryFilter.this.searchOrHistoryAnd(terminal.FilterTools.firstRow(c, b, w)) =&gt; HistoryFilter.this.wrap(rest, HistoryFilter.this.up(b, c))
+      case (ts: dotty.tools.repl.terminal.TermState, width: Int)dotty.tools.repl.terminal.TermInfo(terminal.FilterTools.TS.unapply(&lt;unapply-selector&gt;) &lt;unapply&gt; (terminal.LazyList.CS(scala.StringContext.apply(&quot;\u0010&quot;, &quot;&quot;)).p.unapply(&lt;unapply-selector&gt;) &lt;unapply&gt; ((rest @ _)), (b @ _), (c @ _), _), (w @ _)) if HistoryFilter.this.searchOrHistoryAnd(terminal.FilterTools.firstRow(c, b, w)) =&gt; HistoryFilter.this.wrap(rest, HistoryFilter.this.up(b, c))
+      case (ts: dotty.tools.repl.terminal.TermState, width: Int)dotty.tools.repl.terminal.TermInfo(terminal.FilterTools.TS.unapply(&lt;unapply-selector&gt;) &lt;unapply&gt; (terminal.LazyList.CS(scala.StringContext.apply(&quot;\u001B[5~&quot;, &quot;&quot;)).p.unapply(&lt;unapply-selector&gt;) &lt;unapply&gt; ((rest @ _)), (b @ _), (c @ _), _), (w @ _)) if HistoryFilter.this.searchOrHistoryAnd(c.==(0)) =&gt; HistoryFilter.this.wrap(rest, HistoryFilter.this.up(b, c))
+      case (ts: dotty.tools.repl.terminal.TermState, width: Int)dotty.tools.repl.terminal.TermInfo(terminal.FilterTools.TS.unapply(&lt;unapply-selector&gt;) &lt;unapply&gt; (terminal.LazyList.CS(scala.StringContext.apply(&quot;\u001B[B&quot;, &quot;&quot;)).p.unapply(&lt;unapply-selector&gt;) &lt;unapply&gt; ((rest @ _)), (b @ _), (c @ _), _), (w @ _)) if HistoryFilter.this.searchOrHistoryAnd(terminal.FilterTools.lastRow(c, b, w)) =&gt; HistoryFilter.this.wrap(rest, HistoryFilter.this.down(b, c))
+      case (ts: dotty.tools.repl.terminal.TermState, width: Int)dotty.tools.repl.terminal.TermInfo(terminal.FilterTools.TS.unapply(&lt;unapply-selector&gt;) &lt;unapply&gt; (terminal.LazyList.CS(scala.StringContext.apply(&quot;\u000E&quot;, &quot;&quot;)).p.unapply(&lt;unapply-selector&gt;) &lt;unapply&gt; ((rest @ _)), (b @ _), (c @ _), _), (w @ _)) if HistoryFilter.this.searchOrHistoryAnd(terminal.FilterTools.lastRow(c, b, w)) =&gt; HistoryFilter.this.wrap(rest, HistoryFilter.this.down(b, c))
+      case (ts: dotty.tools.repl.terminal.TermState, width: Int)dotty.tools.repl.terminal.TermInfo(terminal.FilterTools.TS.unapply(&lt;unapply-selector&gt;) &lt;unapply&gt; (terminal.LazyList.CS(scala.StringContext.apply(&quot;\u001B[6~&quot;, &quot;&quot;)).p.unapply(&lt;unapply-selector&gt;) &lt;unapply&gt; ((rest @ _)), (b @ _), (c @ _), _), (w @ _)) if HistoryFilter.this.searchOrHistoryAnd(c.==(b.length.-(1))) =&gt; HistoryFilter.this.wrap(rest, HistoryFilter.this.down(b, c))
+      case terminal.FilterTools.TS.unapply(&lt;unapply-selector&gt;) &lt;unapply&gt; (terminal.LazyList.~:.unapply[Int](&lt;unapply-selector&gt;) &lt;unapply&gt; (127, (rest @ _)), (buffer @ _), (cursor @ _), _) if HistoryFilter.this.activeSearch =&gt; HistoryFilter.this.wrap(rest, HistoryFilter.this.backspace(buffer, cursor))
+      case terminal.FilterTools.TS.unapply(&lt;unapply-selector&gt;) &lt;unapply&gt; (terminal.LazyList.~:.unapply[Int](&lt;unapply-selector&gt;) &lt;unapply&gt; ((char @ _), (inputs @ _)), (buffer @ _), (cursor @ _), _) if scala.Predef.charWrapper(char.toChar).isControl.&amp;&amp;(HistoryFilter.this.searchOrHistoryAnd(HistoryFilter.this.dropHistoryChars.apply(char))) =&gt; {
+        val newBuffer: Vector[Char] = if (HistoryFilter.this.historyIndex.==(-1))
+          HistoryFilter.this.searchTerm.get
+        else
+          if (HistoryFilter.this.searchTerm.exists(((x$7: Vector[Char]) =&gt; x$7.isEmpty)))
+            scala.`package`.Vector.apply[Nothing]()
+          else
+            scala.Predef.augmentString(HistoryFilter.this.history.apply().apply(HistoryFilter.this.historyIndex)).toVector;
+        HistoryFilter.this.endHistory();
+        terminal.FilterTools.TS.apply({
+          &lt;synthetic&gt; &lt;artifact&gt; val x$8: Int = char;
+          inputs.~:(x$8)
+        }, newBuffer, cursor, terminal.FilterTools.TS.apply$default$4)
+      }
+      case terminal.FilterTools.TS.unapply(&lt;unapply-selector&gt;) &lt;unapply&gt; (terminal.LazyList.~:.unapply[Int](&lt;unapply-selector&gt;) &lt;unapply&gt; ((char @ _), (rest @ _)), (buffer @ _), (cursor @ _), _) if HistoryFilter.this.activeSearch =&gt; HistoryFilter.this.wrap(rest, HistoryFilter.this.printableChar(char.toChar)(buffer, cursor))
+      case terminal.FilterTools.TS.unapply(&lt;unapply-selector&gt;) &lt;unapply&gt; (terminal.LazyList.~:.unapply[Int](&lt;unapply-selector&gt;) &lt;unapply&gt; ((char @ _), (rest @ _)), (buffer @ _), (cursor @ _), _) if HistoryFilter.this.activeHistory.&amp;&amp;(scala.Predef.charWrapper(char.toChar).isControl.unary_!) =&gt; {
+        HistoryFilter.this.historyIndex_=(-1);
+        terminal.FilterTools.TS.apply({
+          &lt;synthetic&gt; &lt;artifact&gt; val x$9: Int = char;
+          rest.~:(x$9)
+        }, buffer, cursor, terminal.FilterTools.TS.apply$default$4)
+      }
+      case (defaultCase$ @ _) =&gt; default.apply(x2)
+    };
+    final def isDefinedAt(x2: dotty.tools.repl.terminal.TermInfo): Boolean = ((x2.asInstanceOf[dotty.tools.repl.terminal.TermInfo]: dotty.tools.repl.terminal.TermInfo): dotty.tools.repl.terminal.TermInfo @unchecked) match {
+      case terminal.FilterTools.TS.unapply(&lt;unapply-selector&gt;) &lt;unapply&gt; (terminal.LazyList.~:.unapply[Int](&lt;unapply-selector&gt;) &lt;unapply&gt; (18, (rest @ _)), (b @ _), (c @ _), _) =&gt; true
+      case (ts: dotty.tools.repl.terminal.TermState, width: Int)dotty.tools.repl.terminal.TermInfo(terminal.FilterTools.TS.unapply(&lt;unapply-selector&gt;) &lt;unapply&gt; (terminal.LazyList.CS(scala.StringContext.apply(&quot;\u001B[A&quot;, &quot;&quot;)).p.unapply(&lt;unapply-selector&gt;) &lt;unapply&gt; ((rest @ _)), (b @ _), (c @ _), _), (w @ _)) if terminal.FilterTools.firstRow(c, b, w).&amp;&amp;(HistoryFilter.this.activeHistory.unary_!) =&gt; true
+      case (ts: dotty.tools.repl.terminal.TermState, width: Int)dotty.tools.repl.terminal.TermInfo(terminal.FilterTools.TS.unapply(&lt;unapply-selector&gt;) &lt;unapply&gt; (terminal.LazyList.CS(scala.StringContext.apply(&quot;\u0010&quot;, &quot;&quot;)).p.unapply(&lt;unapply-selector&gt;) &lt;unapply&gt; ((rest @ _)), (b @ _), (c @ _), _), (w @ _)) if terminal.FilterTools.firstRow(c, b, w).&amp;&amp;(HistoryFilter.this.activeHistory.unary_!) =&gt; true
+      case (ts: dotty.tools.repl.terminal.TermState, width: Int)dotty.tools.repl.terminal.TermInfo(terminal.FilterTools.TS.unapply(&lt;unapply-selector&gt;) &lt;unapply&gt; (terminal.LazyList.CS(scala.StringContext.apply(&quot;\u001B[5~&quot;, &quot;&quot;)).p.unapply(&lt;unapply-selector&gt;) &lt;unapply&gt; ((rest @ _)), (b @ _), (c @ _), _), (w @ _)) if c.==(0).&amp;&amp;(HistoryFilter.this.activeHistory.unary_!) =&gt; true
+      case (ts: dotty.tools.repl.terminal.TermState, width: Int)dotty.tools.repl.terminal.TermInfo(terminal.FilterTools.TS.unapply(&lt;unapply-selector&gt;) &lt;unapply&gt; (terminal.LazyList.CS(scala.StringContext.apply(&quot;\u001B[A&quot;, &quot;&quot;)).p.unapply(&lt;unapply-selector&gt;) &lt;unapply&gt; ((rest @ _)), (b @ _), (c @ _), _), (w @ _)) if HistoryFilter.this.searchOrHistoryAnd(terminal.FilterTools.firstRow(c, b, w)) =&gt; true
+      case (ts: dotty.tools.repl.terminal.TermState, width: Int)dotty.tools.repl.terminal.TermInfo(terminal.FilterTools.TS.unapply(&lt;unapply-selector&gt;) &lt;unapply&gt; (terminal.LazyList.CS(scala.StringContext.apply(&quot;\u0010&quot;, &quot;&quot;)).p.unapply(&lt;unapply-selector&gt;) &lt;unapply&gt; ((rest @ _)), (b @ _), (c @ _), _), (w @ _)) if HistoryFilter.this.searchOrHistoryAnd(terminal.FilterTools.firstRow(c, b, w)) =&gt; true
+      case (ts: dotty.tools.repl.terminal.TermState, width: Int)dotty.tools.repl.terminal.TermInfo(terminal.FilterTools.TS.unapply(&lt;unapply-selector&gt;) &lt;unapply&gt; (terminal.LazyList.CS(scala.StringContext.apply(&quot;\u001B[5~&quot;, &quot;&quot;)).p.unapply(&lt;unapply-selector&gt;) &lt;unapply&gt; ((rest @ _)), (b @ _), (c @ _), _), (w @ _)) if HistoryFilter.this.searchOrHistoryAnd(c.==(0)) =&gt; true
+      case (ts: dotty.tools.repl.terminal.TermState, width: Int)dotty.tools.repl.terminal.TermInfo(terminal.FilterTools.TS.unapply(&lt;unapply-selector&gt;) &lt;unapply&gt; (terminal.LazyList.CS(scala.StringContext.apply(&quot;\u001B[B&quot;, &quot;&quot;)).p.unapply(&lt;unapply-selector&gt;) &lt;unapply&gt; ((rest @ _)), (b @ _), (c @ _), _), (w @ _)) if HistoryFilter.this.searchOrHistoryAnd(terminal.FilterTools.lastRow(c, b, w)) =&gt; true
+      case (ts: dotty.tools.repl.terminal.TermState, width: Int)dotty.tools.repl.terminal.TermInfo(terminal.FilterTools.TS.unapply(&lt;unapply-selector&gt;) &lt;unapply&gt; (terminal.LazyList.CS(scala.StringContext.apply(&quot;\u000E&quot;, &quot;&quot;)).p.unapply(&lt;unapply-selector&gt;) &lt;unapply&gt; ((rest @ _)), (b @ _), (c @ _), _), (w @ _)) if HistoryFilter.this.searchOrHistoryAnd(terminal.FilterTools.lastRow(c, b, w)) =&gt; true
+      case (ts: dotty.tools.repl.terminal.TermState, width: Int)dotty.tools.repl.terminal.TermInfo(terminal.FilterTools.TS.unapply(&lt;unapply-selector&gt;) &lt;unapply&gt; (terminal.LazyList.CS(scala.StringContext.apply(&quot;\u001B[6~&quot;, &quot;&quot;)).p.unapply(&lt;unapply-selector&gt;) &lt;unapply&gt; ((rest @ _)), (b @ _), (c @ _), _), (w @ _)) if HistoryFilter.this.searchOrHistoryAnd(c.==(b.length.-(1))) =&gt; true
+      case terminal.FilterTools.TS.unapply(&lt;unapply-selector&gt;) &lt;unapply&gt; (terminal.LazyList.~:.unapply[Int](&lt;unapply-selector&gt;) &lt;unapply&gt; (127, (rest @ _)), (buffer @ _), (cursor @ _), _) if HistoryFilter.this.activeSearch =&gt; true
+      case terminal.FilterTools.TS.unapply(&lt;unapply-selector&gt;) &lt;unapply&gt; (terminal.LazyList.~:.unapply[Int](&lt;unapply-selector&gt;) &lt;unapply&gt; ((char @ _), (inputs @ _)), (buffer @ _), (cursor @ _), _) if scala.Predef.charWrapper(char.toChar).isControl.&amp;&amp;(HistoryFilter.this.searchOrHistoryAnd(HistoryFilter.this.dropHistoryChars.apply(char))) =&gt; true
+      case terminal.FilterTools.TS.unapply(&lt;unapply-selector&gt;) &lt;unapply&gt; (terminal.LazyList.~:.unapply[Int](&lt;unapply-selector&gt;) &lt;unapply&gt; ((char @ _), (rest @ _)), (buffer @ _), (cursor @ _), _) if HistoryFilter.this.activeSearch =&gt; true
+      case terminal.FilterTools.TS.unapply(&lt;unapply-selector&gt;) &lt;unapply&gt; (terminal.LazyList.~:.unapply[Int](&lt;unapply-selector&gt;) &lt;unapply&gt; ((char @ _), (rest @ _)), (buffer @ _), (cursor @ _), _) if HistoryFilter.this.activeHistory.&amp;&amp;(scala.Predef.charWrapper(char.toChar).isControl.unary_!) =&gt; true
+      case (defaultCase$ @ _) =&gt; false
+    }
+  };
+  new $anonfun()
+}: PartialFunction[dotty.tools.repl.terminal.TermInfo,dotty.tools.repl.terminal.TermAction]))
+        </td>
+      </tr><tr>
+        <td>
+          171
+        </td>
+        <td>
+          82481
+        </td>
+        <td>
+          5239
+          -
+          5239
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.repl.terminal.filters.HistoryFilter.$anonfun.&lt;init&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          new $anonfun()
+        </td>
+      </tr><tr>
+        <td>
+          175
+        </td>
+        <td>
+          82409
+        </td>
+        <td>
+          5365
+          -
+          5388
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.repl.terminal.filters.HistoryFilter.wrap
+        </td>
+        <td style="background: #F0ADAD">
+          HistoryFilter.this.wrap(rest, HistoryFilter.this.ctrlR(b, c))
+        </td>
+      </tr><tr>
+        <td>
+          175
+        </td>
+        <td>
+          82408
+        </td>
+        <td>
+          5376
+          -
+          5387
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.repl.terminal.filters.HistoryFilter.ctrlR
+        </td>
+        <td style="background: #F0ADAD">
+          HistoryFilter.this.ctrlR(b, c)
+        </td>
+      </tr><tr>
+        <td>
+          178
+        </td>
+        <td>
+          82411
+        </td>
+        <td>
+          5490
+          -
+          5525
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Boolean.&amp;&amp;
+        </td>
+        <td style="background: #F0ADAD">
+          terminal.FilterTools.firstRow(c, b, w).&amp;&amp;(HistoryFilter.this.activeHistory.unary_!)
+        </td>
+      </tr><tr>
+        <td>
+          178
+        </td>
+        <td>
+          82410
+        </td>
+        <td>
+          5511
+          -
+          5525
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.Boolean.unary_!
+        </td>
+        <td style="background: #F0ADAD">
+          HistoryFilter.this.activeHistory.unary_!
+        </td>
+      </tr><tr>
+        <td>
+          179
+        </td>
+        <td>
+          82413
+        </td>
+        <td>
+          5535
+          -
+          5565
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.repl.terminal.filters.HistoryFilter.wrap
+        </td>
+        <td style="background: #F0ADAD">
+          HistoryFilter.this.wrap(rest, HistoryFilter.this.startHistory(b, c))
+        </td>
+      </tr><tr>
+        <td>
+          179
+        </td>
+        <td>
+          82412
+        </td>
+        <td>
+          5546
+          -
+          5564
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.repl.terminal.filters.HistoryFilter.startHistory
+        </td>
+        <td style="background: #F0ADAD">
+          HistoryFilter.this.startHistory(b, c)
+        </td>
+      </tr><tr>
+        <td>
+          182
+        </td>
+        <td>
+          82414
+        </td>
+        <td>
+          5657
+          -
+          5671
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.Boolean.unary_!
+        </td>
+        <td style="background: #F0ADAD">
+          HistoryFilter.this.activeHistory.unary_!
+        </td>
+      </tr><tr>
+        <td>
+          182
+        </td>
+        <td>
+          82415
+        </td>
+        <td>
+          5636
+          -
+          5671
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Boolean.&amp;&amp;
+        </td>
+        <td style="background: #F0ADAD">
+          terminal.FilterTools.firstRow(c, b, w).&amp;&amp;(HistoryFilter.this.activeHistory.unary_!)
+        </td>
+      </tr><tr>
+        <td>
+          183
+        </td>
+        <td>
+          82417
+        </td>
+        <td>
+          5681
+          -
+          5711
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.repl.terminal.filters.HistoryFilter.wrap
+        </td>
+        <td style="background: #F0ADAD">
+          HistoryFilter.this.wrap(rest, HistoryFilter.this.startHistory(b, c))
+        </td>
+      </tr><tr>
+        <td>
+          183
+        </td>
+        <td>
+          82416
+        </td>
+        <td>
+          5692
+          -
+          5710
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.repl.terminal.filters.HistoryFilter.startHistory
+        </td>
+        <td style="background: #F0ADAD">
+          HistoryFilter.this.startHistory(b, c)
+        </td>
+      </tr><tr>
+        <td>
+          186
+        </td>
+        <td>
+          82418
+        </td>
+        <td>
+          5827
+          -
+          5828
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          0
+        </td>
+      </tr><tr>
+        <td>
+          186
+        </td>
+        <td>
+          82420
+        </td>
+        <td>
+          5822
+          -
+          5846
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Boolean.&amp;&amp;
+        </td>
+        <td style="background: #F0ADAD">
+          c.==(0).&amp;&amp;(HistoryFilter.this.activeHistory.unary_!)
+        </td>
+      </tr><tr>
+        <td>
+          186
+        </td>
+        <td>
+          82419
+        </td>
+        <td>
+          5832
+          -
+          5846
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.Boolean.unary_!
+        </td>
+        <td style="background: #F0ADAD">
+          HistoryFilter.this.activeHistory.unary_!
+        </td>
+      </tr><tr>
+        <td>
+          187
+        </td>
+        <td>
+          82422
+        </td>
+        <td>
+          5856
+          -
+          5886
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.repl.terminal.filters.HistoryFilter.wrap
+        </td>
+        <td style="background: #F0ADAD">
+          HistoryFilter.this.wrap(rest, HistoryFilter.this.startHistory(b, c))
+        </td>
+      </tr><tr>
+        <td>
+          187
+        </td>
+        <td>
+          82421
+        </td>
+        <td>
+          5867
+          -
+          5885
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.repl.terminal.filters.HistoryFilter.startHistory
+        </td>
+        <td style="background: #F0ADAD">
+          HistoryFilter.this.startHistory(b, c)
+        </td>
+      </tr><tr>
+        <td>
+          194
+        </td>
+        <td>
+          82423
+        </td>
+        <td>
+          6171
+          -
+          6188
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.repl.terminal.FilterTools.firstRow
+        </td>
+        <td style="background: #F0ADAD">
+          terminal.FilterTools.firstRow(c, b, w)
+        </td>
+      </tr><tr>
+        <td>
+          194
+        </td>
+        <td>
+          82424
+        </td>
+        <td>
+          6152
+          -
+          6189
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.repl.terminal.filters.HistoryFilter.searchOrHistoryAnd
+        </td>
+        <td style="background: #F0ADAD">
+          HistoryFilter.this.searchOrHistoryAnd(terminal.FilterTools.firstRow(c, b, w))
+        </td>
+      </tr><tr>
+        <td>
+          195
+        </td>
+        <td>
+          82426
+        </td>
+        <td>
+          6199
+          -
+          6219
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.repl.terminal.filters.HistoryFilter.wrap
+        </td>
+        <td style="background: #F0ADAD">
+          HistoryFilter.this.wrap(rest, HistoryFilter.this.up(b, c))
+        </td>
+      </tr><tr>
+        <td>
+          195
+        </td>
+        <td>
+          82425
+        </td>
+        <td>
+          6210
+          -
+          6218
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.repl.terminal.filters.HistoryFilter.up
+        </td>
+        <td style="background: #F0ADAD">
+          HistoryFilter.this.up(b, c)
+        </td>
+      </tr><tr>
+        <td>
+          198
+        </td>
+        <td>
+          82427
+        </td>
+        <td>
+          6307
+          -
+          6324
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.repl.terminal.FilterTools.firstRow
+        </td>
+        <td style="background: #F0ADAD">
+          terminal.FilterTools.firstRow(c, b, w)
+        </td>
+      </tr><tr>
+        <td>
+          198
+        </td>
+        <td>
+          82428
+        </td>
+        <td>
+          6288
+          -
+          6325
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.repl.terminal.filters.HistoryFilter.searchOrHistoryAnd
+        </td>
+        <td style="background: #F0ADAD">
+          HistoryFilter.this.searchOrHistoryAnd(terminal.FilterTools.firstRow(c, b, w))
+        </td>
+      </tr><tr>
+        <td>
+          199
+        </td>
+        <td>
+          82429
+        </td>
+        <td>
+          6346
+          -
+          6354
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.repl.terminal.filters.HistoryFilter.up
+        </td>
+        <td style="background: #F0ADAD">
+          HistoryFilter.this.up(b, c)
+        </td>
+      </tr><tr>
+        <td>
+          199
+        </td>
+        <td>
+          82430
+        </td>
+        <td>
+          6335
+          -
+          6355
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.repl.terminal.filters.HistoryFilter.wrap
+        </td>
+        <td style="background: #F0ADAD">
+          HistoryFilter.this.wrap(rest, HistoryFilter.this.up(b, c))
+        </td>
+      </tr><tr>
+        <td>
+          202
+        </td>
+        <td>
+          82432
+        </td>
+        <td>
+          6469
+          -
+          6495
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.repl.terminal.filters.HistoryFilter.searchOrHistoryAnd
+        </td>
+        <td style="background: #F0ADAD">
+          HistoryFilter.this.searchOrHistoryAnd(c.==(0))
+        </td>
+      </tr><tr>
+        <td>
+          202
+        </td>
+        <td>
+          82431
+        </td>
+        <td>
+          6488
+          -
+          6494
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Int.==
+        </td>
+        <td style="background: #F0ADAD">
+          c.==(0)
+        </td>
+      </tr><tr>
+        <td>
+          203
+        </td>
+        <td>
+          82434
+        </td>
+        <td>
+          6505
+          -
+          6525
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.repl.terminal.filters.HistoryFilter.wrap
+        </td>
+        <td style="background: #F0ADAD">
+          HistoryFilter.this.wrap(rest, HistoryFilter.this.up(b, c))
+        </td>
+      </tr><tr>
+        <td>
+          203
+        </td>
+        <td>
+          82433
+        </td>
+        <td>
+          6516
+          -
+          6524
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.repl.terminal.filters.HistoryFilter.up
+        </td>
+        <td style="background: #F0ADAD">
+          HistoryFilter.this.up(b, c)
+        </td>
+      </tr><tr>
+        <td>
+          206
+        </td>
+        <td>
+          82436
+        </td>
+        <td>
+          6594
+          -
+          6630
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.repl.terminal.filters.HistoryFilter.searchOrHistoryAnd
+        </td>
+        <td style="background: #F0ADAD">
+          HistoryFilter.this.searchOrHistoryAnd(terminal.FilterTools.lastRow(c, b, w))
+        </td>
+      </tr><tr>
+        <td>
+          206
+        </td>
+        <td>
+          82435
+        </td>
+        <td>
+          6613
+          -
+          6629
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.repl.terminal.FilterTools.lastRow
+        </td>
+        <td style="background: #F0ADAD">
+          terminal.FilterTools.lastRow(c, b, w)
+        </td>
+      </tr><tr>
+        <td>
+          207
+        </td>
+        <td>
+          82438
+        </td>
+        <td>
+          6641
+          -
+          6663
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.repl.terminal.filters.HistoryFilter.wrap
+        </td>
+        <td style="background: #F0ADAD">
+          HistoryFilter.this.wrap(rest, HistoryFilter.this.down(b, c))
+        </td>
+      </tr><tr>
+        <td>
+          207
+        </td>
+        <td>
+          82437
+        </td>
+        <td>
+          6652
+          -
+          6662
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.repl.terminal.filters.HistoryFilter.down
+        </td>
+        <td style="background: #F0ADAD">
+          HistoryFilter.this.down(b, c)
+        </td>
+      </tr><tr>
+        <td>
+          211
+        </td>
+        <td>
+          82440
+        </td>
+        <td>
+          6735
+          -
+          6771
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.repl.terminal.filters.HistoryFilter.searchOrHistoryAnd
+        </td>
+        <td style="background: #F0ADAD">
+          HistoryFilter.this.searchOrHistoryAnd(terminal.FilterTools.lastRow(c, b, w))
+        </td>
+      </tr><tr>
+        <td>
+          211
+        </td>
+        <td>
+          82439
+        </td>
+        <td>
+          6754
+          -
+          6770
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.repl.terminal.FilterTools.lastRow
+        </td>
+        <td style="background: #F0ADAD">
+          terminal.FilterTools.lastRow(c, b, w)
+        </td>
+      </tr><tr>
+        <td>
+          212
+        </td>
+        <td>
+          82441
+        </td>
+        <td>
+          6793
+          -
+          6803
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.repl.terminal.filters.HistoryFilter.down
+        </td>
+        <td style="background: #F0ADAD">
+          HistoryFilter.this.down(b, c)
+        </td>
+      </tr><tr>
+        <td>
+          212
+        </td>
+        <td>
+          82442
+        </td>
+        <td>
+          6782
+          -
+          6804
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.repl.terminal.filters.HistoryFilter.wrap
+        </td>
+        <td style="background: #F0ADAD">
+          HistoryFilter.this.wrap(rest, HistoryFilter.this.down(b, c))
+        </td>
+      </tr><tr>
+        <td>
+          214
+        </td>
+        <td>
+          82444
+        </td>
+        <td>
+          6939
+          -
+          6956
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Int.==
+        </td>
+        <td style="background: #F0ADAD">
+          c.==(b.length.-(1))
+        </td>
+      </tr><tr>
+        <td>
+          214
+        </td>
+        <td>
+          82443
+        </td>
+        <td>
+          6944
+          -
+          6956
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Int.-
+        </td>
+        <td style="background: #F0ADAD">
+          b.length.-(1)
+        </td>
+      </tr><tr>
+        <td>
+          214
+        </td>
+        <td>
+          82445
+        </td>
+        <td>
+          6920
+          -
+          6957
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.repl.terminal.filters.HistoryFilter.searchOrHistoryAnd
+        </td>
+        <td style="background: #F0ADAD">
+          HistoryFilter.this.searchOrHistoryAnd(c.==(b.length.-(1)))
+        </td>
+      </tr><tr>
+        <td>
+          215
+        </td>
+        <td>
+          82447
+        </td>
+        <td>
+          6967
+          -
+          6989
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.repl.terminal.filters.HistoryFilter.wrap
+        </td>
+        <td style="background: #F0ADAD">
+          HistoryFilter.this.wrap(rest, HistoryFilter.this.down(b, c))
+        </td>
+      </tr><tr>
+        <td>
+          215
+        </td>
+        <td>
+          82446
+        </td>
+        <td>
+          6978
+          -
+          6988
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.repl.terminal.filters.HistoryFilter.down
+        </td>
+        <td style="background: #F0ADAD">
+          HistoryFilter.this.down(b, c)
+        </td>
+      </tr><tr>
+        <td>
+          221
+        </td>
+        <td>
+          82448
+        </td>
+        <td>
+          7224
+          -
+          7236
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.repl.terminal.filters.HistoryFilter.activeSearch
+        </td>
+        <td style="background: #F0ADAD">
+          HistoryFilter.this.activeSearch
+        </td>
+      </tr><tr>
+        <td>
+          222
+        </td>
+        <td>
+          82450
+        </td>
+        <td>
+          7246
+          -
+          7283
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.repl.terminal.filters.HistoryFilter.wrap
+        </td>
+        <td style="background: #F0ADAD">
+          HistoryFilter.this.wrap(rest, HistoryFilter.this.backspace(buffer, cursor))
+        </td>
+      </tr><tr>
+        <td>
+          222
+        </td>
+        <td>
+          82449
+        </td>
+        <td>
+          7257
+          -
+          7282
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.repl.terminal.filters.HistoryFilter.backspace
+        </td>
+        <td style="background: #F0ADAD">
+          HistoryFilter.this.backspace(buffer, cursor)
+        </td>
+      </tr><tr>
+        <td>
+          227
+        </td>
+        <td>
+          82453
+        </td>
+        <td>
+          7507
+          -
+          7549
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.repl.terminal.filters.HistoryFilter.searchOrHistoryAnd
+        </td>
+        <td style="background: #F0ADAD">
+          HistoryFilter.this.searchOrHistoryAnd(HistoryFilter.this.dropHistoryChars.apply(char))
+        </td>
+      </tr><tr>
+        <td>
+          227
+        </td>
+        <td>
+          82452
+        </td>
+        <td>
+          7526
+          -
+          7548
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.GenSetLike.apply
+        </td>
+        <td style="background: #F0ADAD">
+          HistoryFilter.this.dropHistoryChars.apply(char)
+        </td>
+      </tr><tr>
+        <td>
+          227
+        </td>
+        <td>
+          82454
+        </td>
+        <td>
+          7482
+          -
+          7549
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Boolean.&amp;&amp;
+        </td>
+        <td style="background: #F0ADAD">
+          scala.Predef.charWrapper(char.toChar).isControl.&amp;&amp;(HistoryFilter.this.searchOrHistoryAnd(HistoryFilter.this.dropHistoryChars.apply(char)))
+        </td>
+      </tr><tr>
+        <td>
+          227
+        </td>
+        <td>
+          82451
+        </td>
+        <td>
+          7482
+          -
+          7493
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.Int.toChar
+        </td>
+        <td style="background: #F0ADAD">
+          char.toChar
+        </td>
+      </tr><tr>
+        <td>
+          232
+        </td>
+        <td>
+          82456
+        </td>
+        <td>
+          7824
+          -
+          7838
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.Option.get
+        </td>
+        <td style="background: #F0ADAD">
+          HistoryFilter.this.searchTerm.get
+        </td>
+      </tr><tr>
+        <td>
+          232
+        </td>
+        <td>
+          82455
+        </td>
+        <td>
+          7804
+          -
+          7822
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Int.==
+        </td>
+        <td style="background: #F0ADAD">
+          HistoryFilter.this.historyIndex.==(-1)
+        </td>
+      </tr><tr>
+        <td>
+          232
+        </td>
+        <td>
+          82457
+        </td>
+        <td>
+          7824
+          -
+          7838
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          scala.Option.get
+        </td>
+        <td style="background: #F0ADAD">
+          HistoryFilter.this.searchTerm.get
+        </td>
+      </tr><tr>
+        <td>
+          236
+        </td>
+        <td>
+          82459
+        </td>
+        <td>
+          8076
+          -
+          8104
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Option.exists
+        </td>
+        <td style="background: #F0ADAD">
+          HistoryFilter.this.searchTerm.exists(((x$7: Vector[Char]) =&gt; x$7.isEmpty))
+        </td>
+      </tr><tr>
+        <td>
+          236
+        </td>
+        <td>
+          82458
+        </td>
+        <td>
+          8094
+          -
+          8103
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.collection.SeqLike.isEmpty
+        </td>
+        <td style="background: #F0ADAD">
+          x$7.isEmpty
+        </td>
+      </tr><tr>
+        <td>
+          236
+        </td>
+        <td>
+          82461
+        </td>
+        <td>
+          8106
+          -
+          8114
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          scala.collection.generic.GenericCompanion.apply
+        </td>
+        <td style="background: #F0ADAD">
+          scala.`package`.Vector.apply[Nothing]()
+        </td>
+      </tr><tr>
+        <td>
+          236
+        </td>
+        <td>
+          82466
+        </td>
+        <td>
+          8072
+          -
+          8232
+        </td>
+        <td>
+          If
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          if (HistoryFilter.this.searchTerm.exists(((x$7: Vector[Char]) =&gt; x$7.isEmpty)))
+  scala.`package`.Vector.apply[Nothing]()
+else
+  scala.Predef.augmentString(HistoryFilter.this.history.apply().apply(HistoryFilter.this.historyIndex)).toVector
+        </td>
+      </tr><tr>
+        <td>
+          236
+        </td>
+        <td>
+          82460
+        </td>
+        <td>
+          8106
+          -
+          8114
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.generic.GenericCompanion.apply
+        </td>
+        <td style="background: #F0ADAD">
+          scala.`package`.Vector.apply[Nothing]()
+        </td>
+      </tr><tr>
+        <td>
+          238
+        </td>
+        <td>
+          82462
+        </td>
+        <td>
+          8210
+          -
+          8222
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.repl.terminal.filters.HistoryFilter.historyIndex
+        </td>
+        <td style="background: #F0ADAD">
+          HistoryFilter.this.historyIndex
+        </td>
+      </tr><tr>
+        <td>
+          238
+        </td>
+        <td>
+          82465
+        </td>
+        <td>
+          8200
+          -
+          8232
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          scala.collection.TraversableOnce.toVector
+        </td>
+        <td style="background: #F0ADAD">
+          scala.Predef.augmentString(HistoryFilter.this.history.apply().apply(HistoryFilter.this.historyIndex)).toVector
+        </td>
+      </tr><tr>
+        <td>
+          238
+        </td>
+        <td>
+          82464
+        </td>
+        <td>
+          8200
+          -
+          8232
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.collection.TraversableOnce.toVector
+        </td>
+        <td style="background: #F0ADAD">
+          scala.Predef.augmentString(HistoryFilter.this.history.apply().apply(HistoryFilter.this.historyIndex)).toVector
+        </td>
+      </tr><tr>
+        <td>
+          238
+        </td>
+        <td>
+          82463
+        </td>
+        <td>
+          8200
+          -
+          8223
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.SeqLike.apply
+        </td>
+        <td style="background: #F0ADAD">
+          HistoryFilter.this.history.apply().apply(HistoryFilter.this.historyIndex)
+        </td>
+      </tr><tr>
+        <td>
+          239
+        </td>
+        <td>
+          82467
+        </td>
+        <td>
+          8239
+          -
+          8251
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.repl.terminal.filters.HistoryFilter.endHistory
+        </td>
+        <td style="background: #F0ADAD">
+          HistoryFilter.this.endHistory()
+        </td>
+      </tr><tr>
+        <td>
+          241
+        </td>
+        <td>
+          82468
+        </td>
+        <td>
+          8267
+          -
+          8276
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.repl.terminal.LazyList.~:
+        </td>
+        <td style="background: #F0ADAD">
+          inputs.~:(x$8)
+        </td>
+      </tr><tr>
+        <td>
+          241
+        </td>
+        <td>
+          82470
+        </td>
+        <td>
+          8259
+          -
+          8296
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.repl.terminal.TermState.apply
+        </td>
+        <td style="background: #F0ADAD">
+          terminal.FilterTools.TS.apply({
+  &lt;synthetic&gt; &lt;artifact&gt; val x$8: Int = char;
+  inputs.~:(x$8)
+}, newBuffer, cursor, terminal.FilterTools.TS.apply$default$4)
+        </td>
+      </tr><tr>
+        <td>
+          241
+        </td>
+        <td>
+          82469
+        </td>
+        <td>
+          8259
+          -
+          8259
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.repl.terminal.TermState.apply$default$4
+        </td>
+        <td style="background: #F0ADAD">
+          terminal.FilterTools.TS.apply$default$4
+        </td>
+      </tr><tr>
+        <td>
+          245
+        </td>
+        <td>
+          82471
+        </td>
+        <td>
+          8457
+          -
+          8469
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.repl.terminal.filters.HistoryFilter.activeSearch
+        </td>
+        <td style="background: #F0ADAD">
+          HistoryFilter.this.activeSearch
+        </td>
+      </tr><tr>
+        <td>
+          246
+        </td>
+        <td>
+          82473
+        </td>
+        <td>
+          8479
+          -
+          8533
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.repl.terminal.filters.HistoryFilter.wrap
+        </td>
+        <td style="background: #F0ADAD">
+          HistoryFilter.this.wrap(rest, HistoryFilter.this.printableChar(char.toChar)(buffer, cursor))
+        </td>
+      </tr><tr>
+        <td>
+          246
+        </td>
+        <td>
+          82472
+        </td>
+        <td>
+          8490
+          -
+          8532
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.repl.terminal.filters.HistoryFilter.printableChar
+        </td>
+        <td style="background: #F0ADAD">
+          HistoryFilter.this.printableChar(char.toChar)(buffer, cursor)
+        </td>
+      </tr><tr>
+        <td>
+          251
+        </td>
+        <td>
+          82474
+        </td>
+        <td>
+          8830
+          -
+          8841
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.Int.toChar
+        </td>
+        <td style="background: #F0ADAD">
+          char.toChar
+        </td>
+      </tr><tr>
+        <td>
+          251
+        </td>
+        <td>
+          82476
+        </td>
+        <td>
+          8812
+          -
+          8851
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Boolean.&amp;&amp;
+        </td>
+        <td style="background: #F0ADAD">
+          HistoryFilter.this.activeHistory.&amp;&amp;(scala.Predef.charWrapper(char.toChar).isControl.unary_!)
+        </td>
+      </tr><tr>
+        <td>
+          251
+        </td>
+        <td>
+          82475
+        </td>
+        <td>
+          8829
+          -
+          8851
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.Boolean.unary_!
+        </td>
+        <td style="background: #F0ADAD">
+          scala.Predef.charWrapper(char.toChar).isControl.unary_!
+        </td>
+      </tr><tr>
+        <td>
+          252
+        </td>
+        <td>
+          82477
+        </td>
+        <td>
+          8861
+          -
+          8878
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.repl.terminal.filters.HistoryFilter.historyIndex_=
+        </td>
+        <td style="background: #F0ADAD">
+          HistoryFilter.this.historyIndex_=(-1)
+        </td>
+      </tr><tr>
+        <td>
+          253
+        </td>
+        <td>
+          82480
+        </td>
+        <td>
+          8885
+          -
+          8917
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.repl.terminal.TermState.apply
+        </td>
+        <td style="background: #F0ADAD">
+          terminal.FilterTools.TS.apply({
+  &lt;synthetic&gt; &lt;artifact&gt; val x$9: Int = char;
+  rest.~:(x$9)
+}, buffer, cursor, terminal.FilterTools.TS.apply$default$4)
+        </td>
+      </tr><tr>
+        <td>
+          253
+        </td>
+        <td>
+          82479
+        </td>
+        <td>
+          8885
+          -
+          8885
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.repl.terminal.TermState.apply$default$4
+        </td>
+        <td style="background: #F0ADAD">
+          terminal.FilterTools.TS.apply$default$4
+        </td>
+      </tr><tr>
+        <td>
+          253
+        </td>
+        <td>
+          82478
+        </td>
+        <td>
+          8893
+          -
+          8900
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.repl.terminal.LazyList.~:
+        </td>
+        <td style="background: #F0ADAD">
+          rest.~:(x$9)
+        </td>
+      </tr><tr>
+        <td>
+          265
+        </td>
+        <td>
+          82483
+        </td>
+        <td>
+          9084
+          -
+          9111
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.Boolean.unary_!
+        </td>
+        <td style="background: #F0ADAD">
+          historyFilter.activeSearch.unary_!
+        </td>
+      </tr><tr>
+        <td>
+          265
+        </td>
+        <td>
+          82484
+        </td>
+        <td>
+          9113
+          -
+          9119
+        </td>
+        <td>
+          Ident
+        </td>
+        <td>
+          dotty.tools.repl.terminal.filters.HistoryFilter.buffer
+        </td>
+        <td style="background: #F0ADAD">
+          buffer
+        </td>
+      </tr><tr>
+        <td>
+          266
+        </td>
+        <td>
+          82488
+        </td>
+        <td>
+          9129
+          -
+          9529
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          {
+  &lt;synthetic&gt; &lt;artifact&gt; private[this] val x$10: (Int, Int) = (if (historyFilter.searchTerm.get.isEmpty)
+    scala.Tuple2.apply[Int, Int](cursor, cursor.+(1))
+  else
+    {
+      val start: Int = scala.Predef.augmentString(buffer.plainText).indexOfSlice[Char](historyFilter.searchTerm.get);
+      val end: Int = start.+(scala.Predef.intWrapper(historyFilter.searchTerm.get.length).max(1));
+      scala.Tuple2.apply[Int, Int](start, end)
+    }: (Int, Int) @unchecked) match {
+    case (_1: Int, _2: Int)(Int, Int)((searchStart @ _), (searchEnd @ _)) =&gt; scala.Tuple2.apply[Int, Int](searchStart, searchEnd)
+  };
+  val searchStart: Int = x$10._1;
+  val searchEnd: Int = x$10._2;
+  val newStr: dotty.tools.repl.terminal.Ansi.Str = buffer.overlay(startColor, searchStart, searchEnd);
+  newStr
+}
+        </td>
+      </tr><tr>
+        <td>
+          267
+        </td>
+        <td>
+          82486
+        </td>
+        <td>
+          9155
+          -
+          9155
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.Tuple2._2
+        </td>
+        <td style="background: #F0ADAD">
+          x$10._2
+        </td>
+      </tr><tr>
+        <td>
+          267
+        </td>
+        <td>
+          82485
+        </td>
+        <td>
+          9142
+          -
+          9142
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.Tuple2._1
+        </td>
+        <td style="background: #F0ADAD">
+          x$10._1
+        </td>
+      </tr><tr>
+        <td>
+          276
+        </td>
+        <td>
+          82487
+        </td>
+        <td>
+          9460
+          -
+          9510
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.repl.terminal.Ansi.Str.overlay
+        </td>
+        <td style="background: #F0ADAD">
+          buffer.overlay(startColor, searchStart, searchEnd)
+        </td>
+      </tr><tr>
+        <td>
+          301
+        </td>
+        <td>
+          82489
+        </td>
+        <td>
+          10341
+          -
+          10356
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Function1.apply
+        </td>
+        <td style="background: #F0ADAD">
+          history.lift.apply(i)
+        </td>
+      </tr><tr>
+        <td>
+          304
+        </td>
+        <td>
+          82491
+        </td>
+        <td>
+          10542
+          -
+          10550
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Some.apply
+        </td>
+        <td style="background: #F0ADAD">
+          scala.Some.apply[Int](-1)
+        </td>
+      </tr><tr>
+        <td>
+          304
+        </td>
+        <td>
+          82490
+        </td>
+        <td>
+          10533
+          -
+          10538
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Int.&lt;
+        </td>
+        <td style="background: #F0ADAD">
+          i.&lt;(0)
+        </td>
+      </tr><tr>
+        <td>
+          305
+        </td>
+        <td>
+          82492
+        </td>
+        <td>
+          10570
+          -
+          10574
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.None
+        </td>
+        <td style="background: #F0ADAD">
+          scala.None
+        </td>
+      </tr><tr>
+        <td>
+          306
+        </td>
+        <td>
+          82495
+        </td>
+        <td>
+          10623
+          -
+          10648
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.Boolean.unary_!
+        </td>
+        <td style="background: #F0ADAD">
+          s.contentEquals(scala.Predef.SeqCharSequence(skipped)).unary_!
+        </td>
+      </tr><tr>
+        <td>
+          306
+        </td>
+        <td>
+          82494
+        </td>
+        <td>
+          10640
+          -
+          10647
+        </td>
+        <td>
+          ApplyImplicitView
+        </td>
+        <td>
+          scala.Predef.SeqCharSequence
+        </td>
+        <td style="background: #F0ADAD">
+          scala.Predef.SeqCharSequence(skipped)
+        </td>
+      </tr><tr>
+        <td>
+          306
+        </td>
+        <td>
+          82493
+        </td>
+        <td>
+          10608
+          -
+          10618
+        </td>
+        <td>
+          ApplyImplicitView
+        </td>
+        <td>
+          scala.Predef.SeqCharSequence
+        </td>
+        <td style="background: #F0ADAD">
+          scala.Predef.SeqCharSequence(searchTerm)
+        </td>
+      </tr><tr>
+        <td>
+          306
+        </td>
+        <td>
+          82496
+        </td>
+        <td>
+          10597
+          -
+          10648
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Boolean.&amp;&amp;
+        </td>
+        <td style="background: #F0ADAD">
+          s.contains(scala.Predef.SeqCharSequence(searchTerm)).&amp;&amp;(s.contentEquals(scala.Predef.SeqCharSequence(skipped)).unary_!)
+        </td>
+      </tr><tr>
+        <td>
+          307
+        </td>
+        <td>
+          82497
+        </td>
+        <td>
+          10660
+          -
+          10667
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Some.apply
+        </td>
+        <td style="background: #F0ADAD">
+          scala.Some.apply[Int](i)
+        </td>
+      </tr><tr>
+        <td>
+          308
+        </td>
+        <td>
+          82498
+        </td>
+        <td>
+          10688
+          -
+          10706
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Int.+
+        </td>
+        <td style="background: #F0ADAD">
+          i.+(indexIncrement)
+        </td>
+      </tr><tr>
+        <td>
+          308
+        </td>
+        <td>
+          82499
+        </td>
+        <td>
+          10684
+          -
+          10707
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.repl.terminal.filters.HistoryFilter.rec
+        </td>
+        <td style="background: #F0ADAD">
+          rec(i.+(indexIncrement))
+        </td>
+      </tr><tr>
+        <td>
+          311
+        </td>
+        <td>
+          82500
+        </td>
+        <td>
+          10741
+          -
+          10756
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.repl.terminal.filters.HistoryFilter.rec
+        </td>
+        <td style="background: #F0ADAD">
+          rec(startIndex)
+        </td>
+      </tr><tr>
+        <td>
+          312
+        </td>
+        <td>
+          82501
+        </td>
+        <td>
+          10799
+          -
+          10806
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Int.!=
+        </td>
+        <td style="background: #F0ADAD">
+          x$11.!=(-1)
+        </td>
+      </tr><tr>
+        <td>
+          312
+        </td>
+        <td>
+          82502
+        </td>
+        <td>
+          10778
+          -
+          10807
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.IterableLike.find
+        </td>
+        <td style="background: #F0ADAD">
+          scala.this.Option.option2Iterable[Int](newHistoryIndex).find(((x$11: Int) =&gt; x$11.!=(-1)))
+        </td>
+      </tr><tr>
+        <td>
+          315
+        </td>
+        <td>
+          82504
+        </td>
+        <td>
+          10899
+          -
+          10918
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.collection.TraversableOnce.toVector
+        </td>
+        <td style="background: #F0ADAD">
+          scala.Predef.augmentString(history.apply(i)).toVector
+        </td>
+      </tr><tr>
+        <td>
+          315
+        </td>
+        <td>
+          82503
+        </td>
+        <td>
+          10899
+          -
+          10909
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.SeqLike.apply
+        </td>
+        <td style="background: #F0ADAD">
+          history.apply(i)
+        </td>
+      </tr><tr>
+        <td>
+          319
+        </td>
+        <td>
+          82505
+        </td>
+        <td>
+          10984
+          -
+          11000
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.collection.immutable.Vector.length
+        </td>
+        <td style="background: #F0ADAD">
+          newBuffer.length
+        </td>
+      </tr><tr>
+        <td>
+          320
+        </td>
+        <td>
+          82507
+        </td>
+        <td>
+          11061
+          -
+          11078
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.collection.immutable.Vector.length
+        </td>
+        <td style="background: #F0ADAD">
+          searchTerm.length
+        </td>
+      </tr><tr>
+        <td>
+          320
+        </td>
+        <td>
+          82506
+        </td>
+        <td>
+          11023
+          -
+          11033
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.SeqLike.apply
+        </td>
+        <td style="background: #F0ADAD">
+          history.apply(i)
+        </td>
+      </tr><tr>
+        <td>
+          320
+        </td>
+        <td>
+          82508
+        </td>
+        <td>
+          11023
+          -
+          11078
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Int.+
+        </td>
+        <td style="background: #F0ADAD">
+          scala.Predef.augmentString(history.apply(i)).indexOfSlice[Char](searchTerm).+(searchTerm.length)
+        </td>
+      </tr><tr>
+        <td>
+          323
+        </td>
+        <td>
+          82509
+        </td>
+        <td>
+          11090
+          -
+          11129
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Tuple3.apply
+        </td>
+        <td style="background: #F0ADAD">
+          scala.Tuple3.apply[Option[Int], Vector[Char], Int](newHistoryIndex, newBuffer, newCursor)
+        </td>
+      </tr><tr>
+        <td>
+          327
+        </td>
+        <td>
+          82510
+        </td>
+        <td>
+          11166
+          -
+          11223
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.StringContext.s
+        </td>
+        <td style="background: #F0ADAD">
+          scala.StringContext.apply(&quot; ...enter the string to search for, then `up` for more&quot;).s()
+        </td>
+      </tr><tr>
+        <td>
+          329
+        </td>
+        <td>
+          82511
+        </td>
+        <td>
+          11260
+          -
+          11312
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.StringContext.s
+        </td>
+        <td style="background: #F0ADAD">
+          scala.StringContext.apply(&quot; ...can\'t be found in history; re-starting search&quot;).s()
+        </td>
+      </tr>
+    </table>
+          </div>
+        </div>
+      </body>
+    </html>

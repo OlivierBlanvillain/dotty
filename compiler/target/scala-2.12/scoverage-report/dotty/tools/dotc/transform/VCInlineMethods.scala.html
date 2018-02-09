@@ -1,0 +1,661 @@
+<html>
+      <head>
+        <meta http-equiv="Content-Type" content="text/html; charset=utf-8"/>
+        <title id="title">
+          dotty/tools/dotc/transform/VCInlineMethods.scala.html
+        </title>
+        <script src="https://ajax.googleapis.com/ajax/libs/jquery/1.10.2/jquery.min.js"></script><link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/jquery.tablesorter/2.20.1/css/theme.default.min.css" type="text/css"/><script src="https://cdnjs.cloudflare.com/ajax/libs/jquery.tablesorter/2.20.1/js/jquery.tablesorter.min.js"></script><link rel="stylesheet" href="https://netdna.bootstrapcdn.com/bootstrap/3.0.3/css/bootstrap.min.css" type="text/css"/><script src="https://netdna.bootstrapcdn.com/bootstrap/3.0.3/js/bootstrap.min.js"></script><script type="text/javascript">
+        $(document).ready(function() {$(".tablesorter").tablesorter();});
+      </script>
+        <style>
+          table.codegrid { font-family: monospace; font-size: 12px; width: auto!important; }table.statementlist { width: auto!important; font-size: 13px; } table.codegrid td { padding: 0!important; border: 0!important } table td.linenumber { width: 40px!important; } 
+        </style>
+      </head>
+      <body style="font-family: monospace;">
+        <ul class="nav nav-tabs">
+          <li>
+            <a href="#codegrid" data-toggle="tab">Codegrid</a>
+          </li>
+          <li>
+            <a href="#statementlist" data-toggle="tab">Statement List</a>
+          </li>
+        </ul>
+        <div class="tab-content">
+          <div class="tab-pane active" id="codegrid">
+            <pre style='font-size: 12pt; font-family: courier;'>1 <span style=''>package dotty.tools.dotc
+</span>2 <span style=''>package transform
+</span>3 <span style=''>
+</span>4 <span style=''>import ast.{Trees, tpd}
+</span>5 <span style=''>import core._, core.Decorators._
+</span>6 <span style=''>import Contexts._, Trees._, Types._
+</span>7 <span style=''>import DenotTransformers._, MegaPhase._, Phases.Phase
+</span>8 <span style=''>import ExtensionMethods._, ValueClasses._
+</span>9 <span style=''>
+</span>10 <span style=''>import collection.mutable.ListBuffer
+</span>11 <span style=''>
+</span>12 <span style=''>/** This phase inlines calls to methods of value classes.
+</span>13 <span style=''> *
+</span>14 <span style=''> *  A value class V after [[ExtensionMethods]] will look like:
+</span>15 <span style=''> *    class V[A, B, ...](val underlying: U) extends AnyVal {
+</span>16 <span style=''> *      def foo[T, S, ...](arg1: A1, arg2: A2, ...) =
+</span>17 <span style=''> *        V.foo$extension[T, S, ..., A, B, ...](this)(arg1, arg2, ...)
+</span>18 <span style=''> *
+</span>19 <span style=''> *       ...
+</span>20 <span style=''> *    }
+</span>21 <span style=''> *
+</span>22 <span style=''> *  Let e have type V, if e is a stable prefix or if V does not have any class
+</span>23 <span style=''> *  type parameter, then we can rewrite:
+</span>24 <span style=''> *    e.foo[X, Y, ...](args)
+</span>25 <span style=''> *  as:
+</span>26 <span style=''> *    V.foo$extension[X, Y, ..., A', B', ...](e)(args)
+</span>27 <span style=''> *    where A', B', ... are the class type parameters A, B, ... as seen from `e`.
+</span>28 <span style=''> *  Otherwise, we need to evaluate e first:
+</span>29 <span style=''> *    {
+</span>30 <span style=''> *      val ev = e
+</span>31 <span style=''> *      V.foo$extension[X, Y, ..., A', B', ...](ev)(args)
+</span>32 <span style=''> *    }
+</span>33 <span style=''> *
+</span>34 <span style=''> *  This phase needs to be placed after phases which may introduce calls to
+</span>35 <span style=''> *  value class methods (like [[PatternMatcher]]). This phase uses name mangling
+</span>36 <span style=''> *  to find the correct extension method corresponding to a value class method
+</span>37 <span style=''> *  (see [[ExtensionMethods.extensionMethod]]), therefore we choose to place it
+</span>38 <span style=''> *  before phases which may perform their own name mangling on value class
+</span>39 <span style=''> *  methods (like [[TypeSpecializer]]), this way [[VCInlineMethods]] does not
+</span>40 <span style=''> *  need to have any knowledge of the name mangling done by other phases.
+</span>41 <span style=''> */
+</span>42 <span style=''>class VCInlineMethods extends MiniPhase with IdentityDenotTransformer {
+</span>43 <span style=''>  import tpd._
+</span>44 <span style=''>
+</span>45 <span style=''>  override def phaseName: String = </span><span style='background: #AEF1AE'>&quot;vcInlineMethods&quot;</span><span style=''>
+</span>46 <span style=''>
+</span>47 <span style=''>  override def runsAfter: Set[Class[_ &lt;: Phase]] =
+</span>48 <span style=''>    </span><span style='background: #AEF1AE'>Set(classOf[ExtensionMethods], classOf[PatternMatcher], classOf[PhantomArgLift])</span><span style=''>
+</span>49 <span style=''>
+</span>50 <span style=''>  /** Replace a value class method call by a call to the corresponding extension method.
+</span>51 <span style=''>   *
+</span>52 <span style=''>   *  @param tree   The tree corresponding to the method call
+</span>53 <span style=''>   *  @param mtArgs Type arguments for the method call not present in `tree`
+</span>54 <span style=''>   *  @param mArgss Arguments for the method call not present in `tree`
+</span>55 <span style=''>   *  @return       A tree for the extension method call
+</span>56 <span style=''>   */
+</span>57 <span style=''>  private def rewire(tree: Tree, mtArgs: List[Tree] = Nil, mArgss: List[List[Tree]] = Nil)
+</span>58 <span style=''>    (implicit ctx: Context): Tree =
+</span>59 <span style=''>    tree match {
+</span>60 <span style=''>      case Apply(qual, mArgs) =&gt;
+</span>61 <span style=''>        </span><span style='background: #AEF1AE'>rewire(qual, mtArgs, mArgs :: mArgss)</span><span style=''>
+</span>62 <span style=''>      case TypeApply(qual, mtArgs2) =&gt;
+</span>63 <span style=''>        </span><span style='background: #AEF1AE'>assert(mtArgs == Nil)</span><span style=''>
+</span>64 <span style=''>        </span><span style='background: #AEF1AE'>rewire(qual, mtArgs2, mArgss)</span><span style=''>
+</span>65 <span style=''>      case sel @ Select(qual, _) =&gt;
+</span>66 <span style=''>        val origMeth = </span><span style='background: #AEF1AE'>sel.symbol</span><span style=''>
+</span>67 <span style=''>        val origCls = </span><span style='background: #AEF1AE'>origMeth.enclosingClass</span><span style=''>
+</span>68 <span style=''>        val ctParams = </span><span style='background: #AEF1AE'>origCls.typeParams</span><span style=''>
+</span>69 <span style=''>        val extensionMeth = </span><span style='background: #AEF1AE'>extensionMethod(origMeth)</span><span style=''>
+</span>70 <span style=''>
+</span>71 <span style=''>        if (</span><span style='background: #AEF1AE'>!ctParams.isEmpty</span><span style=''>) {
+</span>72 <span style=''>          </span><span style='background: #AEF1AE'>evalOnce(qual) { ev =&gt;
+</span>73 <span style=''></span><span style='background: #AEF1AE'>            val ctArgs = ctParams.map(tparam =&gt;
+</span>74 <span style=''></span><span style='background: #AEF1AE'>              TypeTree(tparam.typeRef.asSeenFrom(ev.tpe, origCls)))
+</span>75 <span style=''></span><span style='background: #AEF1AE'>            ref(extensionMeth)
+</span>76 <span style=''></span><span style='background: #AEF1AE'>              .appliedToTypeTrees(mtArgs ++ ctArgs)
+</span>77 <span style=''></span><span style='background: #AEF1AE'>              .appliedTo(ev)
+</span>78 <span style=''></span><span style='background: #AEF1AE'>              .appliedToArgss(mArgss)
+</span>79 <span style=''></span><span style='background: #AEF1AE'>          }</span><span style=''>
+</span>80 <span style=''>        } else {
+</span>81 <span style=''>          </span><span style='background: #AEF1AE'>ref(extensionMeth)
+</span>82 <span style=''></span><span style='background: #AEF1AE'>            .appliedToTypeTrees(mtArgs)
+</span>83 <span style=''></span><span style='background: #AEF1AE'>            .appliedTo(qual)
+</span>84 <span style=''></span><span style='background: #AEF1AE'>            .appliedToArgss(mArgss)</span><span style=''>
+</span>85 <span style=''>        }
+</span>86 <span style=''>    }
+</span>87 <span style=''>
+</span>88 <span style=''>  /** If this tree corresponds to a fully-applied value class method call, replace it
+</span>89 <span style=''>   *  by a call to the corresponding extension method, otherwise return it as is.
+</span>90 <span style=''>   */
+</span>91 <span style=''>  private def rewireIfNeeded(tree: Tree)(implicit ctx: Context) = </span><span style='background: #AEF1AE'>tree.tpe.widen</span><span style=''> match {
+</span>92 <span style=''>    case tp: LambdaType =&gt;
+</span>93 <span style=''>      tree // The rewiring will be handled by a fully-applied parent node
+</span>94 <span style=''>    case _ =&gt;
+</span>95 <span style=''>      if (</span><span style='background: #AEF1AE'>isMethodWithExtension(tree.symbol)</span><span style=''>)
+</span>96 <span style=''>        </span><span style='background: #AEF1AE'>rewire(tree).ensureConforms(tree.tpe)</span><span style=''>
+</span>97 <span style=''>      else
+</span>98 <span style=''>        </span><span style='background: #AEF1AE'>tree</span><span style=''>
+</span>99 <span style=''>  }
+</span>100 <span style=''>
+</span>101 <span style=''>  override def transformSelect(tree: Select)(implicit ctx: Context): Tree =
+</span>102 <span style=''>    </span><span style='background: #AEF1AE'>rewireIfNeeded(tree)</span><span style=''>
+</span>103 <span style=''>  override def transformTypeApply(tree: TypeApply)(implicit ctx: Context): Tree =
+</span>104 <span style=''>    </span><span style='background: #AEF1AE'>rewireIfNeeded(tree)</span><span style=''>
+</span>105 <span style=''>  override def transformApply(tree: Apply)(implicit ctx: Context): Tree =
+</span>106 <span style=''>    </span><span style='background: #AEF1AE'>rewireIfNeeded(tree)</span><span style=''>
+</span>107 <span style=''>}
+</span></pre>
+          </div>
+          <div class="tab-pane" id="statementlist">
+            <table cellspacing="0" cellpadding="0" class="table statementlist">
+      <tr>
+        <th>Line</th>
+        <th>Stmt Id</th>
+        <th>Pos</th>
+        <th>Tree</th>
+        <th>Symbol</th>
+        <th>Code</th>
+      </tr><tr>
+        <td>
+          45
+        </td>
+        <td>
+          63921
+        </td>
+        <td>
+          1713
+          -
+          1730
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          &quot;vcInlineMethods&quot;
+        </td>
+      </tr><tr>
+        <td>
+          48
+        </td>
+        <td>
+          63922
+        </td>
+        <td>
+          1787
+          -
+          1867
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.generic.GenericCompanion.apply
+        </td>
+        <td style="background: #AEF1AE">
+          scala.Predef.Set.apply[Class[_ &lt;: dotty.tools.dotc.core.Phases.Phase]](classOf[dotty.tools.dotc.transform.ExtensionMethods], classOf[dotty.tools.dotc.transform.PatternMatcher], classOf[dotty.tools.dotc.transform.PhantomArgLift])
+        </td>
+      </tr><tr>
+        <td>
+          61
+        </td>
+        <td>
+          63923
+        </td>
+        <td>
+          2422
+          -
+          2459
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.transform.VCInlineMethods.rewire
+        </td>
+        <td style="background: #AEF1AE">
+          VCInlineMethods.this.rewire(qual, mtArgs, {
+  &lt;synthetic&gt; &lt;artifact&gt; val x$1: List[dotty.tools.dotc.ast.Trees.Tree[dotty.tools.dotc.core.Types.Type]] = mArgs;
+  mArgss.::[List[dotty.tools.dotc.ast.tpd.Tree]](x$1)
+})(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          63
+        </td>
+        <td>
+          63926
+        </td>
+        <td>
+          2507
+          -
+          2528
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Predef.assert
+        </td>
+        <td style="background: #AEF1AE">
+          scala.Predef.assert(mtArgs.==(scala.collection.immutable.Nil))
+        </td>
+      </tr><tr>
+        <td>
+          63
+        </td>
+        <td>
+          63925
+        </td>
+        <td>
+          2514
+          -
+          2527
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.Object.==
+        </td>
+        <td style="background: #AEF1AE">
+          mtArgs.==(scala.collection.immutable.Nil)
+        </td>
+      </tr><tr>
+        <td>
+          63
+        </td>
+        <td>
+          63924
+        </td>
+        <td>
+          2524
+          -
+          2527
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.collection.immutable.Nil
+        </td>
+        <td style="background: #AEF1AE">
+          scala.collection.immutable.Nil
+        </td>
+      </tr><tr>
+        <td>
+          64
+        </td>
+        <td>
+          63927
+        </td>
+        <td>
+          2537
+          -
+          2566
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.transform.VCInlineMethods.rewire
+        </td>
+        <td style="background: #AEF1AE">
+          VCInlineMethods.this.rewire(qual, mtArgs2, mArgss)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          66
+        </td>
+        <td>
+          63928
+        </td>
+        <td>
+          2626
+          -
+          2636
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Trees.Tree.symbol
+        </td>
+        <td style="background: #AEF1AE">
+          sel.symbol(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          67
+        </td>
+        <td>
+          63929
+        </td>
+        <td>
+          2659
+          -
+          2682
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.SymDenotations.SymDenotation.enclosingClass
+        </td>
+        <td style="background: #AEF1AE">
+          core.this.Symbols.toDenot(origMeth)(ctx).enclosingClass(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          68
+        </td>
+        <td>
+          63930
+        </td>
+        <td>
+          2706
+          -
+          2724
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.SymDenotations.SymDenotation.typeParams
+        </td>
+        <td style="background: #AEF1AE">
+          core.this.Symbols.toDenot(origCls)(ctx).typeParams(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          69
+        </td>
+        <td>
+          63931
+        </td>
+        <td>
+          2753
+          -
+          2778
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.transform.ExtensionMethods.extensionMethod
+        </td>
+        <td style="background: #AEF1AE">
+          ExtensionMethods.extensionMethod(origMeth)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          71
+        </td>
+        <td>
+          63932
+        </td>
+        <td>
+          2792
+          -
+          2809
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.Boolean.unary_!
+        </td>
+        <td style="background: #AEF1AE">
+          ctParams.isEmpty.unary_!
+        </td>
+      </tr><tr>
+        <td>
+          72
+        </td>
+        <td>
+          63934
+        </td>
+        <td>
+          2823
+          -
+          3123
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          dotty.tools.dotc.ast.tpd.evalOnce
+        </td>
+        <td style="background: #AEF1AE">
+          ast.tpd.evalOnce(qual)(((ev: dotty.tools.dotc.ast.tpd.Tree) =&gt; {
+  val ctArgs: List[dotty.tools.dotc.ast.tpd.TypeTree] = ctParams.map[dotty.tools.dotc.ast.tpd.TypeTree, List[dotty.tools.dotc.ast.tpd.TypeTree]](((tparam: dotty.tools.dotc.core.Symbols.TypeSymbol) =&gt; ast.tpd.TypeTree(core.this.Symbols.toDenot(tparam)(ctx).typeRef(ctx).asSeenFrom(ev.tpe, origCls)(ctx))(ctx)))(immutable.this.List.canBuildFrom[dotty.tools.dotc.ast.tpd.TypeTree]);
+  ast.tpd.TreeOps[dotty.tools.dotc.ast.tpd.Tree](ast.tpd.TreeOps[dotty.tools.dotc.ast.tpd.Tree](ast.tpd.TreeOps[dotty.tools.dotc.ast.tpd.Tree](ast.tpd.ref(extensionMeth)(ctx)).appliedToTypeTrees(mtArgs.++[dotty.tools.dotc.ast.tpd.Tree, List[dotty.tools.dotc.ast.tpd.Tree]](ctArgs)(immutable.this.List.canBuildFrom[dotty.tools.dotc.ast.tpd.Tree]))(ctx)).appliedTo(ev)(ctx)).appliedToArgss(mArgss)(ctx)
+}))(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          72
+        </td>
+        <td>
+          63933
+        </td>
+        <td>
+          2823
+          -
+          3123
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.tpd.evalOnce
+        </td>
+        <td style="background: #AEF1AE">
+          ast.tpd.evalOnce(qual)(((ev: dotty.tools.dotc.ast.tpd.Tree) =&gt; {
+  val ctArgs: List[dotty.tools.dotc.ast.tpd.TypeTree] = ctParams.map[dotty.tools.dotc.ast.tpd.TypeTree, List[dotty.tools.dotc.ast.tpd.TypeTree]](((tparam: dotty.tools.dotc.core.Symbols.TypeSymbol) =&gt; ast.tpd.TypeTree(core.this.Symbols.toDenot(tparam)(ctx).typeRef(ctx).asSeenFrom(ev.tpe, origCls)(ctx))(ctx)))(immutable.this.List.canBuildFrom[dotty.tools.dotc.ast.tpd.TypeTree]);
+  ast.tpd.TreeOps[dotty.tools.dotc.ast.tpd.Tree](ast.tpd.TreeOps[dotty.tools.dotc.ast.tpd.Tree](ast.tpd.TreeOps[dotty.tools.dotc.ast.tpd.Tree](ast.tpd.ref(extensionMeth)(ctx)).appliedToTypeTrees(mtArgs.++[dotty.tools.dotc.ast.tpd.Tree, List[dotty.tools.dotc.ast.tpd.Tree]](ctArgs)(immutable.this.List.canBuildFrom[dotty.tools.dotc.ast.tpd.Tree]))(ctx)).appliedTo(ev)(ctx)).appliedToArgss(mArgss)(ctx)
+}))(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          84
+        </td>
+        <td>
+          63936
+        </td>
+        <td>
+          3151
+          -
+          3274
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          dotty.tools.dotc.ast.tpd.TreeOps.appliedToArgss
+        </td>
+        <td style="background: #AEF1AE">
+          ast.tpd.TreeOps[dotty.tools.dotc.ast.tpd.Tree](ast.tpd.TreeOps[dotty.tools.dotc.ast.tpd.Tree](ast.tpd.TreeOps[dotty.tools.dotc.ast.tpd.Tree](ast.tpd.ref(extensionMeth)(ctx)).appliedToTypeTrees(mtArgs)(ctx)).appliedTo(qual)(ctx)).appliedToArgss(mArgss)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          84
+        </td>
+        <td>
+          63935
+        </td>
+        <td>
+          3151
+          -
+          3274
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.tpd.TreeOps.appliedToArgss
+        </td>
+        <td style="background: #AEF1AE">
+          ast.tpd.TreeOps[dotty.tools.dotc.ast.tpd.Tree](ast.tpd.TreeOps[dotty.tools.dotc.ast.tpd.Tree](ast.tpd.TreeOps[dotty.tools.dotc.ast.tpd.Tree](ast.tpd.ref(extensionMeth)(ctx)).appliedToTypeTrees(mtArgs)(ctx)).appliedTo(qual)(ctx)).appliedToArgss(mArgss)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          91
+        </td>
+        <td>
+          63937
+        </td>
+        <td>
+          3532
+          -
+          3546
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.Types.Type.widen
+        </td>
+        <td style="background: #AEF1AE">
+          tree.tpe.widen(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          95
+        </td>
+        <td>
+          63938
+        </td>
+        <td>
+          3680
+          -
+          3714
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.transform.ValueClasses.isMethodWithExtension
+        </td>
+        <td style="background: #AEF1AE">
+          ValueClasses.isMethodWithExtension(core.this.Symbols.toDenot(tree.symbol(ctx))(ctx))(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          96
+        </td>
+        <td>
+          63940
+        </td>
+        <td>
+          3724
+          -
+          3761
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          dotty.tools.dotc.ast.tpd.TreeOps.ensureConforms
+        </td>
+        <td style="background: #AEF1AE">
+          ast.tpd.TreeOps[dotty.tools.dotc.ast.tpd.Tree](VCInlineMethods.this.rewire(tree, VCInlineMethods.this.rewire$default$2, VCInlineMethods.this.rewire$default$3)(ctx)).ensureConforms(tree.tpe)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          96
+        </td>
+        <td>
+          63939
+        </td>
+        <td>
+          3724
+          -
+          3761
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.tpd.TreeOps.ensureConforms
+        </td>
+        <td style="background: #AEF1AE">
+          ast.tpd.TreeOps[dotty.tools.dotc.ast.tpd.Tree](VCInlineMethods.this.rewire(tree, VCInlineMethods.this.rewire$default$2, VCInlineMethods.this.rewire$default$3)(ctx)).ensureConforms(tree.tpe)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          98
+        </td>
+        <td>
+          63941
+        </td>
+        <td>
+          3781
+          -
+          3785
+        </td>
+        <td>
+          Ident
+        </td>
+        <td>
+          dotty.tools.dotc.transform.VCInlineMethods.tree
+        </td>
+        <td style="background: #AEF1AE">
+          tree
+        </td>
+      </tr><tr>
+        <td>
+          102
+        </td>
+        <td>
+          63942
+        </td>
+        <td>
+          3871
+          -
+          3891
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.transform.VCInlineMethods.rewireIfNeeded
+        </td>
+        <td style="background: #AEF1AE">
+          VCInlineMethods.this.rewireIfNeeded(tree)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          104
+        </td>
+        <td>
+          63943
+        </td>
+        <td>
+          3978
+          -
+          3998
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.transform.VCInlineMethods.rewireIfNeeded
+        </td>
+        <td style="background: #AEF1AE">
+          VCInlineMethods.this.rewireIfNeeded(tree)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          106
+        </td>
+        <td>
+          63944
+        </td>
+        <td>
+          4077
+          -
+          4097
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.transform.VCInlineMethods.rewireIfNeeded
+        </td>
+        <td style="background: #AEF1AE">
+          VCInlineMethods.this.rewireIfNeeded(tree)(ctx)
+        </td>
+      </tr>
+    </table>
+          </div>
+        </div>
+      </body>
+    </html>

@@ -1,0 +1,2631 @@
+<html>
+      <head>
+        <meta http-equiv="Content-Type" content="text/html; charset=utf-8"/>
+        <title id="title">
+          dotty/tools/dotc/typer/EtaExpansion.scala.html
+        </title>
+        <script src="https://ajax.googleapis.com/ajax/libs/jquery/1.10.2/jquery.min.js"></script><link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/jquery.tablesorter/2.20.1/css/theme.default.min.css" type="text/css"/><script src="https://cdnjs.cloudflare.com/ajax/libs/jquery.tablesorter/2.20.1/js/jquery.tablesorter.min.js"></script><link rel="stylesheet" href="https://netdna.bootstrapcdn.com/bootstrap/3.0.3/css/bootstrap.min.css" type="text/css"/><script src="https://netdna.bootstrapcdn.com/bootstrap/3.0.3/js/bootstrap.min.js"></script><script type="text/javascript">
+        $(document).ready(function() {$(".tablesorter").tablesorter();});
+      </script>
+        <style>
+          table.codegrid { font-family: monospace; font-size: 12px; width: auto!important; }table.statementlist { width: auto!important; font-size: 13px; } table.codegrid td { padding: 0!important; border: 0!important } table td.linenumber { width: 40px!important; } 
+        </style>
+      </head>
+      <body style="font-family: monospace;">
+        <ul class="nav nav-tabs">
+          <li>
+            <a href="#codegrid" data-toggle="tab">Codegrid</a>
+          </li>
+          <li>
+            <a href="#statementlist" data-toggle="tab">Statement List</a>
+          </li>
+        </ul>
+        <div class="tab-content">
+          <div class="tab-pane active" id="codegrid">
+            <pre style='font-size: 12pt; font-family: courier;'>1 <span style=''>package dotty.tools
+</span>2 <span style=''>package dotc
+</span>3 <span style=''>package typer
+</span>4 <span style=''>
+</span>5 <span style=''>import core._
+</span>6 <span style=''>import ast.{Trees, untpd, tpd, TreeInfo}
+</span>7 <span style=''>import Contexts._
+</span>8 <span style=''>import Types._
+</span>9 <span style=''>import Flags._
+</span>10 <span style=''>import NameOps._
+</span>11 <span style=''>import Symbols._
+</span>12 <span style=''>import Decorators._
+</span>13 <span style=''>import Names._
+</span>14 <span style=''>import StdNames._
+</span>15 <span style=''>import NameKinds.UniqueName
+</span>16 <span style=''>import Inferencing._
+</span>17 <span style=''>import util.Positions._
+</span>18 <span style=''>import collection.mutable
+</span>19 <span style=''>import Trees._
+</span>20 <span style=''>
+</span>21 <span style=''>/** A class that handles argument lifting. Argument lifting is needed in the following
+</span>22 <span style=''> *  scenarios:
+</span>23 <span style=''> *   - eta expansion
+</span>24 <span style=''> *   - applications with default arguments
+</span>25 <span style=''> *   - applications with out-of-order named arguments
+</span>26 <span style=''> *  Lifting generally lifts impure expressions only, except in the case of possible
+</span>27 <span style=''> *  default arguments, where we lift also complex pure expressions, since in that case
+</span>28 <span style=''> *  arguments can be duplicated as arguments to default argument methods.
+</span>29 <span style=''> */
+</span>30 <span style=''>abstract class Lifter {
+</span>31 <span style=''>  import tpd._
+</span>32 <span style=''>
+</span>33 <span style=''>  /** Test indicating `expr` does not need lifting */
+</span>34 <span style=''>  def noLift(expr: Tree)(implicit ctx: Context): Boolean
+</span>35 <span style=''>
+</span>36 <span style=''>  /** The corresponding lifter for pass-by-name arguments */
+</span>37 <span style=''>  protected def exprLifter: Lifter = NoLift
+</span>38 <span style=''>
+</span>39 <span style=''>  /** The flags of a lifted definition */
+</span>40 <span style=''>  protected def liftedFlags: FlagSet = </span><span style='background: #AEF1AE'>EmptyFlags</span><span style=''>
+</span>41 <span style=''>
+</span>42 <span style=''>  /** The tree of a lifted definition */
+</span>43 <span style=''>  protected def liftedDef(sym: TermSymbol, rhs: Tree)(implicit ctx: Context): MemberDef = </span><span style='background: #AEF1AE'>ValDef(sym, rhs)</span><span style=''>
+</span>44 <span style=''>
+</span>45 <span style=''>  private def lift(defs: mutable.ListBuffer[Tree], expr: Tree, prefix: TermName = EmptyTermName)(implicit ctx: Context): Tree =
+</span>46 <span style=''>    if (</span><span style='background: #AEF1AE'>noLift(expr)</span><span style=''>) </span><span style='background: #AEF1AE'>expr</span><span style=''>
+</span>47 <span style=''>    else </span><span style='background: #AEF1AE'>{
+</span>48 <span style=''></span><span style='background: #AEF1AE'>      val name = UniqueName.fresh(prefix)
+</span>49 <span style=''></span><span style='background: #AEF1AE'>      var liftedType = fullyDefinedType(expr.tpe.widen, &quot;lifted expression&quot;, expr.pos)
+</span>50 <span style=''></span><span style='background: #AEF1AE'>      if (liftedFlags.is(Method)) liftedType = ExprType(liftedType)
+</span>51 <span style=''></span><span style='background: #AEF1AE'>      val lifted = ctx.newSymbol(ctx.owner, name, liftedFlags, liftedType, coord = positionCoord(expr.pos))
+</span>52 <span style=''></span><span style='background: #AEF1AE'>      defs += liftedDef(lifted, expr).withPos(expr.pos.focus)
+</span>53 <span style=''></span><span style='background: #AEF1AE'>      ref(lifted.termRef).withPos(expr.pos)
+</span>54 <span style=''></span><span style='background: #AEF1AE'>    }</span><span style=''>
+</span>55 <span style=''>
+</span>56 <span style=''>  /** Lift out common part of lhs tree taking part in an operator assignment such as
+</span>57 <span style=''>   *
+</span>58 <span style=''>   *     lhs += expr
+</span>59 <span style=''>   */
+</span>60 <span style=''>  def liftAssigned(defs: mutable.ListBuffer[Tree], tree: Tree)(implicit ctx: Context): Tree = tree match {
+</span>61 <span style=''>    case Apply(MaybePoly(fn @ Select(pre, name), targs), args) =&gt;
+</span>62 <span style=''>      </span><span style='background: #AEF1AE'>cpy.Apply(tree)(
+</span>63 <span style=''></span><span style='background: #AEF1AE'>        cpy.Select(fn)(
+</span>64 <span style=''></span><span style='background: #AEF1AE'>          lift(defs, pre), name).appliedToTypeTrees(targs),
+</span>65 <span style=''></span><span style='background: #AEF1AE'>          liftArgs(defs, fn.tpe, args))</span><span style=''>
+</span>66 <span style=''>    case Select(pre, name) =&gt;
+</span>67 <span style=''>      </span><span style='background: #AEF1AE'>cpy.Select(tree)(lift(defs, pre), name)</span><span style=''>
+</span>68 <span style=''>    case _ =&gt;
+</span>69 <span style=''>      tree
+</span>70 <span style=''>  }
+</span>71 <span style=''>
+</span>72 <span style=''>  /** Lift a function argument, stripping any NamedArg wrapper */
+</span>73 <span style=''>  private def liftArg(defs: mutable.ListBuffer[Tree], arg: Tree, prefix: TermName = EmptyTermName)(implicit ctx: Context): Tree =
+</span>74 <span style=''>    arg match {
+</span>75 <span style=''>      case arg @ NamedArg(name, arg1) =&gt; </span><span style='background: #AEF1AE'>cpy.NamedArg(arg)(name, lift(defs, arg1, prefix))</span><span style=''>
+</span>76 <span style=''>      case arg =&gt; </span><span style='background: #AEF1AE'>lift(defs, arg, prefix)</span><span style=''>
+</span>77 <span style=''>    }
+</span>78 <span style=''>
+</span>79 <span style=''>  /** Lift arguments that are not-idempotent into ValDefs in buffer `defs`
+</span>80 <span style=''>   *  and replace by the idents of so created ValDefs.
+</span>81 <span style=''>   */
+</span>82 <span style=''>  def liftArgs(defs: mutable.ListBuffer[Tree], methRef: Type, args: List[Tree])(implicit ctx: Context) =
+</span>83 <span style=''>    </span><span style='background: #AEF1AE'>methRef.widen</span><span style=''> match {
+</span>84 <span style=''>      case mt: MethodType =&gt;
+</span>85 <span style=''>        </span><span style='background: #AEF1AE'>(args, mt.paramNames, mt.paramInfos).zipped.map { (arg, name, tp) =&gt;
+</span>86 <span style=''></span><span style='background: #AEF1AE'>          val lifter = if (tp.isInstanceOf[ExprType]) exprLifter else this
+</span>87 <span style=''></span><span style='background: #AEF1AE'>          lifter.liftArg(defs, arg, if (name.firstPart contains '$') EmptyTermName else name)
+</span>88 <span style=''></span><span style='background: #AEF1AE'>        }</span><span style=''>
+</span>89 <span style=''>      case _ =&gt;
+</span>90 <span style=''>        </span><span style='background: #AEF1AE'>args.map(liftArg(defs, _))</span><span style=''>
+</span>91 <span style=''>    }
+</span>92 <span style=''>
+</span>93 <span style=''>  /** Lift out function prefix and all arguments from application
+</span>94 <span style=''>   *
+</span>95 <span style=''>   *     pre.f(arg1, ..., argN)   becomes
+</span>96 <span style=''>   *
+</span>97 <span style=''>   *     val x0 = pre
+</span>98 <span style=''>   *     val x1 = arg1
+</span>99 <span style=''>   *     ...
+</span>100 <span style=''>   *     val xN = argN
+</span>101 <span style=''>   *     x0.f(x1, ..., xN)
+</span>102 <span style=''>   *
+</span>103 <span style=''>   *  But leave pure expressions alone.
+</span>104 <span style=''>   *
+</span>105 <span style=''>   */
+</span>106 <span style=''>  def liftApp(defs: mutable.ListBuffer[Tree], tree: Tree)(implicit ctx: Context): Tree = tree match {
+</span>107 <span style=''>    case Apply(fn, args) =&gt;
+</span>108 <span style=''>      </span><span style='background: #AEF1AE'>cpy.Apply(tree)(liftApp(defs, fn), liftArgs(defs, fn.tpe, args))</span><span style=''>
+</span>109 <span style=''>    case TypeApply(fn, targs) =&gt;
+</span>110 <span style=''>      </span><span style='background: #AEF1AE'>cpy.TypeApply(tree)(liftApp(defs, fn), targs)</span><span style=''>
+</span>111 <span style=''>    case Select(pre, name) if </span><span style='background: #AEF1AE'>isPureRef(tree)</span><span style=''> =&gt;
+</span>112 <span style=''>      </span><span style='background: #AEF1AE'>cpy.Select(tree)(liftPrefix(defs, pre), name)</span><span style=''>
+</span>113 <span style=''>    case Block(stats, expr) =&gt;
+</span>114 <span style=''>      </span><span style='background: #AEF1AE'>liftApp(defs ++= stats, expr)</span><span style=''>
+</span>115 <span style=''>    case New(tpt) =&gt;
+</span>116 <span style=''>      tree
+</span>117 <span style=''>    case _ =&gt;
+</span>118 <span style=''>      </span><span style='background: #AEF1AE'>lift(defs, tree)</span><span style=''>
+</span>119 <span style=''>  }
+</span>120 <span style=''>
+</span>121 <span style=''>  /** Lift prefix `pre` of an application `pre.f(...)` to
+</span>122 <span style=''>   *
+</span>123 <span style=''>   *     val x0 = pre
+</span>124 <span style=''>   *     x0.f(...)
+</span>125 <span style=''>   *
+</span>126 <span style=''>   *  unless `pre` is a `New` or `pre` is idempotent.
+</span>127 <span style=''>   */
+</span>128 <span style=''>  def liftPrefix(defs: mutable.ListBuffer[Tree], tree: Tree)(implicit ctx: Context): Tree = tree match {
+</span>129 <span style=''>    case New(_) =&gt; tree
+</span>130 <span style=''>    case _ =&gt; if (</span><span style='background: #AEF1AE'>isIdempotentExpr(tree)</span><span style=''>) </span><span style='background: #AEF1AE'>tree</span><span style=''> else </span><span style='background: #AEF1AE'>lift(defs, tree)</span><span style=''>
+</span>131 <span style=''>  }
+</span>132 <span style=''>}
+</span>133 <span style=''>
+</span>134 <span style=''>/** No lifting at all */
+</span>135 <span style=''>object NoLift extends Lifter {
+</span>136 <span style=''>  def noLift(expr: tpd.Tree)(implicit ctx: Context) = </span><span style='background: #AEF1AE'>true</span><span style=''>
+</span>137 <span style=''>}
+</span>138 <span style=''>
+</span>139 <span style=''>/** Lift all impure arguments */
+</span>140 <span style=''>class LiftImpure extends Lifter {
+</span>141 <span style=''>  def noLift(expr: tpd.Tree)(implicit ctx: Context) = </span><span style='background: #AEF1AE'>tpd.isPureExpr(expr)</span><span style=''>
+</span>142 <span style=''>}
+</span>143 <span style=''>object LiftImpure extends LiftImpure
+</span>144 <span style=''>
+</span>145 <span style=''>/** Lift all impure or complex arguments */
+</span>146 <span style=''>class LiftComplex extends Lifter {
+</span>147 <span style=''>  def noLift(expr: tpd.Tree)(implicit ctx: Context) = </span><span style='background: #AEF1AE'>tpd.isSimplyPure(expr)</span><span style=''>
+</span>148 <span style=''>  override def exprLifter = LiftToDefs
+</span>149 <span style=''>}
+</span>150 <span style=''>object LiftComplex extends LiftComplex
+</span>151 <span style=''>
+</span>152 <span style=''>/** Lift all impure or complex arguments to `def`s */
+</span>153 <span style=''>object LiftToDefs extends LiftComplex {
+</span>154 <span style=''>  override def liftedFlags: FlagSet = </span><span style='background: #AEF1AE'>Method</span><span style=''>
+</span>155 <span style=''>  override def liftedDef(sym: TermSymbol, rhs: tpd.Tree)(implicit ctx: Context) = </span><span style='background: #AEF1AE'>tpd.DefDef(sym, rhs)</span><span style=''>
+</span>156 <span style=''>}
+</span>157 <span style=''>
+</span>158 <span style=''>/** Lifter for eta expansion */
+</span>159 <span style=''>object EtaExpansion extends LiftImpure {
+</span>160 <span style=''>  import tpd._
+</span>161 <span style=''>
+</span>162 <span style=''>  /** Eta-expanding a tree means converting a method reference to a function value.
+</span>163 <span style=''>   *  @param    tree       The tree to expand
+</span>164 <span style=''>   *  @param    mt         The type of the method reference
+</span>165 <span style=''>   *  @param    xarity     The arity of the expected function type
+</span>166 <span style=''>   *  and assume the lifted application of `tree` (@see liftApp) is
+</span>167 <span style=''>   *
+</span>168 <span style=''>   *         { val xs = es; expr }
+</span>169 <span style=''>   *
+</span>170 <span style=''>   *  If xarity matches the number of parameters in `mt`, the eta-expansion is
+</span>171 <span style=''>   *
+</span>172 <span style=''>   *         { val xs = es; (x1, ..., xn) =&gt; expr(x1, ..., xn) }
+</span>173 <span style=''>   *
+</span>174 <span style=''>   * Note that the function value's parameters are untyped, hence the type will
+</span>175 <span style=''>   * be supplied by the environment (or if missing be supplied by the target
+</span>176 <span style=''>   * method as a fallback). On the other hand, if `xarity` is different from
+</span>177 <span style=''>   * the number of parameters in `mt`, then we cannot propagate parameter types
+</span>178 <span style=''>   * from the expected type, and we fallback to using the method's original
+</span>179 <span style=''>   * parameter types instead.
+</span>180 <span style=''>   *
+</span>181 <span style=''>   * In either case, the result is an untyped tree, with `es` and `expr` as typed splices.
+</span>182 <span style=''>   */
+</span>183 <span style=''>  def etaExpand(tree: Tree, mt: MethodType, xarity: Int)(implicit ctx: Context): untpd.Tree = {
+</span>184 <span style=''>    import untpd._
+</span>185 <span style=''>    </span><span style='background: #AEF1AE'>assert(!ctx.isAfterTyper)</span><span style=''>
+</span>186 <span style=''>    val defs = </span><span style='background: #AEF1AE'>new mutable.ListBuffer[tpd.Tree]</span><span style=''>
+</span>187 <span style=''>    val lifted: Tree = </span><span style='background: #AEF1AE'>TypedSplice(liftApp(defs, tree))</span><span style=''>
+</span>188 <span style=''>    val paramTypes: List[Tree] =
+</span>189 <span style=''>      if (</span><span style='background: #AEF1AE'>mt.paramInfos.length == xarity</span><span style=''>) </span><span style='background: #AEF1AE'>mt.paramInfos map (_ =&gt; TypeTree())</span><span style=''>
+</span>190 <span style=''>      else </span><span style='background: #AEF1AE'>mt.paramInfos map TypeTree</span><span style=''>
+</span>191 <span style=''>    val params = </span><span style='background: #AEF1AE'>(mt.paramNames, paramTypes).zipped.map((name, tpe) =&gt;
+</span>192 <span style=''></span><span style='background: #AEF1AE'>      ValDef(name, tpe, EmptyTree).withFlags(Synthetic | Param).withPos(tree.pos.startPos))</span><span style=''>
+</span>193 <span style=''>    var ids: List[Tree] = </span><span style='background: #AEF1AE'>mt.paramNames map (name =&gt; Ident(name).withPos(tree.pos.startPos))</span><span style=''>
+</span>194 <span style=''>    if (</span><span style='background: #AEF1AE'>mt.paramInfos.nonEmpty &amp;&amp; mt.paramInfos.last.isRepeatedParam</span><span style=''>)
+</span>195 <span style=''>      </span><span style='background: #AEF1AE'>ids = ids.init :+ repeated(ids.last)</span><span style=''>
+</span>196 <span style=''>    var body: Tree = </span><span style='background: #AEF1AE'>Apply(lifted, ids)</span><span style=''>
+</span>197 <span style=''>    </span><span style='background: #AEF1AE'>mt.resultType</span><span style=''> match {
+</span>198 <span style=''>      case rt: MethodType if </span><span style='background: #AEF1AE'>!rt.isImplicitMethod</span><span style=''> =&gt; body = </span><span style='background: #AEF1AE'>PostfixOp(body, Ident(nme.WILDCARD))</span><span style=''>
+</span>199 <span style=''>      case _ </span><span style='background: #AEF1AE'>=&gt;</span><span style=''>
+</span>200 <span style=''>    }
+</span>201 <span style=''>    val fn = </span><span style='background: #AEF1AE'>untpd.Function(params, body)</span><span style=''>
+</span>202 <span style=''>    if (</span><span style='background: #AEF1AE'>defs.nonEmpty</span><span style=''>) </span><span style='background: #AEF1AE'>untpd.Block(defs.toList map (untpd.TypedSplice(_)), fn)</span><span style=''> else </span><span style='background: #AEF1AE'>fn</span><span style=''>
+</span>203 <span style=''>  }
+</span>204 <span style=''>}
+</span></pre>
+          </div>
+          <div class="tab-pane" id="statementlist">
+            <table cellspacing="0" cellpadding="0" class="table statementlist">
+      <tr>
+        <th>Line</th>
+        <th>Stmt Id</th>
+        <th>Pos</th>
+        <th>Tree</th>
+        <th>Symbol</th>
+        <th>Code</th>
+      </tr><tr>
+        <td>
+          40
+        </td>
+        <td>
+          69189
+        </td>
+        <td>
+          1161
+          -
+          1171
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Flags.EmptyFlags
+        </td>
+        <td style="background: #AEF1AE">
+          core.Flags.EmptyFlags
+        </td>
+      </tr><tr>
+        <td>
+          43
+        </td>
+        <td>
+          69190
+        </td>
+        <td>
+          1304
+          -
+          1320
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.tpd.ValDef
+        </td>
+        <td style="background: #AEF1AE">
+          ast.tpd.ValDef(sym, rhs)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          46
+        </td>
+        <td>
+          69192
+        </td>
+        <td>
+          1472
+          -
+          1476
+        </td>
+        <td>
+          Ident
+        </td>
+        <td>
+          dotty.tools.dotc.typer.Lifter.expr
+        </td>
+        <td style="background: #AEF1AE">
+          expr
+        </td>
+      </tr><tr>
+        <td>
+          46
+        </td>
+        <td>
+          69191
+        </td>
+        <td>
+          1458
+          -
+          1470
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.typer.Lifter.noLift
+        </td>
+        <td style="background: #AEF1AE">
+          Lifter.this.noLift(expr)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          47
+        </td>
+        <td>
+          69213
+        </td>
+        <td>
+          1486
+          -
+          1904
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          {
+  val name: dotty.tools.dotc.core.Names.TermName = core.NameKinds.UniqueName.fresh(prefix)(ctx);
+  var liftedType: dotty.tools.dotc.core.Types.Type = Inferencing.fullyDefinedType(expr.tpe.widen(ctx), &quot;lifted expression&quot;, expr.pos)(ctx);
+  if (Lifter.this.liftedFlags.is(core.Flags.Method))
+    liftedType = core.Types.ExprType.apply(liftedType)(ctx)
+  else
+    ();
+  val lifted: dotty.tools.dotc.core.Symbols.Symbol{type ThisName = dotty.tools.dotc.core.Names.TermName} = {
+    &lt;artifact&gt; val x$4: dotty.tools.dotc.core.Symbols.Symbol = ctx.owner;
+    &lt;artifact&gt; val x$5: dotty.tools.dotc.core.Names.TermName = name;
+    &lt;artifact&gt; val x$6: dotty.tools.dotc.core.Flags.FlagSet = Lifter.this.liftedFlags;
+    &lt;artifact&gt; val x$7: dotty.tools.dotc.core.Types.Type = liftedType;
+    &lt;artifact&gt; val x$8: dotty.tools.dotc.util.Positions.Coord = util.Positions.positionCoord(expr.pos);
+    &lt;artifact&gt; val x$9: dotty.tools.dotc.core.Symbols.Symbol = ctx.newSymbol$default$5[Nothing];
+    ctx.newSymbol[dotty.tools.dotc.core.Names.TermName](x$4, x$5, x$6, x$7, x$9, x$8)
+  };
+  defs.+=(Lifter.this.liftedDef(lifted, expr)(ctx).withPos(expr.pos.focus));
+  ast.tpd.ref(core.Symbols.toDenot(lifted)(ctx).termRef(ctx))(ctx).withPos(expr.pos)
+}
+        </td>
+      </tr><tr>
+        <td>
+          48
+        </td>
+        <td>
+          69193
+        </td>
+        <td>
+          1505
+          -
+          1529
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.NameKinds.UniqueNameKind.fresh
+        </td>
+        <td style="background: #AEF1AE">
+          core.NameKinds.UniqueName.fresh(prefix)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          49
+        </td>
+        <td>
+          69194
+        </td>
+        <td>
+          1553
+          -
+          1616
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.typer.Inferencing.fullyDefinedType
+        </td>
+        <td style="background: #AEF1AE">
+          Inferencing.fullyDefinedType(expr.tpe.widen(ctx), &quot;lifted expression&quot;, expr.pos)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          50
+        </td>
+        <td>
+          69196
+        </td>
+        <td>
+          1627
+          -
+          1649
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.core.Flags.FlagSet.is
+        </td>
+        <td style="background: #AEF1AE">
+          Lifter.this.liftedFlags.is(core.Flags.Method)
+        </td>
+      </tr><tr>
+        <td>
+          50
+        </td>
+        <td>
+          69199
+        </td>
+        <td>
+          1623
+          -
+          1623
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          ()
+        </td>
+      </tr><tr>
+        <td>
+          50
+        </td>
+        <td>
+          69195
+        </td>
+        <td>
+          1642
+          -
+          1648
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Flags.Method
+        </td>
+        <td style="background: #AEF1AE">
+          core.Flags.Method
+        </td>
+      </tr><tr>
+        <td>
+          50
+        </td>
+        <td>
+          69198
+        </td>
+        <td>
+          1651
+          -
+          1684
+        </td>
+        <td>
+          Assign
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          liftedType = core.Types.ExprType.apply(liftedType)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          50
+        </td>
+        <td>
+          69197
+        </td>
+        <td>
+          1664
+          -
+          1684
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.Types.ExprType.apply
+        </td>
+        <td style="background: #AEF1AE">
+          core.Types.ExprType.apply(liftedType)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          50
+        </td>
+        <td>
+          69200
+        </td>
+        <td>
+          1623
+          -
+          1623
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          ()
+        </td>
+      </tr><tr>
+        <td>
+          51
+        </td>
+        <td>
+          69205
+        </td>
+        <td>
+          1708
+          -
+          1708
+        </td>
+        <td>
+          TypeApply
+        </td>
+        <td>
+          dotty.tools.dotc.core.Symbols.newSymbol$default$5
+        </td>
+        <td style="background: #AEF1AE">
+          ctx.newSymbol$default$5[Nothing]
+        </td>
+      </tr><tr>
+        <td>
+          51
+        </td>
+        <td>
+          69202
+        </td>
+        <td>
+          1735
+          -
+          1746
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.typer.Lifter.liftedFlags
+        </td>
+        <td style="background: #AEF1AE">
+          Lifter.this.liftedFlags
+        </td>
+      </tr><tr>
+        <td>
+          51
+        </td>
+        <td>
+          69201
+        </td>
+        <td>
+          1718
+          -
+          1727
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Contexts.Context.owner
+        </td>
+        <td style="background: #AEF1AE">
+          ctx.owner
+        </td>
+      </tr><tr>
+        <td>
+          51
+        </td>
+        <td>
+          69204
+        </td>
+        <td>
+          1768
+          -
+          1791
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.util.Positions.positionCoord
+        </td>
+        <td style="background: #AEF1AE">
+          util.Positions.positionCoord(expr.pos)
+        </td>
+      </tr><tr>
+        <td>
+          51
+        </td>
+        <td>
+          69206
+        </td>
+        <td>
+          1704
+          -
+          1792
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.core.Symbols.newSymbol
+        </td>
+        <td style="background: #AEF1AE">
+          ctx.newSymbol[dotty.tools.dotc.core.Names.TermName](x$4, x$5, x$6, x$7, x$9, x$8)
+        </td>
+      </tr><tr>
+        <td>
+          51
+        </td>
+        <td>
+          69203
+        </td>
+        <td>
+          1782
+          -
+          1790
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Positioned.pos
+        </td>
+        <td style="background: #AEF1AE">
+          expr.pos
+        </td>
+      </tr><tr>
+        <td>
+          52
+        </td>
+        <td>
+          69208
+        </td>
+        <td>
+          1807
+          -
+          1854
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Positioned.withPos
+        </td>
+        <td style="background: #AEF1AE">
+          Lifter.this.liftedDef(lifted, expr)(ctx).withPos(expr.pos.focus)
+        </td>
+      </tr><tr>
+        <td>
+          52
+        </td>
+        <td>
+          69207
+        </td>
+        <td>
+          1839
+          -
+          1853
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.util.Positions.Position.focus
+        </td>
+        <td style="background: #AEF1AE">
+          expr.pos.focus
+        </td>
+      </tr><tr>
+        <td>
+          52
+        </td>
+        <td>
+          69209
+        </td>
+        <td>
+          1799
+          -
+          1854
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.mutable.ListBuffer.+=
+        </td>
+        <td style="background: #AEF1AE">
+          defs.+=(Lifter.this.liftedDef(lifted, expr)(ctx).withPos(expr.pos.focus))
+        </td>
+      </tr><tr>
+        <td>
+          53
+        </td>
+        <td>
+          69211
+        </td>
+        <td>
+          1889
+          -
+          1897
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Positioned.pos
+        </td>
+        <td style="background: #AEF1AE">
+          expr.pos
+        </td>
+      </tr><tr>
+        <td>
+          53
+        </td>
+        <td>
+          69210
+        </td>
+        <td>
+          1865
+          -
+          1879
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.SymDenotations.SymDenotation.termRef
+        </td>
+        <td style="background: #AEF1AE">
+          core.Symbols.toDenot(lifted)(ctx).termRef(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          53
+        </td>
+        <td>
+          69212
+        </td>
+        <td>
+          1861
+          -
+          1898
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Positioned.withPos
+        </td>
+        <td style="background: #AEF1AE">
+          ast.tpd.ref(core.Symbols.toDenot(lifted)(ctx).termRef(ctx))(ctx).withPos(expr.pos)
+        </td>
+      </tr><tr>
+        <td>
+          62
+        </td>
+        <td>
+          69214
+        </td>
+        <td>
+          2202
+          -
+          2342
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.tpd.TypedTreeCopier.Apply
+        </td>
+        <td style="background: #AEF1AE">
+          ast.tpd.cpy.Apply(tree)(ast.tpd.TreeOps[dotty.tools.dotc.ast.tpd.Select](ast.tpd.cpy.Select(fn)(Lifter.this.lift(defs, pre, Lifter.this.lift$default$3)(ctx), name)(ctx)).appliedToTypeTrees(targs)(ctx), Lifter.this.liftArgs(defs, fn.tpe, args)(ctx))(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          67
+        </td>
+        <td>
+          69215
+        </td>
+        <td>
+          2379
+          -
+          2418
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.tpd.TypedTreeCopier.Select
+        </td>
+        <td style="background: #AEF1AE">
+          ast.tpd.cpy.Select(tree)(Lifter.this.lift(defs, pre, Lifter.this.lift$default$3)(ctx), name)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          75
+        </td>
+        <td>
+          69216
+        </td>
+        <td>
+          2702
+          -
+          2751
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.tpd.TypedTreeCopier.NamedArg
+        </td>
+        <td style="background: #AEF1AE">
+          ast.tpd.cpy.NamedArg(arg)(name, Lifter.this.lift(defs, arg1, prefix)(ctx))(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          76
+        </td>
+        <td>
+          69217
+        </td>
+        <td>
+          2770
+          -
+          2793
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.typer.Lifter.lift
+        </td>
+        <td style="background: #AEF1AE">
+          Lifter.this.lift(defs, arg, prefix)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          83
+        </td>
+        <td>
+          69218
+        </td>
+        <td>
+          3046
+          -
+          3059
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.Types.Type.widen
+        </td>
+        <td style="background: #AEF1AE">
+          methRef.widen(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          85
+        </td>
+        <td>
+          69220
+        </td>
+        <td>
+          3127
+          -
+          3140
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Types.MethodType.paramInfos
+        </td>
+        <td style="background: #AEF1AE">
+          mt.paramInfos
+        </td>
+      </tr><tr>
+        <td>
+          85
+        </td>
+        <td>
+          69223
+        </td>
+        <td>
+          3142
+          -
+          3142
+        </td>
+        <td>
+          TypeApply
+        </td>
+        <td>
+          scala.Predef.$conforms
+        </td>
+        <td style="background: #AEF1AE">
+          scala.Predef.$conforms[List[dotty.tools.dotc.core.Names.TermName]]
+        </td>
+      </tr><tr>
+        <td>
+          85
+        </td>
+        <td>
+          69219
+        </td>
+        <td>
+          3112
+          -
+          3125
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Types.MethodType.paramNames
+        </td>
+        <td style="background: #AEF1AE">
+          mt.paramNames
+        </td>
+      </tr><tr>
+        <td>
+          85
+        </td>
+        <td>
+          69222
+        </td>
+        <td>
+          3142
+          -
+          3142
+        </td>
+        <td>
+          TypeApply
+        </td>
+        <td>
+          scala.Predef.$conforms
+        </td>
+        <td style="background: #AEF1AE">
+          scala.Predef.$conforms[List[dotty.tools.dotc.ast.tpd.Tree]]
+        </td>
+      </tr><tr>
+        <td>
+          85
+        </td>
+        <td>
+          69231
+        </td>
+        <td>
+          3105
+          -
+          3352
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          scala.runtime.Tuple3Zipped.map
+        </td>
+        <td style="background: #AEF1AE">
+          scala.Predef.tuple3ToZippedOps[List[dotty.tools.dotc.ast.tpd.Tree], List[dotty.tools.dotc.core.Names.TermName], List[dotty.tools.dotc.core.Types.Type]](scala.Tuple3.apply[List[dotty.tools.dotc.ast.tpd.Tree], List[dotty.tools.dotc.core.Names.TermName], List[dotty.tools.dotc.core.Types.Type]](args, mt.paramNames, mt.paramInfos)).zipped[dotty.tools.dotc.ast.tpd.Tree, List[dotty.tools.dotc.ast.tpd.Tree], dotty.tools.dotc.core.Names.TermName, List[dotty.tools.dotc.core.Names.TermName], dotty.tools.dotc.core.Types.Type, List[dotty.tools.dotc.core.Types.Type]](scala.Predef.$conforms[List[dotty.tools.dotc.ast.tpd.Tree]], scala.Predef.$conforms[List[dotty.tools.dotc.core.Names.TermName]], scala.Predef.$conforms[List[dotty.tools.dotc.core.Types.Type]]).map[dotty.tools.dotc.ast.tpd.Tree, List[dotty.tools.dotc.ast.tpd.Tree]](((arg: dotty.tools.dotc.ast.tpd.Tree, name: dotty.tools.dotc.core.Names.TermName, tp: dotty.tools.dotc.core.Types.Type) =&gt; {
+  val lifter: dotty.tools.dotc.typer.Lifter = if (tp.isInstanceOf[dotty.tools.dotc.core.Types.ExprType])
+    Lifter.this.exprLifter
+  else
+    this;
+  lifter.liftArg(defs, arg, if (name.firstPart.contains('$'))
+    core.Names.EmptyTermName
+  else
+    name)(ctx)
+}))(immutable.this.List.canBuildFrom[dotty.tools.dotc.ast.tpd.Tree])
+        </td>
+      </tr><tr>
+        <td>
+          85
+        </td>
+        <td>
+          69224
+        </td>
+        <td>
+          3142
+          -
+          3142
+        </td>
+        <td>
+          TypeApply
+        </td>
+        <td>
+          scala.Predef.$conforms
+        </td>
+        <td style="background: #AEF1AE">
+          scala.Predef.$conforms[List[dotty.tools.dotc.core.Types.Type]]
+        </td>
+      </tr><tr>
+        <td>
+          85
+        </td>
+        <td>
+          69230
+        </td>
+        <td>
+          3153
+          -
+          3153
+        </td>
+        <td>
+          TypeApply
+        </td>
+        <td>
+          scala.collection.immutable.List.canBuildFrom
+        </td>
+        <td style="background: #AEF1AE">
+          immutable.this.List.canBuildFrom[dotty.tools.dotc.ast.tpd.Tree]
+        </td>
+      </tr><tr>
+        <td>
+          85
+        </td>
+        <td>
+          69221
+        </td>
+        <td>
+          3105
+          -
+          3141
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Tuple3.apply
+        </td>
+        <td style="background: #AEF1AE">
+          scala.Tuple3.apply[List[dotty.tools.dotc.ast.tpd.Tree], List[dotty.tools.dotc.core.Names.TermName], List[dotty.tools.dotc.core.Types.Type]](args, mt.paramNames, mt.paramInfos)
+        </td>
+      </tr><tr>
+        <td>
+          86
+        </td>
+        <td>
+          69226
+        </td>
+        <td>
+          3228
+          -
+          3238
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.typer.Lifter.exprLifter
+        </td>
+        <td style="background: #AEF1AE">
+          Lifter.this.exprLifter
+        </td>
+      </tr><tr>
+        <td>
+          86
+        </td>
+        <td>
+          69225
+        </td>
+        <td>
+          3201
+          -
+          3226
+        </td>
+        <td>
+          TypeApply
+        </td>
+        <td>
+          scala.Any.isInstanceOf
+        </td>
+        <td style="background: #AEF1AE">
+          tp.isInstanceOf[dotty.tools.dotc.core.Types.ExprType]
+        </td>
+      </tr><tr>
+        <td>
+          86
+        </td>
+        <td>
+          69228
+        </td>
+        <td>
+          3244
+          -
+          3248
+        </td>
+        <td>
+          This
+        </td>
+        <td>
+          dotty.tools.dotc.typer.Lifter
+        </td>
+        <td style="background: #AEF1AE">
+          this
+        </td>
+      </tr><tr>
+        <td>
+          86
+        </td>
+        <td>
+          69227
+        </td>
+        <td>
+          3228
+          -
+          3238
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          dotty.tools.dotc.typer.Lifter.exprLifter
+        </td>
+        <td style="background: #AEF1AE">
+          Lifter.this.exprLifter
+        </td>
+      </tr><tr>
+        <td>
+          87
+        </td>
+        <td>
+          69229
+        </td>
+        <td>
+          3259
+          -
+          3342
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.typer.Lifter.liftArg
+        </td>
+        <td style="background: #AEF1AE">
+          lifter.liftArg(defs, arg, if (name.firstPart.contains('$'))
+  core.Names.EmptyTermName
+else
+  name)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          90
+        </td>
+        <td>
+          69232
+        </td>
+        <td>
+          3386
+          -
+          3402
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.typer.Lifter.liftArg
+        </td>
+        <td style="background: #AEF1AE">
+          Lifter.this.liftArg(defs, x$1, Lifter.this.liftArg$default$3)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          90
+        </td>
+        <td>
+          69234
+        </td>
+        <td>
+          3377
+          -
+          3403
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          scala.collection.immutable.List.map
+        </td>
+        <td style="background: #AEF1AE">
+          args.map[dotty.tools.dotc.ast.tpd.Tree, List[dotty.tools.dotc.ast.tpd.Tree]](((x$1: dotty.tools.dotc.ast.tpd.Tree) =&gt; Lifter.this.liftArg(defs, x$1, Lifter.this.liftArg$default$3)(ctx)))(immutable.this.List.canBuildFrom[dotty.tools.dotc.ast.tpd.Tree])
+        </td>
+      </tr><tr>
+        <td>
+          90
+        </td>
+        <td>
+          69233
+        </td>
+        <td>
+          3385
+          -
+          3385
+        </td>
+        <td>
+          TypeApply
+        </td>
+        <td>
+          scala.collection.immutable.List.canBuildFrom
+        </td>
+        <td style="background: #AEF1AE">
+          immutable.this.List.canBuildFrom[dotty.tools.dotc.ast.tpd.Tree]
+        </td>
+      </tr><tr>
+        <td>
+          108
+        </td>
+        <td>
+          69235
+        </td>
+        <td>
+          3829
+          -
+          3893
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.tpd.TypedTreeCopier.Apply
+        </td>
+        <td style="background: #AEF1AE">
+          ast.tpd.cpy.Apply(tree)(Lifter.this.liftApp(defs, fn)(ctx), Lifter.this.liftArgs(defs, fn.tpe, args)(ctx))(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          110
+        </td>
+        <td>
+          69236
+        </td>
+        <td>
+          3933
+          -
+          3978
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.tpd.TypedTreeCopier.TypeApply
+        </td>
+        <td style="background: #AEF1AE">
+          ast.tpd.cpy.TypeApply(tree)(Lifter.this.liftApp(defs, fn)(ctx), targs)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          111
+        </td>
+        <td>
+          69237
+        </td>
+        <td>
+          4009
+          -
+          4024
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.TypedTreeInfo.isPureRef
+        </td>
+        <td style="background: #AEF1AE">
+          ast.tpd.isPureRef(tree)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          112
+        </td>
+        <td>
+          69238
+        </td>
+        <td>
+          4034
+          -
+          4079
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.tpd.TypedTreeCopier.Select
+        </td>
+        <td style="background: #AEF1AE">
+          ast.tpd.cpy.Select(tree)(Lifter.this.liftPrefix(defs, pre)(ctx), name)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          114
+        </td>
+        <td>
+          69239
+        </td>
+        <td>
+          4117
+          -
+          4146
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.typer.Lifter.liftApp
+        </td>
+        <td style="background: #AEF1AE">
+          Lifter.this.liftApp(defs.++=(stats), expr)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          118
+        </td>
+        <td>
+          69240
+        </td>
+        <td>
+          4199
+          -
+          4215
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.typer.Lifter.lift
+        </td>
+        <td style="background: #AEF1AE">
+          Lifter.this.lift(defs, tree, Lifter.this.lift$default$3)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          130
+        </td>
+        <td>
+          69241
+        </td>
+        <td>
+          4537
+          -
+          4559
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.TypedTreeInfo.isIdempotentExpr
+        </td>
+        <td style="background: #AEF1AE">
+          ast.tpd.isIdempotentExpr(tree)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          130
+        </td>
+        <td>
+          69244
+        </td>
+        <td>
+          4571
+          -
+          4587
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          dotty.tools.dotc.typer.Lifter.lift
+        </td>
+        <td style="background: #AEF1AE">
+          Lifter.this.lift(defs, tree, Lifter.this.lift$default$3)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          130
+        </td>
+        <td>
+          69243
+        </td>
+        <td>
+          4571
+          -
+          4587
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.typer.Lifter.lift
+        </td>
+        <td style="background: #AEF1AE">
+          Lifter.this.lift(defs, tree, Lifter.this.lift$default$3)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          130
+        </td>
+        <td>
+          69242
+        </td>
+        <td>
+          4561
+          -
+          4565
+        </td>
+        <td>
+          Ident
+        </td>
+        <td>
+          dotty.tools.dotc.typer.Lifter.tree
+        </td>
+        <td style="background: #AEF1AE">
+          tree
+        </td>
+      </tr><tr>
+        <td>
+          136
+        </td>
+        <td>
+          69245
+        </td>
+        <td>
+          4705
+          -
+          4709
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          true
+        </td>
+      </tr><tr>
+        <td>
+          141
+        </td>
+        <td>
+          69246
+        </td>
+        <td>
+          4834
+          -
+          4854
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.TypedTreeInfo.isPureExpr
+        </td>
+        <td style="background: #AEF1AE">
+          ast.tpd.isPureExpr(expr)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          147
+        </td>
+        <td>
+          69247
+        </td>
+        <td>
+          5028
+          -
+          5050
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.TypedTreeInfo.isSimplyPure
+        </td>
+        <td style="background: #AEF1AE">
+          ast.tpd.isSimplyPure(expr)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          154
+        </td>
+        <td>
+          69248
+        </td>
+        <td>
+          5264
+          -
+          5270
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Flags.Method
+        </td>
+        <td style="background: #AEF1AE">
+          core.Flags.Method
+        </td>
+      </tr><tr>
+        <td>
+          155
+        </td>
+        <td>
+          69249
+        </td>
+        <td>
+          5353
+          -
+          5373
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.tpd.DefDef
+        </td>
+        <td style="background: #AEF1AE">
+          ast.tpd.DefDef(sym, rhs)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          185
+        </td>
+        <td>
+          69250
+        </td>
+        <td>
+          6638
+          -
+          6655
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.Boolean.unary_!
+        </td>
+        <td style="background: #AEF1AE">
+          ctx.isAfterTyper.unary_!
+        </td>
+      </tr><tr>
+        <td>
+          185
+        </td>
+        <td>
+          69251
+        </td>
+        <td>
+          6631
+          -
+          6656
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Predef.assert
+        </td>
+        <td style="background: #AEF1AE">
+          scala.Predef.assert(ctx.isAfterTyper.unary_!)
+        </td>
+      </tr><tr>
+        <td>
+          186
+        </td>
+        <td>
+          69252
+        </td>
+        <td>
+          6672
+          -
+          6704
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.mutable.ListBuffer.&lt;init&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          new scala.collection.mutable.ListBuffer[dotty.tools.dotc.ast.tpd.Tree]()
+        </td>
+      </tr><tr>
+        <td>
+          187
+        </td>
+        <td>
+          69253
+        </td>
+        <td>
+          6728
+          -
+          6760
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.untpd.TypedSplice.apply
+        </td>
+        <td style="background: #AEF1AE">
+          ast.untpd.TypedSplice.apply(EtaExpansion.this.liftApp(defs, tree)(ctx))(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          189
+        </td>
+        <td>
+          69256
+        </td>
+        <td>
+          6850
+          -
+          6850
+        </td>
+        <td>
+          TypeApply
+        </td>
+        <td>
+          scala.collection.immutable.List.canBuildFrom
+        </td>
+        <td style="background: #AEF1AE">
+          immutable.this.List.canBuildFrom[dotty.tools.dotc.ast.Trees.TypeTree[dotty.tools.dotc.ast.Trees.Untyped]]
+        </td>
+      </tr><tr>
+        <td>
+          189
+        </td>
+        <td>
+          69255
+        </td>
+        <td>
+          6860
+          -
+          6870
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.ast.untpd.TypeTree
+        </td>
+        <td style="background: #AEF1AE">
+          ast.untpd.TypeTree()
+        </td>
+      </tr><tr>
+        <td>
+          189
+        </td>
+        <td>
+          69258
+        </td>
+        <td>
+          6836
+          -
+          6871
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          scala.collection.immutable.List.map
+        </td>
+        <td style="background: #AEF1AE">
+          mt.paramInfos.map[dotty.tools.dotc.ast.Trees.TypeTree[dotty.tools.dotc.ast.Trees.Untyped], List[dotty.tools.dotc.ast.untpd.Tree]](((x$2: dotty.tools.dotc.core.Types.Type) =&gt; ast.untpd.TypeTree()))(immutable.this.List.canBuildFrom[dotty.tools.dotc.ast.Trees.TypeTree[dotty.tools.dotc.ast.Trees.Untyped]])
+        </td>
+      </tr><tr>
+        <td>
+          189
+        </td>
+        <td>
+          69257
+        </td>
+        <td>
+          6836
+          -
+          6871
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          scala.collection.immutable.List.map
+        </td>
+        <td style="background: #AEF1AE">
+          mt.paramInfos.map[dotty.tools.dotc.ast.Trees.TypeTree[dotty.tools.dotc.ast.Trees.Untyped], List[dotty.tools.dotc.ast.untpd.Tree]](((x$2: dotty.tools.dotc.core.Types.Type) =&gt; ast.untpd.TypeTree()))(immutable.this.List.canBuildFrom[dotty.tools.dotc.ast.Trees.TypeTree[dotty.tools.dotc.ast.Trees.Untyped]])
+        </td>
+      </tr><tr>
+        <td>
+          189
+        </td>
+        <td>
+          69254
+        </td>
+        <td>
+          6804
+          -
+          6834
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Int.==
+        </td>
+        <td style="background: #AEF1AE">
+          mt.paramInfos.length.==(xarity)
+        </td>
+      </tr><tr>
+        <td>
+          190
+        </td>
+        <td>
+          69259
+        </td>
+        <td>
+          6901
+          -
+          6909
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.untpd.TypeTree
+        </td>
+        <td style="background: #AEF1AE">
+          ast.untpd.TypeTree(tpe)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          190
+        </td>
+        <td>
+          69262
+        </td>
+        <td>
+          6883
+          -
+          6909
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          scala.collection.immutable.List.map
+        </td>
+        <td style="background: #AEF1AE">
+          mt.paramInfos.map[dotty.tools.dotc.ast.untpd.TypedSplice, List[dotty.tools.dotc.ast.untpd.Tree]]({
+  ((tpe: dotty.tools.dotc.core.Types.Type) =&gt; ast.untpd.TypeTree(tpe)(ctx))
+})(immutable.this.List.canBuildFrom[dotty.tools.dotc.ast.untpd.TypedSplice])
+        </td>
+      </tr><tr>
+        <td>
+          190
+        </td>
+        <td>
+          69261
+        </td>
+        <td>
+          6883
+          -
+          6909
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          scala.collection.immutable.List.map
+        </td>
+        <td style="background: #AEF1AE">
+          mt.paramInfos.map[dotty.tools.dotc.ast.untpd.TypedSplice, List[dotty.tools.dotc.ast.untpd.Tree]]({
+  ((tpe: dotty.tools.dotc.core.Types.Type) =&gt; ast.untpd.TypeTree(tpe)(ctx))
+})(immutable.this.List.canBuildFrom[dotty.tools.dotc.ast.untpd.TypedSplice])
+        </td>
+      </tr><tr>
+        <td>
+          190
+        </td>
+        <td>
+          69260
+        </td>
+        <td>
+          6897
+          -
+          6897
+        </td>
+        <td>
+          TypeApply
+        </td>
+        <td>
+          scala.collection.immutable.List.canBuildFrom
+        </td>
+        <td style="background: #AEF1AE">
+          immutable.this.List.canBuildFrom[dotty.tools.dotc.ast.untpd.TypedSplice]
+        </td>
+      </tr><tr>
+        <td>
+          191
+        </td>
+        <td>
+          69265
+        </td>
+        <td>
+          6955
+          -
+          6955
+        </td>
+        <td>
+          TypeApply
+        </td>
+        <td>
+          scala.Predef.$conforms
+        </td>
+        <td style="background: #AEF1AE">
+          scala.Predef.$conforms[List[dotty.tools.dotc.core.Names.TermName]]
+        </td>
+      </tr><tr>
+        <td>
+          191
+        </td>
+        <td>
+          69264
+        </td>
+        <td>
+          6927
+          -
+          6954
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Tuple2.apply
+        </td>
+        <td style="background: #AEF1AE">
+          scala.Tuple2.apply[List[dotty.tools.dotc.core.Names.TermName], List[dotty.tools.dotc.ast.untpd.Tree]](mt.paramNames, paramTypes)
+        </td>
+      </tr><tr>
+        <td>
+          191
+        </td>
+        <td>
+          69273
+        </td>
+        <td>
+          6927
+          -
+          7072
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          scala.runtime.Tuple2Zipped.map
+        </td>
+        <td style="background: #AEF1AE">
+          scala.Predef.tuple2ToZippedOps[List[dotty.tools.dotc.core.Names.TermName], List[dotty.tools.dotc.ast.untpd.Tree]](scala.Tuple2.apply[List[dotty.tools.dotc.core.Names.TermName], List[dotty.tools.dotc.ast.untpd.Tree]](mt.paramNames, paramTypes)).zipped[dotty.tools.dotc.core.Names.TermName, List[dotty.tools.dotc.core.Names.TermName], dotty.tools.dotc.ast.untpd.Tree, List[dotty.tools.dotc.ast.untpd.Tree]](scala.Predef.$conforms[List[dotty.tools.dotc.core.Names.TermName]], scala.Predef.$conforms[List[dotty.tools.dotc.ast.untpd.Tree]]).map[dotty.tools.dotc.ast.Trees.ValDef[Null], List[dotty.tools.dotc.ast.Trees.ValDef[Null]]](((name: dotty.tools.dotc.core.Names.TermName, tpe: dotty.tools.dotc.ast.untpd.Tree) =&gt; ast.untpd.ValDef(name, tpe, ast.untpd.EmptyTree).withFlags(core.Flags.Synthetic.|(core.Flags.Param)).withPos(tree.pos.startPos)))(immutable.this.List.canBuildFrom[dotty.tools.dotc.ast.Trees.ValDef[Null]])
+        </td>
+      </tr><tr>
+        <td>
+          191
+        </td>
+        <td>
+          69266
+        </td>
+        <td>
+          6955
+          -
+          6955
+        </td>
+        <td>
+          TypeApply
+        </td>
+        <td>
+          scala.Predef.$conforms
+        </td>
+        <td style="background: #AEF1AE">
+          scala.Predef.$conforms[List[dotty.tools.dotc.ast.untpd.Tree]]
+        </td>
+      </tr><tr>
+        <td>
+          191
+        </td>
+        <td>
+          69263
+        </td>
+        <td>
+          6928
+          -
+          6941
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Types.MethodType.paramNames
+        </td>
+        <td style="background: #AEF1AE">
+          mt.paramNames
+        </td>
+      </tr><tr>
+        <td>
+          191
+        </td>
+        <td>
+          69272
+        </td>
+        <td>
+          6965
+          -
+          6965
+        </td>
+        <td>
+          TypeApply
+        </td>
+        <td>
+          scala.collection.immutable.List.canBuildFrom
+        </td>
+        <td style="background: #AEF1AE">
+          immutable.this.List.canBuildFrom[dotty.tools.dotc.ast.Trees.ValDef[Null]]
+        </td>
+      </tr><tr>
+        <td>
+          192
+        </td>
+        <td>
+          69268
+        </td>
+        <td>
+          7038
+          -
+          7043
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Flags.Param
+        </td>
+        <td style="background: #AEF1AE">
+          core.Flags.Param
+        </td>
+      </tr><tr>
+        <td>
+          192
+        </td>
+        <td>
+          69270
+        </td>
+        <td>
+          7053
+          -
+          7070
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.util.Positions.Position.startPos
+        </td>
+        <td style="background: #AEF1AE">
+          tree.pos.startPos
+        </td>
+      </tr><tr>
+        <td>
+          192
+        </td>
+        <td>
+          69267
+        </td>
+        <td>
+          7005
+          -
+          7014
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Trees.Instance.EmptyTree
+        </td>
+        <td style="background: #AEF1AE">
+          ast.untpd.EmptyTree
+        </td>
+      </tr><tr>
+        <td>
+          192
+        </td>
+        <td>
+          69269
+        </td>
+        <td>
+          7026
+          -
+          7043
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.core.Flags.FlagSet.|
+        </td>
+        <td style="background: #AEF1AE">
+          core.Flags.Synthetic.|(core.Flags.Param)
+        </td>
+      </tr><tr>
+        <td>
+          192
+        </td>
+        <td>
+          69271
+        </td>
+        <td>
+          6987
+          -
+          7071
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Positioned.withPos
+        </td>
+        <td style="background: #AEF1AE">
+          ast.untpd.ValDef(name, tpe, ast.untpd.EmptyTree).withFlags(core.Flags.Synthetic.|(core.Flags.Param)).withPos(tree.pos.startPos)
+        </td>
+      </tr><tr>
+        <td>
+          193
+        </td>
+        <td>
+          69274
+        </td>
+        <td>
+          7146
+          -
+          7163
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.util.Positions.Position.startPos
+        </td>
+        <td style="background: #AEF1AE">
+          tree.pos.startPos
+        </td>
+      </tr><tr>
+        <td>
+          193
+        </td>
+        <td>
+          69277
+        </td>
+        <td>
+          7099
+          -
+          7165
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          scala.collection.immutable.List.map
+        </td>
+        <td style="background: #AEF1AE">
+          mt.paramNames.map[dotty.tools.dotc.ast.Trees.Ident[dotty.tools.dotc.ast.Trees.Untyped], List[dotty.tools.dotc.ast.untpd.Tree]](((name: dotty.tools.dotc.core.Names.TermName) =&gt; ast.untpd.Ident(name).withPos(tree.pos.startPos)))(immutable.this.List.canBuildFrom[dotty.tools.dotc.ast.Trees.Ident[dotty.tools.dotc.ast.Trees.Untyped]])
+        </td>
+      </tr><tr>
+        <td>
+          193
+        </td>
+        <td>
+          69276
+        </td>
+        <td>
+          7113
+          -
+          7113
+        </td>
+        <td>
+          TypeApply
+        </td>
+        <td>
+          scala.collection.immutable.List.canBuildFrom
+        </td>
+        <td style="background: #AEF1AE">
+          immutable.this.List.canBuildFrom[dotty.tools.dotc.ast.Trees.Ident[dotty.tools.dotc.ast.Trees.Untyped]]
+        </td>
+      </tr><tr>
+        <td>
+          193
+        </td>
+        <td>
+          69275
+        </td>
+        <td>
+          7126
+          -
+          7164
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Positioned.withPos
+        </td>
+        <td style="background: #AEF1AE">
+          ast.untpd.Ident(name).withPos(tree.pos.startPos)
+        </td>
+      </tr><tr>
+        <td>
+          194
+        </td>
+        <td>
+          69285
+        </td>
+        <td>
+          7170
+          -
+          7170
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          ()
+        </td>
+      </tr><tr>
+        <td>
+          194
+        </td>
+        <td>
+          69279
+        </td>
+        <td>
+          7174
+          -
+          7234
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Boolean.&amp;&amp;
+        </td>
+        <td style="background: #AEF1AE">
+          mt.paramInfos.nonEmpty.&amp;&amp;(mt.paramInfos.last.isRepeatedParam(ctx))
+        </td>
+      </tr><tr>
+        <td>
+          194
+        </td>
+        <td>
+          69284
+        </td>
+        <td>
+          7170
+          -
+          7170
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          ()
+        </td>
+      </tr><tr>
+        <td>
+          194
+        </td>
+        <td>
+          69278
+        </td>
+        <td>
+          7200
+          -
+          7234
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.Types.Type.isRepeatedParam
+        </td>
+        <td style="background: #AEF1AE">
+          mt.paramInfos.last.isRepeatedParam(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          195
+        </td>
+        <td>
+          69283
+        </td>
+        <td>
+          7242
+          -
+          7278
+        </td>
+        <td>
+          Assign
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          ids = ids.init.:+[dotty.tools.dotc.ast.untpd.Tree, List[dotty.tools.dotc.ast.untpd.Tree]](ast.untpd.repeated(ids.last)(ctx))(immutable.this.List.canBuildFrom[dotty.tools.dotc.ast.untpd.Tree])
+        </td>
+      </tr><tr>
+        <td>
+          195
+        </td>
+        <td>
+          69282
+        </td>
+        <td>
+          7248
+          -
+          7278
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          scala.collection.SeqLike.:+
+        </td>
+        <td style="background: #AEF1AE">
+          ids.init.:+[dotty.tools.dotc.ast.untpd.Tree, List[dotty.tools.dotc.ast.untpd.Tree]](ast.untpd.repeated(ids.last)(ctx))(immutable.this.List.canBuildFrom[dotty.tools.dotc.ast.untpd.Tree])
+        </td>
+      </tr><tr>
+        <td>
+          195
+        </td>
+        <td>
+          69281
+        </td>
+        <td>
+          7257
+          -
+          7257
+        </td>
+        <td>
+          TypeApply
+        </td>
+        <td>
+          scala.collection.immutable.List.canBuildFrom
+        </td>
+        <td style="background: #AEF1AE">
+          immutable.this.List.canBuildFrom[dotty.tools.dotc.ast.untpd.Tree]
+        </td>
+      </tr><tr>
+        <td>
+          195
+        </td>
+        <td>
+          69280
+        </td>
+        <td>
+          7260
+          -
+          7278
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.untpd.repeated
+        </td>
+        <td style="background: #AEF1AE">
+          ast.untpd.repeated(ids.last)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          196
+        </td>
+        <td>
+          69286
+        </td>
+        <td>
+          7300
+          -
+          7318
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.ast.untpd.Apply
+        </td>
+        <td style="background: #AEF1AE">
+          ast.untpd.Apply(lifted, ids)
+        </td>
+      </tr><tr>
+        <td>
+          197
+        </td>
+        <td>
+          69287
+        </td>
+        <td>
+          7323
+          -
+          7336
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.Types.TermLambda.resultType
+        </td>
+        <td style="background: #AEF1AE">
+          mt.resultType(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          198
+        </td>
+        <td>
+          69288
+        </td>
+        <td>
+          7374
+          -
+          7394
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.Boolean.unary_!
+        </td>
+        <td style="background: #AEF1AE">
+          rt.isImplicitMethod.unary_!
+        </td>
+      </tr><tr>
+        <td>
+          198
+        </td>
+        <td>
+          69291
+        </td>
+        <td>
+          7405
+          -
+          7441
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.ast.untpd.PostfixOp.apply
+        </td>
+        <td style="background: #AEF1AE">
+          ast.untpd.PostfixOp.apply(body, ast.untpd.Ident(core.StdNames.nme.WILDCARD))
+        </td>
+      </tr><tr>
+        <td>
+          198
+        </td>
+        <td>
+          69290
+        </td>
+        <td>
+          7421
+          -
+          7440
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.ast.untpd.Ident
+        </td>
+        <td style="background: #AEF1AE">
+          ast.untpd.Ident(core.StdNames.nme.WILDCARD)
+        </td>
+      </tr><tr>
+        <td>
+          198
+        </td>
+        <td>
+          69289
+        </td>
+        <td>
+          7427
+          -
+          7439
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.StdNames.ScalaNames.WILDCARD
+        </td>
+        <td style="background: #AEF1AE">
+          core.StdNames.nme.WILDCARD
+        </td>
+      </tr><tr>
+        <td>
+          199
+        </td>
+        <td>
+          69292
+        </td>
+        <td>
+          7455
+          -
+          7457
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          ()
+        </td>
+      </tr><tr>
+        <td>
+          201
+        </td>
+        <td>
+          69293
+        </td>
+        <td>
+          7477
+          -
+          7505
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.ast.untpd.Function.apply
+        </td>
+        <td style="background: #AEF1AE">
+          ast.untpd.Function.apply(params, body)
+        </td>
+      </tr><tr>
+        <td>
+          202
+        </td>
+        <td>
+          69295
+        </td>
+        <td>
+          7558
+          -
+          7578
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.untpd.TypedSplice.apply
+        </td>
+        <td style="background: #AEF1AE">
+          ast.untpd.TypedSplice.apply(x$3)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          202
+        </td>
+        <td>
+          69294
+        </td>
+        <td>
+          7514
+          -
+          7527
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.collection.mutable.ListBuffer.nonEmpty
+        </td>
+        <td style="background: #AEF1AE">
+          defs.nonEmpty
+        </td>
+      </tr><tr>
+        <td>
+          202
+        </td>
+        <td>
+          69297
+        </td>
+        <td>
+          7541
+          -
+          7579
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          scala.collection.immutable.List.map
+        </td>
+        <td style="background: #AEF1AE">
+          defs.toList.map[dotty.tools.dotc.ast.untpd.TypedSplice, List[dotty.tools.dotc.ast.untpd.TypedSplice]](((x$3: dotty.tools.dotc.ast.tpd.Tree) =&gt; ast.untpd.TypedSplice.apply(x$3)(ctx)))(immutable.this.List.canBuildFrom[dotty.tools.dotc.ast.untpd.TypedSplice])
+        </td>
+      </tr><tr>
+        <td>
+          202
+        </td>
+        <td>
+          69300
+        </td>
+        <td>
+          7590
+          -
+          7592
+        </td>
+        <td>
+          Ident
+        </td>
+        <td>
+          dotty.tools.dotc.typer.EtaExpansion.fn
+        </td>
+        <td style="background: #AEF1AE">
+          fn
+        </td>
+      </tr><tr>
+        <td>
+          202
+        </td>
+        <td>
+          69296
+        </td>
+        <td>
+          7553
+          -
+          7553
+        </td>
+        <td>
+          TypeApply
+        </td>
+        <td>
+          scala.collection.immutable.List.canBuildFrom
+        </td>
+        <td style="background: #AEF1AE">
+          immutable.this.List.canBuildFrom[dotty.tools.dotc.ast.untpd.TypedSplice]
+        </td>
+      </tr><tr>
+        <td>
+          202
+        </td>
+        <td>
+          69299
+        </td>
+        <td>
+          7529
+          -
+          7584
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          dotty.tools.dotc.ast.untpd.Block
+        </td>
+        <td style="background: #AEF1AE">
+          ast.untpd.Block(defs.toList.map[dotty.tools.dotc.ast.untpd.TypedSplice, List[dotty.tools.dotc.ast.untpd.TypedSplice]](((x$3: dotty.tools.dotc.ast.tpd.Tree) =&gt; ast.untpd.TypedSplice.apply(x$3)(ctx)))(immutable.this.List.canBuildFrom[dotty.tools.dotc.ast.untpd.TypedSplice]), fn)
+        </td>
+      </tr><tr>
+        <td>
+          202
+        </td>
+        <td>
+          69298
+        </td>
+        <td>
+          7529
+          -
+          7584
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.ast.untpd.Block
+        </td>
+        <td style="background: #AEF1AE">
+          ast.untpd.Block(defs.toList.map[dotty.tools.dotc.ast.untpd.TypedSplice, List[dotty.tools.dotc.ast.untpd.TypedSplice]](((x$3: dotty.tools.dotc.ast.tpd.Tree) =&gt; ast.untpd.TypedSplice.apply(x$3)(ctx)))(immutable.this.List.canBuildFrom[dotty.tools.dotc.ast.untpd.TypedSplice]), fn)
+        </td>
+      </tr>
+    </table>
+          </div>
+        </div>
+      </body>
+    </html>

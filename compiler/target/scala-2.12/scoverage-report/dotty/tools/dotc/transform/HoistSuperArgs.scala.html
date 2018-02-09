@@ -1,0 +1,4392 @@
+<html>
+      <head>
+        <meta http-equiv="Content-Type" content="text/html; charset=utf-8"/>
+        <title id="title">
+          dotty/tools/dotc/transform/HoistSuperArgs.scala.html
+        </title>
+        <script src="https://ajax.googleapis.com/ajax/libs/jquery/1.10.2/jquery.min.js"></script><link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/jquery.tablesorter/2.20.1/css/theme.default.min.css" type="text/css"/><script src="https://cdnjs.cloudflare.com/ajax/libs/jquery.tablesorter/2.20.1/js/jquery.tablesorter.min.js"></script><link rel="stylesheet" href="https://netdna.bootstrapcdn.com/bootstrap/3.0.3/css/bootstrap.min.css" type="text/css"/><script src="https://netdna.bootstrapcdn.com/bootstrap/3.0.3/js/bootstrap.min.js"></script><script type="text/javascript">
+        $(document).ready(function() {$(".tablesorter").tablesorter();});
+      </script>
+        <style>
+          table.codegrid { font-family: monospace; font-size: 12px; width: auto!important; }table.statementlist { width: auto!important; font-size: 13px; } table.codegrid td { padding: 0!important; border: 0!important } table td.linenumber { width: 40px!important; } 
+        </style>
+      </head>
+      <body style="font-family: monospace;">
+        <ul class="nav nav-tabs">
+          <li>
+            <a href="#codegrid" data-toggle="tab">Codegrid</a>
+          </li>
+          <li>
+            <a href="#statementlist" data-toggle="tab">Statement List</a>
+          </li>
+        </ul>
+        <div class="tab-content">
+          <div class="tab-pane active" id="codegrid">
+            <pre style='font-size: 12pt; font-family: courier;'>1 <span style=''>package dotty.tools.dotc
+</span>2 <span style=''>package transform
+</span>3 <span style=''>
+</span>4 <span style=''>import MegaPhase._
+</span>5 <span style=''>import core.DenotTransformers._
+</span>6 <span style=''>import core.Symbols._
+</span>7 <span style=''>import core.Contexts._
+</span>8 <span style=''>import ast.TreeTypeMap
+</span>9 <span style=''>import core.Types._
+</span>10 <span style=''>import core.Flags._
+</span>11 <span style=''>import core.Decorators._
+</span>12 <span style=''>import collection.mutable
+</span>13 <span style=''>import ast.Trees._
+</span>14 <span style=''>import core.Names.TermName
+</span>15 <span style=''>import core.NameKinds.SuperArgName
+</span>16 <span style=''>import SymUtils._
+</span>17 <span style=''>
+</span>18 <span style=''>/** This phase hoists complex arguments of supercalls and this-calls out of the enclosing class.
+</span>19 <span style=''> *  Example:
+</span>20 <span style=''> *
+</span>21 <span style=''> *      class B(y: Int) extends A({ def f(x: Int) = x * x; f(y)})
+</span>22 <span style=''> *
+</span>23 <span style=''> *  is translated to
+</span>24 <span style=''> *
+</span>25 <span style=''> *      class B(y: Int) extends A(B#B$superArg$1(this.y)) {
+</span>26 <span style=''> *        private &lt;static&gt; def B$superArg$1(y: Int): Int = {
+</span>27 <span style=''> *          def f(x: Int): Int = x.*(x); f(y)
+</span>28 <span style=''> *        }
+</span>29 <span style=''> *      }
+</span>30 <span style=''> *
+</span>31 <span style=''> *  An argument is complex if it contains a method or template definition, a this or a new,
+</span>32 <span style=''> *  or it contains an identifier which needs a `this` prefix to be accessed. This is the case
+</span>33 <span style=''> *  if the identifer neither a global reference nor a reference to a parameter of the enclosing class.
+</span>34 <span style=''> *  @see needsHoist for an implementation.
+</span>35 <span style=''> *
+</span>36 <span style=''> *  A hoisted argument definition gets the parameters of the class it is hoisted from
+</span>37 <span style=''> *  as method parameters. The definition is installed in the scope enclosing the class,
+</span>38 <span style=''> *  or, if that is a package, it is made a static method of the class itself.
+</span>39 <span style=''> */
+</span>40 <span style=''>class HoistSuperArgs extends MiniPhase with IdentityDenotTransformer { thisPhase =&gt;
+</span>41 <span style=''>  import ast.tpd._
+</span>42 <span style=''>
+</span>43 <span style=''>  def phaseName = </span><span style='background: #AEF1AE'>&quot;hoistSuperArgs&quot;</span><span style=''>
+</span>44 <span style=''>
+</span>45 <span style=''>  override def runsAfter = </span><span style='background: #AEF1AE'>Set(classOf[ByNameClosures])</span><span style=''>
+</span>46 <span style=''>    // By name closures need to be introduced first in order to be hoisted out here.
+</span>47 <span style=''>    // There's an interaction with by name closures in that the &lt;cbn-arg&gt; marker
+</span>48 <span style=''>    // application should not be hoisted, but be left at the point of call.
+</span>49 <span style=''>
+</span>50 <span style=''>  /** Defines methods for hoisting complex supercall arguments out of
+</span>51 <span style=''>   *  parent super calls and constructor definitions.
+</span>52 <span style=''>   *  Hoisted superarg methods are collected in `superArgDefs`
+</span>53 <span style=''>   */
+</span>54 <span style=''>  class Hoister(cls: Symbol)(implicit ctx: Context) {
+</span>55 <span style=''>    val superArgDefs = </span><span style='background: #AEF1AE'>new mutable.ListBuffer[DefDef]</span><span style=''>
+</span>56 <span style=''>
+</span>57 <span style=''>    /** If argument is complex, hoist it out into its own method and refer to the
+</span>58 <span style=''>     *  method instead.
+</span>59 <span style=''>     *  @param   arg   The argument that might be hoisted
+</span>60 <span style=''>     *  @param   cdef  The definition of the constructor from which the call is made
+</span>61 <span style=''>     *  @return  The argument after possible hoisting
+</span>62 <span style=''>     */
+</span>63 <span style=''>    private def hoistSuperArg(arg: Tree, cdef: DefDef): Tree = {
+</span>64 <span style=''>      val constr = </span><span style='background: #AEF1AE'>cdef.symbol</span><span style=''>
+</span>65 <span style=''>      lazy val origParams = // The parameters that can be accessed in the supercall
+</span>66 <span style=''>        if (constr == cls.primaryConstructor)
+</span>67 <span style=''>          cls.info.decls.filter(d =&gt; d.is(TypeParam) || d.is(ParamAccessor))
+</span>68 <span style=''>        else
+</span>69 <span style=''>          (cdef.tparams ::: cdef.vparamss.flatten).map(_.symbol)
+</span>70 <span style=''>
+</span>71 <span style=''>      /** The parameter references defined by the constructor info */
+</span>72 <span style=''>      def allParamRefs(tp: Type): List[ParamRef] = tp match {
+</span>73 <span style=''>        case tp: LambdaType =&gt; </span><span style='background: #AEF1AE'>tp.paramRefs ++ allParamRefs(tp.resultType)</span><span style=''>
+</span>74 <span style=''>        case _              =&gt; </span><span style='background: #AEF1AE'>Nil</span><span style=''>
+</span>75 <span style=''>      }
+</span>76 <span style=''>
+</span>77 <span style=''>      /** Splice `restpe` in final result type position of `tp` */
+</span>78 <span style=''>      def replaceResult(tp: Type, restpe: Type): Type = tp match {
+</span>79 <span style=''>        case tp: LambdaType =&gt;
+</span>80 <span style=''>          </span><span style='background: #AEF1AE'>tp.derivedLambdaType(resType = replaceResult(tp.resultType, restpe))</span><span style=''>
+</span>81 <span style=''>        case _ =&gt; restpe
+</span>82 <span style=''>      }
+</span>83 <span style=''>
+</span>84 <span style=''>      /** A method representing a hoisted supercall argument */
+</span>85 <span style=''>      def newSuperArgMethod(argType: Type) = {
+</span>86 <span style=''>        val (staticFlag, methOwner) =
+</span>87 <span style=''>          if (cls.owner.is(Package)) (JavaStatic, cls) else (EmptyFlags, cls.owner)
+</span>88 <span style=''>        val argTypeWrtConstr = </span><span style='background: #AEF1AE'>argType.subst(origParams, allParamRefs(constr.info))</span><span style=''>
+</span>89 <span style=''>        // argType with references to paramRefs of the primary constructor instead of
+</span>90 <span style=''>        // local parameter accessors
+</span>91 <span style=''>        val meth = </span><span style='background: #AEF1AE'>ctx.newSymbol(
+</span>92 <span style=''></span><span style='background: #AEF1AE'>          owner = methOwner,
+</span>93 <span style=''></span><span style='background: #AEF1AE'>          name = SuperArgName.fresh(cls.name.toTermName),
+</span>94 <span style=''></span><span style='background: #AEF1AE'>          flags = Synthetic | Private | Method | staticFlag,
+</span>95 <span style=''></span><span style='background: #AEF1AE'>          info = replaceResult(constr.info, argTypeWrtConstr),
+</span>96 <span style=''></span><span style='background: #AEF1AE'>          coord = constr.coord)</span><span style=''>
+</span>97 <span style=''>        if (</span><span style='background: #AEF1AE'>methOwner.isClass</span><span style=''>) </span><span style='background: #AEF1AE'>meth.enteredAfter(thisPhase)</span><span style=''> else </span><span style='background: #AEF1AE'>meth</span><span style=''>
+</span>98 <span style=''>      }
+</span>99 <span style=''>
+</span>100 <span style=''>      /** Type of a reference implies that it needs to be hoisted */
+</span>101 <span style=''>      def refNeedsHoist(tp: Type): Boolean = tp match {
+</span>102 <span style=''>        case tp: ThisType =&gt; </span><span style='background: #AEF1AE'>!tp.cls.isStaticOwner &amp;&amp; tp.cls != cls</span><span style=''>
+</span>103 <span style=''>        case tp: TermRef  =&gt; </span><span style='background: #AEF1AE'>refNeedsHoist(tp.prefix)</span><span style=''>
+</span>104 <span style=''>        case _            =&gt; </span><span style='background: #AEF1AE'>false</span><span style=''>
+</span>105 <span style=''>      }
+</span>106 <span style=''>
+</span>107 <span style=''>      /** Super call argument is complex, needs to be hoisted */
+</span>108 <span style=''>      def needsHoist(tree: Tree) = tree match {
+</span>109 <span style=''>        case _: DefDef            =&gt; </span><span style='background: #AEF1AE'>true</span><span style=''>
+</span>110 <span style=''>        case _: Template          =&gt; </span><span style='background: #AEF1AE'>true</span><span style=''>
+</span>111 <span style=''>        case _: New               =&gt; </span><span style='background: #AEF1AE'>!tree.tpe.typeSymbol.isStatic</span><span style=''>
+</span>112 <span style=''>        case _: RefTree | _: This =&gt; </span><span style='background: #AEF1AE'>refNeedsHoist(tree.tpe)</span><span style=''>
+</span>113 <span style=''>        case _                    =&gt; </span><span style='background: #AEF1AE'>false</span><span style=''>
+</span>114 <span style=''>      }
+</span>115 <span style=''>
+</span>116 <span style=''>      // begin hoistSuperArg
+</span>117 <span style=''>      arg match {
+</span>118 <span style=''>        case Apply(fn, arg1 :: Nil) if </span><span style='background: #AEF1AE'>fn.symbol == defn.cbnArg</span><span style=''> =&gt;
+</span>119 <span style=''>          </span><span style='background: #AEF1AE'>cpy.Apply(arg)(fn, hoistSuperArg(arg1, cdef) :: Nil)</span><span style=''>
+</span>120 <span style=''>        case _ if (</span><span style='background: #AEF1AE'>arg.existsSubTree(needsHoist)</span><span style=''>) =&gt;
+</span>121 <span style=''>          val superMeth = </span><span style='background: #AEF1AE'>newSuperArgMethod(arg.tpe)</span><span style=''>
+</span>122 <span style=''>          val superArgDef = </span><span style='background: #AEF1AE'>polyDefDef(superMeth, trefs =&gt; vrefss =&gt; {
+</span>123 <span style=''></span><span style='background: #AEF1AE'>            val paramSyms = trefs.map(_.typeSymbol) ::: vrefss.flatten.map(_.symbol)
+</span>124 <span style=''></span><span style='background: #AEF1AE'>            val tmap = new TreeTypeMap(
+</span>125 <span style=''></span><span style='background: #AEF1AE'>              typeMap = new TypeMap {
+</span>126 <span style=''></span><span style='background: #AEF1AE'>                lazy val origToParam = origParams.zip(paramSyms).toMap
+</span>127 <span style=''></span><span style='background: #AEF1AE'>                def apply(tp: Type) = tp match {
+</span>128 <span style=''></span><span style='background: #AEF1AE'>                  case tp: NamedType
+</span>129 <span style=''></span><span style='background: #AEF1AE'>                  if (tp.symbol.owner == cls || tp.symbol.owner == constr) &amp;&amp;
+</span>130 <span style=''></span><span style='background: #AEF1AE'>                     tp.symbol.isParamOrAccessor =&gt;
+</span>131 <span style=''></span><span style='background: #AEF1AE'>                    origToParam.get(tp.symbol) match {
+</span>132 <span style=''></span><span style='background: #AEF1AE'>                      case Some(mappedSym) =&gt; if (tp.symbol.isType) mappedSym.typeRef else mappedSym.termRef
+</span>133 <span style=''></span><span style='background: #AEF1AE'>                      case None =&gt; mapOver(tp)
+</span>134 <span style=''></span><span style='background: #AEF1AE'>                    }
+</span>135 <span style=''></span><span style='background: #AEF1AE'>                  case _ =&gt;
+</span>136 <span style=''></span><span style='background: #AEF1AE'>                    mapOver(tp)
+</span>137 <span style=''></span><span style='background: #AEF1AE'>                }
+</span>138 <span style=''></span><span style='background: #AEF1AE'>              },
+</span>139 <span style=''></span><span style='background: #AEF1AE'>              treeMap = {
+</span>140 <span style=''></span><span style='background: #AEF1AE'>                case tree: RefTree if paramSyms.contains(tree.symbol) =&gt;
+</span>141 <span style=''></span><span style='background: #AEF1AE'>                  </span><span style='background: #F0ADAD'>cpy.Ident(tree)(tree.name).withType(tree.tpe)</span><span style='background: #AEF1AE'>
+</span>142 <span style=''></span><span style='background: #AEF1AE'>                case tree =&gt;
+</span>143 <span style=''></span><span style='background: #AEF1AE'>                  tree
+</span>144 <span style=''></span><span style='background: #AEF1AE'>              })
+</span>145 <span style=''></span><span style='background: #AEF1AE'>            tmap(arg).changeOwnerAfter(constr, superMeth, thisPhase)
+</span>146 <span style=''></span><span style='background: #AEF1AE'>          })</span><span style=''>
+</span>147 <span style=''>          </span><span style='background: #AEF1AE'>superArgDefs += superArgDef</span><span style=''>
+</span>148 <span style=''>          def termParamRefs(tp: Type, params: List[Symbol]): List[List[Tree]] = tp match {
+</span>149 <span style=''>            case tp: PolyType =&gt;
+</span>150 <span style=''>              </span><span style='background: #AEF1AE'>termParamRefs(tp.resultType, params)</span><span style=''>
+</span>151 <span style=''>            case tp: MethodType =&gt;
+</span>152 <span style=''>              val (thisParams, otherParams) = params.splitAt(tp.paramNames.length)
+</span>153 <span style=''>              thisParams.map(ref) </span><span style='background: #AEF1AE'>:: termParamRefs(tp.resultType, otherParams)</span><span style=''>
+</span>154 <span style=''>            case _ =&gt;
+</span>155 <span style=''>              </span><span style='background: #AEF1AE'>Nil</span><span style=''>
+</span>156 <span style=''>          }
+</span>157 <span style=''>          val (typeParams, termParams) = origParams.span(_.isType)
+</span>158 <span style=''>          val res = </span><span style='background: #AEF1AE'>ref(superMeth)
+</span>159 <span style=''></span><span style='background: #AEF1AE'>            .appliedToTypes(typeParams.map(_.typeRef))
+</span>160 <span style=''></span><span style='background: #AEF1AE'>            .appliedToArgss(termParamRefs(constr.info, termParams))</span><span style=''>
+</span>161 <span style=''>          </span><span style='background: #AEF1AE'>ctx.log(</span><span style='background: #F0ADAD'>i&quot;hoist $arg, cls = $cls = $res&quot;</span><span style='background: #AEF1AE'>)</span><span style=''>
+</span>162 <span style=''>          res
+</span>163 <span style=''>        case _ =&gt; arg
+</span>164 <span style=''>      }
+</span>165 <span style=''>    }
+</span>166 <span style=''>
+</span>167 <span style=''>    /** Hoist complex arguments in super call out of the class. */
+</span>168 <span style=''>    def hoistSuperArgsFromCall(superCall: Tree, cdef: DefDef): Tree = superCall match {
+</span>169 <span style=''>      case Apply(fn, args) =&gt;
+</span>170 <span style=''>        </span><span style='background: #AEF1AE'>cpy.Apply(superCall)(hoistSuperArgsFromCall(fn, cdef), args.mapconserve(hoistSuperArg(_, cdef)))</span><span style=''>
+</span>171 <span style=''>      case _ =&gt;
+</span>172 <span style=''>        superCall
+</span>173 <span style=''>    }
+</span>174 <span style=''>
+</span>175 <span style=''>    /** Hoist complex arguments in this-constructor call of secondary constructor out of the class. */
+</span>176 <span style=''>    def hoistSuperArgsFromConstr(stat: Tree): Tree = stat match {
+</span>177 <span style=''>      case stat: DefDef if </span><span style='background: #AEF1AE'>stat.symbol.isClassConstructor</span><span style=''> =&gt;
+</span>178 <span style=''>        </span><span style='background: #AEF1AE'>cpy.DefDef(stat)(rhs =
+</span>179 <span style=''></span><span style='background: #AEF1AE'>          stat.rhs match {
+</span>180 <span style=''></span><span style='background: #AEF1AE'>            case Block(superCall :: stats, expr) =&gt;
+</span>181 <span style=''></span><span style='background: #AEF1AE'>              val superCall1 = hoistSuperArgsFromCall(superCall, stat)
+</span>182 <span style=''></span><span style='background: #AEF1AE'>              if (superCall1 eq superCall) stat.rhs
+</span>183 <span style=''></span><span style='background: #AEF1AE'>              else cpy.Block(stat.rhs)(superCall1 :: stats, expr)
+</span>184 <span style=''></span><span style='background: #AEF1AE'>            case _ =&gt;
+</span>185 <span style=''></span><span style='background: #AEF1AE'>              </span><span style='background: #F0ADAD'>hoistSuperArgsFromCall(stat.rhs, stat)</span><span style='background: #AEF1AE'>
+</span>186 <span style=''></span><span style='background: #AEF1AE'>          })</span><span style=''>
+</span>187 <span style=''>      case _ =&gt;
+</span>188 <span style=''>        stat
+</span>189 <span style=''>    }
+</span>190 <span style=''>  }
+</span>191 <span style=''>
+</span>192 <span style=''>  override def transformTypeDef(tdef: TypeDef)(implicit ctx: Context): Tree =
+</span>193 <span style=''>    </span><span style='background: #AEF1AE'>tdef.rhs</span><span style=''> match {
+</span>194 <span style=''>      case impl @ Template(cdef, superCall :: others, _, _) =&gt;
+</span>195 <span style=''>        val hoist = </span><span style='background: #AEF1AE'>new Hoister(tdef.symbol)</span><span style=''>
+</span>196 <span style=''>        val hoistedSuperCall = </span><span style='background: #AEF1AE'>hoist.hoistSuperArgsFromCall(superCall, cdef)</span><span style=''>
+</span>197 <span style=''>        val hoistedBody = </span><span style='background: #AEF1AE'>impl.body.mapconserve(hoist.hoistSuperArgsFromConstr)</span><span style=''>
+</span>198 <span style=''>        if (</span><span style='background: #AEF1AE'>hoist.superArgDefs.isEmpty</span><span style=''>) </span><span style='background: #AEF1AE'>tdef</span><span style=''>
+</span>199 <span style=''>        else </span><span style='background: #AEF1AE'>{
+</span>200 <span style=''></span><span style='background: #AEF1AE'>          val (staticSuperArgDefs, enclSuperArgDefs) =
+</span>201 <span style=''></span><span style='background: #AEF1AE'>            hoist.superArgDefs.toList.partition(_.symbol.is(JavaStatic))
+</span>202 <span style=''></span><span style='background: #AEF1AE'>          flatTree(
+</span>203 <span style=''></span><span style='background: #AEF1AE'>              cpy.TypeDef(tdef)(
+</span>204 <span style=''></span><span style='background: #AEF1AE'>                  rhs = cpy.Template(impl)(
+</span>205 <span style=''></span><span style='background: #AEF1AE'>                      parents = hoistedSuperCall :: others,
+</span>206 <span style=''></span><span style='background: #AEF1AE'>                      body = hoistedBody ++ staticSuperArgDefs)) ::
+</span>207 <span style=''></span><span style='background: #AEF1AE'>              enclSuperArgDefs)
+</span>208 <span style=''></span><span style='background: #AEF1AE'>        }</span><span style=''>
+</span>209 <span style=''>      case _ =&gt;
+</span>210 <span style=''>        tdef
+</span>211 <span style=''>    }
+</span>212 <span style=''>}
+</span></pre>
+          </div>
+          <div class="tab-pane" id="statementlist">
+            <table cellspacing="0" cellpadding="0" class="table statementlist">
+      <tr>
+        <th>Line</th>
+        <th>Stmt Id</th>
+        <th>Pos</th>
+        <th>Tree</th>
+        <th>Symbol</th>
+        <th>Code</th>
+      </tr><tr>
+        <td>
+          43
+        </td>
+        <td>
+          55678
+        </td>
+        <td>
+          1465
+          -
+          1481
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          &quot;hoistSuperArgs&quot;
+        </td>
+      </tr><tr>
+        <td>
+          45
+        </td>
+        <td>
+          55679
+        </td>
+        <td>
+          1510
+          -
+          1538
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.generic.GenericCompanion.apply
+        </td>
+        <td style="background: #AEF1AE">
+          scala.Predef.Set.apply[Class[_ &lt;: dotty.tools.dotc.core.Phases.Phase]](classOf[dotty.tools.dotc.transform.ByNameClosures])
+        </td>
+      </tr><tr>
+        <td>
+          55
+        </td>
+        <td>
+          55680
+        </td>
+        <td>
+          2052
+          -
+          2082
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.mutable.ListBuffer.&lt;init&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          new scala.collection.mutable.ListBuffer[dotty.tools.dotc.ast.tpd.DefDef]()
+        </td>
+      </tr><tr>
+        <td>
+          64
+        </td>
+        <td>
+          55682
+        </td>
+        <td>
+          2479
+          -
+          2490
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Trees.Tree.symbol
+        </td>
+        <td style="background: #AEF1AE">
+          cdef.symbol(Hoister.this.ctx)
+        </td>
+      </tr><tr>
+        <td>
+          64
+        </td>
+        <td>
+          55681
+        </td>
+        <td>
+          2484
+          -
+          2484
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.transform.HoistSuperArgs.Hoister.ctx
+        </td>
+        <td style="background: #AEF1AE">
+          Hoister.this.ctx
+        </td>
+      </tr><tr>
+        <td>
+          73
+        </td>
+        <td>
+          55684
+        </td>
+        <td>
+          2969
+          -
+          2982
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.Types.LambdaType.resultType
+        </td>
+        <td style="background: #AEF1AE">
+          tp.resultType(Hoister.this.ctx)
+        </td>
+      </tr><tr>
+        <td>
+          73
+        </td>
+        <td>
+          55687
+        </td>
+        <td>
+          2940
+          -
+          2983
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          scala.collection.immutable.List.++
+        </td>
+        <td style="background: #AEF1AE">
+          tp.paramRefs.++[dotty.tools.dotc.core.Types.ParamRef, List[dotty.tools.dotc.core.Types.ParamRef]](allParamRefs(tp.resultType(Hoister.this.ctx)))(immutable.this.List.canBuildFrom[dotty.tools.dotc.core.Types.ParamRef])
+        </td>
+      </tr><tr>
+        <td>
+          73
+        </td>
+        <td>
+          55686
+        </td>
+        <td>
+          2953
+          -
+          2953
+        </td>
+        <td>
+          TypeApply
+        </td>
+        <td>
+          scala.collection.immutable.List.canBuildFrom
+        </td>
+        <td style="background: #AEF1AE">
+          immutable.this.List.canBuildFrom[dotty.tools.dotc.core.Types.ParamRef]
+        </td>
+      </tr><tr>
+        <td>
+          73
+        </td>
+        <td>
+          55683
+        </td>
+        <td>
+          2972
+          -
+          2972
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.transform.HoistSuperArgs.Hoister.ctx
+        </td>
+        <td style="background: #AEF1AE">
+          Hoister.this.ctx
+        </td>
+      </tr><tr>
+        <td>
+          73
+        </td>
+        <td>
+          55685
+        </td>
+        <td>
+          2956
+          -
+          2983
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.transform.HoistSuperArgs.Hoister.allParamRefs
+        </td>
+        <td style="background: #AEF1AE">
+          allParamRefs(tp.resultType(Hoister.this.ctx))
+        </td>
+      </tr><tr>
+        <td>
+          74
+        </td>
+        <td>
+          55688
+        </td>
+        <td>
+          3015
+          -
+          3018
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.collection.immutable.Nil
+        </td>
+        <td style="background: #AEF1AE">
+          scala.collection.immutable.Nil
+        </td>
+      </tr><tr>
+        <td>
+          80
+        </td>
+        <td>
+          55690
+        </td>
+        <td>
+          3248
+          -
+          3261
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.Types.LambdaType.resultType
+        </td>
+        <td style="background: #AEF1AE">
+          tp.resultType(Hoister.this.ctx)
+        </td>
+      </tr><tr>
+        <td>
+          80
+        </td>
+        <td>
+          55693
+        </td>
+        <td>
+          3206
+          -
+          3206
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Types.LambdaType.derivedLambdaType$default$2
+        </td>
+        <td style="background: #AEF1AE">
+          tp.derivedLambdaType$default$2
+        </td>
+      </tr><tr>
+        <td>
+          80
+        </td>
+        <td>
+          55695
+        </td>
+        <td>
+          3203
+          -
+          3271
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.core.Types.LambdaType.derivedLambdaType
+        </td>
+        <td style="background: #AEF1AE">
+          tp.derivedLambdaType(x$20, x$21, x$19)(Hoister.this.ctx)
+        </td>
+      </tr><tr>
+        <td>
+          80
+        </td>
+        <td>
+          55689
+        </td>
+        <td>
+          3251
+          -
+          3251
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.transform.HoistSuperArgs.Hoister.ctx
+        </td>
+        <td style="background: #AEF1AE">
+          Hoister.this.ctx
+        </td>
+      </tr><tr>
+        <td>
+          80
+        </td>
+        <td>
+          55692
+        </td>
+        <td>
+          3206
+          -
+          3206
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Types.LambdaType.derivedLambdaType$default$1
+        </td>
+        <td style="background: #AEF1AE">
+          tp.derivedLambdaType$default$1
+        </td>
+      </tr><tr>
+        <td>
+          80
+        </td>
+        <td>
+          55691
+        </td>
+        <td>
+          3234
+          -
+          3270
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.transform.HoistSuperArgs.Hoister.replaceResult
+        </td>
+        <td style="background: #AEF1AE">
+          replaceResult(tp.resultType(Hoister.this.ctx), restpe)
+        </td>
+      </tr><tr>
+        <td>
+          80
+        </td>
+        <td>
+          55694
+        </td>
+        <td>
+          3223
+          -
+          3223
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.transform.HoistSuperArgs.Hoister.ctx
+        </td>
+        <td style="background: #AEF1AE">
+          Hoister.this.ctx
+        </td>
+      </tr><tr>
+        <td>
+          86
+        </td>
+        <td>
+          55696
+        </td>
+        <td>
+          3430
+          -
+          3430
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.Tuple2._1
+        </td>
+        <td style="background: #AEF1AE">
+          x$3._1
+        </td>
+      </tr><tr>
+        <td>
+          86
+        </td>
+        <td>
+          55697
+        </td>
+        <td>
+          3442
+          -
+          3442
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.Tuple2._2
+        </td>
+        <td style="background: #AEF1AE">
+          x$3._2
+        </td>
+      </tr><tr>
+        <td>
+          88
+        </td>
+        <td>
+          55699
+        </td>
+        <td>
+          3616
+          -
+          3616
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.transform.HoistSuperArgs.Hoister.ctx
+        </td>
+        <td style="background: #AEF1AE">
+          Hoister.this.ctx
+        </td>
+      </tr><tr>
+        <td>
+          88
+        </td>
+        <td>
+          55702
+        </td>
+        <td>
+          3583
+          -
+          3583
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.transform.HoistSuperArgs.Hoister.ctx
+        </td>
+        <td style="background: #AEF1AE">
+          Hoister.this.ctx
+        </td>
+      </tr><tr>
+        <td>
+          88
+        </td>
+        <td>
+          55698
+        </td>
+        <td>
+          3609
+          -
+          3609
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.transform.HoistSuperArgs.Hoister.ctx
+        </td>
+        <td style="background: #AEF1AE">
+          Hoister.this.ctx
+        </td>
+      </tr><tr>
+        <td>
+          88
+        </td>
+        <td>
+          55701
+        </td>
+        <td>
+          3596
+          -
+          3621
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.transform.HoistSuperArgs.Hoister.allParamRefs
+        </td>
+        <td style="background: #AEF1AE">
+          allParamRefs(core.Symbols.toDenot(constr)(Hoister.this.ctx).info(Hoister.this.ctx))
+        </td>
+      </tr><tr>
+        <td>
+          88
+        </td>
+        <td>
+          55700
+        </td>
+        <td>
+          3609
+          -
+          3620
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.SymDenotations.SymDenotation.info
+        </td>
+        <td style="background: #AEF1AE">
+          core.Symbols.toDenot(constr)(Hoister.this.ctx).info(Hoister.this.ctx)
+        </td>
+      </tr><tr>
+        <td>
+          88
+        </td>
+        <td>
+          55703
+        </td>
+        <td>
+          3570
+          -
+          3622
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.Types.Type.subst
+        </td>
+        <td style="background: #AEF1AE">
+          argType.subst(origParams, allParamRefs(core.Symbols.toDenot(constr)(Hoister.this.ctx).info(Hoister.this.ctx)))(Hoister.this.ctx)
+        </td>
+      </tr><tr>
+        <td>
+          91
+        </td>
+        <td>
+          55714
+        </td>
+        <td>
+          3769
+          -
+          3769
+        </td>
+        <td>
+          TypeApply
+        </td>
+        <td>
+          dotty.tools.dotc.core.Symbols.newSymbol$default$5
+        </td>
+        <td style="background: #AEF1AE">
+          Hoister.this.ctx.newSymbol$default$5[Nothing]
+        </td>
+      </tr><tr>
+        <td>
+          91
+        </td>
+        <td>
+          55715
+        </td>
+        <td>
+          3765
+          -
+          4022
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.core.Symbols.newSymbol
+        </td>
+        <td style="background: #AEF1AE">
+          Hoister.this.ctx.newSymbol[dotty.tools.dotc.core.Names.TermName](x$22, x$23, x$24, x$25, x$27, x$26)
+        </td>
+      </tr><tr>
+        <td>
+          93
+        </td>
+        <td>
+          55705
+        </td>
+        <td>
+          3845
+          -
+          3864
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Names.Name.toTermName
+        </td>
+        <td style="background: #AEF1AE">
+          Hoister.this.cls.name(Hoister.this.ctx).toTermName
+        </td>
+      </tr><tr>
+        <td>
+          93
+        </td>
+        <td>
+          55704
+        </td>
+        <td>
+          3849
+          -
+          3849
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.transform.HoistSuperArgs.Hoister.ctx
+        </td>
+        <td style="background: #AEF1AE">
+          Hoister.this.ctx
+        </td>
+      </tr><tr>
+        <td>
+          93
+        </td>
+        <td>
+          55707
+        </td>
+        <td>
+          3826
+          -
+          3865
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.NameKinds.UniqueNameKind.fresh
+        </td>
+        <td style="background: #AEF1AE">
+          core.NameKinds.SuperArgName.fresh(Hoister.this.cls.name(Hoister.this.ctx).toTermName)(Hoister.this.ctx)
+        </td>
+      </tr><tr>
+        <td>
+          93
+        </td>
+        <td>
+          55706
+        </td>
+        <td>
+          3844
+          -
+          3844
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.transform.HoistSuperArgs.Hoister.ctx
+        </td>
+        <td style="background: #AEF1AE">
+          Hoister.this.ctx
+        </td>
+      </tr><tr>
+        <td>
+          94
+        </td>
+        <td>
+          55708
+        </td>
+        <td>
+          3885
+          -
+          3926
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.core.Flags.FlagSet.|
+        </td>
+        <td style="background: #AEF1AE">
+          core.Flags.Synthetic.|(core.Flags.Private).|(core.Flags.Method).|(staticFlag)
+        </td>
+      </tr><tr>
+        <td>
+          95
+        </td>
+        <td>
+          55711
+        </td>
+        <td>
+          3959
+          -
+          3970
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.SymDenotations.SymDenotation.info
+        </td>
+        <td style="background: #AEF1AE">
+          core.Symbols.toDenot(constr)(Hoister.this.ctx).info(Hoister.this.ctx)
+        </td>
+      </tr><tr>
+        <td>
+          95
+        </td>
+        <td>
+          55710
+        </td>
+        <td>
+          3966
+          -
+          3966
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.transform.HoistSuperArgs.Hoister.ctx
+        </td>
+        <td style="background: #AEF1AE">
+          Hoister.this.ctx
+        </td>
+      </tr><tr>
+        <td>
+          95
+        </td>
+        <td>
+          55709
+        </td>
+        <td>
+          3959
+          -
+          3959
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.transform.HoistSuperArgs.Hoister.ctx
+        </td>
+        <td style="background: #AEF1AE">
+          Hoister.this.ctx
+        </td>
+      </tr><tr>
+        <td>
+          95
+        </td>
+        <td>
+          55712
+        </td>
+        <td>
+          3945
+          -
+          3989
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.transform.HoistSuperArgs.Hoister.replaceResult
+        </td>
+        <td style="background: #AEF1AE">
+          replaceResult(core.Symbols.toDenot(constr)(Hoister.this.ctx).info(Hoister.this.ctx), argTypeWrtConstr)
+        </td>
+      </tr><tr>
+        <td>
+          96
+        </td>
+        <td>
+          55713
+        </td>
+        <td>
+          4009
+          -
+          4021
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Symbols.Symbol.coord
+        </td>
+        <td style="background: #AEF1AE">
+          constr.coord
+        </td>
+      </tr><tr>
+        <td>
+          97
+        </td>
+        <td>
+          55717
+        </td>
+        <td>
+          4071
+          -
+          4071
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.transform.HoistSuperArgs.Hoister.ctx
+        </td>
+        <td style="background: #AEF1AE">
+          Hoister.this.ctx
+        </td>
+      </tr><tr>
+        <td>
+          97
+        </td>
+        <td>
+          55720
+        </td>
+        <td>
+          4088
+          -
+          4092
+        </td>
+        <td>
+          Ident
+        </td>
+        <td>
+          dotty.tools.dotc.transform.HoistSuperArgs.Hoister.meth
+        </td>
+        <td style="background: #AEF1AE">
+          meth
+        </td>
+      </tr><tr>
+        <td>
+          97
+        </td>
+        <td>
+          55716
+        </td>
+        <td>
+          4035
+          -
+          4052
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Symbols.Symbol.isClass
+        </td>
+        <td style="background: #AEF1AE">
+          methOwner.isClass
+        </td>
+      </tr><tr>
+        <td>
+          97
+        </td>
+        <td>
+          55719
+        </td>
+        <td>
+          4054
+          -
+          4082
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          dotty.tools.dotc.core.Symbols.Symbol.enteredAfter
+        </td>
+        <td style="background: #AEF1AE">
+          meth.enteredAfter(HoistSuperArgs.this)(Hoister.this.ctx)
+        </td>
+      </tr><tr>
+        <td>
+          97
+        </td>
+        <td>
+          55718
+        </td>
+        <td>
+          4054
+          -
+          4082
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.Symbols.Symbol.enteredAfter
+        </td>
+        <td style="background: #AEF1AE">
+          meth.enteredAfter(HoistSuperArgs.this)(Hoister.this.ctx)
+        </td>
+      </tr><tr>
+        <td>
+          102
+        </td>
+        <td>
+          55723
+        </td>
+        <td>
+          4260
+          -
+          4260
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.transform.HoistSuperArgs.Hoister.ctx
+        </td>
+        <td style="background: #AEF1AE">
+          Hoister.this.ctx
+        </td>
+      </tr><tr>
+        <td>
+          102
+        </td>
+        <td>
+          55726
+        </td>
+        <td>
+          4291
+          -
+          4294
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.transform.HoistSuperArgs.Hoister.cls
+        </td>
+        <td style="background: #AEF1AE">
+          Hoister.this.cls
+        </td>
+      </tr><tr>
+        <td>
+          102
+        </td>
+        <td>
+          55728
+        </td>
+        <td>
+          4256
+          -
+          4294
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Boolean.&amp;&amp;
+        </td>
+        <td style="background: #AEF1AE">
+          core.Symbols.toClassDenot(tp.cls(Hoister.this.ctx))(Hoister.this.ctx).isStaticOwner(Hoister.this.ctx).unary_!.&amp;&amp;(tp.cls(Hoister.this.ctx).!=(Hoister.this.cls))
+        </td>
+      </tr><tr>
+        <td>
+          102
+        </td>
+        <td>
+          55722
+        </td>
+        <td>
+          4257
+          -
+          4263
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.Types.ThisType.cls
+        </td>
+        <td style="background: #AEF1AE">
+          tp.cls(Hoister.this.ctx)
+        </td>
+      </tr><tr>
+        <td>
+          102
+        </td>
+        <td>
+          55725
+        </td>
+        <td>
+          4284
+          -
+          4284
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.transform.HoistSuperArgs.Hoister.ctx
+        </td>
+        <td style="background: #AEF1AE">
+          Hoister.this.ctx
+        </td>
+      </tr><tr>
+        <td>
+          102
+        </td>
+        <td>
+          55727
+        </td>
+        <td>
+          4281
+          -
+          4294
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.Object.!=
+        </td>
+        <td style="background: #AEF1AE">
+          tp.cls(Hoister.this.ctx).!=(Hoister.this.cls)
+        </td>
+      </tr><tr>
+        <td>
+          102
+        </td>
+        <td>
+          55721
+        </td>
+        <td>
+          4260
+          -
+          4260
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.transform.HoistSuperArgs.Hoister.ctx
+        </td>
+        <td style="background: #AEF1AE">
+          Hoister.this.ctx
+        </td>
+      </tr><tr>
+        <td>
+          102
+        </td>
+        <td>
+          55724
+        </td>
+        <td>
+          4264
+          -
+          4264
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.transform.HoistSuperArgs.Hoister.ctx
+        </td>
+        <td style="background: #AEF1AE">
+          Hoister.this.ctx
+        </td>
+      </tr><tr>
+        <td>
+          103
+        </td>
+        <td>
+          55729
+        </td>
+        <td>
+          4338
+          -
+          4347
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Types.TermRef.prefix
+        </td>
+        <td style="background: #AEF1AE">
+          tp.prefix
+        </td>
+      </tr><tr>
+        <td>
+          103
+        </td>
+        <td>
+          55730
+        </td>
+        <td>
+          4324
+          -
+          4348
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.transform.HoistSuperArgs.Hoister.refNeedsHoist
+        </td>
+        <td style="background: #AEF1AE">
+          refNeedsHoist(tp.prefix)
+        </td>
+      </tr><tr>
+        <td>
+          104
+        </td>
+        <td>
+          55731
+        </td>
+        <td>
+          4378
+          -
+          4383
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          false
+        </td>
+      </tr><tr>
+        <td>
+          109
+        </td>
+        <td>
+          55732
+        </td>
+        <td>
+          4543
+          -
+          4547
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          true
+        </td>
+      </tr><tr>
+        <td>
+          110
+        </td>
+        <td>
+          55733
+        </td>
+        <td>
+          4585
+          -
+          4589
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          true
+        </td>
+      </tr><tr>
+        <td>
+          111
+        </td>
+        <td>
+          55735
+        </td>
+        <td>
+          4648
+          -
+          4648
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.transform.HoistSuperArgs.Hoister.ctx
+        </td>
+        <td style="background: #AEF1AE">
+          Hoister.this.ctx
+        </td>
+      </tr><tr>
+        <td>
+          111
+        </td>
+        <td>
+          55734
+        </td>
+        <td>
+          4637
+          -
+          4637
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.transform.HoistSuperArgs.Hoister.ctx
+        </td>
+        <td style="background: #AEF1AE">
+          Hoister.this.ctx
+        </td>
+      </tr><tr>
+        <td>
+          111
+        </td>
+        <td>
+          55736
+        </td>
+        <td>
+          4627
+          -
+          4656
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.Boolean.unary_!
+        </td>
+        <td style="background: #AEF1AE">
+          tree.tpe.typeSymbol(Hoister.this.ctx).isStatic(Hoister.this.ctx).unary_!
+        </td>
+      </tr><tr>
+        <td>
+          112
+        </td>
+        <td>
+          55738
+        </td>
+        <td>
+          4694
+          -
+          4717
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.transform.HoistSuperArgs.Hoister.refNeedsHoist
+        </td>
+        <td style="background: #AEF1AE">
+          refNeedsHoist(tree.tpe)
+        </td>
+      </tr><tr>
+        <td>
+          112
+        </td>
+        <td>
+          55737
+        </td>
+        <td>
+          4708
+          -
+          4716
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Trees.Tree.tpe
+        </td>
+        <td style="background: #AEF1AE">
+          tree.tpe
+        </td>
+      </tr><tr>
+        <td>
+          113
+        </td>
+        <td>
+          55739
+        </td>
+        <td>
+          4755
+          -
+          4760
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          false
+        </td>
+      </tr><tr>
+        <td>
+          118
+        </td>
+        <td>
+          55741
+        </td>
+        <td>
+          4856
+          -
+          4880
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.Object.==
+        </td>
+        <td style="background: #AEF1AE">
+          fn.symbol(Hoister.this.ctx).==(core.Symbols.defn(Hoister.this.ctx).cbnArg)
+        </td>
+      </tr><tr>
+        <td>
+          118
+        </td>
+        <td>
+          55740
+        </td>
+        <td>
+          4859
+          -
+          4859
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.transform.HoistSuperArgs.Hoister.ctx
+        </td>
+        <td style="background: #AEF1AE">
+          Hoister.this.ctx
+        </td>
+      </tr><tr>
+        <td>
+          119
+        </td>
+        <td>
+          55744
+        </td>
+        <td>
+          4894
+          -
+          4946
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.tpd.TypedTreeCopier.Apply
+        </td>
+        <td style="background: #AEF1AE">
+          HoistSuperArgs.this.cpy.Apply(arg)(fn, {
+  &lt;synthetic&gt; &lt;artifact&gt; val x$4: dotty.tools.dotc.ast.tpd.Tree = Hoister.this.hoistSuperArg(arg1, cdef);
+  scala.collection.immutable.Nil.::[dotty.tools.dotc.ast.tpd.Tree](x$4)
+})(Hoister.this.ctx)
+        </td>
+      </tr><tr>
+        <td>
+          119
+        </td>
+        <td>
+          55743
+        </td>
+        <td>
+          4908
+          -
+          4908
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.transform.HoistSuperArgs.Hoister.ctx
+        </td>
+        <td style="background: #AEF1AE">
+          Hoister.this.ctx
+        </td>
+      </tr><tr>
+        <td>
+          119
+        </td>
+        <td>
+          55742
+        </td>
+        <td>
+          4939
+          -
+          4945
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.immutable.List.::
+        </td>
+        <td style="background: #AEF1AE">
+          scala.collection.immutable.Nil.::[dotty.tools.dotc.ast.tpd.Tree](x$4)
+        </td>
+      </tr><tr>
+        <td>
+          120
+        </td>
+        <td>
+          55747
+        </td>
+        <td>
+          4966
+          -
+          4995
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.tpd.TreeOps.existsSubTree
+        </td>
+        <td style="background: #AEF1AE">
+          ast.tpd.TreeOps[dotty.tools.dotc.ast.tpd.Tree](arg).existsSubTree({
+  ((tree: dotty.tools.dotc.ast.tpd.Tree) =&gt; needsHoist(tree))
+})(Hoister.this.ctx)
+        </td>
+      </tr><tr>
+        <td>
+          120
+        </td>
+        <td>
+          55746
+        </td>
+        <td>
+          4983
+          -
+          4983
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.transform.HoistSuperArgs.Hoister.ctx
+        </td>
+        <td style="background: #AEF1AE">
+          Hoister.this.ctx
+        </td>
+      </tr><tr>
+        <td>
+          120
+        </td>
+        <td>
+          55745
+        </td>
+        <td>
+          4984
+          -
+          4994
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.transform.HoistSuperArgs.Hoister.needsHoist
+        </td>
+        <td style="background: #AEF1AE">
+          needsHoist(tree)
+        </td>
+      </tr><tr>
+        <td>
+          121
+        </td>
+        <td>
+          55749
+        </td>
+        <td>
+          5026
+          -
+          5052
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.transform.HoistSuperArgs.Hoister.newSuperArgMethod
+        </td>
+        <td style="background: #AEF1AE">
+          newSuperArgMethod(arg.tpe)
+        </td>
+      </tr><tr>
+        <td>
+          121
+        </td>
+        <td>
+          55748
+        </td>
+        <td>
+          5044
+          -
+          5051
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Trees.Tree.tpe
+        </td>
+        <td style="background: #AEF1AE">
+          arg.tpe
+        </td>
+      </tr><tr>
+        <td>
+          122
+        </td>
+        <td>
+          55795
+        </td>
+        <td>
+          5081
+          -
+          6215
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.tpd.polyDefDef
+        </td>
+        <td style="background: #AEF1AE">
+          ast.tpd.polyDefDef(superMeth, ((trefs: List[dotty.tools.dotc.core.Types.Type]) =&gt; ((vrefss: List[List[dotty.tools.dotc.ast.tpd.Tree]]) =&gt; {
+  val paramSyms: List[dotty.tools.dotc.core.Symbols.Symbol] = {
+    &lt;synthetic&gt; &lt;artifact&gt; val x$7: List[dotty.tools.dotc.core.Symbols.Symbol] = trefs.map[dotty.tools.dotc.core.Symbols.Symbol, List[dotty.tools.dotc.core.Symbols.Symbol]](((x$5: dotty.tools.dotc.core.Types.Type) =&gt; x$5.typeSymbol(Hoister.this.ctx)))(immutable.this.List.canBuildFrom[dotty.tools.dotc.core.Symbols.Symbol]);
+    vrefss.flatten[dotty.tools.dotc.ast.tpd.Tree](scala.Predef.$conforms[List[dotty.tools.dotc.ast.tpd.Tree]]).map[dotty.tools.dotc.core.Symbols.Symbol, List[dotty.tools.dotc.core.Symbols.Symbol]](((x$6: dotty.tools.dotc.ast.tpd.Tree) =&gt; x$6.symbol(Hoister.this.ctx)))(immutable.this.List.canBuildFrom[dotty.tools.dotc.core.Symbols.Symbol]).:::[dotty.tools.dotc.core.Symbols.Symbol](x$7)
+  };
+  val tmap: dotty.tools.dotc.ast.TreeTypeMap = new ast.TreeTypeMap({
+    final class $anon extends core.Types.TypeMap {
+      def &lt;init&gt;(): &lt;$anon: dotty.tools.dotc.core.Types.Type =&gt; dotty.tools.dotc.core.Types.Type&gt; = {
+        $anon.super.&lt;init&gt;()(Hoister.this.ctx);
+        ()
+      };
+      &lt;stable&gt; &lt;accessor&gt; lazy private val origToParam: scala.collection.immutable.Map[dotty.tools.dotc.core.Symbols.Symbol,dotty.tools.dotc.core.Symbols.Symbol] = origParams.zip[dotty.tools.dotc.core.Symbols.Symbol, dotty.tools.dotc.core.Symbols.Symbol, List[(dotty.tools.dotc.core.Symbols.Symbol, dotty.tools.dotc.core.Symbols.Symbol)]](paramSyms)(immutable.this.List.canBuildFrom[(dotty.tools.dotc.core.Symbols.Symbol, dotty.tools.dotc.core.Symbols.Symbol)]).toMap[dotty.tools.dotc.core.Symbols.Symbol, dotty.tools.dotc.core.Symbols.Symbol](scala.Predef.$conforms[(dotty.tools.dotc.core.Symbols.Symbol, dotty.tools.dotc.core.Symbols.Symbol)]);
+      def apply(tp: dotty.tools.dotc.core.Types.Type): dotty.tools.dotc.core.Types.Type = tp match {
+        case (tp @ (_: dotty.tools.dotc.core.Types.NamedType)) if core.Symbols.toDenot(tp.symbol($anon.this.ctx))($anon.this.ctx).owner.==(Hoister.this.cls).||(core.Symbols.toDenot(tp.symbol($anon.this.ctx))($anon.this.ctx).owner.==(constr)).&amp;&amp;(SymUtils.decorateSymbol(tp.symbol($anon.this.ctx)).isParamOrAccessor($anon.this.ctx)) =&gt; $anon.this.origToParam.get(tp.symbol($anon.this.ctx)) match {
+          case (value: dotty.tools.dotc.core.Symbols.Symbol)Some[dotty.tools.dotc.core.Symbols.Symbol]((mappedSym @ _)) =&gt; if (tp.symbol($anon.this.ctx).isType($anon.this.ctx))
+            core.Symbols.toDenot(mappedSym)($anon.this.ctx).typeRef($anon.this.ctx)
+          else
+            core.Symbols.toDenot(mappedSym)($anon.this.ctx).termRef($anon.this.ctx)
+          case scala.None =&gt; $anon.this.mapOver(tp)
+        }
+        case _ =&gt; $anon.this.mapOver(tp)
+      }
+    };
+    new $anon()
+  }, ((x0$1: dotty.tools.dotc.ast.tpd.Tree) =&gt; x0$1 match {
+    case (tree @ (_: dotty.tools.dotc.ast.tpd.RefTree)) if paramSyms.contains[dotty.tools.dotc.core.Symbols.Symbol](tree.symbol(Hoister.this.ctx)) =&gt; HoistSuperArgs.this.cpy.Ident(tree)(tree.name).withType(tree.tpe)(Hoister.this.ctx)
+    case (tree @ _) =&gt; tree
+  }), ast.this.TreeTypeMap.&lt;init&gt;$default$3, ast.this.TreeTypeMap.&lt;init&gt;$default$4, ast.this.TreeTypeMap.&lt;init&gt;$default$5, ast.this.TreeTypeMap.&lt;init&gt;$default$6)(Hoister.this.ctx);
+  ast.tpd.TreeOps[dotty.tools.dotc.ast.tpd.Tree](tmap.apply[dotty.tools.dotc.ast.tpd.Tree](arg)).changeOwnerAfter(constr, superMeth, HoistSuperArgs.this)(Hoister.this.ctx)
+})))(Hoister.this.ctx)
+        </td>
+      </tr><tr>
+        <td>
+          122
+        </td>
+        <td>
+          55794
+        </td>
+        <td>
+          5091
+          -
+          5091
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.transform.HoistSuperArgs.Hoister.ctx
+        </td>
+        <td style="background: #AEF1AE">
+          Hoister.this.ctx
+        </td>
+      </tr><tr>
+        <td>
+          123
+        </td>
+        <td>
+          55750
+        </td>
+        <td>
+          5176
+          -
+          5208
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.immutable.List.:::
+        </td>
+        <td style="background: #AEF1AE">
+          vrefss.flatten[dotty.tools.dotc.ast.tpd.Tree](scala.Predef.$conforms[List[dotty.tools.dotc.ast.tpd.Tree]]).map[dotty.tools.dotc.core.Symbols.Symbol, List[dotty.tools.dotc.core.Symbols.Symbol]](((x$6: dotty.tools.dotc.ast.tpd.Tree) =&gt; x$6.symbol(Hoister.this.ctx)))(immutable.this.List.canBuildFrom[dotty.tools.dotc.core.Symbols.Symbol]).:::[dotty.tools.dotc.core.Symbols.Symbol](x$7)
+        </td>
+      </tr><tr>
+        <td>
+          124
+        </td>
+        <td>
+          55786
+        </td>
+        <td>
+          5232
+          -
+          5232
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.ast.TreeTypeMap.&lt;init&gt;$default$4
+        </td>
+        <td style="background: #AEF1AE">
+          ast.this.TreeTypeMap.&lt;init&gt;$default$4
+        </td>
+      </tr><tr>
+        <td>
+          124
+        </td>
+        <td>
+          55789
+        </td>
+        <td>
+          5232
+          -
+          5232
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.transform.HoistSuperArgs.Hoister.ctx
+        </td>
+        <td style="background: #AEF1AE">
+          Hoister.this.ctx
+        </td>
+      </tr><tr>
+        <td>
+          124
+        </td>
+        <td>
+          55788
+        </td>
+        <td>
+          5232
+          -
+          5232
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.ast.TreeTypeMap.&lt;init&gt;$default$6
+        </td>
+        <td style="background: #AEF1AE">
+          ast.this.TreeTypeMap.&lt;init&gt;$default$6
+        </td>
+      </tr><tr>
+        <td>
+          124
+        </td>
+        <td>
+          55785
+        </td>
+        <td>
+          5232
+          -
+          5232
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.ast.TreeTypeMap.&lt;init&gt;$default$3
+        </td>
+        <td style="background: #AEF1AE">
+          ast.this.TreeTypeMap.&lt;init&gt;$default$3
+        </td>
+      </tr><tr>
+        <td>
+          124
+        </td>
+        <td>
+          55787
+        </td>
+        <td>
+          5232
+          -
+          5232
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.ast.TreeTypeMap.&lt;init&gt;$default$5
+        </td>
+        <td style="background: #AEF1AE">
+          ast.this.TreeTypeMap.&lt;init&gt;$default$5
+        </td>
+      </tr><tr>
+        <td>
+          124
+        </td>
+        <td>
+          55790
+        </td>
+        <td>
+          5232
+          -
+          6133
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.TreeTypeMap.&lt;init&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          new ast.TreeTypeMap({
+  final class $anon extends core.Types.TypeMap {
+    def &lt;init&gt;(): &lt;$anon: dotty.tools.dotc.core.Types.Type =&gt; dotty.tools.dotc.core.Types.Type&gt; = {
+      $anon.super.&lt;init&gt;()(Hoister.this.ctx);
+      ()
+    };
+    &lt;stable&gt; &lt;accessor&gt; lazy private val origToParam: scala.collection.immutable.Map[dotty.tools.dotc.core.Symbols.Symbol,dotty.tools.dotc.core.Symbols.Symbol] = origParams.zip[dotty.tools.dotc.core.Symbols.Symbol, dotty.tools.dotc.core.Symbols.Symbol, List[(dotty.tools.dotc.core.Symbols.Symbol, dotty.tools.dotc.core.Symbols.Symbol)]](paramSyms)(immutable.this.List.canBuildFrom[(dotty.tools.dotc.core.Symbols.Symbol, dotty.tools.dotc.core.Symbols.Symbol)]).toMap[dotty.tools.dotc.core.Symbols.Symbol, dotty.tools.dotc.core.Symbols.Symbol](scala.Predef.$conforms[(dotty.tools.dotc.core.Symbols.Symbol, dotty.tools.dotc.core.Symbols.Symbol)]);
+    def apply(tp: dotty.tools.dotc.core.Types.Type): dotty.tools.dotc.core.Types.Type = tp match {
+      case (tp @ (_: dotty.tools.dotc.core.Types.NamedType)) if core.Symbols.toDenot(tp.symbol($anon.this.ctx))($anon.this.ctx).owner.==(Hoister.this.cls).||(core.Symbols.toDenot(tp.symbol($anon.this.ctx))($anon.this.ctx).owner.==(constr)).&amp;&amp;(SymUtils.decorateSymbol(tp.symbol($anon.this.ctx)).isParamOrAccessor($anon.this.ctx)) =&gt; $anon.this.origToParam.get(tp.symbol($anon.this.ctx)) match {
+        case (value: dotty.tools.dotc.core.Symbols.Symbol)Some[dotty.tools.dotc.core.Symbols.Symbol]((mappedSym @ _)) =&gt; if (tp.symbol($anon.this.ctx).isType($anon.this.ctx))
+          core.Symbols.toDenot(mappedSym)($anon.this.ctx).typeRef($anon.this.ctx)
+        else
+          core.Symbols.toDenot(mappedSym)($anon.this.ctx).termRef($anon.this.ctx)
+        case scala.None =&gt; $anon.this.mapOver(tp)
+      }
+      case _ =&gt; $anon.this.mapOver(tp)
+    }
+  };
+  new $anon()
+}, ((x0$1: dotty.tools.dotc.ast.tpd.Tree) =&gt; x0$1 match {
+  case (tree @ (_: dotty.tools.dotc.ast.tpd.RefTree)) if paramSyms.contains[dotty.tools.dotc.core.Symbols.Symbol](tree.symbol(Hoister.this.ctx)) =&gt; HoistSuperArgs.this.cpy.Ident(tree)(tree.name).withType(tree.tpe)(Hoister.this.ctx)
+  case (tree @ _) =&gt; tree
+}), ast.this.TreeTypeMap.&lt;init&gt;$default$3, ast.this.TreeTypeMap.&lt;init&gt;$default$4, ast.this.TreeTypeMap.&lt;init&gt;$default$5, ast.this.TreeTypeMap.&lt;init&gt;$default$6)(Hoister.this.ctx)
+        </td>
+      </tr><tr>
+        <td>
+          125
+        </td>
+        <td>
+          55777
+        </td>
+        <td>
+          5273
+          -
+          5276
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.transform.HoistSuperArgs.Hoister.$anon.&lt;init&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          new $anon()
+        </td>
+      </tr><tr>
+        <td>
+          129
+        </td>
+        <td>
+          55753
+        </td>
+        <td>
+          5469
+          -
+          5469
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Types.TypeMap.ctx
+        </td>
+        <td style="background: #AEF1AE">
+          $anon.this.ctx
+        </td>
+      </tr><tr>
+        <td>
+          129
+        </td>
+        <td>
+          55755
+        </td>
+        <td>
+          5492
+          -
+          5517
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.Object.==
+        </td>
+        <td style="background: #AEF1AE">
+          core.Symbols.toDenot(tp.symbol($anon.this.ctx))($anon.this.ctx).owner.==(constr)
+        </td>
+      </tr><tr>
+        <td>
+          129
+        </td>
+        <td>
+          55752
+        </td>
+        <td>
+          5466
+          -
+          5475
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.Types.NamedType.symbol
+        </td>
+        <td style="background: #AEF1AE">
+          tp.symbol($anon.this.ctx)
+        </td>
+      </tr><tr>
+        <td>
+          129
+        </td>
+        <td>
+          55760
+        </td>
+        <td>
+          5465
+          -
+          5570
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Boolean.&amp;&amp;
+        </td>
+        <td style="background: #AEF1AE">
+          core.Symbols.toDenot(tp.symbol($anon.this.ctx))($anon.this.ctx).owner.==(Hoister.this.cls).||(core.Symbols.toDenot(tp.symbol($anon.this.ctx))($anon.this.ctx).owner.==(constr)).&amp;&amp;(SymUtils.decorateSymbol(tp.symbol($anon.this.ctx)).isParamOrAccessor($anon.this.ctx))
+        </td>
+      </tr><tr>
+        <td>
+          129
+        </td>
+        <td>
+          55751
+        </td>
+        <td>
+          5469
+          -
+          5469
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Types.TypeMap.ctx
+        </td>
+        <td style="background: #AEF1AE">
+          $anon.this.ctx
+        </td>
+      </tr><tr>
+        <td>
+          129
+        </td>
+        <td>
+          55754
+        </td>
+        <td>
+          5485
+          -
+          5488
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.transform.HoistSuperArgs.Hoister.cls
+        </td>
+        <td style="background: #AEF1AE">
+          Hoister.this.cls
+        </td>
+      </tr><tr>
+        <td>
+          130
+        </td>
+        <td>
+          55759
+        </td>
+        <td>
+          5543
+          -
+          5570
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.transform.SymUtils.isParamOrAccessor
+        </td>
+        <td style="background: #AEF1AE">
+          SymUtils.decorateSymbol(tp.symbol($anon.this.ctx)).isParamOrAccessor($anon.this.ctx)
+        </td>
+      </tr><tr>
+        <td>
+          130
+        </td>
+        <td>
+          55756
+        </td>
+        <td>
+          5546
+          -
+          5546
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Types.TypeMap.ctx
+        </td>
+        <td style="background: #AEF1AE">
+          $anon.this.ctx
+        </td>
+      </tr><tr>
+        <td>
+          130
+        </td>
+        <td>
+          55758
+        </td>
+        <td>
+          5553
+          -
+          5553
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Types.TypeMap.ctx
+        </td>
+        <td style="background: #AEF1AE">
+          $anon.this.ctx
+        </td>
+      </tr><tr>
+        <td>
+          130
+        </td>
+        <td>
+          55757
+        </td>
+        <td>
+          5543
+          -
+          5552
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.Types.NamedType.symbol
+        </td>
+        <td style="background: #AEF1AE">
+          tp.symbol($anon.this.ctx)
+        </td>
+      </tr><tr>
+        <td>
+          131
+        </td>
+        <td>
+          55762
+        </td>
+        <td>
+          5610
+          -
+          5619
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.Types.NamedType.symbol
+        </td>
+        <td style="background: #AEF1AE">
+          tp.symbol($anon.this.ctx)
+        </td>
+      </tr><tr>
+        <td>
+          131
+        </td>
+        <td>
+          55761
+        </td>
+        <td>
+          5613
+          -
+          5613
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Types.TypeMap.ctx
+        </td>
+        <td style="background: #AEF1AE">
+          $anon.this.ctx
+        </td>
+      </tr><tr>
+        <td>
+          131
+        </td>
+        <td>
+          55763
+        </td>
+        <td>
+          5594
+          -
+          5620
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.MapLike.get
+        </td>
+        <td style="background: #AEF1AE">
+          $anon.this.origToParam.get(tp.symbol($anon.this.ctx))
+        </td>
+      </tr><tr>
+        <td>
+          132
+        </td>
+        <td>
+          55765
+        </td>
+        <td>
+          5689
+          -
+          5689
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Types.TypeMap.ctx
+        </td>
+        <td style="background: #AEF1AE">
+          $anon.this.ctx
+        </td>
+      </tr><tr>
+        <td>
+          132
+        </td>
+        <td>
+          55774
+        </td>
+        <td>
+          5720
+          -
+          5737
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          dotty.tools.dotc.core.SymDenotations.SymDenotation.termRef
+        </td>
+        <td style="background: #AEF1AE">
+          core.Symbols.toDenot(mappedSym)($anon.this.ctx).termRef($anon.this.ctx)
+        </td>
+      </tr><tr>
+        <td>
+          132
+        </td>
+        <td>
+          55768
+        </td>
+        <td>
+          5707
+          -
+          5707
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Types.TypeMap.ctx
+        </td>
+        <td style="background: #AEF1AE">
+          $anon.this.ctx
+        </td>
+      </tr><tr>
+        <td>
+          132
+        </td>
+        <td>
+          55771
+        </td>
+        <td>
+          5720
+          -
+          5720
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Types.TypeMap.ctx
+        </td>
+        <td style="background: #AEF1AE">
+          $anon.this.ctx
+        </td>
+      </tr><tr>
+        <td>
+          132
+        </td>
+        <td>
+          55764
+        </td>
+        <td>
+          5682
+          -
+          5682
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Types.TypeMap.ctx
+        </td>
+        <td style="background: #AEF1AE">
+          $anon.this.ctx
+        </td>
+      </tr><tr>
+        <td>
+          132
+        </td>
+        <td>
+          55773
+        </td>
+        <td>
+          5720
+          -
+          5737
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.SymDenotations.SymDenotation.termRef
+        </td>
+        <td style="background: #AEF1AE">
+          core.Symbols.toDenot(mappedSym)($anon.this.ctx).termRef($anon.this.ctx)
+        </td>
+      </tr><tr>
+        <td>
+          132
+        </td>
+        <td>
+          55767
+        </td>
+        <td>
+          5697
+          -
+          5697
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Types.TypeMap.ctx
+        </td>
+        <td style="background: #AEF1AE">
+          $anon.this.ctx
+        </td>
+      </tr><tr>
+        <td>
+          132
+        </td>
+        <td>
+          55770
+        </td>
+        <td>
+          5697
+          -
+          5714
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          dotty.tools.dotc.core.SymDenotations.SymDenotation.typeRef
+        </td>
+        <td style="background: #AEF1AE">
+          core.Symbols.toDenot(mappedSym)($anon.this.ctx).typeRef($anon.this.ctx)
+        </td>
+      </tr><tr>
+        <td>
+          132
+        </td>
+        <td>
+          55769
+        </td>
+        <td>
+          5697
+          -
+          5714
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.SymDenotations.SymDenotation.typeRef
+        </td>
+        <td style="background: #AEF1AE">
+          core.Symbols.toDenot(mappedSym)($anon.this.ctx).typeRef($anon.this.ctx)
+        </td>
+      </tr><tr>
+        <td>
+          132
+        </td>
+        <td>
+          55772
+        </td>
+        <td>
+          5730
+          -
+          5730
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Types.TypeMap.ctx
+        </td>
+        <td style="background: #AEF1AE">
+          $anon.this.ctx
+        </td>
+      </tr><tr>
+        <td>
+          132
+        </td>
+        <td>
+          55766
+        </td>
+        <td>
+          5679
+          -
+          5695
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.Symbols.Symbol.isType
+        </td>
+        <td style="background: #AEF1AE">
+          tp.symbol($anon.this.ctx).isType($anon.this.ctx)
+        </td>
+      </tr><tr>
+        <td>
+          133
+        </td>
+        <td>
+          55775
+        </td>
+        <td>
+          5773
+          -
+          5784
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.core.Types.TypeMap.mapOver
+        </td>
+        <td style="background: #AEF1AE">
+          $anon.this.mapOver(tp)
+        </td>
+      </tr><tr>
+        <td>
+          136
+        </td>
+        <td>
+          55776
+        </td>
+        <td>
+          5855
+          -
+          5866
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.core.Types.TypeMap.mapOver
+        </td>
+        <td style="background: #AEF1AE">
+          $anon.this.mapOver(tp)
+        </td>
+      </tr><tr>
+        <td>
+          140
+        </td>
+        <td>
+          55780
+        </td>
+        <td>
+          5966
+          -
+          5997
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.LinearSeqOptimized.contains
+        </td>
+        <td style="background: #AEF1AE">
+          paramSyms.contains[dotty.tools.dotc.core.Symbols.Symbol](tree.symbol(Hoister.this.ctx))
+        </td>
+      </tr><tr>
+        <td>
+          140
+        </td>
+        <td>
+          55779
+        </td>
+        <td>
+          5985
+          -
+          5996
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Trees.Tree.symbol
+        </td>
+        <td style="background: #AEF1AE">
+          tree.symbol(Hoister.this.ctx)
+        </td>
+      </tr><tr>
+        <td>
+          140
+        </td>
+        <td>
+          55778
+        </td>
+        <td>
+          5990
+          -
+          5990
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.transform.HoistSuperArgs.Hoister.ctx
+        </td>
+        <td style="background: #AEF1AE">
+          Hoister.this.ctx
+        </td>
+      </tr><tr>
+        <td>
+          141
+        </td>
+        <td>
+          55783
+        </td>
+        <td>
+          6054
+          -
+          6054
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.transform.HoistSuperArgs.Hoister.ctx
+        </td>
+        <td style="background: #F0ADAD">
+          Hoister.this.ctx
+        </td>
+      </tr><tr>
+        <td>
+          141
+        </td>
+        <td>
+          55782
+        </td>
+        <td>
+          6055
+          -
+          6063
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Trees.Tree.tpe
+        </td>
+        <td style="background: #F0ADAD">
+          tree.tpe
+        </td>
+      </tr><tr>
+        <td>
+          141
+        </td>
+        <td>
+          55781
+        </td>
+        <td>
+          6035
+          -
+          6044
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Trees.NameTree.name
+        </td>
+        <td style="background: #F0ADAD">
+          tree.name
+        </td>
+      </tr><tr>
+        <td>
+          141
+        </td>
+        <td>
+          55784
+        </td>
+        <td>
+          6019
+          -
+          6064
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Trees.Tree.withType
+        </td>
+        <td style="background: #F0ADAD">
+          HoistSuperArgs.this.cpy.Ident(tree)(tree.name).withType(tree.tpe)(Hoister.this.ctx)
+        </td>
+      </tr><tr>
+        <td>
+          145
+        </td>
+        <td>
+          55792
+        </td>
+        <td>
+          6172
+          -
+          6172
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.transform.HoistSuperArgs.Hoister.ctx
+        </td>
+        <td style="background: #AEF1AE">
+          Hoister.this.ctx
+        </td>
+      </tr><tr>
+        <td>
+          145
+        </td>
+        <td>
+          55791
+        </td>
+        <td>
+          6146
+          -
+          6155
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.ast.TreeTypeMap.apply
+        </td>
+        <td style="background: #AEF1AE">
+          tmap.apply[dotty.tools.dotc.ast.tpd.Tree](arg)
+        </td>
+      </tr><tr>
+        <td>
+          145
+        </td>
+        <td>
+          55793
+        </td>
+        <td>
+          6146
+          -
+          6202
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.tpd.TreeOps.changeOwnerAfter
+        </td>
+        <td style="background: #AEF1AE">
+          ast.tpd.TreeOps[dotty.tools.dotc.ast.tpd.Tree](tmap.apply[dotty.tools.dotc.ast.tpd.Tree](arg)).changeOwnerAfter(constr, superMeth, HoistSuperArgs.this)(Hoister.this.ctx)
+        </td>
+      </tr><tr>
+        <td>
+          147
+        </td>
+        <td>
+          55796
+        </td>
+        <td>
+          6226
+          -
+          6253
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.mutable.ListBuffer.+=
+        </td>
+        <td style="background: #AEF1AE">
+          Hoister.this.superArgDefs.+=(superArgDef)
+        </td>
+      </tr><tr>
+        <td>
+          150
+        </td>
+        <td>
+          55798
+        </td>
+        <td>
+          6406
+          -
+          6419
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.Types.LambdaType.resultType
+        </td>
+        <td style="background: #AEF1AE">
+          tp.resultType(Hoister.this.ctx)
+        </td>
+      </tr><tr>
+        <td>
+          150
+        </td>
+        <td>
+          55797
+        </td>
+        <td>
+          6409
+          -
+          6409
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.transform.HoistSuperArgs.Hoister.ctx
+        </td>
+        <td style="background: #AEF1AE">
+          Hoister.this.ctx
+        </td>
+      </tr><tr>
+        <td>
+          150
+        </td>
+        <td>
+          55799
+        </td>
+        <td>
+          6392
+          -
+          6428
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.transform.HoistSuperArgs.Hoister.termParamRefs
+        </td>
+        <td style="background: #AEF1AE">
+          termParamRefs(tp.resultType(Hoister.this.ctx), params)
+        </td>
+      </tr><tr>
+        <td>
+          152
+        </td>
+        <td>
+          55801
+        </td>
+        <td>
+          6495
+          -
+          6495
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.Tuple2._2
+        </td>
+        <td style="background: #AEF1AE">
+          x$8._2
+        </td>
+      </tr><tr>
+        <td>
+          152
+        </td>
+        <td>
+          55800
+        </td>
+        <td>
+          6483
+          -
+          6483
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.Tuple2._1
+        </td>
+        <td style="background: #AEF1AE">
+          x$8._1
+        </td>
+      </tr><tr>
+        <td>
+          153
+        </td>
+        <td>
+          55802
+        </td>
+        <td>
+          6581
+          -
+          6625
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.immutable.List.::
+        </td>
+        <td style="background: #AEF1AE">
+          termParamRefs(tp.resultType(Hoister.this.ctx), otherParams).::[List[dotty.tools.dotc.ast.tpd.Tree]](x$9)
+        </td>
+      </tr><tr>
+        <td>
+          155
+        </td>
+        <td>
+          55803
+        </td>
+        <td>
+          6662
+          -
+          6665
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.collection.immutable.Nil
+        </td>
+        <td style="background: #AEF1AE">
+          scala.collection.immutable.Nil
+        </td>
+      </tr><tr>
+        <td>
+          157
+        </td>
+        <td>
+          55804
+        </td>
+        <td>
+          6693
+          -
+          6693
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.Tuple2._1
+        </td>
+        <td style="background: #AEF1AE">
+          x$11._1
+        </td>
+      </tr><tr>
+        <td>
+          157
+        </td>
+        <td>
+          55805
+        </td>
+        <td>
+          6705
+          -
+          6705
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.Tuple2._2
+        </td>
+        <td style="background: #AEF1AE">
+          x$11._2
+        </td>
+      </tr><tr>
+        <td>
+          158
+        </td>
+        <td>
+          55807
+        </td>
+        <td>
+          6765
+          -
+          6779
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.tpd.ref
+        </td>
+        <td style="background: #AEF1AE">
+          ast.tpd.ref(superMeth)(Hoister.this.ctx)
+        </td>
+      </tr><tr>
+        <td>
+          158
+        </td>
+        <td>
+          55806
+        </td>
+        <td>
+          6768
+          -
+          6768
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.transform.HoistSuperArgs.Hoister.ctx
+        </td>
+        <td style="background: #AEF1AE">
+          Hoister.this.ctx
+        </td>
+      </tr><tr>
+        <td>
+          159
+        </td>
+        <td>
+          55810
+        </td>
+        <td>
+          6823
+          -
+          6832
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.SymDenotations.SymDenotation.typeRef
+        </td>
+        <td style="background: #AEF1AE">
+          core.Symbols.toDenot(x$12)(Hoister.this.ctx).typeRef(Hoister.this.ctx)
+        </td>
+      </tr><tr>
+        <td>
+          159
+        </td>
+        <td>
+          55813
+        </td>
+        <td>
+          6807
+          -
+          6807
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.transform.HoistSuperArgs.Hoister.ctx
+        </td>
+        <td style="background: #AEF1AE">
+          Hoister.this.ctx
+        </td>
+      </tr><tr>
+        <td>
+          159
+        </td>
+        <td>
+          55809
+        </td>
+        <td>
+          6825
+          -
+          6825
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.transform.HoistSuperArgs.Hoister.ctx
+        </td>
+        <td style="background: #AEF1AE">
+          Hoister.this.ctx
+        </td>
+      </tr><tr>
+        <td>
+          159
+        </td>
+        <td>
+          55812
+        </td>
+        <td>
+          6808
+          -
+          6833
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          scala.collection.immutable.List.map
+        </td>
+        <td style="background: #AEF1AE">
+          typeParams.map[dotty.tools.dotc.core.Types.TypeRef, List[dotty.tools.dotc.core.Types.Type]](((x$12: dotty.tools.dotc.core.Symbols.Symbol) =&gt; core.Symbols.toDenot(x$12)(Hoister.this.ctx).typeRef(Hoister.this.ctx)))(immutable.this.List.canBuildFrom[dotty.tools.dotc.core.Types.TypeRef])
+        </td>
+      </tr><tr>
+        <td>
+          159
+        </td>
+        <td>
+          55811
+        </td>
+        <td>
+          6822
+          -
+          6822
+        </td>
+        <td>
+          TypeApply
+        </td>
+        <td>
+          scala.collection.immutable.List.canBuildFrom
+        </td>
+        <td style="background: #AEF1AE">
+          immutable.this.List.canBuildFrom[dotty.tools.dotc.core.Types.TypeRef]
+        </td>
+      </tr><tr>
+        <td>
+          159
+        </td>
+        <td>
+          55814
+        </td>
+        <td>
+          6765
+          -
+          6834
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.tpd.TreeOps.appliedToTypes
+        </td>
+        <td style="background: #AEF1AE">
+          ast.tpd.TreeOps[dotty.tools.dotc.ast.tpd.Tree](ast.tpd.ref(superMeth)(Hoister.this.ctx)).appliedToTypes(typeParams.map[dotty.tools.dotc.core.Types.TypeRef, List[dotty.tools.dotc.core.Types.Type]](((x$12: dotty.tools.dotc.core.Symbols.Symbol) =&gt; core.Symbols.toDenot(x$12)(Hoister.this.ctx).typeRef(Hoister.this.ctx)))(immutable.this.List.canBuildFrom[dotty.tools.dotc.core.Types.TypeRef]))(Hoister.this.ctx)
+        </td>
+      </tr><tr>
+        <td>
+          159
+        </td>
+        <td>
+          55808
+        </td>
+        <td>
+          6823
+          -
+          6823
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.transform.HoistSuperArgs.Hoister.ctx
+        </td>
+        <td style="background: #AEF1AE">
+          Hoister.this.ctx
+        </td>
+      </tr><tr>
+        <td>
+          160
+        </td>
+        <td>
+          55819
+        </td>
+        <td>
+          6862
+          -
+          6862
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.transform.HoistSuperArgs.Hoister.ctx
+        </td>
+        <td style="background: #AEF1AE">
+          Hoister.this.ctx
+        </td>
+      </tr><tr>
+        <td>
+          160
+        </td>
+        <td>
+          55816
+        </td>
+        <td>
+          6884
+          -
+          6884
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.transform.HoistSuperArgs.Hoister.ctx
+        </td>
+        <td style="background: #AEF1AE">
+          Hoister.this.ctx
+        </td>
+      </tr><tr>
+        <td>
+          160
+        </td>
+        <td>
+          55815
+        </td>
+        <td>
+          6877
+          -
+          6877
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.transform.HoistSuperArgs.Hoister.ctx
+        </td>
+        <td style="background: #AEF1AE">
+          Hoister.this.ctx
+        </td>
+      </tr><tr>
+        <td>
+          160
+        </td>
+        <td>
+          55818
+        </td>
+        <td>
+          6863
+          -
+          6901
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.transform.HoistSuperArgs.Hoister.termParamRefs
+        </td>
+        <td style="background: #AEF1AE">
+          termParamRefs(core.Symbols.toDenot(constr)(Hoister.this.ctx).info(Hoister.this.ctx), termParams)
+        </td>
+      </tr><tr>
+        <td>
+          160
+        </td>
+        <td>
+          55820
+        </td>
+        <td>
+          6765
+          -
+          6902
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.tpd.TreeOps.appliedToArgss
+        </td>
+        <td style="background: #AEF1AE">
+          ast.tpd.TreeOps[dotty.tools.dotc.ast.tpd.Tree](ast.tpd.TreeOps[dotty.tools.dotc.ast.tpd.Tree](ast.tpd.ref(superMeth)(Hoister.this.ctx)).appliedToTypes(typeParams.map[dotty.tools.dotc.core.Types.TypeRef, List[dotty.tools.dotc.core.Types.Type]](((x$12: dotty.tools.dotc.core.Symbols.Symbol) =&gt; core.Symbols.toDenot(x$12)(Hoister.this.ctx).typeRef(Hoister.this.ctx)))(immutable.this.List.canBuildFrom[dotty.tools.dotc.core.Types.TypeRef]))(Hoister.this.ctx)).appliedToArgss(termParamRefs(core.Symbols.toDenot(constr)(Hoister.this.ctx).info(Hoister.this.ctx), termParams))(Hoister.this.ctx)
+        </td>
+      </tr><tr>
+        <td>
+          160
+        </td>
+        <td>
+          55817
+        </td>
+        <td>
+          6877
+          -
+          6888
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.SymDenotations.SymDenotation.info
+        </td>
+        <td style="background: #AEF1AE">
+          core.Symbols.toDenot(constr)(Hoister.this.ctx).info(Hoister.this.ctx)
+        </td>
+      </tr><tr>
+        <td>
+          161
+        </td>
+        <td>
+          55825
+        </td>
+        <td>
+          6917
+          -
+          6917
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.reporting.Reporting.log$default$2
+        </td>
+        <td style="background: #AEF1AE">
+          Hoister.this.ctx.log$default$2
+        </td>
+      </tr><tr>
+        <td>
+          161
+        </td>
+        <td>
+          55822
+        </td>
+        <td>
+          6942
+          -
+          6945
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.transform.HoistSuperArgs.Hoister.cls
+        </td>
+        <td style="background: #F0ADAD">
+          Hoister.this.cls
+        </td>
+      </tr><tr>
+        <td>
+          161
+        </td>
+        <td>
+          55824
+        </td>
+        <td>
+          6921
+          -
+          6953
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.Decorators.StringInterpolators.i
+        </td>
+        <td style="background: #F0ADAD">
+          core.Decorators.StringInterpolators(scala.StringContext.apply(&quot;hoist &quot;, &quot;, cls = &quot;, &quot; = &quot;, &quot;&quot;)).i(arg, Hoister.this.cls, res)(Hoister.this.ctx)
+        </td>
+      </tr><tr>
+        <td>
+          161
+        </td>
+        <td>
+          55821
+        </td>
+        <td>
+          6921
+          -
+          6953
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.StringContext.apply
+        </td>
+        <td style="background: #F0ADAD">
+          scala.StringContext.apply(&quot;hoist &quot;, &quot;, cls = &quot;, &quot; = &quot;, &quot;&quot;)
+        </td>
+      </tr><tr>
+        <td>
+          161
+        </td>
+        <td>
+          55823
+        </td>
+        <td>
+          6921
+          -
+          6921
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.transform.HoistSuperArgs.Hoister.ctx
+        </td>
+        <td style="background: #F0ADAD">
+          Hoister.this.ctx
+        </td>
+      </tr><tr>
+        <td>
+          161
+        </td>
+        <td>
+          55826
+        </td>
+        <td>
+          6913
+          -
+          6954
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.reporting.Reporting.log
+        </td>
+        <td style="background: #AEF1AE">
+          Hoister.this.ctx.log(core.Decorators.StringInterpolators(scala.StringContext.apply(&quot;hoist &quot;, &quot;, cls = &quot;, &quot; = &quot;, &quot;&quot;)).i(arg, Hoister.this.cls, res)(Hoister.this.ctx), Hoister.this.ctx.log$default$2)
+        </td>
+      </tr><tr>
+        <td>
+          170
+        </td>
+        <td>
+          55828
+        </td>
+        <td>
+          7271
+          -
+          7293
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.transform.HoistSuperArgs.Hoister.hoistSuperArg
+        </td>
+        <td style="background: #AEF1AE">
+          Hoister.this.hoistSuperArg(x$13, cdef)
+        </td>
+      </tr><tr>
+        <td>
+          170
+        </td>
+        <td>
+          55831
+        </td>
+        <td>
+          7199
+          -
+          7295
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.tpd.TypedTreeCopier.Apply
+        </td>
+        <td style="background: #AEF1AE">
+          HoistSuperArgs.this.cpy.Apply(superCall)(Hoister.this.hoistSuperArgsFromCall(fn, cdef), core.Decorators.ListDecorator[dotty.tools.dotc.ast.Trees.Tree[dotty.tools.dotc.core.Types.Type]](args).mapconserve[dotty.tools.dotc.ast.tpd.Tree](((x$13: dotty.tools.dotc.ast.Trees.Tree[dotty.tools.dotc.core.Types.Type]) =&gt; Hoister.this.hoistSuperArg(x$13, cdef))))(Hoister.this.ctx)
+        </td>
+      </tr><tr>
+        <td>
+          170
+        </td>
+        <td>
+          55827
+        </td>
+        <td>
+          7220
+          -
+          7252
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.transform.HoistSuperArgs.Hoister.hoistSuperArgsFromCall
+        </td>
+        <td style="background: #AEF1AE">
+          Hoister.this.hoistSuperArgsFromCall(fn, cdef)
+        </td>
+      </tr><tr>
+        <td>
+          170
+        </td>
+        <td>
+          55830
+        </td>
+        <td>
+          7219
+          -
+          7219
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.transform.HoistSuperArgs.Hoister.ctx
+        </td>
+        <td style="background: #AEF1AE">
+          Hoister.this.ctx
+        </td>
+      </tr><tr>
+        <td>
+          170
+        </td>
+        <td>
+          55829
+        </td>
+        <td>
+          7254
+          -
+          7294
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.core.Decorators.ListDecorator.mapconserve
+        </td>
+        <td style="background: #AEF1AE">
+          core.Decorators.ListDecorator[dotty.tools.dotc.ast.Trees.Tree[dotty.tools.dotc.core.Types.Type]](args).mapconserve[dotty.tools.dotc.ast.tpd.Tree](((x$13: dotty.tools.dotc.ast.Trees.Tree[dotty.tools.dotc.core.Types.Type]) =&gt; Hoister.this.hoistSuperArg(x$13, cdef)))
+        </td>
+      </tr><tr>
+        <td>
+          177
+        </td>
+        <td>
+          55834
+        </td>
+        <td>
+          7538
+          -
+          7538
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.transform.HoistSuperArgs.Hoister.ctx
+        </td>
+        <td style="background: #AEF1AE">
+          Hoister.this.ctx
+        </td>
+      </tr><tr>
+        <td>
+          177
+        </td>
+        <td>
+          55833
+        </td>
+        <td>
+          7533
+          -
+          7544
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Trees.Tree.symbol
+        </td>
+        <td style="background: #AEF1AE">
+          stat.symbol(Hoister.this.ctx)
+        </td>
+      </tr><tr>
+        <td>
+          177
+        </td>
+        <td>
+          55832
+        </td>
+        <td>
+          7538
+          -
+          7538
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.transform.HoistSuperArgs.Hoister.ctx
+        </td>
+        <td style="background: #AEF1AE">
+          Hoister.this.ctx
+        </td>
+      </tr><tr>
+        <td>
+          177
+        </td>
+        <td>
+          55835
+        </td>
+        <td>
+          7533
+          -
+          7563
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.SymDenotations.SymDenotation.isClassConstructor
+        </td>
+        <td style="background: #AEF1AE">
+          core.Symbols.toDenot(stat.symbol(Hoister.this.ctx))(Hoister.this.ctx).isClassConstructor
+        </td>
+      </tr><tr>
+        <td>
+          178
+        </td>
+        <td>
+          55852
+        </td>
+        <td>
+          7585
+          -
+          7585
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Trees.Instance.TreeCopier.DefDef$default$2
+        </td>
+        <td style="background: #AEF1AE">
+          HoistSuperArgs.this.cpy.DefDef$default$2(x$28)
+        </td>
+      </tr><tr>
+        <td>
+          178
+        </td>
+        <td>
+          55855
+        </td>
+        <td>
+          7585
+          -
+          7585
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Trees.Instance.TreeCopier.DefDef$default$5
+        </td>
+        <td style="background: #AEF1AE">
+          HoistSuperArgs.this.cpy.DefDef$default$5(x$28)
+        </td>
+      </tr><tr>
+        <td>
+          178
+        </td>
+        <td>
+          55854
+        </td>
+        <td>
+          7585
+          -
+          7585
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Trees.Instance.TreeCopier.DefDef$default$4
+        </td>
+        <td style="background: #AEF1AE">
+          HoistSuperArgs.this.cpy.DefDef$default$4(x$28)
+        </td>
+      </tr><tr>
+        <td>
+          178
+        </td>
+        <td>
+          55856
+        </td>
+        <td>
+          7575
+          -
+          7953
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Trees.Instance.TreeCopier.DefDef
+        </td>
+        <td style="background: #AEF1AE">
+          HoistSuperArgs.this.cpy.DefDef(x$28)(x$30, x$31, x$32, x$33, x$29)
+        </td>
+      </tr><tr>
+        <td>
+          178
+        </td>
+        <td>
+          55853
+        </td>
+        <td>
+          7585
+          -
+          7585
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Trees.Instance.TreeCopier.DefDef$default$3
+        </td>
+        <td style="background: #AEF1AE">
+          HoistSuperArgs.this.cpy.DefDef$default$3(x$28)
+        </td>
+      </tr><tr>
+        <td>
+          179
+        </td>
+        <td>
+          55837
+        </td>
+        <td>
+          7608
+          -
+          7616
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Trees.ValOrDefDef.rhs
+        </td>
+        <td style="background: #AEF1AE">
+          stat.rhs(Hoister.this.ctx)
+        </td>
+      </tr><tr>
+        <td>
+          179
+        </td>
+        <td>
+          55836
+        </td>
+        <td>
+          7613
+          -
+          7613
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.transform.HoistSuperArgs.Hoister.ctx
+        </td>
+        <td style="background: #AEF1AE">
+          Hoister.this.ctx
+        </td>
+      </tr><tr>
+        <td>
+          181
+        </td>
+        <td>
+          55838
+        </td>
+        <td>
+          7708
+          -
+          7747
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.transform.HoistSuperArgs.Hoister.hoistSuperArgsFromCall
+        </td>
+        <td style="background: #AEF1AE">
+          Hoister.this.hoistSuperArgsFromCall(superCall, stat)
+        </td>
+      </tr><tr>
+        <td>
+          182
+        </td>
+        <td>
+          55840
+        </td>
+        <td>
+          7796
+          -
+          7796
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.transform.HoistSuperArgs.Hoister.ctx
+        </td>
+        <td style="background: #AEF1AE">
+          Hoister.this.ctx
+        </td>
+      </tr><tr>
+        <td>
+          182
+        </td>
+        <td>
+          55842
+        </td>
+        <td>
+          7791
+          -
+          7799
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Trees.ValOrDefDef.rhs
+        </td>
+        <td style="background: #AEF1AE">
+          stat.rhs(Hoister.this.ctx)
+        </td>
+      </tr><tr>
+        <td>
+          182
+        </td>
+        <td>
+          55839
+        </td>
+        <td>
+          7766
+          -
+          7789
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.Object.eq
+        </td>
+        <td style="background: #AEF1AE">
+          superCall1.eq(superCall)
+        </td>
+      </tr><tr>
+        <td>
+          182
+        </td>
+        <td>
+          55841
+        </td>
+        <td>
+          7791
+          -
+          7799
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Trees.ValOrDefDef.rhs
+        </td>
+        <td style="background: #AEF1AE">
+          stat.rhs(Hoister.this.ctx)
+        </td>
+      </tr><tr>
+        <td>
+          183
+        </td>
+        <td>
+          55843
+        </td>
+        <td>
+          7834
+          -
+          7834
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.transform.HoistSuperArgs.Hoister.ctx
+        </td>
+        <td style="background: #AEF1AE">
+          Hoister.this.ctx
+        </td>
+      </tr><tr>
+        <td>
+          183
+        </td>
+        <td>
+          55846
+        </td>
+        <td>
+          7838
+          -
+          7838
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.transform.HoistSuperArgs.Hoister.ctx
+        </td>
+        <td style="background: #AEF1AE">
+          Hoister.this.ctx
+        </td>
+      </tr><tr>
+        <td>
+          183
+        </td>
+        <td>
+          55848
+        </td>
+        <td>
+          7819
+          -
+          7865
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          dotty.tools.dotc.ast.tpd.TypedTreeCopier.Block
+        </td>
+        <td style="background: #AEF1AE">
+          HoistSuperArgs.this.cpy.Block(stat.rhs(Hoister.this.ctx))({
+  &lt;synthetic&gt; &lt;artifact&gt; val x$14: dotty.tools.dotc.ast.tpd.Tree = superCall1;
+  stats.::[dotty.tools.dotc.ast.Trees.Tree[dotty.tools.dotc.core.Types.Type]](x$14)
+}, expr)(Hoister.this.ctx)
+        </td>
+      </tr><tr>
+        <td>
+          183
+        </td>
+        <td>
+          55845
+        </td>
+        <td>
+          7850
+          -
+          7858
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.immutable.List.::
+        </td>
+        <td style="background: #AEF1AE">
+          stats.::[dotty.tools.dotc.ast.Trees.Tree[dotty.tools.dotc.core.Types.Type]](x$14)
+        </td>
+      </tr><tr>
+        <td>
+          183
+        </td>
+        <td>
+          55847
+        </td>
+        <td>
+          7819
+          -
+          7865
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.tpd.TypedTreeCopier.Block
+        </td>
+        <td style="background: #AEF1AE">
+          HoistSuperArgs.this.cpy.Block(stat.rhs(Hoister.this.ctx))({
+  &lt;synthetic&gt; &lt;artifact&gt; val x$14: dotty.tools.dotc.ast.tpd.Tree = superCall1;
+  stats.::[dotty.tools.dotc.ast.Trees.Tree[dotty.tools.dotc.core.Types.Type]](x$14)
+}, expr)(Hoister.this.ctx)
+        </td>
+      </tr><tr>
+        <td>
+          183
+        </td>
+        <td>
+          55844
+        </td>
+        <td>
+          7829
+          -
+          7837
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Trees.ValOrDefDef.rhs
+        </td>
+        <td style="background: #AEF1AE">
+          stat.rhs(Hoister.this.ctx)
+        </td>
+      </tr><tr>
+        <td>
+          185
+        </td>
+        <td>
+          55849
+        </td>
+        <td>
+          7930
+          -
+          7930
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.transform.HoistSuperArgs.Hoister.ctx
+        </td>
+        <td style="background: #F0ADAD">
+          Hoister.this.ctx
+        </td>
+      </tr><tr>
+        <td>
+          185
+        </td>
+        <td>
+          55851
+        </td>
+        <td>
+          7902
+          -
+          7940
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.transform.HoistSuperArgs.Hoister.hoistSuperArgsFromCall
+        </td>
+        <td style="background: #F0ADAD">
+          Hoister.this.hoistSuperArgsFromCall(stat.rhs(Hoister.this.ctx), stat)
+        </td>
+      </tr><tr>
+        <td>
+          185
+        </td>
+        <td>
+          55850
+        </td>
+        <td>
+          7925
+          -
+          7933
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Trees.ValOrDefDef.rhs
+        </td>
+        <td style="background: #F0ADAD">
+          stat.rhs(Hoister.this.ctx)
+        </td>
+      </tr><tr>
+        <td>
+          193
+        </td>
+        <td>
+          55857
+        </td>
+        <td>
+          8076
+          -
+          8084
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Trees.TypeDef.rhs
+        </td>
+        <td style="background: #AEF1AE">
+          tdef.rhs
+        </td>
+      </tr><tr>
+        <td>
+          195
+        </td>
+        <td>
+          55858
+        </td>
+        <td>
+          8176
+          -
+          8200
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.transform.HoistSuperArgs.Hoister.&lt;init&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          new HoistSuperArgs.this.Hoister(tdef.symbol(ctx))(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          196
+        </td>
+        <td>
+          55859
+        </td>
+        <td>
+          8232
+          -
+          8277
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.transform.HoistSuperArgs.Hoister.hoistSuperArgsFromCall
+        </td>
+        <td style="background: #AEF1AE">
+          hoist.hoistSuperArgsFromCall(superCall, cdef)
+        </td>
+      </tr><tr>
+        <td>
+          197
+        </td>
+        <td>
+          55861
+        </td>
+        <td>
+          8326
+          -
+          8356
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.transform.HoistSuperArgs.Hoister.hoistSuperArgsFromConstr
+        </td>
+        <td style="background: #AEF1AE">
+          hoist.hoistSuperArgsFromConstr(stat)
+        </td>
+      </tr><tr>
+        <td>
+          197
+        </td>
+        <td>
+          55860
+        </td>
+        <td>
+          8304
+          -
+          8313
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Trees.Template.body
+        </td>
+        <td style="background: #AEF1AE">
+          impl.body(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          197
+        </td>
+        <td>
+          55862
+        </td>
+        <td>
+          8304
+          -
+          8357
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.core.Decorators.ListDecorator.mapconserve
+        </td>
+        <td style="background: #AEF1AE">
+          core.Decorators.ListDecorator[dotty.tools.dotc.ast.Trees.Tree[dotty.tools.dotc.core.Types.Type]](impl.body(ctx)).mapconserve[dotty.tools.dotc.ast.tpd.Tree]({
+  ((stat: dotty.tools.dotc.ast.tpd.Tree) =&gt; hoist.hoistSuperArgsFromConstr(stat))
+})
+        </td>
+      </tr><tr>
+        <td>
+          198
+        </td>
+        <td>
+          55864
+        </td>
+        <td>
+          8398
+          -
+          8402
+        </td>
+        <td>
+          Ident
+        </td>
+        <td>
+          dotty.tools.dotc.transform.HoistSuperArgs.tdef
+        </td>
+        <td style="background: #AEF1AE">
+          tdef
+        </td>
+      </tr><tr>
+        <td>
+          198
+        </td>
+        <td>
+          55863
+        </td>
+        <td>
+          8370
+          -
+          8396
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.collection.mutable.ListBuffer.isEmpty
+        </td>
+        <td style="background: #AEF1AE">
+          hoist.superArgDefs.isEmpty
+        </td>
+      </tr><tr>
+        <td>
+          199
+        </td>
+        <td>
+          55869
+        </td>
+        <td>
+          8416
+          -
+          8812
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          {
+  &lt;synthetic&gt; &lt;artifact&gt; private[this] val x$16: (List[dotty.tools.dotc.ast.tpd.DefDef], List[dotty.tools.dotc.ast.tpd.DefDef]) = (hoist.superArgDefs.toList.partition(((x$15: dotty.tools.dotc.ast.tpd.DefDef) =&gt; core.Symbols.toDenot(x$15.symbol(ctx))(ctx).is(core.Flags.JavaStatic)(ctx))): (List[dotty.tools.dotc.ast.tpd.DefDef], List[dotty.tools.dotc.ast.tpd.DefDef]) @unchecked) match {
+    case (_1: List[dotty.tools.dotc.ast.tpd.DefDef], _2: List[dotty.tools.dotc.ast.tpd.DefDef])(List[dotty.tools.dotc.ast.tpd.DefDef], List[dotty.tools.dotc.ast.tpd.DefDef])((staticSuperArgDefs @ _), (enclSuperArgDefs @ _)) =&gt; scala.Tuple2.apply[List[dotty.tools.dotc.ast.tpd.DefDef], List[dotty.tools.dotc.ast.tpd.DefDef]](staticSuperArgDefs, enclSuperArgDefs)
+  };
+  val staticSuperArgDefs: List[dotty.tools.dotc.ast.tpd.DefDef] = x$16._1;
+  val enclSuperArgDefs: List[dotty.tools.dotc.ast.tpd.DefDef] = x$16._2;
+  ast.tpd.flatTree({
+    &lt;synthetic&gt; &lt;artifact&gt; val x$18: dotty.tools.dotc.ast.tpd.TypeDef = {
+      &lt;artifact&gt; val x$34: dotty.tools.dotc.ast.tpd.TypeDef = tdef;
+      &lt;artifact&gt; val x$40: dotty.tools.dotc.ast.tpd.Template = {
+        &lt;artifact&gt; val x$35: dotty.tools.dotc.ast.Trees.Template[dotty.tools.dotc.core.Types.Type] = impl;
+        &lt;artifact&gt; val x$36: List[dotty.tools.dotc.ast.Trees.Tree[dotty.tools.dotc.core.Types.Type]] = {
+          &lt;synthetic&gt; &lt;artifact&gt; val x$17: dotty.tools.dotc.ast.tpd.Tree = hoistedSuperCall;
+          others.::[dotty.tools.dotc.ast.Trees.Tree[dotty.tools.dotc.core.Types.Type]](x$17)
+        };
+        &lt;artifact&gt; val x$37: dotty.tools.dotc.ast.Trees.LazyTreeList = hoistedBody.++[dotty.tools.dotc.ast.tpd.Tree, dotty.tools.dotc.ast.Trees.LazyTreeList](staticSuperArgDefs)(immutable.this.List.canBuildFrom[dotty.tools.dotc.ast.tpd.Tree]);
+        &lt;artifact&gt; val x$38: dotty.tools.dotc.ast.tpd.DefDef = HoistSuperArgs.this.cpy.Template$default$2(x$35);
+        &lt;artifact&gt; val x$39: dotty.tools.dotc.ast.tpd.ValDef = HoistSuperArgs.this.cpy.Template$default$4(x$35);
+        HoistSuperArgs.this.cpy.Template(x$35)(x$38, x$36, x$39, x$37)
+      };
+      &lt;artifact&gt; val x$41: dotty.tools.dotc.core.Names.TypeName = HoistSuperArgs.this.cpy.TypeDef$default$2(x$34);
+      HoistSuperArgs.this.cpy.TypeDef(x$34)(x$41, x$40)
+    };
+    enclSuperArgDefs.::[dotty.tools.dotc.ast.Trees.MemberDef[dotty.tools.dotc.core.Types.Type] with Serializable{def name: dotty.tools.dotc.core.Names.Name{type ThisName &gt;: dotty.tools.dotc.core.Names.TermName with dotty.tools.dotc.core.Names.TypeName &lt;: dotty.tools.dotc.core.Names.Name}}](x$18)
+  })
+}
+        </td>
+      </tr><tr>
+        <td>
+          200
+        </td>
+        <td>
+          55866
+        </td>
+        <td>
+          8453
+          -
+          8453
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.Tuple2._2
+        </td>
+        <td style="background: #AEF1AE">
+          x$16._2
+        </td>
+      </tr><tr>
+        <td>
+          200
+        </td>
+        <td>
+          55865
+        </td>
+        <td>
+          8433
+          -
+          8433
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.Tuple2._1
+        </td>
+        <td style="background: #AEF1AE">
+          x$16._1
+        </td>
+      </tr><tr>
+        <td>
+          202
+        </td>
+        <td>
+          55868
+        </td>
+        <td>
+          8556
+          -
+          8802
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Trees.Instance.flatTree
+        </td>
+        <td style="background: #AEF1AE">
+          ast.tpd.flatTree({
+  &lt;synthetic&gt; &lt;artifact&gt; val x$18: dotty.tools.dotc.ast.tpd.TypeDef = {
+    &lt;artifact&gt; val x$34: dotty.tools.dotc.ast.tpd.TypeDef = tdef;
+    &lt;artifact&gt; val x$40: dotty.tools.dotc.ast.tpd.Template = {
+      &lt;artifact&gt; val x$35: dotty.tools.dotc.ast.Trees.Template[dotty.tools.dotc.core.Types.Type] = impl;
+      &lt;artifact&gt; val x$36: List[dotty.tools.dotc.ast.Trees.Tree[dotty.tools.dotc.core.Types.Type]] = {
+        &lt;synthetic&gt; &lt;artifact&gt; val x$17: dotty.tools.dotc.ast.tpd.Tree = hoistedSuperCall;
+        others.::[dotty.tools.dotc.ast.Trees.Tree[dotty.tools.dotc.core.Types.Type]](x$17)
+      };
+      &lt;artifact&gt; val x$37: dotty.tools.dotc.ast.Trees.LazyTreeList = hoistedBody.++[dotty.tools.dotc.ast.tpd.Tree, dotty.tools.dotc.ast.Trees.LazyTreeList](staticSuperArgDefs)(immutable.this.List.canBuildFrom[dotty.tools.dotc.ast.tpd.Tree]);
+      &lt;artifact&gt; val x$38: dotty.tools.dotc.ast.tpd.DefDef = HoistSuperArgs.this.cpy.Template$default$2(x$35);
+      &lt;artifact&gt; val x$39: dotty.tools.dotc.ast.tpd.ValDef = HoistSuperArgs.this.cpy.Template$default$4(x$35);
+      HoistSuperArgs.this.cpy.Template(x$35)(x$38, x$36, x$39, x$37)
+    };
+    &lt;artifact&gt; val x$41: dotty.tools.dotc.core.Names.TypeName = HoistSuperArgs.this.cpy.TypeDef$default$2(x$34);
+    HoistSuperArgs.this.cpy.TypeDef(x$34)(x$41, x$40)
+  };
+  enclSuperArgDefs.::[dotty.tools.dotc.ast.Trees.MemberDef[dotty.tools.dotc.core.Types.Type] with Serializable{def name: dotty.tools.dotc.core.Names.Name{type ThisName &gt;: dotty.tools.dotc.core.Names.TermName with dotty.tools.dotc.core.Names.TypeName &lt;: dotty.tools.dotc.core.Names.Name}}](x$18)
+})
+        </td>
+      </tr><tr>
+        <td>
+          206
+        </td>
+        <td>
+          55867
+        </td>
+        <td>
+          8768
+          -
+          8801
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.immutable.List.::
+        </td>
+        <td style="background: #AEF1AE">
+          enclSuperArgDefs.::[dotty.tools.dotc.ast.Trees.MemberDef[dotty.tools.dotc.core.Types.Type] with Serializable{def name: dotty.tools.dotc.core.Names.Name{type ThisName &gt;: dotty.tools.dotc.core.Names.TermName with dotty.tools.dotc.core.Names.TypeName &lt;: dotty.tools.dotc.core.Names.Name}}](x$18)
+        </td>
+      </tr>
+    </table>
+          </div>
+        </div>
+      </body>
+    </html>

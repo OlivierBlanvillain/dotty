@@ -1,0 +1,5138 @@
+<html>
+      <head>
+        <meta http-equiv="Content-Type" content="text/html; charset=utf-8"/>
+        <title id="title">
+          dotty/tools/repl/ReplCompiler.scala.html
+        </title>
+        <script src="https://ajax.googleapis.com/ajax/libs/jquery/1.10.2/jquery.min.js"></script><link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/jquery.tablesorter/2.20.1/css/theme.default.min.css" type="text/css"/><script src="https://cdnjs.cloudflare.com/ajax/libs/jquery.tablesorter/2.20.1/js/jquery.tablesorter.min.js"></script><link rel="stylesheet" href="https://netdna.bootstrapcdn.com/bootstrap/3.0.3/css/bootstrap.min.css" type="text/css"/><script src="https://netdna.bootstrapcdn.com/bootstrap/3.0.3/js/bootstrap.min.js"></script><script type="text/javascript">
+        $(document).ready(function() {$(".tablesorter").tablesorter();});
+      </script>
+        <style>
+          table.codegrid { font-family: monospace; font-size: 12px; width: auto!important; }table.statementlist { width: auto!important; font-size: 13px; } table.codegrid td { padding: 0!important; border: 0!important } table td.linenumber { width: 40px!important; } 
+        </style>
+      </head>
+      <body style="font-family: monospace;">
+        <ul class="nav nav-tabs">
+          <li>
+            <a href="#codegrid" data-toggle="tab">Codegrid</a>
+          </li>
+          <li>
+            <a href="#statementlist" data-toggle="tab">Statement List</a>
+          </li>
+        </ul>
+        <div class="tab-content">
+          <div class="tab-pane active" id="codegrid">
+            <pre style='font-size: 12pt; font-family: courier;'>1 <span style=''>package dotty.tools
+</span>2 <span style=''>package repl
+</span>3 <span style=''>
+</span>4 <span style=''>import dotc.ast.Trees._
+</span>5 <span style=''>import dotc.ast.{ untpd, tpd }
+</span>6 <span style=''>import dotc.{ Run, CompilationUnit, Compiler }
+</span>7 <span style=''>import dotc.core.Decorators._, dotc.core.Flags._, dotc.core.Phases, Phases.Phase
+</span>8 <span style=''>import dotc.core.Names._, dotc.core.Contexts._, dotc.core.StdNames._
+</span>9 <span style=''>import dotc.core.Constants.Constant
+</span>10 <span style=''>import dotc.util.SourceFile
+</span>11 <span style=''>import dotc.typer.{ ImportInfo, FrontEnd }
+</span>12 <span style=''>import backend.jvm.GenBCode
+</span>13 <span style=''>import dotc.core.NameOps._
+</span>14 <span style=''>import dotc.util.Positions._
+</span>15 <span style=''>import dotc.reporting.diagnostic.messages
+</span>16 <span style=''>import io._
+</span>17 <span style=''>
+</span>18 <span style=''>import results._
+</span>19 <span style=''>
+</span>20 <span style=''>/** This subclass of `Compiler` replaces the appropriate phases in order to
+</span>21 <span style=''> *  facilitate the REPL
+</span>22 <span style=''> *
+</span>23 <span style=''> *  Specifically it replaces the front end with `REPLFrontEnd`, and adds a
+</span>24 <span style=''> *  custom subclass of `GenBCode`. The custom `GenBCode`, `REPLGenBCode`, works
+</span>25 <span style=''> *  in conjunction with a specialized class loader in order to load virtual
+</span>26 <span style=''> *  classfiles.
+</span>27 <span style=''> */
+</span>28 <span style=''>class ReplCompiler(val directory: AbstractFile) extends Compiler {
+</span>29 <span style=''>
+</span>30 <span style=''>
+</span>31 <span style=''>  /** A GenBCode phase that outputs to a virtual directory */
+</span>32 <span style=''>  private class REPLGenBCode extends GenBCode {
+</span>33 <span style=''>    override def phaseName = </span><span style='background: #AEF1AE'>&quot;genBCode&quot;</span><span style=''>
+</span>34 <span style=''>    override def outputDir(implicit ctx: Context) = </span><span style='background: #AEF1AE'>directory</span><span style=''>
+</span>35 <span style=''>  }
+</span>36 <span style=''>
+</span>37 <span style=''>  override protected def frontendPhases: List[List[Phase]] =
+</span>38 <span style=''>    </span><span style='background: #AEF1AE'>Phases.replace(classOf[FrontEnd], _ =&gt; new REPLFrontEnd :: Nil, super.frontendPhases)</span><span style=''>
+</span>39 <span style=''>
+</span>40 <span style=''>  override protected def backendPhases: List[List[Phase]] =
+</span>41 <span style=''>    List(new REPLGenBCode) </span><span style='background: #AEF1AE'>:: Nil</span><span style=''>
+</span>42 <span style=''>
+</span>43 <span style=''>  def newRun(initCtx: Context, objectIndex: Int) = </span><span style='background: #AEF1AE'>new</span><span style=''> Run(this, initCtx) {
+</span>44 <span style=''>    override protected[this] def rootContext(implicit ctx: Context) =
+</span>45 <span style=''>      </span><span style='background: #AEF1AE'>addMagicImports(super.rootContext.fresh.setReporter(storeReporter))</span><span style=''>
+</span>46 <span style=''>
+</span>47 <span style=''>    private def addMagicImports(initCtx: Context): Context = {
+</span>48 <span style=''>      def addImport(path: TermName)(implicit ctx: Context) = {
+</span>49 <span style=''>        val importInfo = </span><span style='background: #AEF1AE'>ImportInfo.rootImport { () =&gt;
+</span>50 <span style=''></span><span style='background: #AEF1AE'>          ctx.requiredModuleRef(path)
+</span>51 <span style=''></span><span style='background: #AEF1AE'>        }</span><span style=''>
+</span>52 <span style=''>        </span><span style='background: #AEF1AE'>ctx.fresh.setNewScope.setImportInfo(importInfo)</span><span style=''>
+</span>53 <span style=''>      }
+</span>54 <span style=''>
+</span>55 <span style=''>      (</span><span style='background: #AEF1AE'>1 to objectIndex)
+</span>56 <span style=''></span><span style='background: #AEF1AE'>        .foldLeft(addImport(&quot;dotty.Show&quot;.toTermName)(initCtx)) { (ictx, i) =&gt;
+</span>57 <span style=''></span><span style='background: #AEF1AE'>          addImport(nme.EMPTY_PACKAGE ++ &quot;.&quot; ++ objectNames(i))(ictx)
+</span>58 <span style=''></span><span style='background: #AEF1AE'>        }</span><span style=''>
+</span>59 <span style=''>    }
+</span>60 <span style=''>  }
+</span>61 <span style=''>
+</span>62 <span style=''>  private[this] var objectNames = </span><span style='background: #AEF1AE'>Map.empty[Int, TermName]</span><span style=''>
+</span>63 <span style=''>  private def objectName(state: State) =
+</span>64 <span style=''>    </span><span style='background: #AEF1AE'>objectNames.get(state.objectIndex).getOrElse {
+</span>65 <span style=''></span><span style='background: #AEF1AE'>      val newName = (str.REPL_SESSION_LINE + state.objectIndex).toTermName
+</span>66 <span style=''></span><span style='background: #AEF1AE'>      objectNames = objectNames + (state.objectIndex -&gt; newName)
+</span>67 <span style=''></span><span style='background: #AEF1AE'>      newName
+</span>68 <span style=''></span><span style='background: #AEF1AE'>    }</span><span style=''>
+</span>69 <span style=''>
+</span>70 <span style=''>  private case class Definitions(stats: List[untpd.Tree], state: State)
+</span>71 <span style=''>
+</span>72 <span style=''>  private def definitions(trees: List[untpd.Tree], state: State): Definitions = {
+</span>73 <span style=''>    import untpd._
+</span>74 <span style=''>
+</span>75 <span style=''>    implicit val ctx: Context = </span><span style='background: #AEF1AE'>state.run.runContext</span><span style=''>
+</span>76 <span style=''>
+</span>77 <span style=''>    def createShow(name: TermName, pos: Position) = {
+</span>78 <span style=''>      val showName = </span><span style='background: #AEF1AE'>name ++ &quot;Show&quot;</span><span style=''>
+</span>79 <span style=''>      val select = </span><span style='background: #AEF1AE'>Select(Ident(name), &quot;show&quot;.toTermName)</span><span style=''>
+</span>80 <span style=''>      val valAsAnyRef = </span><span style='background: #AEF1AE'>TypeApply(Select(Ident(name), nme.asInstanceOf_),
+</span>81 <span style=''></span><span style='background: #AEF1AE'>                                  List(Ident(tpnme.AnyRef)))</span><span style=''>
+</span>82 <span style=''>      val cond = </span><span style='background: #AEF1AE'>InfixOp(valAsAnyRef,
+</span>83 <span style=''></span><span style='background: #AEF1AE'>                         Ident(nme.EQ),
+</span>84 <span style=''></span><span style='background: #AEF1AE'>                         Literal(Constant(null)))</span><span style=''>
+</span>85 <span style=''>      val showWithNullCheck = </span><span style='background: #AEF1AE'>If(cond, Literal(Constant(&quot;null&quot;)), select)</span><span style=''>
+</span>86 <span style=''>      </span><span style='background: #AEF1AE'>DefDef(showName, Nil, Nil, TypeTree(), showWithNullCheck).withFlags(Synthetic).withPos(pos)</span><span style=''>
+</span>87 <span style=''>    }
+</span>88 <span style=''>
+</span>89 <span style=''>    def createPatDefShows(patDef: PatDef) = {
+</span>90 <span style=''>      def createDeepShows(tree: untpd.Tree) = {
+</span>91 <span style=''>        class PatFolder extends UntypedDeepFolder[List[DefDef]] (
+</span>92 <span style=''>          (acc, tree) =&gt; tree match {
+</span>93 <span style=''>            case Ident(name) if name.isVariableName &amp;&amp; name != nme.WILDCARD =&gt;
+</span>94 <span style=''>              createShow(name.toTermName, tree.pos) :: acc
+</span>95 <span style=''>            case Bind(name, _) if name.isVariableName &amp;&amp; name != nme.WILDCARD =&gt;
+</span>96 <span style=''>              createShow(name.toTermName, tree.pos) :: acc
+</span>97 <span style=''>            case _ =&gt;
+</span>98 <span style=''>              acc
+</span>99 <span style=''>          }
+</span>100 <span style=''>        )
+</span>101 <span style=''>        (</span><span style='background: #AEF1AE'>new PatFolder).apply(Nil, tree).reverse</span><span style=''>
+</span>102 <span style=''>      }
+</span>103 <span style=''>
+</span>104 <span style=''>      // cannot fold over the whole tree because we need to generate show methods
+</span>105 <span style=''>      // for top level identifier starting with an uppercase (e.g. val X, Y = 2)
+</span>106 <span style=''>      </span><span style='background: #AEF1AE'>patDef.pats.flatMap {
+</span>107 <span style=''></span><span style='background: #AEF1AE'>        case id @ Ident(name) if name != nme.WILDCARD =&gt;
+</span>108 <span style=''></span><span style='background: #AEF1AE'>          List(createShow(name.toTermName, id.pos))
+</span>109 <span style=''></span><span style='background: #AEF1AE'>        case bd @ Bind(name, body) if name != nme.WILDCARD =&gt;
+</span>110 <span style=''></span><span style='background: #AEF1AE'>          createShow(name.toTermName, bd.pos) :: createDeepShows(body)
+</span>111 <span style=''></span><span style='background: #AEF1AE'>        case other =&gt;
+</span>112 <span style=''></span><span style='background: #AEF1AE'>          createDeepShows(other)
+</span>113 <span style=''></span><span style='background: #AEF1AE'>      }</span><span style=''>
+</span>114 <span style=''>    }
+</span>115 <span style=''>
+</span>116 <span style=''>    var valIdx = </span><span style='background: #AEF1AE'>state.valIndex</span><span style=''>
+</span>117 <span style=''>
+</span>118 <span style=''>    val defs = </span><span style='background: #AEF1AE'>trees.flatMap {
+</span>119 <span style=''></span><span style='background: #AEF1AE'>      case vd: ValDef =&gt;
+</span>120 <span style=''></span><span style='background: #AEF1AE'>        List(vd, createShow(vd.name, vd.pos))
+</span>121 <span style=''></span><span style='background: #AEF1AE'>      case pd: PatDef =&gt;
+</span>122 <span style=''></span><span style='background: #AEF1AE'>        pd :: createPatDefShows(pd)
+</span>123 <span style=''></span><span style='background: #AEF1AE'>      case expr @ Assign(id: Ident, rhs) =&gt;
+</span>124 <span style=''></span><span style='background: #AEF1AE'>        // special case simple reassignment (e.g. x = 3)
+</span>125 <span style=''></span><span style='background: #AEF1AE'>        // in order to print the new value in the REPL
+</span>126 <span style=''></span><span style='background: #AEF1AE'>        val assignName = (id.name ++ str.REPL_ASSIGN_SUFFIX).toTermName
+</span>127 <span style=''></span><span style='background: #AEF1AE'>        val assign = ValDef(assignName, TypeTree(), id).withPos(expr.pos)
+</span>128 <span style=''></span><span style='background: #AEF1AE'>        val show = createShow(assignName, expr.pos)
+</span>129 <span style=''></span><span style='background: #AEF1AE'>        List(expr, assign, show)
+</span>130 <span style=''></span><span style='background: #AEF1AE'>      case expr if expr.isTerm =&gt;
+</span>131 <span style=''></span><span style='background: #AEF1AE'>        val resName = (str.REPL_RES_PREFIX + valIdx).toTermName
+</span>132 <span style=''></span><span style='background: #AEF1AE'>        valIdx += 1
+</span>133 <span style=''></span><span style='background: #AEF1AE'>        val show = createShow(resName, expr.pos)
+</span>134 <span style=''></span><span style='background: #AEF1AE'>        val vd = ValDef(resName, TypeTree(), expr).withPos(expr.pos)
+</span>135 <span style=''></span><span style='background: #AEF1AE'>        List(vd, show)
+</span>136 <span style=''></span><span style='background: #AEF1AE'>      case other =&gt;
+</span>137 <span style=''></span><span style='background: #AEF1AE'>        List(other)
+</span>138 <span style=''></span><span style='background: #AEF1AE'>    }</span><span style=''>
+</span>139 <span style=''>
+</span>140 <span style=''>    </span><span style='background: #AEF1AE'>Definitions(
+</span>141 <span style=''></span><span style='background: #AEF1AE'>      state.imports ++ defs,
+</span>142 <span style=''></span><span style='background: #AEF1AE'>      state.copy(
+</span>143 <span style=''></span><span style='background: #AEF1AE'>        objectIndex = state.objectIndex + (if (defs.isEmpty) </span><span style='background: #F0ADAD'>0</span><span style='background: #AEF1AE'> else 1),
+</span>144 <span style=''></span><span style='background: #AEF1AE'>        valIndex = valIdx
+</span>145 <span style=''></span><span style='background: #AEF1AE'>      )
+</span>146 <span style=''></span><span style='background: #AEF1AE'>    )</span><span style=''>
+</span>147 <span style=''>  }
+</span>148 <span style=''>
+</span>149 <span style=''>  /** Wrap trees in an object and add imports from the previous compilations
+</span>150 <span style=''>   *
+</span>151 <span style=''>   *  The resulting structure is something like:
+</span>152 <span style=''>   *
+</span>153 <span style=''>   *  ```
+</span>154 <span style=''>   *  package &lt;none&gt; {
+</span>155 <span style=''>   *    object rs$line$nextId {
+</span>156 <span style=''>   *      import rs$line${i &lt;- 0 until nextId}._
+</span>157 <span style=''>   *      import dotty.Show._
+</span>158 <span style=''>   *
+</span>159 <span style=''>   *      &lt;trees&gt;
+</span>160 <span style=''>   *    }
+</span>161 <span style=''>   *  }
+</span>162 <span style=''>   *  ```
+</span>163 <span style=''>   */
+</span>164 <span style=''>  private def wrapped(defs: Definitions): untpd.PackageDef = {
+</span>165 <span style=''>    import untpd._
+</span>166 <span style=''>
+</span>167 <span style=''>    </span><span style='background: #AEF1AE'>assert(defs.stats.nonEmpty)</span><span style=''>
+</span>168 <span style=''>
+</span>169 <span style=''>    implicit val ctx: Context = </span><span style='background: #AEF1AE'>defs.state.run.runContext</span><span style=''>
+</span>170 <span style=''>
+</span>171 <span style=''>    val tmpl = </span><span style='background: #AEF1AE'>Template(emptyConstructor, Nil, EmptyValDef, defs.stats)</span><span style=''>
+</span>172 <span style=''>    val module = </span><span style='background: #AEF1AE'>ModuleDef(objectName(defs.state), tmpl)
+</span>173 <span style=''></span><span style='background: #AEF1AE'>      .withMods(new Modifiers(Module | Final))
+</span>174 <span style=''></span><span style='background: #AEF1AE'>      .withPos(Position(0, defs.stats.last.pos.end))</span><span style=''>
+</span>175 <span style=''>
+</span>176 <span style=''>    </span><span style='background: #AEF1AE'>PackageDef(Ident(nme.EMPTY_PACKAGE), List(module))</span><span style=''>
+</span>177 <span style=''>  }
+</span>178 <span style=''>
+</span>179 <span style=''>  private def createUnit(defs: Definitions, sourceCode: String): CompilationUnit = {
+</span>180 <span style=''>    val unit = </span><span style='background: #AEF1AE'>new CompilationUnit(new SourceFile(objectName(defs.state).toString, sourceCode))</span><span style=''>
+</span>181 <span style=''>    </span><span style='background: #AEF1AE'>unit.untpdTree = wrapped(defs)</span><span style=''>
+</span>182 <span style=''>    unit
+</span>183 <span style=''>  }
+</span>184 <span style=''>
+</span>185 <span style=''>  private def runCompilationUnit(unit: CompilationUnit, state: State): Result[(CompilationUnit, State)] = {
+</span>186 <span style=''>    val run = </span><span style='background: #AEF1AE'>state.run</span><span style=''>
+</span>187 <span style=''>    val reporter = </span><span style='background: #AEF1AE'>state.run.runContext.reporter</span><span style=''>
+</span>188 <span style=''>    </span><span style='background: #AEF1AE'>run.compileUnits(unit :: Nil)</span><span style=''>
+</span>189 <span style=''>
+</span>190 <span style=''>    if (</span><span style='background: #AEF1AE'>!reporter.hasErrors</span><span style=''>) </span><span style='background: #AEF1AE'>(unit, state).result</span><span style=''>
+</span>191 <span style=''>    else </span><span style='background: #AEF1AE'>run.runContext.flushBufferedMessages().errors</span><span style=''>
+</span>192 <span style=''>  }
+</span>193 <span style=''>
+</span>194 <span style=''>  def compile(parsed: Parsed)(implicit state: State): Result[(CompilationUnit, State)] = {
+</span>195 <span style=''>    val defs = </span><span style='background: #AEF1AE'>definitions(parsed.trees, state)</span><span style=''>
+</span>196 <span style=''>    val unit = </span><span style='background: #AEF1AE'>createUnit(defs, parsed.sourceCode)</span><span style=''>
+</span>197 <span style=''>    </span><span style='background: #AEF1AE'>runCompilationUnit(unit, defs.state)</span><span style=''>
+</span>198 <span style=''>  }
+</span>199 <span style=''>
+</span>200 <span style=''>  def typeOf(expr: String)(implicit state: State): Result[String] =
+</span>201 <span style=''>    </span><span style='background: #AEF1AE'>typeCheck(expr).map { tree =&gt;
+</span>202 <span style=''></span><span style='background: #AEF1AE'>      import dotc.ast.Trees._
+</span>203 <span style=''></span><span style='background: #AEF1AE'>      implicit val ctx = state.run.runContext
+</span>204 <span style=''></span><span style='background: #AEF1AE'>      tree.rhs match {
+</span>205 <span style=''></span><span style='background: #AEF1AE'>        case Block(xs, _) =&gt; xs.last.tpe.widen.show
+</span>206 <span style=''></span><span style='background: #AEF1AE'>        case _ =&gt;
+</span>207 <span style=''></span><span style='background: #AEF1AE'>          </span><span style='background: #F0ADAD'>&quot;&quot;&quot;Couldn't compute the type of your expression, so sorry :(
+</span>208 <span style=''></span><span style='background: #F0ADAD'>            |
+</span>209 <span style=''></span><span style='background: #F0ADAD'>            |Please report this to my masters at github.com/lampepfl/dotty
+</span>210 <span style=''></span><span style='background: #F0ADAD'>          &quot;&quot;&quot;.stripMargin</span><span style='background: #AEF1AE'>
+</span>211 <span style=''></span><span style='background: #AEF1AE'>      }
+</span>212 <span style=''></span><span style='background: #AEF1AE'>    }</span><span style=''>
+</span>213 <span style=''>
+</span>214 <span style=''>  def typeCheck(expr: String, errorsAllowed: Boolean = false)(implicit state: State): Result[tpd.ValDef] = {
+</span>215 <span style=''>
+</span>216 <span style=''>    def wrapped(expr: String, sourceFile: SourceFile, state: State)(implicit ctx: Context): Result[untpd.PackageDef] = {
+</span>217 <span style=''>      def wrap(trees: Seq[untpd.Tree]): untpd.PackageDef = {
+</span>218 <span style=''>        import untpd._
+</span>219 <span style=''>
+</span>220 <span style=''>        val valdef =
+</span>221 <span style=''>          </span><span style='background: #AEF1AE'>ValDef(&quot;expr&quot;.toTermName, TypeTree(), Block(trees.toList, untpd.unitLiteral))</span><span style=''>
+</span>222 <span style=''>
+</span>223 <span style=''>        val tmpl = </span><span style='background: #AEF1AE'>Template(emptyConstructor,
+</span>224 <span style=''></span><span style='background: #AEF1AE'>                            List(Ident(tpnme.Any)),
+</span>225 <span style=''></span><span style='background: #AEF1AE'>                            EmptyValDef,
+</span>226 <span style=''></span><span style='background: #AEF1AE'>                            state.imports :+ valdef)</span><span style=''>
+</span>227 <span style=''>
+</span>228 <span style=''>        </span><span style='background: #AEF1AE'>PackageDef(Ident(nme.EMPTY_PACKAGE),
+</span>229 <span style=''></span><span style='background: #AEF1AE'>          TypeDef(&quot;EvaluateExpr&quot;.toTypeName, tmpl)
+</span>230 <span style=''></span><span style='background: #AEF1AE'>            .withMods(new Modifiers(Final))
+</span>231 <span style=''></span><span style='background: #AEF1AE'>            .withPos(Position(0, expr.length)) :: Nil
+</span>232 <span style=''></span><span style='background: #AEF1AE'>        )</span><span style=''>
+</span>233 <span style=''>      }
+</span>234 <span style=''>
+</span>235 <span style=''>      </span><span style='background: #AEF1AE'>ParseResult(expr)</span><span style=''> match {
+</span>236 <span style=''>        case Parsed(sourceCode, trees) =&gt;
+</span>237 <span style=''>          </span><span style='background: #AEF1AE'>wrap(trees).result</span><span style=''>
+</span>238 <span style=''>        case SyntaxErrors(_, reported, trees) =&gt;
+</span>239 <span style=''>          if (errorsAllowed) </span><span style='background: #AEF1AE'>wrap(trees).result</span><span style=''>
+</span>240 <span style=''>          else </span><span style='background: #F0ADAD'>reported.errors</span><span style=''>
+</span>241 <span style=''>        case _ =&gt; </span><span style='background: #F0ADAD'>List(
+</span>242 <span style=''></span><span style='background: #F0ADAD'>          new messages.Error(
+</span>243 <span style=''></span><span style='background: #F0ADAD'>            s&quot;Couldn't parse '$expr' to valid scala&quot;,
+</span>244 <span style=''></span><span style='background: #F0ADAD'>            sourceFile.atPos(Position(0, expr.length))
+</span>245 <span style=''></span><span style='background: #F0ADAD'>          )
+</span>246 <span style=''></span><span style='background: #F0ADAD'>        ).errors</span><span style=''>
+</span>247 <span style=''>      }
+</span>248 <span style=''>    }
+</span>249 <span style=''>
+</span>250 <span style=''>    def unwrapped(tree: tpd.Tree, sourceFile: SourceFile)(implicit ctx: Context): Result[tpd.ValDef] = {
+</span>251 <span style=''>      def error: Result[tpd.ValDef] =
+</span>252 <span style=''>        </span><span style='background: #F0ADAD'>List(new messages.Error(s&quot;Invalid scala expression&quot;,
+</span>253 <span style=''></span><span style='background: #F0ADAD'>          sourceFile.atPos(Position(0, sourceFile.content.length)))).errors</span><span style=''>
+</span>254 <span style=''>
+</span>255 <span style=''>      import tpd._
+</span>256 <span style=''>      tree match {
+</span>257 <span style=''>        case PackageDef(_, List(TypeDef(_, tmpl: Template))) =&gt;
+</span>258 <span style=''>          </span><span style='background: #AEF1AE'>tmpl.body
+</span>259 <span style=''></span><span style='background: #AEF1AE'>              .collectFirst { case dd: ValDef if dd.name.show == &quot;expr&quot; =&gt; dd.result }
+</span>260 <span style=''></span><span style='background: #AEF1AE'>              .getOrElse(error)</span><span style=''>
+</span>261 <span style=''>        case _ =&gt;
+</span>262 <span style=''>          error
+</span>263 <span style=''>      }
+</span>264 <span style=''>    }
+</span>265 <span style=''>
+</span>266 <span style=''>
+</span>267 <span style=''>    val run = </span><span style='background: #AEF1AE'>state.run</span><span style=''>
+</span>268 <span style=''>    val reporter = </span><span style='background: #AEF1AE'>state.run.runContext.reporter</span><span style=''>
+</span>269 <span style=''>    val src = </span><span style='background: #AEF1AE'>new SourceFile(s&quot;EvaluateExpr&quot;, expr)</span><span style=''>
+</span>270 <span style=''>    val runCtx =
+</span>271 <span style=''>      </span><span style='background: #AEF1AE'>run.runContext.fresh
+</span>272 <span style=''></span><span style='background: #AEF1AE'>         .setSetting(run.runContext.settings.YstopAfter, List(&quot;frontend&quot;))</span><span style=''>
+</span>273 <span style=''>
+</span>274 <span style=''>    </span><span style='background: #AEF1AE'>wrapped(expr, src, state)(runCtx).flatMap { pkg =&gt;
+</span>275 <span style=''></span><span style='background: #AEF1AE'>      val unit = new CompilationUnit(src)
+</span>276 <span style=''></span><span style='background: #AEF1AE'>      unit.untpdTree = pkg
+</span>277 <span style=''></span><span style='background: #AEF1AE'>      run.compileUnits(unit :: Nil, runCtx.fresh.setReporter(storeReporter))
+</span>278 <span style=''></span><span style='background: #AEF1AE'>
+</span>279 <span style=''></span><span style='background: #AEF1AE'>      if (errorsAllowed || !reporter.hasErrors)
+</span>280 <span style=''></span><span style='background: #AEF1AE'>        unwrapped(unit.tpdTree, src)(runCtx)
+</span>281 <span style=''></span><span style='background: #AEF1AE'>      else {
+</span>282 <span style=''></span><span style='background: #AEF1AE'>        </span><span style='background: #F0ADAD'>reporter.removeBufferedMessages(runCtx).errors</span><span style='background: #AEF1AE'>
+</span>283 <span style=''></span><span style='background: #AEF1AE'>      }
+</span>284 <span style=''></span><span style='background: #AEF1AE'>    }</span><span style=''>
+</span>285 <span style=''>  }
+</span>286 <span style=''>}
+</span></pre>
+          </div>
+          <div class="tab-pane" id="statementlist">
+            <table cellspacing="0" cellpadding="0" class="table statementlist">
+      <tr>
+        <th>Line</th>
+        <th>Stmt Id</th>
+        <th>Pos</th>
+        <th>Tree</th>
+        <th>Symbol</th>
+        <th>Code</th>
+      </tr><tr>
+        <td>
+          33
+        </td>
+        <td>
+          80585
+        </td>
+        <td>
+          1112
+          -
+          1122
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          &quot;genBCode&quot;
+        </td>
+      </tr><tr>
+        <td>
+          34
+        </td>
+        <td>
+          80586
+        </td>
+        <td>
+          1175
+          -
+          1184
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.repl.ReplCompiler.directory
+        </td>
+        <td style="background: #AEF1AE">
+          ReplCompiler.this.directory
+        </td>
+      </tr><tr>
+        <td>
+          38
+        </td>
+        <td>
+          80587
+        </td>
+        <td>
+          1270
+          -
+          1287
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          classOf[dotty.tools.dotc.typer.FrontEnd]
+        </td>
+      </tr><tr>
+        <td>
+          38
+        </td>
+        <td>
+          80590
+        </td>
+        <td>
+          1255
+          -
+          1340
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.core.Phases.replace
+        </td>
+        <td style="background: #AEF1AE">
+          dotc.core.Phases.replace(classOf[dotty.tools.dotc.typer.FrontEnd], ((x$1: dotty.tools.dotc.core.Phases.Phase) =&gt; {
+  &lt;synthetic&gt; &lt;artifact&gt; val x$2: dotty.tools.repl.REPLFrontEnd = new REPLFrontEnd();
+  scala.collection.immutable.Nil.::[dotty.tools.repl.REPLFrontEnd](x$2)
+}), ReplCompiler.super.frontendPhases)
+        </td>
+      </tr><tr>
+        <td>
+          38
+        </td>
+        <td>
+          80589
+        </td>
+        <td>
+          1319
+          -
+          1339
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.Compiler.frontendPhases
+        </td>
+        <td style="background: #AEF1AE">
+          ReplCompiler.super.frontendPhases
+        </td>
+      </tr><tr>
+        <td>
+          38
+        </td>
+        <td>
+          80588
+        </td>
+        <td>
+          1311
+          -
+          1317
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.immutable.List.::
+        </td>
+        <td style="background: #AEF1AE">
+          scala.collection.immutable.Nil.::[dotty.tools.repl.REPLFrontEnd](x$2)
+        </td>
+      </tr><tr>
+        <td>
+          41
+        </td>
+        <td>
+          80591
+        </td>
+        <td>
+          1429
+          -
+          1435
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.immutable.List.::
+        </td>
+        <td style="background: #AEF1AE">
+          scala.collection.immutable.Nil.::[List[ReplCompiler.this.REPLGenBCode]](x$3)
+        </td>
+      </tr><tr>
+        <td>
+          43
+        </td>
+        <td>
+          80601
+        </td>
+        <td>
+          1488
+          -
+          1491
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.repl.ReplCompiler.$anon.&lt;init&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          new $anon()
+        </td>
+      </tr><tr>
+        <td>
+          45
+        </td>
+        <td>
+          80593
+        </td>
+        <td>
+          1605
+          -
+          1655
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.core.Contexts.FreshContext.setReporter
+        </td>
+        <td style="background: #AEF1AE">
+          $anon.super.rootContext(ctx).fresh.setReporter(repl.this.`package`.storeReporter)
+        </td>
+      </tr><tr>
+        <td>
+          45
+        </td>
+        <td>
+          80592
+        </td>
+        <td>
+          1641
+          -
+          1654
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.repl.storeReporter
+        </td>
+        <td style="background: #AEF1AE">
+          repl.this.`package`.storeReporter
+        </td>
+      </tr><tr>
+        <td>
+          45
+        </td>
+        <td>
+          80594
+        </td>
+        <td>
+          1589
+          -
+          1656
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.repl.ReplCompiler.$anon.addMagicImports
+        </td>
+        <td style="background: #AEF1AE">
+          $anon.this.addMagicImports($anon.super.rootContext(ctx).fresh.setReporter(repl.this.`package`.storeReporter))
+        </td>
+      </tr><tr>
+        <td>
+          49
+        </td>
+        <td>
+          80595
+        </td>
+        <td>
+          1809
+          -
+          1886
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.typer.ImportInfo.rootImport
+        </td>
+        <td style="background: #AEF1AE">
+          dotc.typer.ImportInfo.rootImport((() =&gt; ctx.requiredModuleRef(path)))(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          52
+        </td>
+        <td>
+          80596
+        </td>
+        <td>
+          1895
+          -
+          1942
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.core.Contexts.FreshContext.setImportInfo
+        </td>
+        <td style="background: #AEF1AE">
+          ctx.fresh.setNewScope.setImportInfo(importInfo)
+        </td>
+      </tr><tr>
+        <td>
+          55
+        </td>
+        <td>
+          80597
+        </td>
+        <td>
+          1959
+          -
+          1960
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          1
+        </td>
+      </tr><tr>
+        <td>
+          56
+        </td>
+        <td>
+          80598
+        </td>
+        <td>
+          1995
+          -
+          2038
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.repl.ReplCompiler.$anon.addImport
+        </td>
+        <td style="background: #AEF1AE">
+          addImport(dotc.core.Decorators.PreNamedString(&quot;dotty.Show&quot;).toTermName)(initCtx)
+        </td>
+      </tr><tr>
+        <td>
+          56
+        </td>
+        <td>
+          80600
+        </td>
+        <td>
+          1959
+          -
+          2134
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.TraversableOnce.foldLeft
+        </td>
+        <td style="background: #AEF1AE">
+          scala.Predef.intWrapper(1).to(objectIndex).foldLeft[dotty.tools.dotc.core.Contexts.FreshContext](addImport(dotc.core.Decorators.PreNamedString(&quot;dotty.Show&quot;).toTermName)(initCtx))(((ictx: dotty.tools.dotc.core.Contexts.FreshContext, i: Int) =&gt; addImport(dotc.core.StdNames.nme.EMPTY_PACKAGE.++(&quot;.&quot;).++(ReplCompiler.this.objectNames.apply(i)))(ictx)))
+        </td>
+      </tr><tr>
+        <td>
+          57
+        </td>
+        <td>
+          80599
+        </td>
+        <td>
+          2065
+          -
+          2124
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.repl.ReplCompiler.$anon.addImport
+        </td>
+        <td style="background: #AEF1AE">
+          addImport(dotc.core.StdNames.nme.EMPTY_PACKAGE.++(&quot;.&quot;).++(ReplCompiler.this.objectNames.apply(i)))(ictx)
+        </td>
+      </tr><tr>
+        <td>
+          62
+        </td>
+        <td>
+          80602
+        </td>
+        <td>
+          2180
+          -
+          2204
+        </td>
+        <td>
+          TypeApply
+        </td>
+        <td>
+          scala.collection.immutable.Map.empty
+        </td>
+        <td style="background: #AEF1AE">
+          scala.Predef.Map.empty[Int, dotty.tools.dotc.core.Names.TermName]
+        </td>
+      </tr><tr>
+        <td>
+          64
+        </td>
+        <td>
+          80610
+        </td>
+        <td>
+          2250
+          -
+          2456
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Option.getOrElse
+        </td>
+        <td style="background: #AEF1AE">
+          ReplCompiler.this.objectNames.get(state.objectIndex).getOrElse[dotty.tools.dotc.core.Names.TermName]({
+  val newName: dotty.tools.dotc.core.Names.TermName = dotc.core.Decorators.PreNamedString(&quot;rs$line$&quot;.+(state.objectIndex)).toTermName;
+  ReplCompiler.this.objectNames = ReplCompiler.this.objectNames.+[dotty.tools.dotc.core.Names.TermName](scala.Predef.ArrowAssoc[Int](state.objectIndex).-&gt;[dotty.tools.dotc.core.Names.TermName](newName));
+  newName
+})
+        </td>
+      </tr><tr>
+        <td>
+          64
+        </td>
+        <td>
+          80603
+        </td>
+        <td>
+          2266
+          -
+          2283
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.repl.State.objectIndex
+        </td>
+        <td style="background: #AEF1AE">
+          state.objectIndex
+        </td>
+      </tr><tr>
+        <td>
+          65
+        </td>
+        <td>
+          80605
+        </td>
+        <td>
+          2342
+          -
+          2359
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.repl.State.objectIndex
+        </td>
+        <td style="background: #AEF1AE">
+          state.objectIndex
+        </td>
+      </tr><tr>
+        <td>
+          65
+        </td>
+        <td>
+          80607
+        </td>
+        <td>
+          2318
+          -
+          2371
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Decorators.PreNamedString.toTermName
+        </td>
+        <td style="background: #AEF1AE">
+          dotc.core.Decorators.PreNamedString(&quot;rs$line$&quot;.+(state.objectIndex)).toTermName
+        </td>
+      </tr><tr>
+        <td>
+          65
+        </td>
+        <td>
+          80604
+        </td>
+        <td>
+          2318
+          -
+          2339
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          &quot;rs$line$&quot;
+        </td>
+      </tr><tr>
+        <td>
+          65
+        </td>
+        <td>
+          80606
+        </td>
+        <td>
+          2318
+          -
+          2359
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.String.+
+        </td>
+        <td style="background: #AEF1AE">
+          &quot;rs$line$&quot;.+(state.objectIndex)
+        </td>
+      </tr><tr>
+        <td>
+          66
+        </td>
+        <td>
+          80608
+        </td>
+        <td>
+          2407
+          -
+          2435
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Predef.ArrowAssoc.-&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          scala.Predef.ArrowAssoc[Int](state.objectIndex).-&gt;[dotty.tools.dotc.core.Names.TermName](newName)
+        </td>
+      </tr><tr>
+        <td>
+          66
+        </td>
+        <td>
+          80609
+        </td>
+        <td>
+          2392
+          -
+          2436
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.immutable.Map.+
+        </td>
+        <td style="background: #AEF1AE">
+          ReplCompiler.this.objectNames.+[dotty.tools.dotc.core.Names.TermName](scala.Predef.ArrowAssoc[Int](state.objectIndex).-&gt;[dotty.tools.dotc.core.Names.TermName](newName))
+        </td>
+      </tr><tr>
+        <td>
+          75
+        </td>
+        <td>
+          80611
+        </td>
+        <td>
+          2665
+          -
+          2685
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.Run.runContext
+        </td>
+        <td style="background: #AEF1AE">
+          state.run.runContext
+        </td>
+      </tr><tr>
+        <td>
+          78
+        </td>
+        <td>
+          80612
+        </td>
+        <td>
+          2762
+          -
+          2776
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.core.Names.Name.++
+        </td>
+        <td style="background: #AEF1AE">
+          name.++(&quot;Show&quot;)
+        </td>
+      </tr><tr>
+        <td>
+          79
+        </td>
+        <td>
+          80614
+        </td>
+        <td>
+          2816
+          -
+          2822
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          &quot;show&quot;
+        </td>
+      </tr><tr>
+        <td>
+          79
+        </td>
+        <td>
+          80616
+        </td>
+        <td>
+          2796
+          -
+          2834
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.ast.untpd.Select
+        </td>
+        <td style="background: #AEF1AE">
+          dotc.ast.untpd.Select(dotc.ast.untpd.Ident(name), dotc.core.Decorators.PreNamedString(&quot;show&quot;).toTermName)
+        </td>
+      </tr><tr>
+        <td>
+          79
+        </td>
+        <td>
+          80613
+        </td>
+        <td>
+          2803
+          -
+          2814
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.ast.untpd.Ident
+        </td>
+        <td style="background: #AEF1AE">
+          dotc.ast.untpd.Ident(name)
+        </td>
+      </tr><tr>
+        <td>
+          79
+        </td>
+        <td>
+          80615
+        </td>
+        <td>
+          2816
+          -
+          2833
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Decorators.PreNamedString.toTermName
+        </td>
+        <td style="background: #AEF1AE">
+          dotc.core.Decorators.PreNamedString(&quot;show&quot;).toTermName
+        </td>
+      </tr><tr>
+        <td>
+          80
+        </td>
+        <td>
+          80617
+        </td>
+        <td>
+          2876
+          -
+          2887
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.ast.untpd.Ident
+        </td>
+        <td style="background: #AEF1AE">
+          dotc.ast.untpd.Ident(name)
+        </td>
+      </tr><tr>
+        <td>
+          80
+        </td>
+        <td>
+          80623
+        </td>
+        <td>
+          2859
+          -
+          2969
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.ast.untpd.TypeApply
+        </td>
+        <td style="background: #AEF1AE">
+          dotc.ast.untpd.TypeApply(dotc.ast.untpd.Select(dotc.ast.untpd.Ident(name), dotc.core.StdNames.nme.asInstanceOf_), scala.collection.immutable.List.apply[dotty.tools.dotc.ast.untpd.Ident](dotc.ast.untpd.Ident(dotc.core.StdNames.tpnme.AnyRef)))
+        </td>
+      </tr><tr>
+        <td>
+          80
+        </td>
+        <td>
+          80619
+        </td>
+        <td>
+          2869
+          -
+          2907
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.ast.untpd.Select
+        </td>
+        <td style="background: #AEF1AE">
+          dotc.ast.untpd.Select(dotc.ast.untpd.Ident(name), dotc.core.StdNames.nme.asInstanceOf_)
+        </td>
+      </tr><tr>
+        <td>
+          80
+        </td>
+        <td>
+          80618
+        </td>
+        <td>
+          2889
+          -
+          2906
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.StdNames.ScalaNames.asInstanceOf_
+        </td>
+        <td style="background: #AEF1AE">
+          dotc.core.StdNames.nme.asInstanceOf_
+        </td>
+      </tr><tr>
+        <td>
+          81
+        </td>
+        <td>
+          80620
+        </td>
+        <td>
+          2954
+          -
+          2966
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.StdNames.ScalaNames.AnyRef
+        </td>
+        <td style="background: #AEF1AE">
+          dotc.core.StdNames.tpnme.AnyRef
+        </td>
+      </tr><tr>
+        <td>
+          81
+        </td>
+        <td>
+          80622
+        </td>
+        <td>
+          2943
+          -
+          2968
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.immutable.List.apply
+        </td>
+        <td style="background: #AEF1AE">
+          scala.collection.immutable.List.apply[dotty.tools.dotc.ast.untpd.Ident](dotc.ast.untpd.Ident(dotc.core.StdNames.tpnme.AnyRef))
+        </td>
+      </tr><tr>
+        <td>
+          81
+        </td>
+        <td>
+          80621
+        </td>
+        <td>
+          2948
+          -
+          2967
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.ast.untpd.Ident
+        </td>
+        <td style="background: #AEF1AE">
+          dotc.ast.untpd.Ident(dotc.core.StdNames.tpnme.AnyRef)
+        </td>
+      </tr><tr>
+        <td>
+          82
+        </td>
+        <td>
+          80628
+        </td>
+        <td>
+          2987
+          -
+          3097
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.ast.untpd.InfixOp.apply
+        </td>
+        <td style="background: #AEF1AE">
+          dotc.ast.untpd.InfixOp.apply(valAsAnyRef, dotc.ast.untpd.Ident(dotc.core.StdNames.nme.EQ), dotc.ast.untpd.Literal(dotc.core.Constants.Constant.apply(null)))
+        </td>
+      </tr><tr>
+        <td>
+          83
+        </td>
+        <td>
+          80625
+        </td>
+        <td>
+          3033
+          -
+          3046
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.ast.untpd.Ident
+        </td>
+        <td style="background: #AEF1AE">
+          dotc.ast.untpd.Ident(dotc.core.StdNames.nme.EQ)
+        </td>
+      </tr><tr>
+        <td>
+          83
+        </td>
+        <td>
+          80624
+        </td>
+        <td>
+          3039
+          -
+          3045
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.StdNames.ScalaNames.EQ
+        </td>
+        <td style="background: #AEF1AE">
+          dotc.core.StdNames.nme.EQ
+        </td>
+      </tr><tr>
+        <td>
+          84
+        </td>
+        <td>
+          80626
+        </td>
+        <td>
+          3081
+          -
+          3095
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.core.Constants.Constant.apply
+        </td>
+        <td style="background: #AEF1AE">
+          dotc.core.Constants.Constant.apply(null)
+        </td>
+      </tr><tr>
+        <td>
+          84
+        </td>
+        <td>
+          80627
+        </td>
+        <td>
+          3073
+          -
+          3096
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.ast.untpd.Literal
+        </td>
+        <td style="background: #AEF1AE">
+          dotc.ast.untpd.Literal(dotc.core.Constants.Constant.apply(null))
+        </td>
+      </tr><tr>
+        <td>
+          85
+        </td>
+        <td>
+          80629
+        </td>
+        <td>
+          3145
+          -
+          3161
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.core.Constants.Constant.apply
+        </td>
+        <td style="background: #AEF1AE">
+          dotc.core.Constants.Constant.apply(&quot;null&quot;)
+        </td>
+      </tr><tr>
+        <td>
+          85
+        </td>
+        <td>
+          80631
+        </td>
+        <td>
+          3128
+          -
+          3171
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.ast.untpd.If
+        </td>
+        <td style="background: #AEF1AE">
+          dotc.ast.untpd.If(cond, dotc.ast.untpd.Literal(dotc.core.Constants.Constant.apply(&quot;null&quot;)), select)
+        </td>
+      </tr><tr>
+        <td>
+          85
+        </td>
+        <td>
+          80630
+        </td>
+        <td>
+          3137
+          -
+          3162
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.ast.untpd.Literal
+        </td>
+        <td style="background: #AEF1AE">
+          dotc.ast.untpd.Literal(dotc.core.Constants.Constant.apply(&quot;null&quot;))
+        </td>
+      </tr><tr>
+        <td>
+          86
+        </td>
+        <td>
+          80632
+        </td>
+        <td>
+          3178
+          -
+          3269
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Positioned.withPos
+        </td>
+        <td style="background: #AEF1AE">
+          dotc.ast.untpd.DefDef(showName, scala.collection.immutable.Nil, scala.collection.immutable.Nil, dotc.ast.untpd.TypeTree(), showWithNullCheck).withFlags(dotc.core.Flags.Synthetic).withPos(pos)
+        </td>
+      </tr><tr>
+        <td>
+          101
+        </td>
+        <td>
+          80634
+        </td>
+        <td>
+          3824
+          -
+          3863
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.collection.immutable.List.reverse
+        </td>
+        <td style="background: #AEF1AE">
+          new PatFolder().apply(scala.collection.immutable.Nil, tree)(ctx).reverse
+        </td>
+      </tr><tr>
+        <td>
+          101
+        </td>
+        <td>
+          80633
+        </td>
+        <td>
+          3845
+          -
+          3848
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.collection.immutable.Nil
+        </td>
+        <td style="background: #AEF1AE">
+          scala.collection.immutable.Nil
+        </td>
+      </tr><tr>
+        <td>
+          106
+        </td>
+        <td>
+          80646
+        </td>
+        <td>
+          4042
+          -
+          4368
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          scala.collection.immutable.List.flatMap
+        </td>
+        <td style="background: #AEF1AE">
+          patDef.pats.flatMap[dotty.tools.dotc.ast.Trees.DefDef[Null], List[dotty.tools.dotc.ast.Trees.DefDef[Null]]](((x0$1: dotty.tools.dotc.ast.untpd.Tree) =&gt; x0$1 match {
+  case (id @ (name: dotty.tools.dotc.core.Names.Name)dotty.tools.dotc.ast.Trees.Ident[Any]((name @ _))) if name.!=(dotc.core.StdNames.nme.WILDCARD) =&gt; scala.collection.immutable.List.apply[dotty.tools.dotc.ast.Trees.DefDef[Null]](createShow(name.toTermName, id.pos))
+  case (bd @ (name: dotty.tools.dotc.core.Names.Name, body: dotty.tools.dotc.ast.Trees.Tree[dotty.tools.dotc.ast.Trees.Untyped])dotty.tools.dotc.ast.Trees.Bind[dotty.tools.dotc.ast.Trees.Untyped]((name @ _), (body @ _))) if name.!=(dotc.core.StdNames.nme.WILDCARD) =&gt; {
+    &lt;synthetic&gt; &lt;artifact&gt; val x$6: dotty.tools.dotc.ast.Trees.DefDef[Null] = createShow(name.toTermName, bd.pos);
+    createDeepShows(body).::[dotty.tools.dotc.ast.untpd.DefDef](x$6)
+  }
+  case (other @ _) =&gt; createDeepShows(other)
+}))(immutable.this.List.canBuildFrom[dotty.tools.dotc.ast.Trees.DefDef[Null]])
+        </td>
+      </tr><tr>
+        <td>
+          106
+        </td>
+        <td>
+          80645
+        </td>
+        <td>
+          4062
+          -
+          4062
+        </td>
+        <td>
+          TypeApply
+        </td>
+        <td>
+          scala.collection.immutable.List.canBuildFrom
+        </td>
+        <td style="background: #AEF1AE">
+          immutable.this.List.canBuildFrom[dotty.tools.dotc.ast.Trees.DefDef[Null]]
+        </td>
+      </tr><tr>
+        <td>
+          107
+        </td>
+        <td>
+          80635
+        </td>
+        <td>
+          4105
+          -
+          4117
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.StdNames.ScalaNames.WILDCARD
+        </td>
+        <td style="background: #AEF1AE">
+          dotc.core.StdNames.nme.WILDCARD
+        </td>
+      </tr><tr>
+        <td>
+          107
+        </td>
+        <td>
+          80636
+        </td>
+        <td>
+          4097
+          -
+          4117
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.Object.!=
+        </td>
+        <td style="background: #AEF1AE">
+          name.!=(dotc.core.StdNames.nme.WILDCARD)
+        </td>
+      </tr><tr>
+        <td>
+          108
+        </td>
+        <td>
+          80638
+        </td>
+        <td>
+          4164
+          -
+          4170
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Positioned.pos
+        </td>
+        <td style="background: #AEF1AE">
+          id.pos
+        </td>
+      </tr><tr>
+        <td>
+          108
+        </td>
+        <td>
+          80640
+        </td>
+        <td>
+          4131
+          -
+          4172
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.immutable.List.apply
+        </td>
+        <td style="background: #AEF1AE">
+          scala.collection.immutable.List.apply[dotty.tools.dotc.ast.Trees.DefDef[Null]](createShow(name.toTermName, id.pos))
+        </td>
+      </tr><tr>
+        <td>
+          108
+        </td>
+        <td>
+          80637
+        </td>
+        <td>
+          4147
+          -
+          4162
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Names.Name.toTermName
+        </td>
+        <td style="background: #AEF1AE">
+          name.toTermName
+        </td>
+      </tr><tr>
+        <td>
+          108
+        </td>
+        <td>
+          80639
+        </td>
+        <td>
+          4136
+          -
+          4171
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.repl.ReplCompiler.createShow
+        </td>
+        <td style="background: #AEF1AE">
+          createShow(name.toTermName, id.pos)
+        </td>
+      </tr><tr>
+        <td>
+          109
+        </td>
+        <td>
+          80641
+        </td>
+        <td>
+          4219
+          -
+          4231
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.StdNames.ScalaNames.WILDCARD
+        </td>
+        <td style="background: #AEF1AE">
+          dotc.core.StdNames.nme.WILDCARD
+        </td>
+      </tr><tr>
+        <td>
+          109
+        </td>
+        <td>
+          80642
+        </td>
+        <td>
+          4211
+          -
+          4231
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.Object.!=
+        </td>
+        <td style="background: #AEF1AE">
+          name.!=(dotc.core.StdNames.nme.WILDCARD)
+        </td>
+      </tr><tr>
+        <td>
+          110
+        </td>
+        <td>
+          80643
+        </td>
+        <td>
+          4281
+          -
+          4305
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.immutable.List.::
+        </td>
+        <td style="background: #AEF1AE">
+          createDeepShows(body).::[dotty.tools.dotc.ast.untpd.DefDef](x$6)
+        </td>
+      </tr><tr>
+        <td>
+          112
+        </td>
+        <td>
+          80644
+        </td>
+        <td>
+          4338
+          -
+          4360
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.repl.ReplCompiler.createDeepShows
+        </td>
+        <td style="background: #AEF1AE">
+          createDeepShows(other)
+        </td>
+      </tr><tr>
+        <td>
+          116
+        </td>
+        <td>
+          80647
+        </td>
+        <td>
+          4393
+          -
+          4407
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.repl.State.valIndex
+        </td>
+        <td style="background: #AEF1AE">
+          state.valIndex
+        </td>
+      </tr><tr>
+        <td>
+          118
+        </td>
+        <td>
+          80673
+        </td>
+        <td>
+          4424
+          -
+          5263
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          scala.collection.immutable.List.flatMap
+        </td>
+        <td style="background: #AEF1AE">
+          trees.flatMap[dotty.tools.dotc.ast.untpd.Tree, List[dotty.tools.dotc.ast.untpd.Tree]](((x0$2: dotty.tools.dotc.ast.untpd.Tree) =&gt; x0$2 match {
+  case (vd @ (_: dotty.tools.dotc.ast.untpd.ValDef)) =&gt; scala.collection.immutable.List.apply[dotty.tools.dotc.ast.Trees.ValOrDefDef[Null] with Serializable{def name: dotty.tools.dotc.core.Names.TermName}](vd, createShow(vd.name, vd.pos))
+  case (pd @ (_: dotty.tools.dotc.ast.untpd.PatDef)) =&gt; {
+    &lt;synthetic&gt; &lt;artifact&gt; val x$7: dotty.tools.dotc.ast.untpd.PatDef = pd;
+    createPatDefShows(pd).::[dotty.tools.dotc.ast.Trees.DefTree[Null] with Serializable](x$7)
+  }
+  case (expr @ (lhs: dotty.tools.dotc.ast.Trees.Tree[dotty.tools.dotc.ast.Trees.Untyped], rhs: dotty.tools.dotc.ast.Trees.Tree[dotty.tools.dotc.ast.Trees.Untyped])dotty.tools.dotc.ast.Trees.Assign[dotty.tools.dotc.ast.Trees.Untyped]((id @ (_: dotty.tools.dotc.ast.untpd.Ident)), (rhs @ _))) =&gt; {
+    val assignName: dotty.tools.dotc.core.Names.TermName = id.name.++(&quot;$assign&quot;).toTermName;
+    val assign: dotty.tools.dotc.ast.Trees.ValDef[dotty.tools.dotc.ast.Trees.Untyped] = dotc.ast.untpd.ValDef(assignName, dotc.ast.untpd.TypeTree(), id).withPos(expr.pos);
+    val show: dotty.tools.dotc.ast.Trees.DefDef[Null] = createShow(assignName, expr.pos);
+    scala.collection.immutable.List.apply[dotty.tools.dotc.ast.Trees.Tree[Null] with Serializable](expr, assign, show)
+  }
+  case (expr @ _) if expr.isTerm =&gt; {
+    val resName: dotty.tools.dotc.core.Names.TermName = dotc.core.Decorators.PreNamedString(&quot;res&quot;.+(valIdx)).toTermName;
+    valIdx = valIdx.+(1);
+    val show: dotty.tools.dotc.ast.Trees.DefDef[Null] = createShow(resName, expr.pos);
+    val vd: dotty.tools.dotc.ast.Trees.ValDef[dotty.tools.dotc.ast.Trees.Untyped] = dotc.ast.untpd.ValDef(resName, dotc.ast.untpd.TypeTree(), expr).withPos(expr.pos);
+    scala.collection.immutable.List.apply[dotty.tools.dotc.ast.Trees.ValOrDefDef[Null] with Serializable{def name: dotty.tools.dotc.core.Names.TermName}](vd, show)
+  }
+  case (other @ _) =&gt; scala.collection.immutable.List.apply[dotty.tools.dotc.ast.untpd.Tree](other)
+}))(immutable.this.List.canBuildFrom[dotty.tools.dotc.ast.untpd.Tree])
+        </td>
+      </tr><tr>
+        <td>
+          118
+        </td>
+        <td>
+          80672
+        </td>
+        <td>
+          4438
+          -
+          4438
+        </td>
+        <td>
+          TypeApply
+        </td>
+        <td>
+          scala.collection.immutable.List.canBuildFrom
+        </td>
+        <td style="background: #AEF1AE">
+          immutable.this.List.canBuildFrom[dotty.tools.dotc.ast.untpd.Tree]
+        </td>
+      </tr><tr>
+        <td>
+          120
+        </td>
+        <td>
+          80650
+        </td>
+        <td>
+          4482
+          -
+          4509
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.repl.ReplCompiler.createShow
+        </td>
+        <td style="background: #AEF1AE">
+          createShow(vd.name, vd.pos)
+        </td>
+      </tr><tr>
+        <td>
+          120
+        </td>
+        <td>
+          80649
+        </td>
+        <td>
+          4502
+          -
+          4508
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Positioned.pos
+        </td>
+        <td style="background: #AEF1AE">
+          vd.pos
+        </td>
+      </tr><tr>
+        <td>
+          120
+        </td>
+        <td>
+          80648
+        </td>
+        <td>
+          4493
+          -
+          4500
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Trees.ValDef.name
+        </td>
+        <td style="background: #AEF1AE">
+          vd.name
+        </td>
+      </tr><tr>
+        <td>
+          120
+        </td>
+        <td>
+          80651
+        </td>
+        <td>
+          4473
+          -
+          4510
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.immutable.List.apply
+        </td>
+        <td style="background: #AEF1AE">
+          scala.collection.immutable.List.apply[dotty.tools.dotc.ast.Trees.ValOrDefDef[Null] with Serializable{def name: dotty.tools.dotc.core.Names.TermName}](vd, createShow(vd.name, vd.pos))
+        </td>
+      </tr><tr>
+        <td>
+          122
+        </td>
+        <td>
+          80652
+        </td>
+        <td>
+          4547
+          -
+          4571
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.immutable.List.::
+        </td>
+        <td style="background: #AEF1AE">
+          createPatDefShows(pd).::[dotty.tools.dotc.ast.Trees.DefTree[Null] with Serializable](x$7)
+        </td>
+      </tr><tr>
+        <td>
+          126
+        </td>
+        <td>
+          80653
+        </td>
+        <td>
+          4765
+          -
+          4787
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          &quot;$assign&quot;
+        </td>
+      </tr><tr>
+        <td>
+          126
+        </td>
+        <td>
+          80654
+        </td>
+        <td>
+          4754
+          -
+          4799
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Names.Name.toTermName
+        </td>
+        <td style="background: #AEF1AE">
+          id.name.++(&quot;$assign&quot;).toTermName
+        </td>
+      </tr><tr>
+        <td>
+          127
+        </td>
+        <td>
+          80656
+        </td>
+        <td>
+          4864
+          -
+          4872
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Positioned.pos
+        </td>
+        <td style="background: #AEF1AE">
+          expr.pos
+        </td>
+      </tr><tr>
+        <td>
+          127
+        </td>
+        <td>
+          80655
+        </td>
+        <td>
+          4840
+          -
+          4850
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.ast.untpd.TypeTree
+        </td>
+        <td style="background: #AEF1AE">
+          dotc.ast.untpd.TypeTree()
+        </td>
+      </tr><tr>
+        <td>
+          127
+        </td>
+        <td>
+          80657
+        </td>
+        <td>
+          4821
+          -
+          4873
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Positioned.withPos
+        </td>
+        <td style="background: #AEF1AE">
+          dotc.ast.untpd.ValDef(assignName, dotc.ast.untpd.TypeTree(), id).withPos(expr.pos)
+        </td>
+      </tr><tr>
+        <td>
+          128
+        </td>
+        <td>
+          80659
+        </td>
+        <td>
+          4893
+          -
+          4925
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.repl.ReplCompiler.createShow
+        </td>
+        <td style="background: #AEF1AE">
+          createShow(assignName, expr.pos)
+        </td>
+      </tr><tr>
+        <td>
+          128
+        </td>
+        <td>
+          80658
+        </td>
+        <td>
+          4916
+          -
+          4924
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Positioned.pos
+        </td>
+        <td style="background: #AEF1AE">
+          expr.pos
+        </td>
+      </tr><tr>
+        <td>
+          129
+        </td>
+        <td>
+          80660
+        </td>
+        <td>
+          4934
+          -
+          4958
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.immutable.List.apply
+        </td>
+        <td style="background: #AEF1AE">
+          scala.collection.immutable.List.apply[dotty.tools.dotc.ast.Trees.Tree[Null] with Serializable](expr, assign, show)
+        </td>
+      </tr><tr>
+        <td>
+          130
+        </td>
+        <td>
+          80661
+        </td>
+        <td>
+          4978
+          -
+          4989
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Trees.Tree.isTerm
+        </td>
+        <td style="background: #AEF1AE">
+          expr.isTerm
+        </td>
+      </tr><tr>
+        <td>
+          131
+        </td>
+        <td>
+          80662
+        </td>
+        <td>
+          5016
+          -
+          5044
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.String.+
+        </td>
+        <td style="background: #AEF1AE">
+          &quot;res&quot;.+(valIdx)
+        </td>
+      </tr><tr>
+        <td>
+          131
+        </td>
+        <td>
+          80663
+        </td>
+        <td>
+          5016
+          -
+          5056
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Decorators.PreNamedString.toTermName
+        </td>
+        <td style="background: #AEF1AE">
+          dotc.core.Decorators.PreNamedString(&quot;res&quot;.+(valIdx)).toTermName
+        </td>
+      </tr><tr>
+        <td>
+          132
+        </td>
+        <td>
+          80664
+        </td>
+        <td>
+          5065
+          -
+          5076
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Int.+
+        </td>
+        <td style="background: #AEF1AE">
+          valIdx.+(1)
+        </td>
+      </tr><tr>
+        <td>
+          133
+        </td>
+        <td>
+          80665
+        </td>
+        <td>
+          5116
+          -
+          5124
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Positioned.pos
+        </td>
+        <td style="background: #AEF1AE">
+          expr.pos
+        </td>
+      </tr><tr>
+        <td>
+          133
+        </td>
+        <td>
+          80666
+        </td>
+        <td>
+          5096
+          -
+          5125
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.repl.ReplCompiler.createShow
+        </td>
+        <td style="background: #AEF1AE">
+          createShow(resName, expr.pos)
+        </td>
+      </tr><tr>
+        <td>
+          134
+        </td>
+        <td>
+          80668
+        </td>
+        <td>
+          5185
+          -
+          5193
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Positioned.pos
+        </td>
+        <td style="background: #AEF1AE">
+          expr.pos
+        </td>
+      </tr><tr>
+        <td>
+          134
+        </td>
+        <td>
+          80667
+        </td>
+        <td>
+          5159
+          -
+          5169
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.ast.untpd.TypeTree
+        </td>
+        <td style="background: #AEF1AE">
+          dotc.ast.untpd.TypeTree()
+        </td>
+      </tr><tr>
+        <td>
+          134
+        </td>
+        <td>
+          80669
+        </td>
+        <td>
+          5143
+          -
+          5194
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Positioned.withPos
+        </td>
+        <td style="background: #AEF1AE">
+          dotc.ast.untpd.ValDef(resName, dotc.ast.untpd.TypeTree(), expr).withPos(expr.pos)
+        </td>
+      </tr><tr>
+        <td>
+          135
+        </td>
+        <td>
+          80670
+        </td>
+        <td>
+          5203
+          -
+          5217
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.immutable.List.apply
+        </td>
+        <td style="background: #AEF1AE">
+          scala.collection.immutable.List.apply[dotty.tools.dotc.ast.Trees.ValOrDefDef[Null] with Serializable{def name: dotty.tools.dotc.core.Names.TermName}](vd, show)
+        </td>
+      </tr><tr>
+        <td>
+          137
+        </td>
+        <td>
+          80671
+        </td>
+        <td>
+          5246
+          -
+          5257
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.immutable.List.apply
+        </td>
+        <td style="background: #AEF1AE">
+          scala.collection.immutable.List.apply[dotty.tools.dotc.ast.untpd.Tree](other)
+        </td>
+      </tr><tr>
+        <td>
+          140
+        </td>
+        <td>
+          80686
+        </td>
+        <td>
+          5269
+          -
+          5440
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.repl.ReplCompiler.Definitions.apply
+        </td>
+        <td style="background: #AEF1AE">
+          ReplCompiler.this.Definitions.apply(state.imports.++[dotty.tools.dotc.ast.untpd.Tree, List[dotty.tools.dotc.ast.untpd.Tree]](defs)(immutable.this.List.canBuildFrom[dotty.tools.dotc.ast.untpd.Tree]), state.copy(state.objectIndex.+(if (defs.isEmpty)
+  0
+else
+  1), valIdx, state.copy$default$3, state.copy$default$4, state.copy$default$5))
+        </td>
+      </tr><tr>
+        <td>
+          141
+        </td>
+        <td>
+          80674
+        </td>
+        <td>
+          5302
+          -
+          5302
+        </td>
+        <td>
+          TypeApply
+        </td>
+        <td>
+          scala.collection.immutable.List.canBuildFrom
+        </td>
+        <td style="background: #AEF1AE">
+          immutable.this.List.canBuildFrom[dotty.tools.dotc.ast.untpd.Tree]
+        </td>
+      </tr><tr>
+        <td>
+          141
+        </td>
+        <td>
+          80675
+        </td>
+        <td>
+          5288
+          -
+          5309
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          scala.collection.immutable.List.++
+        </td>
+        <td style="background: #AEF1AE">
+          state.imports.++[dotty.tools.dotc.ast.untpd.Tree, List[dotty.tools.dotc.ast.untpd.Tree]](defs)(immutable.this.List.canBuildFrom[dotty.tools.dotc.ast.untpd.Tree])
+        </td>
+      </tr><tr>
+        <td>
+          142
+        </td>
+        <td>
+          80683
+        </td>
+        <td>
+          5323
+          -
+          5323
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.repl.State.copy$default$4
+        </td>
+        <td style="background: #AEF1AE">
+          state.copy$default$4
+        </td>
+      </tr><tr>
+        <td>
+          142
+        </td>
+        <td>
+          80685
+        </td>
+        <td>
+          5317
+          -
+          5434
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.repl.State.copy
+        </td>
+        <td style="background: #AEF1AE">
+          state.copy(state.objectIndex.+(if (defs.isEmpty)
+  0
+else
+  1), valIdx, state.copy$default$3, state.copy$default$4, state.copy$default$5)
+        </td>
+      </tr><tr>
+        <td>
+          142
+        </td>
+        <td>
+          80682
+        </td>
+        <td>
+          5323
+          -
+          5323
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.repl.State.copy$default$3
+        </td>
+        <td style="background: #AEF1AE">
+          state.copy$default$3
+        </td>
+      </tr><tr>
+        <td>
+          142
+        </td>
+        <td>
+          80684
+        </td>
+        <td>
+          5323
+          -
+          5323
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.repl.State.copy$default$5
+        </td>
+        <td style="background: #AEF1AE">
+          state.copy$default$5
+        </td>
+      </tr><tr>
+        <td>
+          143
+        </td>
+        <td>
+          80677
+        </td>
+        <td>
+          5390
+          -
+          5391
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          0
+        </td>
+      </tr><tr>
+        <td>
+          143
+        </td>
+        <td>
+          80680
+        </td>
+        <td>
+          5397
+          -
+          5398
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          1
+        </td>
+      </tr><tr>
+        <td>
+          143
+        </td>
+        <td>
+          80676
+        </td>
+        <td>
+          5376
+          -
+          5388
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.collection.SeqLike.isEmpty
+        </td>
+        <td style="background: #AEF1AE">
+          defs.isEmpty
+        </td>
+      </tr><tr>
+        <td>
+          143
+        </td>
+        <td>
+          80679
+        </td>
+        <td>
+          5397
+          -
+          5398
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          1
+        </td>
+      </tr><tr>
+        <td>
+          143
+        </td>
+        <td>
+          80681
+        </td>
+        <td>
+          5351
+          -
+          5399
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Int.+
+        </td>
+        <td style="background: #AEF1AE">
+          state.objectIndex.+(if (defs.isEmpty)
+  0
+else
+  1)
+        </td>
+      </tr><tr>
+        <td>
+          143
+        </td>
+        <td>
+          80678
+        </td>
+        <td>
+          5390
+          -
+          5391
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          0
+        </td>
+      </tr><tr>
+        <td>
+          167
+        </td>
+        <td>
+          80688
+        </td>
+        <td>
+          5870
+          -
+          5897
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Predef.assert
+        </td>
+        <td style="background: #AEF1AE">
+          scala.Predef.assert(defs.stats.nonEmpty)
+        </td>
+      </tr><tr>
+        <td>
+          167
+        </td>
+        <td>
+          80687
+        </td>
+        <td>
+          5877
+          -
+          5896
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.collection.TraversableOnce.nonEmpty
+        </td>
+        <td style="background: #AEF1AE">
+          defs.stats.nonEmpty
+        </td>
+      </tr><tr>
+        <td>
+          169
+        </td>
+        <td>
+          80689
+        </td>
+        <td>
+          5931
+          -
+          5956
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.Run.runContext
+        </td>
+        <td style="background: #AEF1AE">
+          defs.state.run.runContext
+        </td>
+      </tr><tr>
+        <td>
+          171
+        </td>
+        <td>
+          80692
+        </td>
+        <td>
+          6005
+          -
+          6016
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Trees.Instance.EmptyValDef
+        </td>
+        <td style="background: #AEF1AE">
+          dotc.ast.untpd.EmptyValDef
+        </td>
+      </tr><tr>
+        <td>
+          171
+        </td>
+        <td>
+          80691
+        </td>
+        <td>
+          6000
+          -
+          6003
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.collection.immutable.Nil
+        </td>
+        <td style="background: #AEF1AE">
+          scala.collection.immutable.Nil
+        </td>
+      </tr><tr>
+        <td>
+          171
+        </td>
+        <td>
+          80694
+        </td>
+        <td>
+          5973
+          -
+          6029
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.ast.untpd.Template
+        </td>
+        <td style="background: #AEF1AE">
+          dotc.ast.untpd.Template(dotc.ast.untpd.emptyConstructor(ctx), scala.collection.immutable.Nil, dotc.ast.untpd.EmptyValDef, defs.stats)
+        </td>
+      </tr><tr>
+        <td>
+          171
+        </td>
+        <td>
+          80690
+        </td>
+        <td>
+          5982
+          -
+          5998
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.untpd.emptyConstructor
+        </td>
+        <td style="background: #AEF1AE">
+          dotc.ast.untpd.emptyConstructor(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          171
+        </td>
+        <td>
+          80693
+        </td>
+        <td>
+          6018
+          -
+          6028
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.repl.ReplCompiler.Definitions.stats
+        </td>
+        <td style="background: #AEF1AE">
+          defs.stats
+        </td>
+      </tr><tr>
+        <td>
+          172
+        </td>
+        <td>
+          80695
+        </td>
+        <td>
+          6068
+          -
+          6078
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.repl.ReplCompiler.Definitions.state
+        </td>
+        <td style="background: #AEF1AE">
+          defs.state
+        </td>
+      </tr><tr>
+        <td>
+          172
+        </td>
+        <td>
+          80696
+        </td>
+        <td>
+          6057
+          -
+          6079
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.repl.ReplCompiler.objectName
+        </td>
+        <td style="background: #AEF1AE">
+          ReplCompiler.this.objectName(defs.state)
+        </td>
+      </tr><tr>
+        <td>
+          173
+        </td>
+        <td>
+          80698
+        </td>
+        <td>
+          6117
+          -
+          6131
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.core.Flags.FlagSet.|
+        </td>
+        <td style="background: #AEF1AE">
+          dotc.core.Flags.Module.|(dotc.core.Flags.Final)
+        </td>
+      </tr><tr>
+        <td>
+          173
+        </td>
+        <td>
+          80701
+        </td>
+        <td>
+          6103
+          -
+          6103
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.ast.untpd.Modifiers.&lt;init&gt;$default$4
+        </td>
+        <td style="background: #AEF1AE">
+          ast.this.untpd.Modifiers.&lt;init&gt;$default$4
+        </td>
+      </tr><tr>
+        <td>
+          173
+        </td>
+        <td>
+          80700
+        </td>
+        <td>
+          6103
+          -
+          6103
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.ast.untpd.Modifiers.&lt;init&gt;$default$3
+        </td>
+        <td style="background: #AEF1AE">
+          ast.this.untpd.Modifiers.&lt;init&gt;$default$3
+        </td>
+      </tr><tr>
+        <td>
+          173
+        </td>
+        <td>
+          80697
+        </td>
+        <td>
+          6126
+          -
+          6131
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Flags.Final
+        </td>
+        <td style="background: #AEF1AE">
+          dotc.core.Flags.Final
+        </td>
+      </tr><tr>
+        <td>
+          173
+        </td>
+        <td>
+          80699
+        </td>
+        <td>
+          6103
+          -
+          6103
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.ast.untpd.Modifiers.&lt;init&gt;$default$2
+        </td>
+        <td style="background: #AEF1AE">
+          ast.this.untpd.Modifiers.&lt;init&gt;$default$2
+        </td>
+      </tr><tr>
+        <td>
+          173
+        </td>
+        <td>
+          80702
+        </td>
+        <td>
+          6103
+          -
+          6132
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.ast.untpd.Modifiers.&lt;init&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          new dotc.ast.untpd.Modifiers(dotc.core.Flags.Module.|(dotc.core.Flags.Final), ast.this.untpd.Modifiers.&lt;init&gt;$default$2, ast.this.untpd.Modifiers.&lt;init&gt;$default$3, ast.this.untpd.Modifiers.&lt;init&gt;$default$4)
+        </td>
+      </tr><tr>
+        <td>
+          174
+        </td>
+        <td>
+          80704
+        </td>
+        <td>
+          6161
+          -
+          6184
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.util.Positions.Position.end
+        </td>
+        <td style="background: #AEF1AE">
+          defs.stats.last.pos.end
+        </td>
+      </tr><tr>
+        <td>
+          174
+        </td>
+        <td>
+          80703
+        </td>
+        <td>
+          6158
+          -
+          6159
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          0
+        </td>
+      </tr><tr>
+        <td>
+          174
+        </td>
+        <td>
+          80706
+        </td>
+        <td>
+          6047
+          -
+          6186
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Positioned.withPos
+        </td>
+        <td style="background: #AEF1AE">
+          dotc.ast.untpd.ModuleDef.apply(ReplCompiler.this.objectName(defs.state), tmpl).withMods(new dotc.ast.untpd.Modifiers(dotc.core.Flags.Module.|(dotc.core.Flags.Final), ast.this.untpd.Modifiers.&lt;init&gt;$default$2, ast.this.untpd.Modifiers.&lt;init&gt;$default$3, ast.this.untpd.Modifiers.&lt;init&gt;$default$4)).withPos(dotc.util.Positions.Position(0, defs.stats.last.pos.end))
+        </td>
+      </tr><tr>
+        <td>
+          174
+        </td>
+        <td>
+          80705
+        </td>
+        <td>
+          6149
+          -
+          6185
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.util.Positions.Position
+        </td>
+        <td style="background: #AEF1AE">
+          dotc.util.Positions.Position(0, defs.stats.last.pos.end)
+        </td>
+      </tr><tr>
+        <td>
+          176
+        </td>
+        <td>
+          80707
+        </td>
+        <td>
+          6209
+          -
+          6226
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.StdNames.ScalaNames.EMPTY_PACKAGE
+        </td>
+        <td style="background: #AEF1AE">
+          dotc.core.StdNames.nme.EMPTY_PACKAGE
+        </td>
+      </tr><tr>
+        <td>
+          176
+        </td>
+        <td>
+          80710
+        </td>
+        <td>
+          6192
+          -
+          6242
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.ast.untpd.PackageDef
+        </td>
+        <td style="background: #AEF1AE">
+          dotc.ast.untpd.PackageDef(dotc.ast.untpd.Ident(dotc.core.StdNames.nme.EMPTY_PACKAGE), scala.collection.immutable.List.apply[dotty.tools.dotc.ast.untpd.ModuleDef#ThisTree[Null]](module))
+        </td>
+      </tr><tr>
+        <td>
+          176
+        </td>
+        <td>
+          80709
+        </td>
+        <td>
+          6229
+          -
+          6241
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.immutable.List.apply
+        </td>
+        <td style="background: #AEF1AE">
+          scala.collection.immutable.List.apply[dotty.tools.dotc.ast.untpd.ModuleDef#ThisTree[Null]](module)
+        </td>
+      </tr><tr>
+        <td>
+          176
+        </td>
+        <td>
+          80708
+        </td>
+        <td>
+          6203
+          -
+          6227
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.ast.untpd.Ident
+        </td>
+        <td style="background: #AEF1AE">
+          dotc.ast.untpd.Ident(dotc.core.StdNames.nme.EMPTY_PACKAGE)
+        </td>
+      </tr><tr>
+        <td>
+          180
+        </td>
+        <td>
+          80713
+        </td>
+        <td>
+          6368
+          -
+          6427
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.util.SourceFile.&lt;init&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          new dotc.util.SourceFile(ReplCompiler.this.objectName(defs.state).toString(), scala.Predef.wrapString(sourceCode))
+        </td>
+      </tr><tr>
+        <td>
+          180
+        </td>
+        <td>
+          80712
+        </td>
+        <td>
+          6416
+          -
+          6426
+        </td>
+        <td>
+          ApplyImplicitView
+        </td>
+        <td>
+          scala.LowPriorityImplicits.wrapString
+        </td>
+        <td style="background: #AEF1AE">
+          scala.Predef.wrapString(sourceCode)
+        </td>
+      </tr><tr>
+        <td>
+          180
+        </td>
+        <td>
+          80714
+        </td>
+        <td>
+          6348
+          -
+          6428
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.CompilationUnit.&lt;init&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          new dotc.CompilationUnit(new dotc.util.SourceFile(ReplCompiler.this.objectName(defs.state).toString(), scala.Predef.wrapString(sourceCode)))
+        </td>
+      </tr><tr>
+        <td>
+          180
+        </td>
+        <td>
+          80711
+        </td>
+        <td>
+          6383
+          -
+          6414
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.Object.toString
+        </td>
+        <td style="background: #AEF1AE">
+          ReplCompiler.this.objectName(defs.state).toString()
+        </td>
+      </tr><tr>
+        <td>
+          181
+        </td>
+        <td>
+          80716
+        </td>
+        <td>
+          6433
+          -
+          6463
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.CompilationUnit.untpdTree_=
+        </td>
+        <td style="background: #AEF1AE">
+          unit.untpdTree_=(ReplCompiler.this.wrapped(defs))
+        </td>
+      </tr><tr>
+        <td>
+          181
+        </td>
+        <td>
+          80715
+        </td>
+        <td>
+          6450
+          -
+          6463
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.repl.ReplCompiler.wrapped
+        </td>
+        <td style="background: #AEF1AE">
+          ReplCompiler.this.wrapped(defs)
+        </td>
+      </tr><tr>
+        <td>
+          186
+        </td>
+        <td>
+          80717
+        </td>
+        <td>
+          6600
+          -
+          6609
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.repl.State.run
+        </td>
+        <td style="background: #AEF1AE">
+          state.run
+        </td>
+      </tr><tr>
+        <td>
+          187
+        </td>
+        <td>
+          80718
+        </td>
+        <td>
+          6629
+          -
+          6658
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Contexts.Context.reporter
+        </td>
+        <td style="background: #AEF1AE">
+          state.run.runContext.reporter
+        </td>
+      </tr><tr>
+        <td>
+          188
+        </td>
+        <td>
+          80719
+        </td>
+        <td>
+          6685
+          -
+          6691
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.immutable.List.::
+        </td>
+        <td style="background: #AEF1AE">
+          scala.collection.immutable.Nil.::[dotty.tools.dotc.CompilationUnit](x$8)
+        </td>
+      </tr><tr>
+        <td>
+          188
+        </td>
+        <td>
+          80720
+        </td>
+        <td>
+          6663
+          -
+          6692
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.Run.compileUnits
+        </td>
+        <td style="background: #AEF1AE">
+          run.compileUnits({
+  &lt;synthetic&gt; &lt;artifact&gt; val x$8: dotty.tools.dotc.CompilationUnit = unit;
+  scala.collection.immutable.Nil.::[dotty.tools.dotc.CompilationUnit](x$8)
+})
+        </td>
+      </tr><tr>
+        <td>
+          190
+        </td>
+        <td>
+          80722
+        </td>
+        <td>
+          6723
+          -
+          6736
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Tuple2.apply
+        </td>
+        <td style="background: #AEF1AE">
+          scala.Tuple2.apply[dotty.tools.dotc.CompilationUnit, dotty.tools.repl.State](unit, state)
+        </td>
+      </tr><tr>
+        <td>
+          190
+        </td>
+        <td>
+          80721
+        </td>
+        <td>
+          6702
+          -
+          6721
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.Boolean.unary_!
+        </td>
+        <td style="background: #AEF1AE">
+          reporter.hasErrors().unary_!
+        </td>
+      </tr><tr>
+        <td>
+          190
+        </td>
+        <td>
+          80724
+        </td>
+        <td>
+          6723
+          -
+          6743
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          dotty.tools.repl.results.ResultConversionA.result
+        </td>
+        <td style="background: #AEF1AE">
+          results.ResultConversionA[(dotty.tools.dotc.CompilationUnit, dotty.tools.repl.State)](scala.Tuple2.apply[dotty.tools.dotc.CompilationUnit, dotty.tools.repl.State](unit, state)).result
+        </td>
+      </tr><tr>
+        <td>
+          190
+        </td>
+        <td>
+          80723
+        </td>
+        <td>
+          6723
+          -
+          6743
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.repl.results.ResultConversionA.result
+        </td>
+        <td style="background: #AEF1AE">
+          results.ResultConversionA[(dotty.tools.dotc.CompilationUnit, dotty.tools.repl.State)](scala.Tuple2.apply[dotty.tools.dotc.CompilationUnit, dotty.tools.repl.State](unit, state)).result
+        </td>
+      </tr><tr>
+        <td>
+          191
+        </td>
+        <td>
+          80725
+        </td>
+        <td>
+          6753
+          -
+          6791
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.repl.StoreReporterContext.flushBufferedMessages
+        </td>
+        <td style="background: #AEF1AE">
+          repl.this.`package`.StoreReporterContext(run.runContext).flushBufferedMessages()
+        </td>
+      </tr><tr>
+        <td>
+          191
+        </td>
+        <td>
+          80727
+        </td>
+        <td>
+          6753
+          -
+          6798
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          dotty.tools.repl.results.ResultConversionErr.errors
+        </td>
+        <td style="background: #AEF1AE">
+          results.ResultConversionErr(repl.this.`package`.StoreReporterContext(run.runContext).flushBufferedMessages()).errors[Nothing]
+        </td>
+      </tr><tr>
+        <td>
+          191
+        </td>
+        <td>
+          80726
+        </td>
+        <td>
+          6753
+          -
+          6798
+        </td>
+        <td>
+          TypeApply
+        </td>
+        <td>
+          dotty.tools.repl.results.ResultConversionErr.errors
+        </td>
+        <td style="background: #AEF1AE">
+          results.ResultConversionErr(repl.this.`package`.StoreReporterContext(run.runContext).flushBufferedMessages()).errors[Nothing]
+        </td>
+      </tr><tr>
+        <td>
+          195
+        </td>
+        <td>
+          80728
+        </td>
+        <td>
+          6922
+          -
+          6934
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.repl.Parsed.trees
+        </td>
+        <td style="background: #AEF1AE">
+          parsed.trees
+        </td>
+      </tr><tr>
+        <td>
+          195
+        </td>
+        <td>
+          80729
+        </td>
+        <td>
+          6910
+          -
+          6942
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.repl.ReplCompiler.definitions
+        </td>
+        <td style="background: #AEF1AE">
+          ReplCompiler.this.definitions(parsed.trees, state)
+        </td>
+      </tr><tr>
+        <td>
+          196
+        </td>
+        <td>
+          80731
+        </td>
+        <td>
+          6958
+          -
+          6993
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.repl.ReplCompiler.createUnit
+        </td>
+        <td style="background: #AEF1AE">
+          ReplCompiler.this.createUnit(defs, parsed.sourceCode)
+        </td>
+      </tr><tr>
+        <td>
+          196
+        </td>
+        <td>
+          80730
+        </td>
+        <td>
+          6975
+          -
+          6992
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.repl.Parsed.sourceCode
+        </td>
+        <td style="background: #AEF1AE">
+          parsed.sourceCode
+        </td>
+      </tr><tr>
+        <td>
+          197
+        </td>
+        <td>
+          80733
+        </td>
+        <td>
+          6998
+          -
+          7034
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.repl.ReplCompiler.runCompilationUnit
+        </td>
+        <td style="background: #AEF1AE">
+          ReplCompiler.this.runCompilationUnit(unit, defs.state)
+        </td>
+      </tr><tr>
+        <td>
+          197
+        </td>
+        <td>
+          80732
+        </td>
+        <td>
+          7023
+          -
+          7033
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.repl.ReplCompiler.Definitions.state
+        </td>
+        <td style="background: #AEF1AE">
+          defs.state
+        </td>
+      </tr><tr>
+        <td>
+          201
+        </td>
+        <td>
+          80740
+        </td>
+        <td>
+          7112
+          -
+          7510
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.util.Either.map
+        </td>
+        <td style="background: #AEF1AE">
+          ReplCompiler.this.typeCheck(expr, ReplCompiler.this.typeCheck$default$2)(state).map[String](((tree: dotty.tools.dotc.ast.tpd.ValDef) =&gt; {
+  import dotc.ast.Trees._;
+  implicit val ctx: dotty.tools.dotc.core.Contexts.Context = state.run.runContext;
+  tree.rhs(ctx) match {
+    case (stats: List[dotty.tools.dotc.ast.Trees.Tree[dotty.tools.dotc.core.Types.Type]], expr: dotty.tools.dotc.ast.Trees.Tree[dotty.tools.dotc.core.Types.Type])dotty.tools.dotc.ast.Trees.Block[dotty.tools.dotc.core.Types.Type]((xs @ _), _) =&gt; xs.last.tpe.widen(ctx).show(ctx)
+    case _ =&gt; scala.Predef.augmentString(&quot;Couldn\'t compute the type of your expression, so sorry :(\n            |\n            |Please report this to my masters at github.com/lampepfl/dotty\n          &quot;).stripMargin
+  }
+}))
+        </td>
+      </tr><tr>
+        <td>
+          201
+        </td>
+        <td>
+          80734
+        </td>
+        <td>
+          7112
+          -
+          7112
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.repl.ReplCompiler.typeCheck$default$2
+        </td>
+        <td style="background: #AEF1AE">
+          ReplCompiler.this.typeCheck$default$2
+        </td>
+      </tr><tr>
+        <td>
+          203
+        </td>
+        <td>
+          80735
+        </td>
+        <td>
+          7197
+          -
+          7217
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.Run.runContext
+        </td>
+        <td style="background: #AEF1AE">
+          state.run.runContext
+        </td>
+      </tr><tr>
+        <td>
+          204
+        </td>
+        <td>
+          80736
+        </td>
+        <td>
+          7224
+          -
+          7232
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Trees.ValOrDefDef.rhs
+        </td>
+        <td style="background: #AEF1AE">
+          tree.rhs(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          205
+        </td>
+        <td>
+          80737
+        </td>
+        <td>
+          7270
+          -
+          7292
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.printing.Showable.show
+        </td>
+        <td style="background: #AEF1AE">
+          xs.last.tpe.widen(ctx).show(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          207
+        </td>
+        <td>
+          80738
+        </td>
+        <td>
+          7321
+          -
+          7484
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          &quot;Couldn\'t compute the type of your expression, so sorry :(\n            |\n            |Please report this to my masters at github.com/lampepfl/dotty\n          &quot;
+        </td>
+      </tr><tr>
+        <td>
+          210
+        </td>
+        <td>
+          80739
+        </td>
+        <td>
+          7321
+          -
+          7496
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.collection.immutable.StringLike.stripMargin
+        </td>
+        <td style="background: #F0ADAD">
+          scala.Predef.augmentString(&quot;Couldn\'t compute the type of your expression, so sorry :(\n            |\n            |Please report this to my masters at github.com/lampepfl/dotty\n          &quot;).stripMargin
+        </td>
+      </tr><tr>
+        <td>
+          221
+        </td>
+        <td>
+          80743
+        </td>
+        <td>
+          7885
+          -
+          7895
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.ast.untpd.TypeTree
+        </td>
+        <td style="background: #AEF1AE">
+          dotc.ast.untpd.TypeTree()
+        </td>
+      </tr><tr>
+        <td>
+          221
+        </td>
+        <td>
+          80745
+        </td>
+        <td>
+          7917
+          -
+          7934
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.ast.untpd.unitLiteral
+        </td>
+        <td style="background: #AEF1AE">
+          dotc.ast.untpd.unitLiteral
+        </td>
+      </tr><tr>
+        <td>
+          221
+        </td>
+        <td>
+          80742
+        </td>
+        <td>
+          7866
+          -
+          7883
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Decorators.PreNamedString.toTermName
+        </td>
+        <td style="background: #AEF1AE">
+          dotc.core.Decorators.PreNamedString(&quot;expr&quot;).toTermName
+        </td>
+      </tr><tr>
+        <td>
+          221
+        </td>
+        <td>
+          80741
+        </td>
+        <td>
+          7866
+          -
+          7872
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          &quot;expr&quot;
+        </td>
+      </tr><tr>
+        <td>
+          221
+        </td>
+        <td>
+          80744
+        </td>
+        <td>
+          7903
+          -
+          7915
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.collection.TraversableOnce.toList
+        </td>
+        <td style="background: #AEF1AE">
+          trees.toList
+        </td>
+      </tr><tr>
+        <td>
+          221
+        </td>
+        <td>
+          80747
+        </td>
+        <td>
+          7859
+          -
+          7936
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.ast.untpd.ValDef
+        </td>
+        <td style="background: #AEF1AE">
+          dotc.ast.untpd.ValDef(dotc.core.Decorators.PreNamedString(&quot;expr&quot;).toTermName, dotc.ast.untpd.TypeTree(), dotc.ast.untpd.Block(trees.toList, dotc.ast.untpd.unitLiteral))
+        </td>
+      </tr><tr>
+        <td>
+          221
+        </td>
+        <td>
+          80746
+        </td>
+        <td>
+          7897
+          -
+          7935
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.ast.untpd.Block
+        </td>
+        <td style="background: #AEF1AE">
+          dotc.ast.untpd.Block(trees.toList, dotc.ast.untpd.unitLiteral)
+        </td>
+      </tr><tr>
+        <td>
+          223
+        </td>
+        <td>
+          80748
+        </td>
+        <td>
+          7966
+          -
+          7982
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.untpd.emptyConstructor
+        </td>
+        <td style="background: #AEF1AE">
+          dotc.ast.untpd.emptyConstructor(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          223
+        </td>
+        <td>
+          80755
+        </td>
+        <td>
+          7957
+          -
+          8129
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.ast.untpd.Template
+        </td>
+        <td style="background: #AEF1AE">
+          dotc.ast.untpd.Template(dotc.ast.untpd.emptyConstructor(ctx), scala.collection.immutable.List.apply[dotty.tools.dotc.ast.untpd.Ident](dotc.ast.untpd.Ident(dotc.core.StdNames.tpnme.Any)), dotc.ast.untpd.EmptyValDef, state.imports.:+[dotty.tools.dotc.ast.Trees.DenotingTree[dotty.tools.dotc.ast.Trees.Untyped] with Serializable, dotty.tools.dotc.ast.Trees.LazyTreeList](valdef)(immutable.this.List.canBuildFrom[dotty.tools.dotc.ast.Trees.DenotingTree[dotty.tools.dotc.ast.Trees.Untyped] with Serializable]))
+        </td>
+      </tr><tr>
+        <td>
+          224
+        </td>
+        <td>
+          80749
+        </td>
+        <td>
+          8023
+          -
+          8032
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.StdNames.ScalaNames.Any
+        </td>
+        <td style="background: #AEF1AE">
+          dotc.core.StdNames.tpnme.Any
+        </td>
+      </tr><tr>
+        <td>
+          224
+        </td>
+        <td>
+          80751
+        </td>
+        <td>
+          8012
+          -
+          8034
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.immutable.List.apply
+        </td>
+        <td style="background: #AEF1AE">
+          scala.collection.immutable.List.apply[dotty.tools.dotc.ast.untpd.Ident](dotc.ast.untpd.Ident(dotc.core.StdNames.tpnme.Any))
+        </td>
+      </tr><tr>
+        <td>
+          224
+        </td>
+        <td>
+          80750
+        </td>
+        <td>
+          8017
+          -
+          8033
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.ast.untpd.Ident
+        </td>
+        <td style="background: #AEF1AE">
+          dotc.ast.untpd.Ident(dotc.core.StdNames.tpnme.Any)
+        </td>
+      </tr><tr>
+        <td>
+          225
+        </td>
+        <td>
+          80752
+        </td>
+        <td>
+          8064
+          -
+          8075
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Trees.Instance.EmptyValDef
+        </td>
+        <td style="background: #AEF1AE">
+          dotc.ast.untpd.EmptyValDef
+        </td>
+      </tr><tr>
+        <td>
+          226
+        </td>
+        <td>
+          80754
+        </td>
+        <td>
+          8105
+          -
+          8128
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          scala.collection.SeqLike.:+
+        </td>
+        <td style="background: #AEF1AE">
+          state.imports.:+[dotty.tools.dotc.ast.Trees.DenotingTree[dotty.tools.dotc.ast.Trees.Untyped] with Serializable, dotty.tools.dotc.ast.Trees.LazyTreeList](valdef)(immutable.this.List.canBuildFrom[dotty.tools.dotc.ast.Trees.DenotingTree[dotty.tools.dotc.ast.Trees.Untyped] with Serializable])
+        </td>
+      </tr><tr>
+        <td>
+          226
+        </td>
+        <td>
+          80753
+        </td>
+        <td>
+          8119
+          -
+          8119
+        </td>
+        <td>
+          TypeApply
+        </td>
+        <td>
+          scala.collection.immutable.List.canBuildFrom
+        </td>
+        <td style="background: #AEF1AE">
+          immutable.this.List.canBuildFrom[dotty.tools.dotc.ast.Trees.DenotingTree[dotty.tools.dotc.ast.Trees.Untyped] with Serializable]
+        </td>
+      </tr><tr>
+        <td>
+          228
+        </td>
+        <td>
+          80757
+        </td>
+        <td>
+          8150
+          -
+          8174
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.ast.untpd.Ident
+        </td>
+        <td style="background: #AEF1AE">
+          dotc.ast.untpd.Ident(dotc.core.StdNames.nme.EMPTY_PACKAGE)
+        </td>
+      </tr><tr>
+        <td>
+          228
+        </td>
+        <td>
+          80759
+        </td>
+        <td>
+          8139
+          -
+          8334
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.ast.untpd.PackageDef
+        </td>
+        <td style="background: #AEF1AE">
+          dotc.ast.untpd.PackageDef(dotc.ast.untpd.Ident(dotc.core.StdNames.nme.EMPTY_PACKAGE), {
+  &lt;synthetic&gt; &lt;artifact&gt; val x$9: dotty.tools.dotc.ast.Trees.TypeDef[Null] = dotc.ast.untpd.TypeDef(dotc.core.Decorators.PreNamedString(&quot;EvaluateExpr&quot;).toTypeName, tmpl).withMods(new dotc.ast.untpd.Modifiers(dotc.core.Flags.Final, ast.this.untpd.Modifiers.&lt;init&gt;$default$2, ast.this.untpd.Modifiers.&lt;init&gt;$default$3, ast.this.untpd.Modifiers.&lt;init&gt;$default$4)).withPos(dotc.util.Positions.Position(0, expr.length()));
+  scala.collection.immutable.Nil.::[dotty.tools.dotc.ast.Trees.TypeDef[Null]](x$9)
+})
+        </td>
+      </tr><tr>
+        <td>
+          228
+        </td>
+        <td>
+          80756
+        </td>
+        <td>
+          8156
+          -
+          8173
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.StdNames.ScalaNames.EMPTY_PACKAGE
+        </td>
+        <td style="background: #AEF1AE">
+          dotc.core.StdNames.nme.EMPTY_PACKAGE
+        </td>
+      </tr><tr>
+        <td>
+          231
+        </td>
+        <td>
+          80758
+        </td>
+        <td>
+          8318
+          -
+          8324
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.immutable.List.::
+        </td>
+        <td style="background: #AEF1AE">
+          scala.collection.immutable.Nil.::[dotty.tools.dotc.ast.Trees.TypeDef[Null]](x$9)
+        </td>
+      </tr><tr>
+        <td>
+          235
+        </td>
+        <td>
+          80760
+        </td>
+        <td>
+          8350
+          -
+          8367
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.repl.ParseResult.apply
+        </td>
+        <td style="background: #AEF1AE">
+          ParseResult.apply(expr)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          237
+        </td>
+        <td>
+          80761
+        </td>
+        <td>
+          8428
+          -
+          8439
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.repl.ReplCompiler.wrap
+        </td>
+        <td style="background: #AEF1AE">
+          wrap(trees)
+        </td>
+      </tr><tr>
+        <td>
+          237
+        </td>
+        <td>
+          80762
+        </td>
+        <td>
+          8428
+          -
+          8446
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.repl.results.ResultConversionA.result
+        </td>
+        <td style="background: #AEF1AE">
+          results.ResultConversionA[dotty.tools.dotc.ast.untpd.PackageDef](wrap(trees)).result
+        </td>
+      </tr><tr>
+        <td>
+          239
+        </td>
+        <td>
+          80763
+        </td>
+        <td>
+          8525
+          -
+          8536
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.repl.ReplCompiler.wrap
+        </td>
+        <td style="background: #AEF1AE">
+          wrap(trees)
+        </td>
+      </tr><tr>
+        <td>
+          239
+        </td>
+        <td>
+          80765
+        </td>
+        <td>
+          8525
+          -
+          8543
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          dotty.tools.repl.results.ResultConversionA.result
+        </td>
+        <td style="background: #AEF1AE">
+          results.ResultConversionA[dotty.tools.dotc.ast.untpd.PackageDef](wrap(trees)).result
+        </td>
+      </tr><tr>
+        <td>
+          239
+        </td>
+        <td>
+          80764
+        </td>
+        <td>
+          8525
+          -
+          8543
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.repl.results.ResultConversionA.result
+        </td>
+        <td style="background: #AEF1AE">
+          results.ResultConversionA[dotty.tools.dotc.ast.untpd.PackageDef](wrap(trees)).result
+        </td>
+      </tr><tr>
+        <td>
+          240
+        </td>
+        <td>
+          80767
+        </td>
+        <td>
+          8559
+          -
+          8574
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          dotty.tools.repl.results.ResultConversionErr.errors
+        </td>
+        <td style="background: #F0ADAD">
+          results.ResultConversionErr(reported).errors[Nothing]
+        </td>
+      </tr><tr>
+        <td>
+          240
+        </td>
+        <td>
+          80766
+        </td>
+        <td>
+          8559
+          -
+          8574
+        </td>
+        <td>
+          TypeApply
+        </td>
+        <td>
+          dotty.tools.repl.results.ResultConversionErr.errors
+        </td>
+        <td style="background: #F0ADAD">
+          results.ResultConversionErr(reported).errors[Nothing]
+        </td>
+      </tr><tr>
+        <td>
+          241
+        </td>
+        <td>
+          80775
+        </td>
+        <td>
+          8593
+          -
+          8759
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.immutable.List.apply
+        </td>
+        <td style="background: #F0ADAD">
+          scala.collection.immutable.List.apply[dotty.tools.dotc.reporting.diagnostic.messages.Error](new dotc.reporting.diagnostic.messages.Error(diagnostic.this.Message.toNoExplanation(scala.StringContext.apply(&quot;Couldn\'t parse \'&quot;, &quot;\' to valid scala&quot;).s(expr)), sourceFile.atPos(dotc.util.Positions.Position(0, expr.length()))))
+        </td>
+      </tr><tr>
+        <td>
+          242
+        </td>
+        <td>
+          80774
+        </td>
+        <td>
+          8609
+          -
+          8749
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.reporting.diagnostic.messages.Error.&lt;init&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          new dotc.reporting.diagnostic.messages.Error(diagnostic.this.Message.toNoExplanation(scala.StringContext.apply(&quot;Couldn\'t parse \'&quot;, &quot;\' to valid scala&quot;).s(expr)), sourceFile.atPos(dotc.util.Positions.Position(0, expr.length())))
+        </td>
+      </tr><tr>
+        <td>
+          243
+        </td>
+        <td>
+          80769
+        </td>
+        <td>
+          8641
+          -
+          8681
+        </td>
+        <td>
+          ApplyImplicitView
+        </td>
+        <td>
+          dotty.tools.dotc.reporting.diagnostic.Message.toNoExplanation
+        </td>
+        <td style="background: #F0ADAD">
+          diagnostic.this.Message.toNoExplanation(scala.StringContext.apply(&quot;Couldn\'t parse \'&quot;, &quot;\' to valid scala&quot;).s(expr))
+        </td>
+      </tr><tr>
+        <td>
+          243
+        </td>
+        <td>
+          80768
+        </td>
+        <td>
+          8641
+          -
+          8681
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.StringContext.s
+        </td>
+        <td style="background: #F0ADAD">
+          scala.StringContext.apply(&quot;Couldn\'t parse \'&quot;, &quot;\' to valid scala&quot;).s(expr)
+        </td>
+      </tr><tr>
+        <td>
+          244
+        </td>
+        <td>
+          80770
+        </td>
+        <td>
+          8721
+          -
+          8722
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          0
+        </td>
+      </tr><tr>
+        <td>
+          244
+        </td>
+        <td>
+          80772
+        </td>
+        <td>
+          8712
+          -
+          8736
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.util.Positions.Position
+        </td>
+        <td style="background: #F0ADAD">
+          dotc.util.Positions.Position(0, expr.length())
+        </td>
+      </tr><tr>
+        <td>
+          244
+        </td>
+        <td>
+          80771
+        </td>
+        <td>
+          8724
+          -
+          8735
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.String.length
+        </td>
+        <td style="background: #F0ADAD">
+          expr.length()
+        </td>
+      </tr><tr>
+        <td>
+          244
+        </td>
+        <td>
+          80773
+        </td>
+        <td>
+          8695
+          -
+          8737
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.util.SourceFile.atPos
+        </td>
+        <td style="background: #F0ADAD">
+          sourceFile.atPos(dotc.util.Positions.Position(0, expr.length()))
+        </td>
+      </tr><tr>
+        <td>
+          246
+        </td>
+        <td>
+          80776
+        </td>
+        <td>
+          8593
+          -
+          8766
+        </td>
+        <td>
+          TypeApply
+        </td>
+        <td>
+          dotty.tools.repl.results.ResultConversionErr.errors
+        </td>
+        <td style="background: #F0ADAD">
+          results.ResultConversionErr(scala.collection.immutable.List.apply[dotty.tools.dotc.reporting.diagnostic.messages.Error](new dotc.reporting.diagnostic.messages.Error(diagnostic.this.Message.toNoExplanation(scala.StringContext.apply(&quot;Couldn\'t parse \'&quot;, &quot;\' to valid scala&quot;).s(expr)), sourceFile.atPos(dotc.util.Positions.Position(0, expr.length()))))).errors[Nothing]
+        </td>
+      </tr><tr>
+        <td>
+          252
+        </td>
+        <td>
+          80778
+        </td>
+        <td>
+          8957
+          -
+          8984
+        </td>
+        <td>
+          ApplyImplicitView
+        </td>
+        <td>
+          dotty.tools.dotc.reporting.diagnostic.Message.toNoExplanation
+        </td>
+        <td style="background: #F0ADAD">
+          diagnostic.this.Message.toNoExplanation(scala.StringContext.apply(&quot;Invalid scala expression&quot;).s())
+        </td>
+      </tr><tr>
+        <td>
+          252
+        </td>
+        <td>
+          80784
+        </td>
+        <td>
+          8933
+          -
+          9054
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.immutable.List.apply
+        </td>
+        <td style="background: #F0ADAD">
+          scala.collection.immutable.List.apply[dotty.tools.dotc.reporting.diagnostic.messages.Error](new dotc.reporting.diagnostic.messages.Error(diagnostic.this.Message.toNoExplanation(scala.StringContext.apply(&quot;Invalid scala expression&quot;).s()), sourceFile.atPos(dotc.util.Positions.Position(0, sourceFile.content.length))))
+        </td>
+      </tr><tr>
+        <td>
+          252
+        </td>
+        <td>
+          80783
+        </td>
+        <td>
+          8938
+          -
+          9053
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.reporting.diagnostic.messages.Error.&lt;init&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          new dotc.reporting.diagnostic.messages.Error(diagnostic.this.Message.toNoExplanation(scala.StringContext.apply(&quot;Invalid scala expression&quot;).s()), sourceFile.atPos(dotc.util.Positions.Position(0, sourceFile.content.length)))
+        </td>
+      </tr><tr>
+        <td>
+          252
+        </td>
+        <td>
+          80777
+        </td>
+        <td>
+          8957
+          -
+          8984
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.StringContext.s
+        </td>
+        <td style="background: #F0ADAD">
+          scala.StringContext.apply(&quot;Invalid scala expression&quot;).s()
+        </td>
+      </tr><tr>
+        <td>
+          253
+        </td>
+        <td>
+          80785
+        </td>
+        <td>
+          8933
+          -
+          9061
+        </td>
+        <td>
+          TypeApply
+        </td>
+        <td>
+          dotty.tools.repl.results.ResultConversionErr.errors
+        </td>
+        <td style="background: #F0ADAD">
+          results.ResultConversionErr(scala.collection.immutable.List.apply[dotty.tools.dotc.reporting.diagnostic.messages.Error](new dotc.reporting.diagnostic.messages.Error(diagnostic.this.Message.toNoExplanation(scala.StringContext.apply(&quot;Invalid scala expression&quot;).s()), sourceFile.atPos(dotc.util.Positions.Position(0, sourceFile.content.length))))).errors[Nothing]
+        </td>
+      </tr><tr>
+        <td>
+          253
+        </td>
+        <td>
+          80779
+        </td>
+        <td>
+          9022
+          -
+          9023
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          0
+        </td>
+      </tr><tr>
+        <td>
+          253
+        </td>
+        <td>
+          80781
+        </td>
+        <td>
+          9013
+          -
+          9051
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.util.Positions.Position
+        </td>
+        <td style="background: #F0ADAD">
+          dotc.util.Positions.Position(0, sourceFile.content.length)
+        </td>
+      </tr><tr>
+        <td>
+          253
+        </td>
+        <td>
+          80780
+        </td>
+        <td>
+          9025
+          -
+          9050
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.Array.length
+        </td>
+        <td style="background: #F0ADAD">
+          sourceFile.content.length
+        </td>
+      </tr><tr>
+        <td>
+          253
+        </td>
+        <td>
+          80782
+        </td>
+        <td>
+          8996
+          -
+          9052
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.util.SourceFile.atPos
+        </td>
+        <td style="background: #F0ADAD">
+          sourceFile.atPos(dotc.util.Positions.Position(0, sourceFile.content.length))
+        </td>
+      </tr><tr>
+        <td>
+          260
+        </td>
+        <td>
+          80786
+        </td>
+        <td>
+          9175
+          -
+          9303
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Option.getOrElse
+        </td>
+        <td style="background: #AEF1AE">
+          tmpl.body(ctx).collectFirst[dotty.tools.repl.results.Result[dotty.tools.dotc.ast.tpd.ValDef]](({
+  @SerialVersionUID(value = 0) final &lt;synthetic&gt; class $anonfun extends scala.runtime.AbstractPartialFunction[dotty.tools.dotc.ast.Trees.Tree[dotty.tools.dotc.core.Types.Type],dotty.tools.repl.results.Result[dotty.tools.dotc.ast.tpd.ValDef]] with Serializable {
+    def &lt;init&gt;(): &lt;$anon: dotty.tools.dotc.ast.Trees.Tree[dotty.tools.dotc.core.Types.Type] =&gt; dotty.tools.repl.results.Result[dotty.tools.dotc.ast.tpd.ValDef]&gt; = {
+      $anonfun.super.&lt;init&gt;();
+      ()
+    };
+    final override def applyOrElse[A1 &lt;: dotty.tools.dotc.ast.Trees.Tree[dotty.tools.dotc.core.Types.Type], B1 &gt;: dotty.tools.repl.results.Result[dotty.tools.dotc.ast.tpd.ValDef]](x1: A1, default: A1 =&gt; B1): B1 = ((x1.asInstanceOf[dotty.tools.dotc.ast.Trees.Tree[dotty.tools.dotc.core.Types.Type]]: dotty.tools.dotc.ast.Trees.Tree[dotty.tools.dotc.core.Types.Type]): dotty.tools.dotc.ast.Trees.Tree[dotty.tools.dotc.core.Types.Type] @unchecked) match {
+      case (dd @ (_: dotty.tools.dotc.ast.tpd.ValDef)) if dd.name.show(ctx).==(&quot;expr&quot;) =&gt; results.ResultConversionA[dotty.tools.dotc.ast.tpd.ValDef](dd).result
+      case (defaultCase$ @ _) =&gt; default.apply(x1)
+    };
+    final def isDefinedAt(x1: dotty.tools.dotc.ast.Trees.Tree[dotty.tools.dotc.core.Types.Type]): Boolean = ((x1.asInstanceOf[dotty.tools.dotc.ast.Trees.Tree[dotty.tools.dotc.core.Types.Type]]: dotty.tools.dotc.ast.Trees.Tree[dotty.tools.dotc.core.Types.Type]): dotty.tools.dotc.ast.Trees.Tree[dotty.tools.dotc.core.Types.Type] @unchecked) match {
+      case (dd @ (_: dotty.tools.dotc.ast.tpd.ValDef)) if dd.name.show(ctx).==(&quot;expr&quot;) =&gt; true
+      case (defaultCase$ @ _) =&gt; false
+    }
+  };
+  new $anonfun()
+}: PartialFunction[dotty.tools.dotc.ast.Trees.Tree[dotty.tools.dotc.core.Types.Type],dotty.tools.repl.results.Result[dotty.tools.dotc.ast.tpd.ValDef]])).getOrElse[dotty.tools.repl.results.Result[dotty.tools.dotc.ast.tpd.ValDef]](error)
+        </td>
+      </tr><tr>
+        <td>
+          267
+        </td>
+        <td>
+          80787
+        </td>
+        <td>
+          9368
+          -
+          9377
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.repl.State.run
+        </td>
+        <td style="background: #AEF1AE">
+          state.run
+        </td>
+      </tr><tr>
+        <td>
+          268
+        </td>
+        <td>
+          80788
+        </td>
+        <td>
+          9397
+          -
+          9426
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Contexts.Context.reporter
+        </td>
+        <td style="background: #AEF1AE">
+          state.run.runContext.reporter
+        </td>
+      </tr><tr>
+        <td>
+          269
+        </td>
+        <td>
+          80790
+        </td>
+        <td>
+          9473
+          -
+          9477
+        </td>
+        <td>
+          ApplyImplicitView
+        </td>
+        <td>
+          scala.LowPriorityImplicits.wrapString
+        </td>
+        <td style="background: #AEF1AE">
+          scala.Predef.wrapString(expr)
+        </td>
+      </tr><tr>
+        <td>
+          269
+        </td>
+        <td>
+          80789
+        </td>
+        <td>
+          9456
+          -
+          9471
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.StringContext.s
+        </td>
+        <td style="background: #AEF1AE">
+          scala.StringContext.apply(&quot;EvaluateExpr&quot;).s()
+        </td>
+      </tr><tr>
+        <td>
+          269
+        </td>
+        <td>
+          80791
+        </td>
+        <td>
+          9441
+          -
+          9478
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.util.SourceFile.&lt;init&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          new dotc.util.SourceFile(scala.StringContext.apply(&quot;EvaluateExpr&quot;).s(), scala.Predef.wrapString(expr))
+        </td>
+      </tr><tr>
+        <td>
+          272
+        </td>
+        <td>
+          80794
+        </td>
+        <td>
+          9580
+          -
+          9596
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.immutable.List.apply
+        </td>
+        <td style="background: #AEF1AE">
+          scala.collection.immutable.List.apply[String](&quot;frontend&quot;)
+        </td>
+      </tr><tr>
+        <td>
+          272
+        </td>
+        <td>
+          80793
+        </td>
+        <td>
+          9544
+          -
+          9578
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.config.ScalaSettings.YstopAfter
+        </td>
+        <td style="background: #AEF1AE">
+          Contexts.this.Context.toBase(run.runContext).settings.YstopAfter
+        </td>
+      </tr><tr>
+        <td>
+          272
+        </td>
+        <td>
+          80792
+        </td>
+        <td>
+          9544
+          -
+          9558
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.Run.runContext
+        </td>
+        <td style="background: #AEF1AE">
+          run.runContext
+        </td>
+      </tr><tr>
+        <td>
+          272
+        </td>
+        <td>
+          80795
+        </td>
+        <td>
+          9502
+          -
+          9597
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.core.Contexts.FreshContext.setSetting
+        </td>
+        <td style="background: #AEF1AE">
+          run.runContext.fresh.setSetting[List[String]](Contexts.this.Context.toBase(run.runContext).settings.YstopAfter, scala.collection.immutable.List.apply[String](&quot;frontend&quot;))
+        </td>
+      </tr><tr>
+        <td>
+          274
+        </td>
+        <td>
+          80809
+        </td>
+        <td>
+          9603
+          -
+          9975
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.util.Either.flatMap
+        </td>
+        <td style="background: #AEF1AE">
+          wrapped(expr, src, state)(runCtx).flatMap[dotty.tools.repl.results.Errors, dotty.tools.dotc.ast.tpd.ValDef](((pkg: dotty.tools.dotc.ast.untpd.PackageDef) =&gt; {
+  val unit: dotty.tools.dotc.CompilationUnit = new dotc.CompilationUnit(src);
+  unit.untpdTree_=(pkg);
+  run.compileUnits({
+    &lt;synthetic&gt; &lt;artifact&gt; val x$10: dotty.tools.dotc.CompilationUnit = unit;
+    scala.collection.immutable.Nil.::[dotty.tools.dotc.CompilationUnit](x$10)
+  }, runCtx.fresh.setReporter(repl.this.`package`.storeReporter));
+  if (errorsAllowed.||(reporter.hasErrors().unary_!))
+    unwrapped(unit.tpdTree, src)(runCtx)
+  else
+    results.ResultConversionErr(reporter.removeBufferedMessages(runCtx)).errors[Nothing]
+}))
+        </td>
+      </tr><tr>
+        <td>
+          275
+        </td>
+        <td>
+          80796
+        </td>
+        <td>
+          9671
+          -
+          9695
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.CompilationUnit.&lt;init&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          new dotc.CompilationUnit(src)
+        </td>
+      </tr><tr>
+        <td>
+          276
+        </td>
+        <td>
+          80797
+        </td>
+        <td>
+          9702
+          -
+          9722
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.CompilationUnit.untpdTree_=
+        </td>
+        <td style="background: #AEF1AE">
+          unit.untpdTree_=(pkg)
+        </td>
+      </tr><tr>
+        <td>
+          277
+        </td>
+        <td>
+          80799
+        </td>
+        <td>
+          9784
+          -
+          9797
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.repl.storeReporter
+        </td>
+        <td style="background: #AEF1AE">
+          repl.this.`package`.storeReporter
+        </td>
+      </tr><tr>
+        <td>
+          277
+        </td>
+        <td>
+          80801
+        </td>
+        <td>
+          9729
+          -
+          9799
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.Run.compileUnits
+        </td>
+        <td style="background: #AEF1AE">
+          run.compileUnits({
+  &lt;synthetic&gt; &lt;artifact&gt; val x$10: dotty.tools.dotc.CompilationUnit = unit;
+  scala.collection.immutable.Nil.::[dotty.tools.dotc.CompilationUnit](x$10)
+}, runCtx.fresh.setReporter(repl.this.`package`.storeReporter))
+        </td>
+      </tr><tr>
+        <td>
+          277
+        </td>
+        <td>
+          80798
+        </td>
+        <td>
+          9751
+          -
+          9757
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.immutable.List.::
+        </td>
+        <td style="background: #AEF1AE">
+          scala.collection.immutable.Nil.::[dotty.tools.dotc.CompilationUnit](x$10)
+        </td>
+      </tr><tr>
+        <td>
+          277
+        </td>
+        <td>
+          80800
+        </td>
+        <td>
+          9759
+          -
+          9798
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.core.Contexts.FreshContext.setReporter
+        </td>
+        <td style="background: #AEF1AE">
+          runCtx.fresh.setReporter(repl.this.`package`.storeReporter)
+        </td>
+      </tr><tr>
+        <td>
+          279
+        </td>
+        <td>
+          80803
+        </td>
+        <td>
+          9811
+          -
+          9847
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Boolean.||
+        </td>
+        <td style="background: #AEF1AE">
+          errorsAllowed.||(reporter.hasErrors().unary_!)
+        </td>
+      </tr><tr>
+        <td>
+          279
+        </td>
+        <td>
+          80802
+        </td>
+        <td>
+          9828
+          -
+          9847
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.Boolean.unary_!
+        </td>
+        <td style="background: #AEF1AE">
+          reporter.hasErrors().unary_!
+        </td>
+      </tr><tr>
+        <td>
+          280
+        </td>
+        <td>
+          80805
+        </td>
+        <td>
+          9857
+          -
+          9893
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          dotty.tools.repl.ReplCompiler.unwrapped
+        </td>
+        <td style="background: #AEF1AE">
+          unwrapped(unit.tpdTree, src)(runCtx)
+        </td>
+      </tr><tr>
+        <td>
+          280
+        </td>
+        <td>
+          80804
+        </td>
+        <td>
+          9857
+          -
+          9893
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.repl.ReplCompiler.unwrapped
+        </td>
+        <td style="background: #AEF1AE">
+          unwrapped(unit.tpdTree, src)(runCtx)
+        </td>
+      </tr><tr>
+        <td>
+          282
+        </td>
+        <td>
+          80808
+        </td>
+        <td>
+          9915
+          -
+          9961
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          dotty.tools.repl.results.ResultConversionErr.errors
+        </td>
+        <td style="background: #F0ADAD">
+          results.ResultConversionErr(reporter.removeBufferedMessages(runCtx)).errors[Nothing]
+        </td>
+      </tr><tr>
+        <td>
+          282
+        </td>
+        <td>
+          80807
+        </td>
+        <td>
+          9915
+          -
+          9961
+        </td>
+        <td>
+          TypeApply
+        </td>
+        <td>
+          dotty.tools.repl.results.ResultConversionErr.errors
+        </td>
+        <td style="background: #F0ADAD">
+          results.ResultConversionErr(reporter.removeBufferedMessages(runCtx)).errors[Nothing]
+        </td>
+      </tr><tr>
+        <td>
+          282
+        </td>
+        <td>
+          80806
+        </td>
+        <td>
+          9915
+          -
+          9954
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.reporting.Reporter.removeBufferedMessages
+        </td>
+        <td style="background: #F0ADAD">
+          reporter.removeBufferedMessages(runCtx)
+        </td>
+      </tr>
+    </table>
+          </div>
+        </div>
+      </body>
+    </html>

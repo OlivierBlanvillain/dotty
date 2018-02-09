@@ -1,0 +1,887 @@
+<html>
+      <head>
+        <meta http-equiv="Content-Type" content="text/html; charset=utf-8"/>
+        <title id="title">
+          dotty/tools/dotc/transform/CheckReentrant.scala.html
+        </title>
+        <script src="https://ajax.googleapis.com/ajax/libs/jquery/1.10.2/jquery.min.js"></script><link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/jquery.tablesorter/2.20.1/css/theme.default.min.css" type="text/css"/><script src="https://cdnjs.cloudflare.com/ajax/libs/jquery.tablesorter/2.20.1/js/jquery.tablesorter.min.js"></script><link rel="stylesheet" href="https://netdna.bootstrapcdn.com/bootstrap/3.0.3/css/bootstrap.min.css" type="text/css"/><script src="https://netdna.bootstrapcdn.com/bootstrap/3.0.3/js/bootstrap.min.js"></script><script type="text/javascript">
+        $(document).ready(function() {$(".tablesorter").tablesorter();});
+      </script>
+        <style>
+          table.codegrid { font-family: monospace; font-size: 12px; width: auto!important; }table.statementlist { width: auto!important; font-size: 13px; } table.codegrid td { padding: 0!important; border: 0!important } table td.linenumber { width: 40px!important; } 
+        </style>
+      </head>
+      <body style="font-family: monospace;">
+        <ul class="nav nav-tabs">
+          <li>
+            <a href="#codegrid" data-toggle="tab">Codegrid</a>
+          </li>
+          <li>
+            <a href="#statementlist" data-toggle="tab">Statement List</a>
+          </li>
+        </ul>
+        <div class="tab-content">
+          <div class="tab-pane active" id="codegrid">
+            <pre style='font-size: 12pt; font-family: courier;'>1 <span style=''>package dotty.tools.dotc
+</span>2 <span style=''>package transform
+</span>3 <span style=''>
+</span>4 <span style=''>import core._
+</span>5 <span style=''>import Names._
+</span>6 <span style=''>import dotty.tools.dotc.transform.MegaPhase._
+</span>7 <span style=''>import ast.Trees._
+</span>8 <span style=''>import Flags._
+</span>9 <span style=''>import Types._
+</span>10 <span style=''>import Constants.Constant
+</span>11 <span style=''>import Contexts.Context
+</span>12 <span style=''>import Symbols._
+</span>13 <span style=''>import SymDenotations._
+</span>14 <span style=''>import Decorators._
+</span>15 <span style=''>import dotty.tools.dotc.core.Annotations.ConcreteAnnotation
+</span>16 <span style=''>import dotty.tools.dotc.core.Denotations.SingleDenotation
+</span>17 <span style=''>import scala.collection.mutable
+</span>18 <span style=''>import DenotTransformers._
+</span>19 <span style=''>import typer.Checking
+</span>20 <span style=''>import Names.Name
+</span>21 <span style=''>import NameOps._
+</span>22 <span style=''>import StdNames._
+</span>23 <span style=''>
+</span>24 <span style=''>
+</span>25 <span style=''>/** A no-op transform that checks whether the compiled sources are re-entrant.
+</span>26 <span style=''> *  If -Ycheck:reentrant is set, the phase makes sure that there are no variables
+</span>27 <span style=''> *  that are accessible from a global object. It excludes from checking paths that
+</span>28 <span style=''> *  are labeled with one of the annotations
+</span>29 <span style=''> *
+</span>30 <span style=''> *      @sharable   Indicating a class or val can be safely shared
+</span>31 <span style=''> *      @unshared   Indicating an object will not be accessed from multiple threads
+</span>32 <span style=''> *
+</span>33 <span style=''> *  Currently the analysis is only intended to check the dotty compiler itself. To make
+</span>34 <span style=''> *  it generally useful we'd need to add at least the following:
+</span>35 <span style=''> *
+</span>36 <span style=''> *   - Handle polymorphic instantiation: We might instantiate a generic class
+</span>37 <span style=''> *     with a type that contains vars. If the class contains fields of the generic
+</span>38 <span style=''> *     type, this may constitute a path to a shared var, which currently goes undetected.
+</span>39 <span style=''> *   - Handle arrays: Array elements are currently ignored because they are often used
+</span>40 <span style=''> *     in an immutable way anyway. To do better, it would be helpful to have a type
+</span>41 <span style=''> *     for immutable array.
+</span>42 <span style=''> */
+</span>43 <span style=''>class CheckReentrant extends MiniPhase {
+</span>44 <span style=''>  import ast.tpd._
+</span>45 <span style=''>
+</span>46 <span style=''>  override def phaseName = </span><span style='background: #AEF1AE'>&quot;checkReentrant&quot;</span><span style=''>
+</span>47 <span style=''>
+</span>48 <span style=''>  private[this] var shared: Set[Symbol] = </span><span style='background: #AEF1AE'>Set()</span><span style=''>
+</span>49 <span style=''>  private[this] var seen: Set[ClassSymbol] = </span><span style='background: #AEF1AE'>Set()</span><span style=''>
+</span>50 <span style=''>  private[this] var indent: Int = </span><span style='background: #AEF1AE'>0</span><span style=''>
+</span>51 <span style=''>
+</span>52 <span style=''>  private val sharableAnnot = </span><span style='background: #AEF1AE'>new CtxLazy(implicit ctx =&gt;
+</span>53 <span style=''></span><span style='background: #AEF1AE'>    ctx.requiredClass(&quot;dotty.tools.sharable&quot;))</span><span style=''>
+</span>54 <span style=''>  private val unsharedAnnot = </span><span style='background: #AEF1AE'>new CtxLazy(implicit ctx =&gt;
+</span>55 <span style=''></span><span style='background: #AEF1AE'>    ctx.requiredClass(&quot;dotty.tools.unshared&quot;))</span><span style=''>
+</span>56 <span style=''>
+</span>57 <span style=''>  def isIgnored(sym: Symbol)(implicit ctx: Context) =
+</span>58 <span style=''>    </span><span style='background: #AEF1AE'>sym.hasAnnotation(sharableAnnot()) ||
+</span>59 <span style=''></span><span style='background: #AEF1AE'>    sym.hasAnnotation(unsharedAnnot())</span><span style=''>
+</span>60 <span style=''>
+</span>61 <span style=''>  def scanning(sym: Symbol)(op: =&gt; Unit)(implicit ctx: Context): Unit = {
+</span>62 <span style=''>    </span><span style='background: #AEF1AE'>ctx.log(</span><span style='background: #F0ADAD'>i&quot;${&quot;  &quot; * indent}scanning $sym&quot;</span><span style='background: #AEF1AE'>)</span><span style=''>
+</span>63 <span style=''>    </span><span style='background: #AEF1AE'>indent += 1</span><span style=''>
+</span>64 <span style=''>    try </span><span style='background: #AEF1AE'>op</span><span style=''>
+</span>65 <span style=''>    finally </span><span style='background: #AEF1AE'>indent -= 1</span><span style=''>
+</span>66 <span style=''>  }
+</span>67 <span style=''>
+</span>68 <span style=''>  def addVars(cls: ClassSymbol)(implicit ctx: Context): Unit = {
+</span>69 <span style=''>    if (</span><span style='background: #AEF1AE'>!seen.contains(cls) &amp;&amp; !isIgnored(cls)</span><span style=''>) </span><span style='background: #AEF1AE'>{
+</span>70 <span style=''></span><span style='background: #AEF1AE'>      seen += cls
+</span>71 <span style=''></span><span style='background: #AEF1AE'>      scanning(cls) {
+</span>72 <span style=''></span><span style='background: #AEF1AE'>        for (sym &lt;- cls.classInfo.decls)
+</span>73 <span style=''></span><span style='background: #AEF1AE'>          if (sym.isTerm &amp;&amp; !sym.isSetter &amp;&amp; !isIgnored(sym))
+</span>74 <span style=''></span><span style='background: #AEF1AE'>            if (sym.is(Mutable)) {
+</span>75 <span style=''></span><span style='background: #AEF1AE'>              ctx.error(
+</span>76 <span style=''></span><span style='background: #AEF1AE'>                i&quot;&quot;&quot;possible data race involving globally reachable ${sym.showLocated}: ${sym.info}
+</span>77 <span style=''></span><span style='background: #AEF1AE'>                   |  use -Ylog:checkReentrant+ to find out more about why the variable is reachable.&quot;&quot;&quot;)
+</span>78 <span style=''></span><span style='background: #AEF1AE'>              shared += sym
+</span>79 <span style=''></span><span style='background: #AEF1AE'>            } else if (!sym.is(Method) || sym.is(Accessor | ParamAccessor)) {
+</span>80 <span style=''></span><span style='background: #AEF1AE'>              scanning(sym) {
+</span>81 <span style=''></span><span style='background: #AEF1AE'>                sym.info.widenExpr.classSymbols.foreach(addVars)
+</span>82 <span style=''></span><span style='background: #AEF1AE'>              }
+</span>83 <span style=''></span><span style='background: #AEF1AE'>            }
+</span>84 <span style=''></span><span style='background: #AEF1AE'>        for (parent &lt;- cls.classInfo.classParents)
+</span>85 <span style=''></span><span style='background: #AEF1AE'>          addVars(parent.typeSymbol.asClass)
+</span>86 <span style=''></span><span style='background: #AEF1AE'>      }
+</span>87 <span style=''></span><span style='background: #AEF1AE'>    }</span><span style=''>
+</span>88 <span style=''>  }
+</span>89 <span style=''>
+</span>90 <span style=''>  override def transformTemplate(tree: Template)(implicit ctx: Context): Tree = {
+</span>91 <span style=''>    if (</span><span style='background: #AEF1AE'>ctx.settings.YcheckReentrant.value &amp;&amp; tree.symbol.owner.isStaticOwner</span><span style=''>)
+</span>92 <span style=''>      </span><span style='background: #AEF1AE'>addVars(tree.symbol.owner.asClass)</span><span style=''>
+</span>93 <span style=''>    tree
+</span>94 <span style=''>  }
+</span>95 <span style=''>}
+</span></pre>
+          </div>
+          <div class="tab-pane" id="statementlist">
+            <table cellspacing="0" cellpadding="0" class="table statementlist">
+      <tr>
+        <th>Line</th>
+        <th>Stmt Id</th>
+        <th>Pos</th>
+        <th>Tree</th>
+        <th>Symbol</th>
+        <th>Code</th>
+      </tr><tr>
+        <td>
+          46
+        </td>
+        <td>
+          52923
+        </td>
+        <td>
+          1676
+          -
+          1692
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          &quot;checkReentrant&quot;
+        </td>
+      </tr><tr>
+        <td>
+          48
+        </td>
+        <td>
+          52924
+        </td>
+        <td>
+          1736
+          -
+          1741
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.generic.GenericCompanion.apply
+        </td>
+        <td style="background: #AEF1AE">
+          scala.Predef.Set.apply[dotty.tools.dotc.core.Symbols.Symbol]()
+        </td>
+      </tr><tr>
+        <td>
+          49
+        </td>
+        <td>
+          52925
+        </td>
+        <td>
+          1787
+          -
+          1792
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.generic.GenericCompanion.apply
+        </td>
+        <td style="background: #AEF1AE">
+          scala.Predef.Set.apply[dotty.tools.dotc.core.Symbols.ClassSymbol]()
+        </td>
+      </tr><tr>
+        <td>
+          50
+        </td>
+        <td>
+          52926
+        </td>
+        <td>
+          1827
+          -
+          1828
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          0
+        </td>
+      </tr><tr>
+        <td>
+          52
+        </td>
+        <td>
+          52929
+        </td>
+        <td>
+          1860
+          -
+          1934
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.transform.CtxLazy.&lt;init&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          new dotty.tools.dotc.transform.CtxLazy[dotty.tools.dotc.core.Symbols.ClassSymbol](((implicit ctx: dotty.tools.dotc.core.Contexts.Context) =&gt; ctx.requiredClass(core.Decorators.PreNamedString(&quot;dotty.tools.sharable&quot;))))
+        </td>
+      </tr><tr>
+        <td>
+          53
+        </td>
+        <td>
+          52927
+        </td>
+        <td>
+          1910
+          -
+          1932
+        </td>
+        <td>
+          ApplyImplicitView
+        </td>
+        <td>
+          dotty.tools.dotc.core.Decorators.PreNamedString
+        </td>
+        <td style="background: #AEF1AE">
+          core.Decorators.PreNamedString(&quot;dotty.tools.sharable&quot;)
+        </td>
+      </tr><tr>
+        <td>
+          53
+        </td>
+        <td>
+          52928
+        </td>
+        <td>
+          1892
+          -
+          1933
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.core.Symbols.requiredClass
+        </td>
+        <td style="background: #AEF1AE">
+          ctx.requiredClass(core.Decorators.PreNamedString(&quot;dotty.tools.sharable&quot;))
+        </td>
+      </tr><tr>
+        <td>
+          54
+        </td>
+        <td>
+          52932
+        </td>
+        <td>
+          1965
+          -
+          2039
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.transform.CtxLazy.&lt;init&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          new dotty.tools.dotc.transform.CtxLazy[dotty.tools.dotc.core.Symbols.ClassSymbol](((implicit ctx: dotty.tools.dotc.core.Contexts.Context) =&gt; ctx.requiredClass(core.Decorators.PreNamedString(&quot;dotty.tools.unshared&quot;))))
+        </td>
+      </tr><tr>
+        <td>
+          55
+        </td>
+        <td>
+          52930
+        </td>
+        <td>
+          2015
+          -
+          2037
+        </td>
+        <td>
+          ApplyImplicitView
+        </td>
+        <td>
+          dotty.tools.dotc.core.Decorators.PreNamedString
+        </td>
+        <td style="background: #AEF1AE">
+          core.Decorators.PreNamedString(&quot;dotty.tools.unshared&quot;)
+        </td>
+      </tr><tr>
+        <td>
+          55
+        </td>
+        <td>
+          52931
+        </td>
+        <td>
+          1997
+          -
+          2038
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.core.Symbols.requiredClass
+        </td>
+        <td style="background: #AEF1AE">
+          ctx.requiredClass(core.Decorators.PreNamedString(&quot;dotty.tools.unshared&quot;))
+        </td>
+      </tr><tr>
+        <td>
+          58
+        </td>
+        <td>
+          52933
+        </td>
+        <td>
+          2117
+          -
+          2132
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.transform.CtxLazy.apply
+        </td>
+        <td style="background: #AEF1AE">
+          CheckReentrant.this.sharableAnnot.apply()(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          58
+        </td>
+        <td>
+          52935
+        </td>
+        <td>
+          2099
+          -
+          2175
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Boolean.||
+        </td>
+        <td style="background: #AEF1AE">
+          core.Symbols.toDenot(sym)(ctx).hasAnnotation(CheckReentrant.this.sharableAnnot.apply()(ctx))(ctx).||(core.Symbols.toDenot(sym)(ctx).hasAnnotation(CheckReentrant.this.unsharedAnnot.apply()(ctx))(ctx))
+        </td>
+      </tr><tr>
+        <td>
+          59
+        </td>
+        <td>
+          52934
+        </td>
+        <td>
+          2141
+          -
+          2175
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.SymDenotations.SymDenotation.hasAnnotation
+        </td>
+        <td style="background: #AEF1AE">
+          core.Symbols.toDenot(sym)(ctx).hasAnnotation(CheckReentrant.this.unsharedAnnot.apply()(ctx))(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          62
+        </td>
+        <td>
+          52936
+        </td>
+        <td>
+          2263
+          -
+          2295
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.Decorators.StringInterpolators.i
+        </td>
+        <td style="background: #F0ADAD">
+          core.Decorators.StringInterpolators(scala.StringContext.apply(&quot;&quot;, &quot;scanning &quot;, &quot;&quot;)).i(scala.Predef.augmentString(&quot;  &quot;).*(CheckReentrant.this.indent), sym)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          62
+        </td>
+        <td>
+          52938
+        </td>
+        <td>
+          2255
+          -
+          2296
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.reporting.Reporting.log
+        </td>
+        <td style="background: #AEF1AE">
+          ctx.log(core.Decorators.StringInterpolators(scala.StringContext.apply(&quot;&quot;, &quot;scanning &quot;, &quot;&quot;)).i(scala.Predef.augmentString(&quot;  &quot;).*(CheckReentrant.this.indent), sym)(ctx), ctx.log$default$2)
+        </td>
+      </tr><tr>
+        <td>
+          62
+        </td>
+        <td>
+          52937
+        </td>
+        <td>
+          2259
+          -
+          2259
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.reporting.Reporting.log$default$2
+        </td>
+        <td style="background: #AEF1AE">
+          ctx.log$default$2
+        </td>
+      </tr><tr>
+        <td>
+          63
+        </td>
+        <td>
+          52939
+        </td>
+        <td>
+          2301
+          -
+          2312
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Int.+
+        </td>
+        <td style="background: #AEF1AE">
+          CheckReentrant.this.indent.+(1)
+        </td>
+      </tr><tr>
+        <td>
+          64
+        </td>
+        <td>
+          52940
+        </td>
+        <td>
+          2321
+          -
+          2323
+        </td>
+        <td>
+          Ident
+        </td>
+        <td>
+          dotty.tools.dotc.transform.CheckReentrant.op
+        </td>
+        <td style="background: #AEF1AE">
+          op
+        </td>
+      </tr><tr>
+        <td>
+          65
+        </td>
+        <td>
+          52942
+        </td>
+        <td>
+          2336
+          -
+          2347
+        </td>
+        <td>
+          Assign
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          CheckReentrant.this.indent = CheckReentrant.this.indent.-(1)
+        </td>
+      </tr><tr>
+        <td>
+          65
+        </td>
+        <td>
+          52941
+        </td>
+        <td>
+          2336
+          -
+          2347
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Int.-
+        </td>
+        <td style="background: #AEF1AE">
+          CheckReentrant.this.indent.-(1)
+        </td>
+      </tr><tr>
+        <td>
+          69
+        </td>
+        <td>
+          52948
+        </td>
+        <td>
+          2422
+          -
+          2422
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          ()
+        </td>
+      </tr><tr>
+        <td>
+          69
+        </td>
+        <td>
+          52944
+        </td>
+        <td>
+          2426
+          -
+          2464
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Boolean.&amp;&amp;
+        </td>
+        <td style="background: #AEF1AE">
+          CheckReentrant.this.seen.contains(cls).unary_!.&amp;&amp;(CheckReentrant.this.isIgnored(cls)(ctx).unary_!)
+        </td>
+      </tr><tr>
+        <td>
+          69
+        </td>
+        <td>
+          52947
+        </td>
+        <td>
+          2466
+          -
+          3217
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          {
+  CheckReentrant.this.seen = CheckReentrant.this.seen.+(cls);
+  CheckReentrant.this.scanning(cls)({
+    core.Symbols.toClassDenot(cls)(ctx).classInfo(ctx).decls.foreach[Unit](((sym: dotty.tools.dotc.core.Symbols.Symbol) =&gt; if (sym.isTerm(ctx).&amp;&amp;(core.Symbols.toDenot(sym)(ctx).isSetter(ctx).unary_!).&amp;&amp;(CheckReentrant.this.isIgnored(sym)(ctx).unary_!))
+      if (core.Symbols.toDenot(sym)(ctx).is(core.Flags.Mutable)(ctx))
+        {
+          ctx.error(diagnostic.this.Message.toNoExplanation(core.Decorators.StringInterpolators(scala.StringContext.apply(&quot;possible data race involving globally reachable &quot;, &quot;: &quot;, &quot;\n                   |  use -Ylog:checkReentrant+ to find out more about why the variable is reachable.&quot;)).i(sym.showLocated(ctx), core.Symbols.toDenot(sym)(ctx).info(ctx))(ctx)), ctx.error$default$2);
+          CheckReentrant.this.shared = CheckReentrant.this.shared.+(sym)
+        }
+      else
+        if (core.Symbols.toDenot(sym)(ctx).is(core.Flags.Method)(ctx).unary_!.||(core.Symbols.toDenot(sym)(ctx).is(core.Flags.Accessor.|(core.Flags.ParamAccessor))(ctx)))
+          CheckReentrant.this.scanning(sym)(core.Symbols.toDenot(sym)(ctx).info(ctx).widenExpr.classSymbols(ctx).foreach[Unit]({
+            ((cls: dotty.tools.dotc.core.Symbols.ClassSymbol) =&gt; CheckReentrant.this.addVars(cls)(ctx))
+          }))(ctx)
+        else
+          ()
+    else
+      ()))(ctx);
+    core.Symbols.toClassDenot(cls)(ctx).classInfo(ctx).classParents.foreach[Unit](((parent: dotty.tools.dotc.core.Types.Type) =&gt; CheckReentrant.this.addVars(parent.typeSymbol(ctx).asClass)(ctx)))
+  })(ctx)
+}
+        </td>
+      </tr><tr>
+        <td>
+          69
+        </td>
+        <td>
+          52949
+        </td>
+        <td>
+          2422
+          -
+          2422
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          ()
+        </td>
+      </tr><tr>
+        <td>
+          69
+        </td>
+        <td>
+          52943
+        </td>
+        <td>
+          2449
+          -
+          2464
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.Boolean.unary_!
+        </td>
+        <td style="background: #AEF1AE">
+          CheckReentrant.this.isIgnored(cls)(ctx).unary_!
+        </td>
+      </tr><tr>
+        <td>
+          70
+        </td>
+        <td>
+          52945
+        </td>
+        <td>
+          2474
+          -
+          2485
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.SetLike.+
+        </td>
+        <td style="background: #AEF1AE">
+          CheckReentrant.this.seen.+(cls)
+        </td>
+      </tr><tr>
+        <td>
+          71
+        </td>
+        <td>
+          52946
+        </td>
+        <td>
+          2492
+          -
+          3211
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.transform.CheckReentrant.scanning
+        </td>
+        <td style="background: #AEF1AE">
+          CheckReentrant.this.scanning(cls)({
+  core.Symbols.toClassDenot(cls)(ctx).classInfo(ctx).decls.foreach[Unit](((sym: dotty.tools.dotc.core.Symbols.Symbol) =&gt; if (sym.isTerm(ctx).&amp;&amp;(core.Symbols.toDenot(sym)(ctx).isSetter(ctx).unary_!).&amp;&amp;(CheckReentrant.this.isIgnored(sym)(ctx).unary_!))
+    if (core.Symbols.toDenot(sym)(ctx).is(core.Flags.Mutable)(ctx))
+      {
+        ctx.error(diagnostic.this.Message.toNoExplanation(core.Decorators.StringInterpolators(scala.StringContext.apply(&quot;possible data race involving globally reachable &quot;, &quot;: &quot;, &quot;\n                   |  use -Ylog:checkReentrant+ to find out more about why the variable is reachable.&quot;)).i(sym.showLocated(ctx), core.Symbols.toDenot(sym)(ctx).info(ctx))(ctx)), ctx.error$default$2);
+        CheckReentrant.this.shared = CheckReentrant.this.shared.+(sym)
+      }
+    else
+      if (core.Symbols.toDenot(sym)(ctx).is(core.Flags.Method)(ctx).unary_!.||(core.Symbols.toDenot(sym)(ctx).is(core.Flags.Accessor.|(core.Flags.ParamAccessor))(ctx)))
+        CheckReentrant.this.scanning(sym)(core.Symbols.toDenot(sym)(ctx).info(ctx).widenExpr.classSymbols(ctx).foreach[Unit]({
+          ((cls: dotty.tools.dotc.core.Symbols.ClassSymbol) =&gt; CheckReentrant.this.addVars(cls)(ctx))
+        }))(ctx)
+      else
+        ()
+  else
+    ()))(ctx);
+  core.Symbols.toClassDenot(cls)(ctx).classInfo(ctx).classParents.foreach[Unit](((parent: dotty.tools.dotc.core.Types.Type) =&gt; CheckReentrant.this.addVars(parent.typeSymbol(ctx).asClass)(ctx)))
+})(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          91
+        </td>
+        <td>
+          52951
+        </td>
+        <td>
+          3351
+          -
+          3382
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.SymDenotations.SymDenotation.isStaticOwner
+        </td>
+        <td style="background: #AEF1AE">
+          core.Symbols.toDenot(core.Symbols.toDenot(tree.symbol(ctx))(ctx).owner)(ctx).isStaticOwner(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          91
+        </td>
+        <td>
+          52956
+        </td>
+        <td>
+          3309
+          -
+          3309
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          ()
+        </td>
+      </tr><tr>
+        <td>
+          91
+        </td>
+        <td>
+          52950
+        </td>
+        <td>
+          3313
+          -
+          3341
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.config.ScalaSettings.YcheckReentrant
+        </td>
+        <td style="background: #AEF1AE">
+          Contexts.this.Context.toBase(ctx).settings.YcheckReentrant
+        </td>
+      </tr><tr>
+        <td>
+          91
+        </td>
+        <td>
+          52952
+        </td>
+        <td>
+          3313
+          -
+          3382
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Boolean.&amp;&amp;
+        </td>
+        <td style="background: #AEF1AE">
+          Settings.this.Setting.SettingDecorator[Boolean](Contexts.this.Context.toBase(ctx).settings.YcheckReentrant).value(ctx).&amp;&amp;(core.Symbols.toDenot(core.Symbols.toDenot(tree.symbol(ctx))(ctx).owner)(ctx).isStaticOwner(ctx))
+        </td>
+      </tr><tr>
+        <td>
+          91
+        </td>
+        <td>
+          52955
+        </td>
+        <td>
+          3309
+          -
+          3309
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          ()
+        </td>
+      </tr><tr>
+        <td>
+          92
+        </td>
+        <td>
+          52954
+        </td>
+        <td>
+          3390
+          -
+          3424
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          dotty.tools.dotc.transform.CheckReentrant.addVars
+        </td>
+        <td style="background: #AEF1AE">
+          CheckReentrant.this.addVars(core.Symbols.toDenot(tree.symbol(ctx))(ctx).owner.asClass)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          92
+        </td>
+        <td>
+          52953
+        </td>
+        <td>
+          3390
+          -
+          3424
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.transform.CheckReentrant.addVars
+        </td>
+        <td style="background: #AEF1AE">
+          CheckReentrant.this.addVars(core.Symbols.toDenot(tree.symbol(ctx))(ctx).owner.asClass)(ctx)
+        </td>
+      </tr>
+    </table>
+          </div>
+        </div>
+      </body>
+    </html>

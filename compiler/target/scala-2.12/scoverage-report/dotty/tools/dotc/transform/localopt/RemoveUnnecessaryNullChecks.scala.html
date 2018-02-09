@@ -1,0 +1,1978 @@
+<html>
+      <head>
+        <meta http-equiv="Content-Type" content="text/html; charset=utf-8"/>
+        <title id="title">
+          dotty/tools/dotc/transform/localopt/RemoveUnnecessaryNullChecks.scala.html
+        </title>
+        <script src="https://ajax.googleapis.com/ajax/libs/jquery/1.10.2/jquery.min.js"></script><link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/jquery.tablesorter/2.20.1/css/theme.default.min.css" type="text/css"/><script src="https://cdnjs.cloudflare.com/ajax/libs/jquery.tablesorter/2.20.1/js/jquery.tablesorter.min.js"></script><link rel="stylesheet" href="https://netdna.bootstrapcdn.com/bootstrap/3.0.3/css/bootstrap.min.css" type="text/css"/><script src="https://netdna.bootstrapcdn.com/bootstrap/3.0.3/js/bootstrap.min.js"></script><script type="text/javascript">
+        $(document).ready(function() {$(".tablesorter").tablesorter();});
+      </script>
+        <style>
+          table.codegrid { font-family: monospace; font-size: 12px; width: auto!important; }table.statementlist { width: auto!important; font-size: 13px; } table.codegrid td { padding: 0!important; border: 0!important } table td.linenumber { width: 40px!important; } 
+        </style>
+      </head>
+      <body style="font-family: monospace;">
+        <ul class="nav nav-tabs">
+          <li>
+            <a href="#codegrid" data-toggle="tab">Codegrid</a>
+          </li>
+          <li>
+            <a href="#statementlist" data-toggle="tab">Statement List</a>
+          </li>
+        </ul>
+        <div class="tab-content">
+          <div class="tab-pane active" id="codegrid">
+            <pre style='font-size: 12pt; font-family: courier;'>1 <span style=''>package dotty.tools.dotc
+</span>2 <span style=''>package transform.localopt
+</span>3 <span style=''>
+</span>4 <span style=''>import core.Constants.{Constant, NullTag}
+</span>5 <span style=''>import core.Contexts.Context
+</span>6 <span style=''>import core.Symbols._
+</span>7 <span style=''>import core.Types._
+</span>8 <span style=''>import core.Flags._
+</span>9 <span style=''>import ast.Trees._
+</span>10 <span style=''>import scala.collection.mutable
+</span>11 <span style=''>
+</span>12 <span style=''>/** Eliminated null checks based on the following observations:
+</span>13 <span style=''> *
+</span>14 <span style=''> *  - (this)  cannot be null
+</span>15 <span style=''> *  - (new C) cannot be null
+</span>16 <span style=''> *  - literal is either null itself or non null
+</span>17 <span style=''> *  - fallsback to `tpe.isNotNull`, which will eventually be true for non nullable types.
+</span>18 <span style=''> *  - in (a.call; a == null), the first call throws a NPE if a is null; the test can be removed.
+</span>19 <span style=''> *
+</span>20 <span style=''> *  @author DarkDimius, Jvican, OlivierBlanvillain
+</span>21 <span style=''> */
+</span>22 <span style=''> class RemoveUnnecessaryNullChecks extends Optimisation {
+</span>23 <span style=''>  import ast.tpd._
+</span>24 <span style=''>
+</span>25 <span style=''>  val initializedVals = </span><span style='background: #AEF1AE'>mutable.HashSet[Symbol]()</span><span style=''>
+</span>26 <span style=''>
+</span>27 <span style=''>  val checkGood = </span><span style='background: #AEF1AE'>newMutableSymbolMap[Set[Symbol]]</span><span style=''>
+</span>28 <span style=''>
+</span>29 <span style=''>  def clear(): Unit = {
+</span>30 <span style=''>    </span><span style='background: #AEF1AE'>initializedVals.clear()</span><span style=''>
+</span>31 <span style=''>    </span><span style='background: #AEF1AE'>checkGood.clear()</span><span style=''>
+</span>32 <span style=''>  }
+</span>33 <span style=''>
+</span>34 <span style=''>  def isGood(t: Symbol)(implicit ctx: Context): Boolean = {
+</span>35 <span style=''>    </span><span style='background: #AEF1AE'>t.exists &amp;&amp; initializedVals.contains(t) &amp;&amp; {
+</span>36 <span style=''></span><span style='background: #AEF1AE'>      var changed = true
+</span>37 <span style=''></span><span style='background: #AEF1AE'>      var set = Set(t)
+</span>38 <span style=''></span><span style='background: #AEF1AE'>      while (changed) {
+</span>39 <span style=''></span><span style='background: #AEF1AE'>        val oldSet = set
+</span>40 <span style=''></span><span style='background: #AEF1AE'>        set = set ++ set.flatMap(x =&gt; checkGood.getOrElse(x, Nil))
+</span>41 <span style=''></span><span style='background: #AEF1AE'>        changed = set != oldSet
+</span>42 <span style=''></span><span style='background: #AEF1AE'>      }
+</span>43 <span style=''></span><span style='background: #AEF1AE'>      !set.exists(x =&gt; !initializedVals.contains(x))
+</span>44 <span style=''></span><span style='background: #AEF1AE'>    }</span><span style=''>
+</span>45 <span style=''>  }
+</span>46 <span style=''>
+</span>47 <span style=''>  def visitor(implicit ctx: Context): Tree =&gt; Unit = {
+</span>48 <span style=''>    case vd: ValDef =&gt;
+</span>49 <span style=''>      val rhs = </span><span style='background: #AEF1AE'>vd.rhs</span><span style=''>
+</span>50 <span style=''>      if (</span><span style='background: #AEF1AE'>!vd.symbol.is(Mutable) &amp;&amp; !rhs.isEmpty</span><span style=''>) </span><span style='background: #AEF1AE'>{
+</span>51 <span style=''></span><span style='background: #AEF1AE'>        def checkNonNull(t: Tree, target: Symbol): Boolean = t match {
+</span>52 <span style=''></span><span style='background: #AEF1AE'>          case Block(_ , expr) =&gt;
+</span>53 <span style=''></span><span style='background: #AEF1AE'>            checkNonNull(expr, target)
+</span>54 <span style=''></span><span style='background: #AEF1AE'>
+</span>55 <span style=''></span><span style='background: #AEF1AE'>          case If(_, thenp, elsep) =&gt;
+</span>56 <span style=''></span><span style='background: #AEF1AE'>            checkNonNull(thenp, target) &amp;&amp; checkNonNull(elsep, target)
+</span>57 <span style=''></span><span style='background: #AEF1AE'>
+</span>58 <span style=''></span><span style='background: #AEF1AE'>          case _: New | _: This =&gt; true
+</span>59 <span style=''></span><span style='background: #AEF1AE'>
+</span>60 <span style=''></span><span style='background: #AEF1AE'>          case t: Apply if t.symbol.isPrimaryConstructor =&gt; true
+</span>61 <span style=''></span><span style='background: #AEF1AE'>
+</span>62 <span style=''></span><span style='background: #AEF1AE'>          case t: Literal =&gt; t.const.value != null
+</span>63 <span style=''></span><span style='background: #AEF1AE'>
+</span>64 <span style=''></span><span style='background: #AEF1AE'>          case t: Ident if !t.symbol.owner.isClass =&gt;
+</span>65 <span style=''></span><span style='background: #AEF1AE'>            checkGood.update(target, checkGood.getOrElse(target, Set.empty) + t.symbol)
+</span>66 <span style=''></span><span style='background: #AEF1AE'>            true
+</span>67 <span style=''></span><span style='background: #AEF1AE'>
+</span>68 <span style=''></span><span style='background: #AEF1AE'>          case t: Apply if !t.symbol.owner.isClass =&gt;
+</span>69 <span style=''></span><span style='background: #AEF1AE'>            checkGood.update(target, checkGood.getOrElse(target, Set.empty) + t.symbol)
+</span>70 <span style=''></span><span style='background: #AEF1AE'>            true
+</span>71 <span style=''></span><span style='background: #AEF1AE'>
+</span>72 <span style=''></span><span style='background: #AEF1AE'>          case t: Typed =&gt;
+</span>73 <span style=''></span><span style='background: #AEF1AE'>            checkNonNull(t.expr, target)
+</span>74 <span style=''></span><span style='background: #AEF1AE'>
+</span>75 <span style=''></span><span style='background: #AEF1AE'>          case _ =&gt; t.tpe.isNotNull
+</span>76 <span style=''></span><span style='background: #AEF1AE'>
+</span>77 <span style=''></span><span style='background: #AEF1AE'>        }
+</span>78 <span style=''></span><span style='background: #AEF1AE'>        if (checkNonNull(vd.rhs, vd.symbol))
+</span>79 <span style=''></span><span style='background: #AEF1AE'>          initializedVals += vd.symbol
+</span>80 <span style=''></span><span style='background: #AEF1AE'>      }</span><span style=''>
+</span>81 <span style=''>    case t: Tree </span><span style='background: #AEF1AE'>=&gt;</span><span style=''>
+</span>82 <span style=''>  }
+</span>83 <span style=''>
+</span>84 <span style=''>
+</span>85 <span style=''>  def transformer(implicit ctx: Context): Tree =&gt; Tree = {
+</span>86 <span style=''>    def isNullLiteral(tree: Tree) = tree match {
+</span>87 <span style=''>      case literal: Literal =&gt;
+</span>88 <span style=''>        </span><span style='background: #AEF1AE'>literal.const.tag == NullTag</span><span style=''>
+</span>89 <span style=''>      case _ =&gt; </span><span style='background: #AEF1AE'>false</span><span style=''>
+</span>90 <span style=''>    }
+</span>91 <span style=''>    val transformation: Tree =&gt; Tree = {
+</span>92 <span style=''>      case check @ Apply(Select(lhs, _), List(rhs)) =&gt;
+</span>93 <span style=''>        val sym = </span><span style='background: #AEF1AE'>check.symbol</span><span style=''>
+</span>94 <span style=''>        val eqOrNe  = </span><span style='background: #AEF1AE'>sym == defn.Object_eq || sym == defn.Object_ne</span><span style=''>
+</span>95 <span style=''>        val nullLhs = </span><span style='background: #AEF1AE'>isNullLiteral(lhs) &amp;&amp; isGood(rhs.symbol)</span><span style=''>
+</span>96 <span style=''>        val nullRhs = </span><span style='background: #AEF1AE'>isNullLiteral(rhs) &amp;&amp; isGood(lhs.symbol)</span><span style=''>
+</span>97 <span style=''>
+</span>98 <span style=''>        if (</span><span style='background: #AEF1AE'>eqOrNe &amp;&amp; (nullLhs || nullRhs)</span><span style=''>) </span><span style='background: #AEF1AE'>{
+</span>99 <span style=''></span><span style='background: #AEF1AE'>          def block(b: Boolean) = Block(List(lhs, rhs), Literal(Constant(b)))
+</span>100 <span style=''></span><span style='background: #AEF1AE'>          if (sym == defn.Object_eq) block(false)
+</span>101 <span style=''></span><span style='background: #AEF1AE'>          else if (sym == defn.Object_ne) block(true)
+</span>102 <span style=''></span><span style='background: #AEF1AE'>          else </span><span style='background: #F0ADAD'>check</span><span style='background: #AEF1AE'>
+</span>103 <span style=''></span><span style='background: #AEF1AE'>        }</span><span style=''> else </span><span style='background: #AEF1AE'>check</span><span style=''>
+</span>104 <span style=''>
+</span>105 <span style=''>      case t =&gt; t
+</span>106 <span style=''>    }
+</span>107 <span style=''>    transformation
+</span>108 <span style=''>  }
+</span>109 <span style=''>}
+</span></pre>
+          </div>
+          <div class="tab-pane" id="statementlist">
+            <table cellspacing="0" cellpadding="0" class="table statementlist">
+      <tr>
+        <th>Line</th>
+        <th>Stmt Id</th>
+        <th>Pos</th>
+        <th>Tree</th>
+        <th>Symbol</th>
+        <th>Code</th>
+      </tr><tr>
+        <td>
+          25
+        </td>
+        <td>
+          64903
+        </td>
+        <td>
+          758
+          -
+          783
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.generic.GenericCompanion.apply
+        </td>
+        <td style="background: #AEF1AE">
+          scala.collection.mutable.HashSet.apply[dotty.tools.dotc.core.Symbols.Symbol]()
+        </td>
+      </tr><tr>
+        <td>
+          27
+        </td>
+        <td>
+          64904
+        </td>
+        <td>
+          803
+          -
+          835
+        </td>
+        <td>
+          TypeApply
+        </td>
+        <td>
+          dotty.tools.dotc.core.Symbols.newMutableSymbolMap
+        </td>
+        <td style="background: #AEF1AE">
+          core.Symbols.newMutableSymbolMap[Set[dotty.tools.dotc.core.Symbols.Symbol]]
+        </td>
+      </tr><tr>
+        <td>
+          30
+        </td>
+        <td>
+          64905
+        </td>
+        <td>
+          865
+          -
+          888
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.mutable.HashSet.clear
+        </td>
+        <td style="background: #AEF1AE">
+          RemoveUnnecessaryNullChecks.this.initializedVals.clear()
+        </td>
+      </tr><tr>
+        <td>
+          31
+        </td>
+        <td>
+          64906
+        </td>
+        <td>
+          893
+          -
+          910
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.core.Symbols.MutableSymbolMap.clear
+        </td>
+        <td style="background: #AEF1AE">
+          RemoveUnnecessaryNullChecks.this.checkGood.clear()
+        </td>
+      </tr><tr>
+        <td>
+          35
+        </td>
+        <td>
+          64922
+        </td>
+        <td>
+          980
+          -
+          1287
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Boolean.&amp;&amp;
+        </td>
+        <td style="background: #AEF1AE">
+          core.Symbols.toDenot(t)(ctx).exists.&amp;&amp;(RemoveUnnecessaryNullChecks.this.initializedVals.contains(t)).&amp;&amp;({
+  var changed: Boolean = true;
+  var set: scala.collection.immutable.Set[dotty.tools.dotc.core.Symbols.Symbol] = scala.Predef.Set.apply[dotty.tools.dotc.core.Symbols.Symbol](t);
+  while$1(){
+    if (changed)
+      {
+        {
+          val oldSet: scala.collection.immutable.Set[dotty.tools.dotc.core.Symbols.Symbol] = set;
+          set = set.++(set.flatMap[dotty.tools.dotc.core.Symbols.Symbol, scala.collection.immutable.Set[dotty.tools.dotc.core.Symbols.Symbol]](((x: dotty.tools.dotc.core.Symbols.Symbol) =&gt; RemoveUnnecessaryNullChecks.this.checkGood.getOrElse[scala.collection.immutable.Iterable[dotty.tools.dotc.core.Symbols.Symbol] with dotty.tools.dotc.core.Symbols.Symbol with Int =&gt; Boolean](x, scala.collection.immutable.Nil)))(immutable.this.Set.canBuildFrom[dotty.tools.dotc.core.Symbols.Symbol]));
+          changed = set.!=(oldSet)
+        };
+        while$1()
+      }
+    else
+      ()
+  };
+  set.exists(((x: dotty.tools.dotc.core.Symbols.Symbol) =&gt; RemoveUnnecessaryNullChecks.this.initializedVals.contains(x).unary_!)).unary_!
+})
+        </td>
+      </tr><tr>
+        <td>
+          35
+        </td>
+        <td>
+          64907
+        </td>
+        <td>
+          992
+          -
+          1019
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.mutable.HashSet.contains
+        </td>
+        <td style="background: #AEF1AE">
+          RemoveUnnecessaryNullChecks.this.initializedVals.contains(t)
+        </td>
+      </tr><tr>
+        <td>
+          36
+        </td>
+        <td>
+          64908
+        </td>
+        <td>
+          1045
+          -
+          1049
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          true
+        </td>
+      </tr><tr>
+        <td>
+          37
+        </td>
+        <td>
+          64909
+        </td>
+        <td>
+          1066
+          -
+          1072
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.generic.GenericCompanion.apply
+        </td>
+        <td style="background: #AEF1AE">
+          scala.Predef.Set.apply[dotty.tools.dotc.core.Symbols.Symbol](t)
+        </td>
+      </tr><tr>
+        <td>
+          38
+        </td>
+        <td>
+          64916
+        </td>
+        <td>
+          1095
+          -
+          1095
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.transform.localopt.RemoveUnnecessaryNullChecks.while$1
+        </td>
+        <td style="background: #AEF1AE">
+          while$1()
+        </td>
+      </tr><tr>
+        <td>
+          38
+        </td>
+        <td>
+          64919
+        </td>
+        <td>
+          1079
+          -
+          1079
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          ()
+        </td>
+      </tr><tr>
+        <td>
+          38
+        </td>
+        <td>
+          64918
+        </td>
+        <td>
+          1079
+          -
+          1079
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          ()
+        </td>
+      </tr><tr>
+        <td>
+          38
+        </td>
+        <td>
+          64917
+        </td>
+        <td>
+          1095
+          -
+          1228
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          {
+  {
+    val oldSet: scala.collection.immutable.Set[dotty.tools.dotc.core.Symbols.Symbol] = set;
+    set = set.++(set.flatMap[dotty.tools.dotc.core.Symbols.Symbol, scala.collection.immutable.Set[dotty.tools.dotc.core.Symbols.Symbol]](((x: dotty.tools.dotc.core.Symbols.Symbol) =&gt; RemoveUnnecessaryNullChecks.this.checkGood.getOrElse[scala.collection.immutable.Iterable[dotty.tools.dotc.core.Symbols.Symbol] with dotty.tools.dotc.core.Symbols.Symbol with Int =&gt; Boolean](x, scala.collection.immutable.Nil)))(immutable.this.Set.canBuildFrom[dotty.tools.dotc.core.Symbols.Symbol]));
+    changed = set.!=(oldSet)
+  };
+  while$1()
+}
+        </td>
+      </tr><tr>
+        <td>
+          40
+        </td>
+        <td>
+          64914
+        </td>
+        <td>
+          1136
+          -
+          1188
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.SetLike.++
+        </td>
+        <td style="background: #AEF1AE">
+          set.++(set.flatMap[dotty.tools.dotc.core.Symbols.Symbol, scala.collection.immutable.Set[dotty.tools.dotc.core.Symbols.Symbol]](((x: dotty.tools.dotc.core.Symbols.Symbol) =&gt; RemoveUnnecessaryNullChecks.this.checkGood.getOrElse[scala.collection.immutable.Iterable[dotty.tools.dotc.core.Symbols.Symbol] with dotty.tools.dotc.core.Symbols.Symbol with Int =&gt; Boolean](x, scala.collection.immutable.Nil)))(immutable.this.Set.canBuildFrom[dotty.tools.dotc.core.Symbols.Symbol]))
+        </td>
+      </tr><tr>
+        <td>
+          40
+        </td>
+        <td>
+          64913
+        </td>
+        <td>
+          1143
+          -
+          1188
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          scala.collection.TraversableLike.flatMap
+        </td>
+        <td style="background: #AEF1AE">
+          set.flatMap[dotty.tools.dotc.core.Symbols.Symbol, scala.collection.immutable.Set[dotty.tools.dotc.core.Symbols.Symbol]](((x: dotty.tools.dotc.core.Symbols.Symbol) =&gt; RemoveUnnecessaryNullChecks.this.checkGood.getOrElse[scala.collection.immutable.Iterable[dotty.tools.dotc.core.Symbols.Symbol] with dotty.tools.dotc.core.Symbols.Symbol with Int =&gt; Boolean](x, scala.collection.immutable.Nil)))(immutable.this.Set.canBuildFrom[dotty.tools.dotc.core.Symbols.Symbol])
+        </td>
+      </tr><tr>
+        <td>
+          40
+        </td>
+        <td>
+          64910
+        </td>
+        <td>
+          1183
+          -
+          1186
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.collection.immutable.Nil
+        </td>
+        <td style="background: #AEF1AE">
+          scala.collection.immutable.Nil
+        </td>
+      </tr><tr>
+        <td>
+          40
+        </td>
+        <td>
+          64912
+        </td>
+        <td>
+          1154
+          -
+          1154
+        </td>
+        <td>
+          TypeApply
+        </td>
+        <td>
+          scala.collection.immutable.Set.canBuildFrom
+        </td>
+        <td style="background: #AEF1AE">
+          immutable.this.Set.canBuildFrom[dotty.tools.dotc.core.Symbols.Symbol]
+        </td>
+      </tr><tr>
+        <td>
+          40
+        </td>
+        <td>
+          64911
+        </td>
+        <td>
+          1160
+          -
+          1187
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.core.Symbols.MutableSymbolMap.getOrElse
+        </td>
+        <td style="background: #AEF1AE">
+          RemoveUnnecessaryNullChecks.this.checkGood.getOrElse[scala.collection.immutable.Iterable[dotty.tools.dotc.core.Symbols.Symbol] with dotty.tools.dotc.core.Symbols.Symbol with Int =&gt; Boolean](x, scala.collection.immutable.Nil)
+        </td>
+      </tr><tr>
+        <td>
+          41
+        </td>
+        <td>
+          64915
+        </td>
+        <td>
+          1207
+          -
+          1220
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.Object.!=
+        </td>
+        <td style="background: #AEF1AE">
+          set.!=(oldSet)
+        </td>
+      </tr><tr>
+        <td>
+          43
+        </td>
+        <td>
+          64921
+        </td>
+        <td>
+          1235
+          -
+          1281
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.Boolean.unary_!
+        </td>
+        <td style="background: #AEF1AE">
+          set.exists(((x: dotty.tools.dotc.core.Symbols.Symbol) =&gt; RemoveUnnecessaryNullChecks.this.initializedVals.contains(x).unary_!)).unary_!
+        </td>
+      </tr><tr>
+        <td>
+          43
+        </td>
+        <td>
+          64920
+        </td>
+        <td>
+          1252
+          -
+          1280
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.Boolean.unary_!
+        </td>
+        <td style="background: #AEF1AE">
+          RemoveUnnecessaryNullChecks.this.initializedVals.contains(x).unary_!
+        </td>
+      </tr><tr>
+        <td>
+          49
+        </td>
+        <td>
+          64923
+        </td>
+        <td>
+          1387
+          -
+          1393
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Trees.ValOrDefDef.rhs
+        </td>
+        <td style="background: #AEF1AE">
+          vd.rhs(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          50
+        </td>
+        <td>
+          64925
+        </td>
+        <td>
+          1418
+          -
+          1425
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Flags.Mutable
+        </td>
+        <td style="background: #AEF1AE">
+          core.Flags.Mutable
+        </td>
+      </tr><tr>
+        <td>
+          50
+        </td>
+        <td>
+          64961
+        </td>
+        <td>
+          1444
+          -
+          2387
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          {
+  def checkNonNull(t: dotty.tools.dotc.ast.tpd.Tree, target: dotty.tools.dotc.core.Symbols.Symbol): Boolean = t match {
+    case (stats: List[dotty.tools.dotc.ast.Trees.Tree[dotty.tools.dotc.core.Types.Type]], expr: dotty.tools.dotc.ast.Trees.Tree[dotty.tools.dotc.core.Types.Type])dotty.tools.dotc.ast.Trees.Block[dotty.tools.dotc.core.Types.Type](_, (expr @ _)) =&gt; checkNonNull(expr, target)
+    case (cond: dotty.tools.dotc.ast.Trees.Tree[dotty.tools.dotc.core.Types.Type], thenp: dotty.tools.dotc.ast.Trees.Tree[dotty.tools.dotc.core.Types.Type], elsep: dotty.tools.dotc.ast.Trees.Tree[dotty.tools.dotc.core.Types.Type])dotty.tools.dotc.ast.Trees.If[dotty.tools.dotc.core.Types.Type](_, (thenp @ _), (elsep @ _)) =&gt; checkNonNull(thenp, target).&amp;&amp;(checkNonNull(elsep, target))
+    case ((_: dotty.tools.dotc.ast.tpd.New)| (_: dotty.tools.dotc.ast.tpd.This)) =&gt; true
+    case (t @ (_: dotty.tools.dotc.ast.tpd.Apply)) if core.Symbols.toDenot(t.symbol(ctx))(ctx).isPrimaryConstructor(ctx) =&gt; true
+    case (t @ (_: dotty.tools.dotc.ast.tpd.Literal)) =&gt; t.const.value.!=(null)
+    case (t @ (_: dotty.tools.dotc.ast.tpd.Ident)) if core.Symbols.toDenot(t.symbol(ctx))(ctx).owner.isClass.unary_! =&gt; {
+      RemoveUnnecessaryNullChecks.this.checkGood.update(target, RemoveUnnecessaryNullChecks.this.checkGood.getOrElse[Set[dotty.tools.dotc.core.Symbols.Symbol]](target, scala.Predef.Set.empty[dotty.tools.dotc.core.Symbols.Symbol]).+(t.symbol(ctx)));
+      true
+    }
+    case (t @ (_: dotty.tools.dotc.ast.tpd.Apply)) if core.Symbols.toDenot(t.symbol(ctx))(ctx).owner.isClass.unary_! =&gt; {
+      RemoveUnnecessaryNullChecks.this.checkGood.update(target, RemoveUnnecessaryNullChecks.this.checkGood.getOrElse[Set[dotty.tools.dotc.core.Symbols.Symbol]](target, scala.Predef.Set.empty[dotty.tools.dotc.core.Symbols.Symbol]).+(t.symbol(ctx)));
+      true
+    }
+    case (t @ (_: dotty.tools.dotc.ast.tpd.Typed)) =&gt; checkNonNull(t.expr, target)
+    case _ =&gt; t.tpe.isNotNull(ctx)
+  };
+  if (checkNonNull(vd.rhs(ctx), vd.symbol(ctx)))
+    {
+      RemoveUnnecessaryNullChecks.this.initializedVals.+=(vd.symbol(ctx));
+      ()
+    }
+  else
+    ()
+}
+        </td>
+      </tr><tr>
+        <td>
+          50
+        </td>
+        <td>
+          64927
+        </td>
+        <td>
+          1404
+          -
+          1442
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Boolean.&amp;&amp;
+        </td>
+        <td style="background: #AEF1AE">
+          core.Symbols.toDenot(vd.symbol(ctx))(ctx).is(core.Flags.Mutable)(ctx).unary_!.&amp;&amp;(rhs.isEmpty.unary_!)
+        </td>
+      </tr><tr>
+        <td>
+          50
+        </td>
+        <td>
+          64963
+        </td>
+        <td>
+          1400
+          -
+          1400
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          ()
+        </td>
+      </tr><tr>
+        <td>
+          50
+        </td>
+        <td>
+          64924
+        </td>
+        <td>
+          1405
+          -
+          1414
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Trees.Tree.symbol
+        </td>
+        <td style="background: #AEF1AE">
+          vd.symbol(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          50
+        </td>
+        <td>
+          64962
+        </td>
+        <td>
+          1400
+          -
+          1400
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          ()
+        </td>
+      </tr><tr>
+        <td>
+          50
+        </td>
+        <td>
+          64926
+        </td>
+        <td>
+          1430
+          -
+          1442
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.Boolean.unary_!
+        </td>
+        <td style="background: #AEF1AE">
+          rhs.isEmpty.unary_!
+        </td>
+      </tr><tr>
+        <td>
+          53
+        </td>
+        <td>
+          64928
+        </td>
+        <td>
+          1563
+          -
+          1589
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.transform.localopt.RemoveUnnecessaryNullChecks.checkNonNull
+        </td>
+        <td style="background: #AEF1AE">
+          checkNonNull(expr, target)
+        </td>
+      </tr><tr>
+        <td>
+          56
+        </td>
+        <td>
+          64930
+        </td>
+        <td>
+          1641
+          -
+          1699
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Boolean.&amp;&amp;
+        </td>
+        <td style="background: #AEF1AE">
+          checkNonNull(thenp, target).&amp;&amp;(checkNonNull(elsep, target))
+        </td>
+      </tr><tr>
+        <td>
+          56
+        </td>
+        <td>
+          64929
+        </td>
+        <td>
+          1672
+          -
+          1699
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.transform.localopt.RemoveUnnecessaryNullChecks.checkNonNull
+        </td>
+        <td style="background: #AEF1AE">
+          checkNonNull(elsep, target)
+        </td>
+      </tr><tr>
+        <td>
+          58
+        </td>
+        <td>
+          64931
+        </td>
+        <td>
+          1736
+          -
+          1740
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          true
+        </td>
+      </tr><tr>
+        <td>
+          60
+        </td>
+        <td>
+          64933
+        </td>
+        <td>
+          1802
+          -
+          1806
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          true
+        </td>
+      </tr><tr>
+        <td>
+          60
+        </td>
+        <td>
+          64932
+        </td>
+        <td>
+          1769
+          -
+          1798
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.SymDenotations.SymDenotation.isPrimaryConstructor
+        </td>
+        <td style="background: #AEF1AE">
+          core.Symbols.toDenot(t.symbol(ctx))(ctx).isPrimaryConstructor(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          62
+        </td>
+        <td>
+          64934
+        </td>
+        <td>
+          1837
+          -
+          1858
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Any.!=
+        </td>
+        <td style="background: #AEF1AE">
+          t.const.value.!=(null)
+        </td>
+      </tr><tr>
+        <td>
+          64
+        </td>
+        <td>
+          64936
+        </td>
+        <td>
+          1887
+          -
+          1910
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.Boolean.unary_!
+        </td>
+        <td style="background: #AEF1AE">
+          core.Symbols.toDenot(t.symbol(ctx))(ctx).owner.isClass.unary_!
+        </td>
+      </tr><tr>
+        <td>
+          64
+        </td>
+        <td>
+          64935
+        </td>
+        <td>
+          1888
+          -
+          1896
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Trees.Tree.symbol
+        </td>
+        <td style="background: #AEF1AE">
+          t.symbol(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          65
+        </td>
+        <td>
+          64940
+        </td>
+        <td>
+          1926
+          -
+          2001
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.core.Symbols.MutableSymbolMap.update
+        </td>
+        <td style="background: #AEF1AE">
+          RemoveUnnecessaryNullChecks.this.checkGood.update(target, RemoveUnnecessaryNullChecks.this.checkGood.getOrElse[Set[dotty.tools.dotc.core.Symbols.Symbol]](target, scala.Predef.Set.empty[dotty.tools.dotc.core.Symbols.Symbol]).+(t.symbol(ctx)))
+        </td>
+      </tr><tr>
+        <td>
+          65
+        </td>
+        <td>
+          64937
+        </td>
+        <td>
+          1979
+          -
+          1988
+        </td>
+        <td>
+          TypeApply
+        </td>
+        <td>
+          scala.collection.generic.ImmutableSetFactory.empty
+        </td>
+        <td style="background: #AEF1AE">
+          scala.Predef.Set.empty[dotty.tools.dotc.core.Symbols.Symbol]
+        </td>
+      </tr><tr>
+        <td>
+          65
+        </td>
+        <td>
+          64939
+        </td>
+        <td>
+          1951
+          -
+          2000
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.SetLike.+
+        </td>
+        <td style="background: #AEF1AE">
+          RemoveUnnecessaryNullChecks.this.checkGood.getOrElse[Set[dotty.tools.dotc.core.Symbols.Symbol]](target, scala.Predef.Set.empty[dotty.tools.dotc.core.Symbols.Symbol]).+(t.symbol(ctx))
+        </td>
+      </tr><tr>
+        <td>
+          65
+        </td>
+        <td>
+          64938
+        </td>
+        <td>
+          1992
+          -
+          2000
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Trees.Tree.symbol
+        </td>
+        <td style="background: #AEF1AE">
+          t.symbol(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          66
+        </td>
+        <td>
+          64941
+        </td>
+        <td>
+          2014
+          -
+          2018
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          true
+        </td>
+      </tr><tr>
+        <td>
+          68
+        </td>
+        <td>
+          64943
+        </td>
+        <td>
+          2047
+          -
+          2070
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.Boolean.unary_!
+        </td>
+        <td style="background: #AEF1AE">
+          core.Symbols.toDenot(t.symbol(ctx))(ctx).owner.isClass.unary_!
+        </td>
+      </tr><tr>
+        <td>
+          68
+        </td>
+        <td>
+          64942
+        </td>
+        <td>
+          2048
+          -
+          2056
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Trees.Tree.symbol
+        </td>
+        <td style="background: #AEF1AE">
+          t.symbol(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          69
+        </td>
+        <td>
+          64946
+        </td>
+        <td>
+          2111
+          -
+          2160
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.SetLike.+
+        </td>
+        <td style="background: #AEF1AE">
+          RemoveUnnecessaryNullChecks.this.checkGood.getOrElse[Set[dotty.tools.dotc.core.Symbols.Symbol]](target, scala.Predef.Set.empty[dotty.tools.dotc.core.Symbols.Symbol]).+(t.symbol(ctx))
+        </td>
+      </tr><tr>
+        <td>
+          69
+        </td>
+        <td>
+          64945
+        </td>
+        <td>
+          2152
+          -
+          2160
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Trees.Tree.symbol
+        </td>
+        <td style="background: #AEF1AE">
+          t.symbol(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          69
+        </td>
+        <td>
+          64944
+        </td>
+        <td>
+          2139
+          -
+          2148
+        </td>
+        <td>
+          TypeApply
+        </td>
+        <td>
+          scala.collection.generic.ImmutableSetFactory.empty
+        </td>
+        <td style="background: #AEF1AE">
+          scala.Predef.Set.empty[dotty.tools.dotc.core.Symbols.Symbol]
+        </td>
+      </tr><tr>
+        <td>
+          69
+        </td>
+        <td>
+          64947
+        </td>
+        <td>
+          2086
+          -
+          2161
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.core.Symbols.MutableSymbolMap.update
+        </td>
+        <td style="background: #AEF1AE">
+          RemoveUnnecessaryNullChecks.this.checkGood.update(target, RemoveUnnecessaryNullChecks.this.checkGood.getOrElse[Set[dotty.tools.dotc.core.Symbols.Symbol]](target, scala.Predef.Set.empty[dotty.tools.dotc.core.Symbols.Symbol]).+(t.symbol(ctx)))
+        </td>
+      </tr><tr>
+        <td>
+          70
+        </td>
+        <td>
+          64948
+        </td>
+        <td>
+          2174
+          -
+          2178
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          true
+        </td>
+      </tr><tr>
+        <td>
+          73
+        </td>
+        <td>
+          64949
+        </td>
+        <td>
+          2232
+          -
+          2238
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Trees.Typed.expr
+        </td>
+        <td style="background: #AEF1AE">
+          t.expr
+        </td>
+      </tr><tr>
+        <td>
+          73
+        </td>
+        <td>
+          64950
+        </td>
+        <td>
+          2219
+          -
+          2247
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.transform.localopt.RemoveUnnecessaryNullChecks.checkNonNull
+        </td>
+        <td style="background: #AEF1AE">
+          checkNonNull(t.expr, target)
+        </td>
+      </tr><tr>
+        <td>
+          75
+        </td>
+        <td>
+          64951
+        </td>
+        <td>
+          2269
+          -
+          2284
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.Types.Type.isNotNull
+        </td>
+        <td style="background: #AEF1AE">
+          t.tpe.isNotNull(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          78
+        </td>
+        <td>
+          64952
+        </td>
+        <td>
+          2321
+          -
+          2327
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Trees.ValOrDefDef.rhs
+        </td>
+        <td style="background: #AEF1AE">
+          vd.rhs(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          78
+        </td>
+        <td>
+          64954
+        </td>
+        <td>
+          2308
+          -
+          2339
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.transform.localopt.RemoveUnnecessaryNullChecks.checkNonNull
+        </td>
+        <td style="background: #AEF1AE">
+          checkNonNull(vd.rhs(ctx), vd.symbol(ctx))
+        </td>
+      </tr><tr>
+        <td>
+          78
+        </td>
+        <td>
+          64960
+        </td>
+        <td>
+          2304
+          -
+          2304
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          ()
+        </td>
+      </tr><tr>
+        <td>
+          78
+        </td>
+        <td>
+          64959
+        </td>
+        <td>
+          2304
+          -
+          2304
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          ()
+        </td>
+      </tr><tr>
+        <td>
+          78
+        </td>
+        <td>
+          64953
+        </td>
+        <td>
+          2329
+          -
+          2338
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Trees.Tree.symbol
+        </td>
+        <td style="background: #AEF1AE">
+          vd.symbol(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          79
+        </td>
+        <td>
+          64955
+        </td>
+        <td>
+          2370
+          -
+          2379
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Trees.Tree.symbol
+        </td>
+        <td style="background: #AEF1AE">
+          vd.symbol(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          79
+        </td>
+        <td>
+          64958
+        </td>
+        <td>
+          2351
+          -
+          2379
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          {
+  RemoveUnnecessaryNullChecks.this.initializedVals.+=(vd.symbol(ctx));
+  ()
+}
+        </td>
+      </tr><tr>
+        <td>
+          79
+        </td>
+        <td>
+          64957
+        </td>
+        <td>
+          2367
+          -
+          2367
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          ()
+        </td>
+      </tr><tr>
+        <td>
+          79
+        </td>
+        <td>
+          64956
+        </td>
+        <td>
+          2351
+          -
+          2379
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.mutable.HashSet.+=
+        </td>
+        <td style="background: #AEF1AE">
+          RemoveUnnecessaryNullChecks.this.initializedVals.+=(vd.symbol(ctx))
+        </td>
+      </tr><tr>
+        <td>
+          81
+        </td>
+        <td>
+          64964
+        </td>
+        <td>
+          2405
+          -
+          2407
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          ()
+        </td>
+      </tr><tr>
+        <td>
+          88
+        </td>
+        <td>
+          64965
+        </td>
+        <td>
+          2561
+          -
+          2589
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Int.==
+        </td>
+        <td style="background: #AEF1AE">
+          literal.const.tag.==(11)
+        </td>
+      </tr><tr>
+        <td>
+          89
+        </td>
+        <td>
+          64966
+        </td>
+        <td>
+          2606
+          -
+          2611
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          false
+        </td>
+      </tr><tr>
+        <td>
+          93
+        </td>
+        <td>
+          64967
+        </td>
+        <td>
+          2732
+          -
+          2744
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Trees.Tree.symbol
+        </td>
+        <td style="background: #AEF1AE">
+          check.symbol(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          94
+        </td>
+        <td>
+          64969
+        </td>
+        <td>
+          2767
+          -
+          2813
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Boolean.||
+        </td>
+        <td style="background: #AEF1AE">
+          sym.==(core.Symbols.defn(ctx).Object_eq).||(sym.==(core.Symbols.defn(ctx).Object_ne))
+        </td>
+      </tr><tr>
+        <td>
+          94
+        </td>
+        <td>
+          64968
+        </td>
+        <td>
+          2792
+          -
+          2813
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.Object.==
+        </td>
+        <td style="background: #AEF1AE">
+          sym.==(core.Symbols.defn(ctx).Object_ne)
+        </td>
+      </tr><tr>
+        <td>
+          95
+        </td>
+        <td>
+          64970
+        </td>
+        <td>
+          2858
+          -
+          2876
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.transform.localopt.RemoveUnnecessaryNullChecks.isGood
+        </td>
+        <td style="background: #AEF1AE">
+          RemoveUnnecessaryNullChecks.this.isGood(rhs.symbol(ctx))(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          95
+        </td>
+        <td>
+          64971
+        </td>
+        <td>
+          2836
+          -
+          2876
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Boolean.&amp;&amp;
+        </td>
+        <td style="background: #AEF1AE">
+          isNullLiteral(lhs).&amp;&amp;(RemoveUnnecessaryNullChecks.this.isGood(rhs.symbol(ctx))(ctx))
+        </td>
+      </tr><tr>
+        <td>
+          96
+        </td>
+        <td>
+          64973
+        </td>
+        <td>
+          2899
+          -
+          2939
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Boolean.&amp;&amp;
+        </td>
+        <td style="background: #AEF1AE">
+          isNullLiteral(rhs).&amp;&amp;(RemoveUnnecessaryNullChecks.this.isGood(lhs.symbol(ctx))(ctx))
+        </td>
+      </tr><tr>
+        <td>
+          96
+        </td>
+        <td>
+          64972
+        </td>
+        <td>
+          2921
+          -
+          2939
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.transform.localopt.RemoveUnnecessaryNullChecks.isGood
+        </td>
+        <td style="background: #AEF1AE">
+          RemoveUnnecessaryNullChecks.this.isGood(lhs.symbol(ctx))(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          98
+        </td>
+        <td>
+          64985
+        </td>
+        <td>
+          2985
+          -
+          3199
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          {
+  def block(b: Boolean): dotty.tools.dotc.ast.tpd.Block = ast.tpd.Block(scala.collection.immutable.List.apply[dotty.tools.dotc.ast.Trees.Tree[dotty.tools.dotc.core.Types.Type]](lhs, rhs), ast.tpd.Literal(core.Constants.Constant.apply(b))(ctx))(ctx);
+  if (sym.==(core.Symbols.defn(ctx).Object_eq))
+    block(false)
+  else
+    if (sym.==(core.Symbols.defn(ctx).Object_ne))
+      block(true)
+    else
+      check
+}
+        </td>
+      </tr><tr>
+        <td>
+          98
+        </td>
+        <td>
+          64975
+        </td>
+        <td>
+          2953
+          -
+          2983
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Boolean.&amp;&amp;
+        </td>
+        <td style="background: #AEF1AE">
+          eqOrNe.&amp;&amp;(nullLhs.||(nullRhs))
+        </td>
+      </tr><tr>
+        <td>
+          98
+        </td>
+        <td>
+          64974
+        </td>
+        <td>
+          2964
+          -
+          2982
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Boolean.||
+        </td>
+        <td style="background: #AEF1AE">
+          nullLhs.||(nullRhs)
+        </td>
+      </tr><tr>
+        <td>
+          99
+        </td>
+        <td>
+          64976
+        </td>
+        <td>
+          3021
+          -
+          3064
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.tpd.Block
+        </td>
+        <td style="background: #AEF1AE">
+          ast.tpd.Block(scala.collection.immutable.List.apply[dotty.tools.dotc.ast.Trees.Tree[dotty.tools.dotc.core.Types.Type]](lhs, rhs), ast.tpd.Literal(core.Constants.Constant.apply(b))(ctx))(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          100
+        </td>
+        <td>
+          64979
+        </td>
+        <td>
+          3102
+          -
+          3114
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          dotty.tools.dotc.transform.localopt.RemoveUnnecessaryNullChecks.block
+        </td>
+        <td style="background: #AEF1AE">
+          block(false)
+        </td>
+      </tr><tr>
+        <td>
+          100
+        </td>
+        <td>
+          64978
+        </td>
+        <td>
+          3102
+          -
+          3114
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.transform.localopt.RemoveUnnecessaryNullChecks.block
+        </td>
+        <td style="background: #AEF1AE">
+          block(false)
+        </td>
+      </tr><tr>
+        <td>
+          100
+        </td>
+        <td>
+          64977
+        </td>
+        <td>
+          3079
+          -
+          3100
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.Object.==
+        </td>
+        <td style="background: #AEF1AE">
+          sym.==(core.Symbols.defn(ctx).Object_eq)
+        </td>
+      </tr><tr>
+        <td>
+          101
+        </td>
+        <td>
+          64982
+        </td>
+        <td>
+          3157
+          -
+          3168
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          dotty.tools.dotc.transform.localopt.RemoveUnnecessaryNullChecks.block
+        </td>
+        <td style="background: #AEF1AE">
+          block(true)
+        </td>
+      </tr><tr>
+        <td>
+          101
+        </td>
+        <td>
+          64981
+        </td>
+        <td>
+          3157
+          -
+          3168
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.transform.localopt.RemoveUnnecessaryNullChecks.block
+        </td>
+        <td style="background: #AEF1AE">
+          block(true)
+        </td>
+      </tr><tr>
+        <td>
+          101
+        </td>
+        <td>
+          64984
+        </td>
+        <td>
+          3130
+          -
+          3189
+        </td>
+        <td>
+          If
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          if (sym.==(core.Symbols.defn(ctx).Object_ne))
+  block(true)
+else
+  check
+        </td>
+      </tr><tr>
+        <td>
+          101
+        </td>
+        <td>
+          64980
+        </td>
+        <td>
+          3134
+          -
+          3155
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.Object.==
+        </td>
+        <td style="background: #AEF1AE">
+          sym.==(core.Symbols.defn(ctx).Object_ne)
+        </td>
+      </tr><tr>
+        <td>
+          102
+        </td>
+        <td>
+          64983
+        </td>
+        <td>
+          3184
+          -
+          3189
+        </td>
+        <td>
+          Ident
+        </td>
+        <td>
+          dotty.tools.dotc.transform.localopt.RemoveUnnecessaryNullChecks.check
+        </td>
+        <td style="background: #F0ADAD">
+          check
+        </td>
+      </tr><tr>
+        <td>
+          103
+        </td>
+        <td>
+          64986
+        </td>
+        <td>
+          3205
+          -
+          3210
+        </td>
+        <td>
+          Ident
+        </td>
+        <td>
+          dotty.tools.dotc.transform.localopt.RemoveUnnecessaryNullChecks.check
+        </td>
+        <td style="background: #AEF1AE">
+          check
+        </td>
+      </tr>
+    </table>
+          </div>
+        </div>
+      </body>
+    </html>
