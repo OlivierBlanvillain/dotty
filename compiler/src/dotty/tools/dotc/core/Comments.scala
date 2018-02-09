@@ -41,22 +41,12 @@ object Comments {
     * The `Comment` contains functionality to create versions of itself without
     * `@usecase` sections as well as functionality to map the `raw` docstring
     */
-  abstract case class Comment(pos: Position, raw: String) { self =>
-    def isExpanded: Boolean
-
-    def usecases: List[UseCase]
-
+  final class Comment(val pos: Position, val raw: String, val isExpanded: Boolean, val usecases: List[UseCase]) { self =>
     val isDocComment = raw.startsWith("/**")
 
-    def expand(f: String => String): Comment = new Comment(pos, f(raw)) {
-      val isExpanded = true
-      val usecases = self.usecases
-    }
+    def expand(f: String => String): Comment = new Comment(pos, f(raw), true, self.usecases)
 
-    def withUsecases(implicit ctx: Context): Comment = new Comment(pos, stripUsecases) {
-      val isExpanded = self.isExpanded
-      val usecases = parseUsecases
-    }
+    def withUsecases(implicit ctx: Context): Comment = new Comment(pos, stripUsecases, self.isExpanded, parseUsecases)
 
     private[this] lazy val stripUsecases: String =
       removeSections(raw, "@usecase", "@define")
@@ -99,11 +89,7 @@ object Comments {
   }
 
   object Comment {
-    def apply(pos: Position, raw: String, expanded: Boolean = false, usc: List[UseCase] = Nil)(implicit ctx: Context): Comment =
-      new Comment(pos, raw) {
-        val isExpanded = expanded
-        val usecases = usc
-      }
+    def apply(pos: Position, raw: String, expanded: Boolean = false, usc: List[UseCase] = Nil): Comment = new Comment(pos, raw, expanded, usc)
   }
 
   abstract case class UseCase(comment: Comment, code: String, codePos: Position) {

@@ -8,7 +8,7 @@ import scala.collection.JavaConverters._
  * This class implements an [[AbstractFile]] backed by a jar
  * that be can used as the compiler's output directory.
  */
-class JarArchive private (root: Directory) extends PlainDirectory(root) {
+final class JarArchive private (root: Directory) extends PlainDirectory(root) {
   def close() = jpath.getFileSystem().close()
 }
 
