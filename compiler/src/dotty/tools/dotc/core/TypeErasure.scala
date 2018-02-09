@@ -322,7 +322,8 @@ object TypeErasure {
     case tp: TypeParamRef => false
     case tp: TypeBounds => false
     case tp: TypeProxy => hasStableErasure(tp.superType)
-    case tp: AndOrType => hasStableErasure(tp.tp1) && hasStableErasure(tp.tp2)
+    case AndType(tp1, tp2) => hasStableErasure(tp1) && hasStableErasure(tp2)
+    case OrType(tp1, tp2)  => hasStableErasure(tp1) && hasStableErasure(tp2)
     case _ => false
   }
 }
