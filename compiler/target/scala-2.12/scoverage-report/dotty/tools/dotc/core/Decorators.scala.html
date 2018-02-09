@@ -1,0 +1,3728 @@
+<html>
+      <head>
+        <meta http-equiv="Content-Type" content="text/html; charset=utf-8"/>
+        <title id="title">
+          dotty/tools/dotc/core/Decorators.scala.html
+        </title>
+        <script src="https://ajax.googleapis.com/ajax/libs/jquery/1.10.2/jquery.min.js"></script><link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/jquery.tablesorter/2.20.1/css/theme.default.min.css" type="text/css"/><script src="https://cdnjs.cloudflare.com/ajax/libs/jquery.tablesorter/2.20.1/js/jquery.tablesorter.min.js"></script><link rel="stylesheet" href="https://netdna.bootstrapcdn.com/bootstrap/3.0.3/css/bootstrap.min.css" type="text/css"/><script src="https://netdna.bootstrapcdn.com/bootstrap/3.0.3/js/bootstrap.min.js"></script><script type="text/javascript">
+        $(document).ready(function() {$(".tablesorter").tablesorter();});
+      </script>
+        <style>
+          table.codegrid { font-family: monospace; font-size: 12px; width: auto!important; }table.statementlist { width: auto!important; font-size: 13px; } table.codegrid td { padding: 0!important; border: 0!important } table td.linenumber { width: 40px!important; } 
+        </style>
+      </head>
+      <body style="font-family: monospace;">
+        <ul class="nav nav-tabs">
+          <li>
+            <a href="#codegrid" data-toggle="tab">Codegrid</a>
+          </li>
+          <li>
+            <a href="#statementlist" data-toggle="tab">Statement List</a>
+          </li>
+        </ul>
+        <div class="tab-content">
+          <div class="tab-pane active" id="codegrid">
+            <pre style='font-size: 12pt; font-family: courier;'>1 <span style=''>package dotty.tools.dotc
+</span>2 <span style=''>package core
+</span>3 <span style=''>
+</span>4 <span style=''>import annotation.tailrec
+</span>5 <span style=''>import Symbols._
+</span>6 <span style=''>import Contexts._, Names._, Phases._, printing.Texts._, printing.Printer, printing.Showable
+</span>7 <span style=''>import util.Positions.Position, util.SourcePosition
+</span>8 <span style=''>import collection.mutable.ListBuffer
+</span>9 <span style=''>import dotty.tools.dotc.transform.MegaPhase
+</span>10 <span style=''>import ast.tpd._
+</span>11 <span style=''>import scala.language.implicitConversions
+</span>12 <span style=''>import printing.Formatting._
+</span>13 <span style=''>
+</span>14 <span style=''>/** This object provides useful implicit decorators for types defined elsewhere */
+</span>15 <span style=''>object Decorators {
+</span>16 <span style=''>
+</span>17 <span style=''>  /** Turns Strings into PreNames, adding toType/TermName methods */
+</span>18 <span style=''>  implicit class PreNamedString(val s: String) extends AnyVal with PreName {
+</span>19 <span style=''>    def toTypeName: TypeName = </span><span style='background: #AEF1AE'>typeName(s)</span><span style=''>
+</span>20 <span style=''>    def toTermName: TermName = </span><span style='background: #AEF1AE'>termName(s)</span><span style=''>
+</span>21 <span style=''>    def toText(printer: Printer): Text = </span><span style='background: #F0ADAD'>Str(s)</span><span style=''>
+</span>22 <span style=''>  }
+</span>23 <span style=''>
+</span>24 <span style=''>  implicit class StringDecorator(val s: String) extends AnyVal {
+</span>25 <span style=''>    def splitWhere(f: Char =&gt; Boolean, doDropIndex: Boolean): Option[(String, String)] = {
+</span>26 <span style=''>      def splitAt(idx: Int, doDropIndex: Boolean): Option[(String, String)] =
+</span>27 <span style=''>        if (</span><span style='background: #AEF1AE'>idx == -1</span><span style=''>) </span><span style='background: #AEF1AE'>None</span><span style=''>
+</span>28 <span style=''>        else </span><span style='background: #AEF1AE'>Some((s.take(idx), s.drop(if (doDropIndex) idx + 1 else </span><span style='background: #F0ADAD'>idx</span><span style='background: #AEF1AE'>)))</span><span style=''>
+</span>29 <span style=''>
+</span>30 <span style=''>      </span><span style='background: #AEF1AE'>splitAt(s.indexWhere(f), doDropIndex)</span><span style=''>
+</span>31 <span style=''>    }
+</span>32 <span style=''>  }
+</span>33 <span style=''>
+</span>34 <span style=''>  /** Implements a findSymbol method on iterators of Symbols that
+</span>35 <span style=''>   *  works like find but avoids Option, replacing None with NoSymbol.
+</span>36 <span style=''>   */
+</span>37 <span style=''>  implicit class SymbolIteratorDecorator(val it: Iterator[Symbol]) extends AnyVal {
+</span>38 <span style=''>    final def findSymbol(p: Symbol =&gt; Boolean): Symbol = {
+</span>39 <span style=''>      while (</span><span style='background: #AEF1AE'>it.hasNext</span><span style=''>) </span><span style='background: #AEF1AE'>{
+</span>40 <span style=''></span><span style='background: #AEF1AE'>        val sym = it.next()
+</span>41 <span style=''></span><span style='background: #AEF1AE'>        if (p(sym)) return sym
+</span>42 <span style=''></span><span style='background: #AEF1AE'>      }</span><span style=''>
+</span>43 <span style=''>      </span><span style='background: #AEF1AE'>NoSymbol</span><span style=''>
+</span>44 <span style=''>    }
+</span>45 <span style=''>  }
+</span>46 <span style=''>
+</span>47 <span style=''>  final val MaxFilterRecursions = </span><span style='background: #F0ADAD'>1000</span><span style=''>
+</span>48 <span style=''>
+</span>49 <span style=''>  /** Implements filterConserve, zipWithConserve methods
+</span>50 <span style=''>   *  on lists that avoid duplication of list nodes where feasible.
+</span>51 <span style=''>   */
+</span>52 <span style=''>  implicit class ListDecorator[T](val xs: List[T]) extends AnyVal {
+</span>53 <span style=''>
+</span>54 <span style=''>    final def mapconserve[U](f: T =&gt; U): List[U] = {
+</span>55 <span style=''>      @tailrec
+</span>56 <span style=''>      def loop(mapped: ListBuffer[U], unchanged: List[U], pending: List[T]): List[U] =
+</span>57 <span style=''>        if (</span><span style='background: #AEF1AE'>pending.isEmpty</span><span style=''>) {
+</span>58 <span style=''>          </span><span style='background: #AEF1AE'>if (mapped eq null) unchanged
+</span>59 <span style=''></span><span style='background: #AEF1AE'>          else mapped.prependToList(unchanged)</span><span style=''>
+</span>60 <span style=''>        } else </span><span style='background: #AEF1AE'>{
+</span>61 <span style=''></span><span style='background: #AEF1AE'>          val head0 = pending.head
+</span>62 <span style=''></span><span style='background: #AEF1AE'>          val head1 = f(head0)
+</span>63 <span style=''></span><span style='background: #AEF1AE'>
+</span>64 <span style=''></span><span style='background: #AEF1AE'>          if (head1.asInstanceOf[AnyRef] eq head0.asInstanceOf[AnyRef])
+</span>65 <span style=''></span><span style='background: #AEF1AE'>            loop(mapped, unchanged, pending.tail)
+</span>66 <span style=''></span><span style='background: #AEF1AE'>          else {
+</span>67 <span style=''></span><span style='background: #AEF1AE'>            val b = if (mapped eq null) new ListBuffer[U] else mapped
+</span>68 <span style=''></span><span style='background: #AEF1AE'>            var xc = unchanged
+</span>69 <span style=''></span><span style='background: #AEF1AE'>            while (xc ne pending) {
+</span>70 <span style=''></span><span style='background: #AEF1AE'>              b += xc.head
+</span>71 <span style=''></span><span style='background: #AEF1AE'>              xc = xc.tail
+</span>72 <span style=''></span><span style='background: #AEF1AE'>            }
+</span>73 <span style=''></span><span style='background: #AEF1AE'>            b += head1
+</span>74 <span style=''></span><span style='background: #AEF1AE'>            val tail0 = pending.tail
+</span>75 <span style=''></span><span style='background: #AEF1AE'>            loop(b, tail0.asInstanceOf[List[U]], tail0)
+</span>76 <span style=''></span><span style='background: #AEF1AE'>          }
+</span>77 <span style=''></span><span style='background: #AEF1AE'>        }</span><span style=''>
+</span>78 <span style=''>      </span><span style='background: #AEF1AE'>loop(null, xs.asInstanceOf[List[U]], xs)</span><span style=''>
+</span>79 <span style=''>    }
+</span>80 <span style=''>
+</span>81 <span style=''>    /** Like `xs filter p` but returns list `xs` itself  - instead of a copy -
+</span>82 <span style=''>     *  if `p` is true for all elements and `xs` is not longer
+</span>83 <span style=''>     *  than `MaxFilterRecursions`.
+</span>84 <span style=''>     */
+</span>85 <span style=''>    def filterConserve(p: T =&gt; Boolean): List[T] = {
+</span>86 <span style=''>      def loop(xs: List[T], nrec: Int): List[T] = xs match {
+</span>87 <span style=''>        case Nil =&gt; xs
+</span>88 <span style=''>        case x :: xs1 =&gt;
+</span>89 <span style=''>          if (</span><span style='background: #AEF1AE'>nrec &lt; MaxFilterRecursions</span><span style=''>) </span><span style='background: #AEF1AE'>{
+</span>90 <span style=''></span><span style='background: #AEF1AE'>            val ys1 = loop(xs1, nrec + 1)
+</span>91 <span style=''></span><span style='background: #AEF1AE'>            if (p(x))
+</span>92 <span style=''></span><span style='background: #AEF1AE'>              if (ys1 eq xs1) xs else x :: ys1
+</span>93 <span style=''></span><span style='background: #AEF1AE'>            else
+</span>94 <span style=''></span><span style='background: #AEF1AE'>              ys1
+</span>95 <span style=''></span><span style='background: #AEF1AE'>          }</span><span style=''> else </span><span style='background: #F0ADAD'>xs filter p</span><span style=''>
+</span>96 <span style=''>      }
+</span>97 <span style=''>      </span><span style='background: #AEF1AE'>loop(xs, 0)</span><span style=''>
+</span>98 <span style=''>    }
+</span>99 <span style=''>
+</span>100 <span style=''>    /** Like `(xs, ys).zipped.map(f)`, but returns list `xs` itself
+</span>101 <span style=''>     *  - instead of a copy - if function `f` maps all elements of
+</span>102 <span style=''>     *  `xs` to themselves. Also, it is required that `ys` is at least
+</span>103 <span style=''>     *  as long as `xs`.
+</span>104 <span style=''>     */
+</span>105 <span style=''>    def zipWithConserve[U](ys: List[U])(f: (T, U) =&gt; T): List[T] =
+</span>106 <span style=''>      if (</span><span style='background: #AEF1AE'>xs.isEmpty || ys.isEmpty</span><span style=''>) </span><span style='background: #AEF1AE'>Nil</span><span style=''>
+</span>107 <span style=''>      else </span><span style='background: #AEF1AE'>{
+</span>108 <span style=''></span><span style='background: #AEF1AE'>        val x1 = f(xs.head, ys.head)
+</span>109 <span style=''></span><span style='background: #AEF1AE'>        val xs1 = xs.tail.zipWithConserve(ys.tail)(f)
+</span>110 <span style=''></span><span style='background: #AEF1AE'>        if ((x1.asInstanceOf[AnyRef] eq xs.head.asInstanceOf[AnyRef]) &amp;&amp;
+</span>111 <span style=''></span><span style='background: #AEF1AE'>            (xs1 eq xs.tail)) xs
+</span>112 <span style=''></span><span style='background: #AEF1AE'>        else x1 :: xs1
+</span>113 <span style=''></span><span style='background: #AEF1AE'>      }</span><span style=''>
+</span>114 <span style=''>
+</span>115 <span style=''>    final def hasSameLengthAs[U](ys: List[U]): Boolean = {
+</span>116 <span style=''>      @tailrec def loop(xs: List[T], ys: List[U]): Boolean =
+</span>117 <span style=''>        if (</span><span style='background: #AEF1AE'>xs.isEmpty</span><span style=''>) </span><span style='background: #AEF1AE'>ys.isEmpty</span><span style=''>
+</span>118 <span style=''>        else </span><span style='background: #AEF1AE'>ys.nonEmpty &amp;&amp; loop(xs.tail, ys.tail)</span><span style=''>
+</span>119 <span style=''>      </span><span style='background: #AEF1AE'>loop(xs, ys)</span><span style=''>
+</span>120 <span style=''>    }
+</span>121 <span style=''>
+</span>122 <span style=''>    @tailrec final def eqElements(ys: List[AnyRef]): Boolean = </span><span style='background: #AEF1AE'>xs</span><span style=''> match {
+</span>123 <span style=''>      case x :: _ =&gt;
+</span>124 <span style=''>        ys match {
+</span>125 <span style=''>          case y :: _ =&gt;
+</span>126 <span style=''>            </span><span style='background: #AEF1AE'>x.asInstanceOf[AnyRef].eq(y) &amp;&amp;
+</span>127 <span style=''></span><span style='background: #AEF1AE'>            xs.tail.eqElements(ys.tail)</span><span style=''>
+</span>128 <span style=''>          case _ =&gt; </span><span style='background: #AEF1AE'>false</span><span style=''>
+</span>129 <span style=''>        }
+</span>130 <span style=''>      case nil =&gt; </span><span style='background: #AEF1AE'>ys.isEmpty</span><span style=''>
+</span>131 <span style=''>    }
+</span>132 <span style=''>
+</span>133 <span style=''>    /** Union on lists seen as sets */
+</span>134 <span style=''>    def | (ys: List[T]): List[T] = </span><span style='background: #F0ADAD'>xs ++ (ys filterNot (xs contains _))</span><span style=''>
+</span>135 <span style=''>
+</span>136 <span style=''>    /** Intersection on lists seen as sets */
+</span>137 <span style=''>    def &amp; (ys: List[T]): List[T] = </span><span style='background: #F0ADAD'>xs filter (ys contains _)</span><span style=''>
+</span>138 <span style=''>  }
+</span>139 <span style=''>
+</span>140 <span style=''>  implicit class ListOfListDecorator[T](val xss: List[List[T]]) extends AnyVal {
+</span>141 <span style=''>    def nestedMap[U](f: T =&gt; U): List[List[U]] = </span><span style='background: #AEF1AE'>xss map (_ map f)</span><span style=''>
+</span>142 <span style=''>    def nestedMapconserve[U](f: T =&gt; U): List[List[U]] = </span><span style='background: #AEF1AE'>xss mapconserve (_ mapconserve f)</span><span style=''>
+</span>143 <span style=''>  }
+</span>144 <span style=''>
+</span>145 <span style=''>  implicit class TextToString(val text: Text) extends AnyVal {
+</span>146 <span style=''>    def show(implicit ctx: Context) = </span><span style='background: #AEF1AE'>text.mkString(ctx.settings.pageWidth.value, ctx.settings.printLines.value)</span><span style=''>
+</span>147 <span style=''>  }
+</span>148 <span style=''>
+</span>149 <span style=''>  /** Test whether a list of strings representing phases contains
+</span>150 <span style=''>   *  a given phase. See [[config.CompilerCommand#explainAdvanced]] for the
+</span>151 <span style=''>   *  exact meaning of &quot;contains&quot; here.
+</span>152 <span style=''>   */
+</span>153 <span style=''>  implicit class PhaseListDecorator(val names: List[String]) extends AnyVal {
+</span>154 <span style=''>    def containsPhase(phase: Phase): Boolean = phase match {
+</span>155 <span style=''>      case phase: MegaPhase =&gt; </span><span style='background: #AEF1AE'>phase.miniPhases.exists(containsPhase)</span><span style=''>
+</span>156 <span style=''>      case _ =&gt;
+</span>157 <span style=''>        </span><span style='background: #AEF1AE'>names exists { name =&gt;
+</span>158 <span style=''></span><span style='background: #AEF1AE'>          name == &quot;all&quot; || {
+</span>159 <span style=''></span><span style='background: #AEF1AE'>            val strippedName = name.stripSuffix(&quot;+&quot;)
+</span>160 <span style=''></span><span style='background: #AEF1AE'>            val logNextPhase = name ne strippedName
+</span>161 <span style=''></span><span style='background: #AEF1AE'>            phase.phaseName.startsWith(strippedName) ||
+</span>162 <span style=''></span><span style='background: #AEF1AE'>              (logNextPhase &amp;&amp; </span><span style='background: #F0ADAD'>phase.prev.phaseName.startsWith(strippedName)</span><span style='background: #AEF1AE'>)
+</span>163 <span style=''></span><span style='background: #AEF1AE'>          }</span><span style=''>
+</span>164 <span style=''>        }
+</span>165 <span style=''>    }
+</span>166 <span style=''>  }
+</span>167 <span style=''>
+</span>168 <span style=''>  implicit def sourcePos(pos: Position)(implicit ctx: Context): SourcePosition = {
+</span>169 <span style=''>    def recur(inlinedCalls: List[Tree], pos: Position): SourcePosition = inlinedCalls match {
+</span>170 <span style=''>      case inlinedCall :: rest =&gt;
+</span>171 <span style=''>        </span><span style='background: #AEF1AE'>sourceFile(inlinedCall).atPos(pos).withOuter(recur(rest, inlinedCall.pos))</span><span style=''>
+</span>172 <span style=''>      case empty =&gt;
+</span>173 <span style=''>        </span><span style='background: #AEF1AE'>ctx.source.atPos(pos)</span><span style=''>
+</span>174 <span style=''>    }
+</span>175 <span style=''>    </span><span style='background: #AEF1AE'>recur(enclosingInlineds, pos)</span><span style=''>
+</span>176 <span style=''>  }
+</span>177 <span style=''>
+</span>178 <span style=''>  implicit class reportingDeco[T](val x: T) extends AnyVal {
+</span>179 <span style=''>    def reporting(op: T =&gt; String): T = { </span><span style='background: #F0ADAD'>println(op(x))</span><span style=''>; </span><span style='background: #F0ADAD'>x</span><span style=''> }
+</span>180 <span style=''>  }
+</span>181 <span style=''>
+</span>182 <span style=''>  implicit class StringInterpolators(val sc: StringContext) extends AnyVal {
+</span>183 <span style=''>
+</span>184 <span style=''>    /** General purpose string formatting */
+</span>185 <span style=''>    def i(args: Any*)(implicit ctx: Context): String =
+</span>186 <span style=''>      </span><span style='background: #AEF1AE'>new StringFormatter(sc).assemble(args)</span><span style=''>
+</span>187 <span style=''>
+</span>188 <span style=''>    /** Formatting for error messages: Like `i` but suppress follow-on
+</span>189 <span style=''>     *  error messages after the first one if some of their arguments are &quot;non-sensical&quot;.
+</span>190 <span style=''>     */
+</span>191 <span style=''>    def em(args: Any*)(implicit ctx: Context): String =
+</span>192 <span style=''>      </span><span style='background: #AEF1AE'>new ErrorMessageFormatter(sc).assemble(args)</span><span style=''>
+</span>193 <span style=''>
+</span>194 <span style=''>    /** Formatting with added explanations: Like `em`, but add explanations to
+</span>195 <span style=''>     *  give more info about type variables and to disambiguate where needed.
+</span>196 <span style=''>     */
+</span>197 <span style=''>    def ex(args: Any*)(implicit ctx: Context): String =
+</span>198 <span style=''>      </span><span style='background: #AEF1AE'>explained(implicit ctx =&gt; em(args: _*))</span><span style=''>
+</span>199 <span style=''>
+</span>200 <span style=''>    /** Formatter that adds syntax highlighting to all interpolated values */
+</span>201 <span style=''>    def hl(args: Any*)(implicit ctx: Context): String =
+</span>202 <span style=''>      </span><span style='background: #AEF1AE'>new SyntaxFormatter(sc).assemble(args).stripMargin</span><span style=''>
+</span>203 <span style=''>  }
+</span>204 <span style=''>}
+</span></pre>
+          </div>
+          <div class="tab-pane" id="statementlist">
+            <table cellspacing="0" cellpadding="0" class="table statementlist">
+      <tr>
+        <th>Line</th>
+        <th>Stmt Id</th>
+        <th>Pos</th>
+        <th>Tree</th>
+        <th>Symbol</th>
+        <th>Code</th>
+      </tr><tr>
+        <td>
+          19
+        </td>
+        <td>
+          14477
+        </td>
+        <td>
+          677
+          -
+          688
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.core.Names.typeName
+        </td>
+        <td style="background: #AEF1AE">
+          Names.typeName(PreNamedString.this.s)
+        </td>
+      </tr><tr>
+        <td>
+          19
+        </td>
+        <td>
+          14476
+        </td>
+        <td>
+          686
+          -
+          687
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Decorators.PreNamedString.s
+        </td>
+        <td style="background: #AEF1AE">
+          PreNamedString.this.s
+        </td>
+      </tr><tr>
+        <td>
+          20
+        </td>
+        <td>
+          14479
+        </td>
+        <td>
+          720
+          -
+          731
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.core.Names.termName
+        </td>
+        <td style="background: #AEF1AE">
+          Names.termName(PreNamedString.this.s)
+        </td>
+      </tr><tr>
+        <td>
+          20
+        </td>
+        <td>
+          14478
+        </td>
+        <td>
+          729
+          -
+          730
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Decorators.PreNamedString.s
+        </td>
+        <td style="background: #AEF1AE">
+          PreNamedString.this.s
+        </td>
+      </tr><tr>
+        <td>
+          21
+        </td>
+        <td>
+          14482
+        </td>
+        <td>
+          773
+          -
+          779
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.printing.Texts.Str.apply
+        </td>
+        <td style="background: #F0ADAD">
+          printing.Texts.Str.apply(PreNamedString.this.s, printing.Texts.Str.apply$default$2)
+        </td>
+      </tr><tr>
+        <td>
+          21
+        </td>
+        <td>
+          14481
+        </td>
+        <td>
+          773
+          -
+          773
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.printing.Texts.Str.apply$default$2
+        </td>
+        <td style="background: #F0ADAD">
+          printing.Texts.Str.apply$default$2
+        </td>
+      </tr><tr>
+        <td>
+          21
+        </td>
+        <td>
+          14480
+        </td>
+        <td>
+          777
+          -
+          778
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Decorators.PreNamedString.s
+        </td>
+        <td style="background: #F0ADAD">
+          PreNamedString.this.s
+        </td>
+      </tr><tr>
+        <td>
+          27
+        </td>
+        <td>
+          14483
+        </td>
+        <td>
+          1031
+          -
+          1040
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Int.==
+        </td>
+        <td style="background: #AEF1AE">
+          idx.==(-1)
+        </td>
+      </tr><tr>
+        <td>
+          27
+        </td>
+        <td>
+          14485
+        </td>
+        <td>
+          1042
+          -
+          1046
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          scala.None
+        </td>
+        <td style="background: #AEF1AE">
+          scala.None
+        </td>
+      </tr><tr>
+        <td>
+          27
+        </td>
+        <td>
+          14484
+        </td>
+        <td>
+          1042
+          -
+          1046
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.None
+        </td>
+        <td style="background: #AEF1AE">
+          scala.None
+        </td>
+      </tr><tr>
+        <td>
+          28
+        </td>
+        <td>
+          14492
+        </td>
+        <td>
+          1065
+          -
+          1121
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Tuple2.apply
+        </td>
+        <td style="background: #AEF1AE">
+          scala.Tuple2.apply[String, String](scala.Predef.augmentString(StringDecorator.this.s).take(idx), scala.Predef.augmentString(StringDecorator.this.s).drop(if (doDropIndex)
+  idx.+(1)
+else
+  idx))
+        </td>
+      </tr><tr>
+        <td>
+          28
+        </td>
+        <td>
+          14486
+        </td>
+        <td>
+          1066
+          -
+          1077
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.IndexedSeqOptimized.take
+        </td>
+        <td style="background: #AEF1AE">
+          scala.Predef.augmentString(StringDecorator.this.s).take(idx)
+        </td>
+      </tr><tr>
+        <td>
+          28
+        </td>
+        <td>
+          14494
+        </td>
+        <td>
+          1060
+          -
+          1122
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          scala.Some.apply
+        </td>
+        <td style="background: #AEF1AE">
+          scala.Some.apply[(String, String)](scala.Tuple2.apply[String, String](scala.Predef.augmentString(StringDecorator.this.s).take(idx), scala.Predef.augmentString(StringDecorator.this.s).drop(if (doDropIndex)
+  idx.+(1)
+else
+  idx)))
+        </td>
+      </tr><tr>
+        <td>
+          28
+        </td>
+        <td>
+          14488
+        </td>
+        <td>
+          1103
+          -
+          1110
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Int.+
+        </td>
+        <td style="background: #AEF1AE">
+          idx.+(1)
+        </td>
+      </tr><tr>
+        <td>
+          28
+        </td>
+        <td>
+          14491
+        </td>
+        <td>
+          1079
+          -
+          1120
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.IndexedSeqOptimized.drop
+        </td>
+        <td style="background: #AEF1AE">
+          scala.Predef.augmentString(StringDecorator.this.s).drop(if (doDropIndex)
+  idx.+(1)
+else
+  idx)
+        </td>
+      </tr><tr>
+        <td>
+          28
+        </td>
+        <td>
+          14493
+        </td>
+        <td>
+          1060
+          -
+          1122
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Some.apply
+        </td>
+        <td style="background: #AEF1AE">
+          scala.Some.apply[(String, String)](scala.Tuple2.apply[String, String](scala.Predef.augmentString(StringDecorator.this.s).take(idx), scala.Predef.augmentString(StringDecorator.this.s).drop(if (doDropIndex)
+  idx.+(1)
+else
+  idx)))
+        </td>
+      </tr><tr>
+        <td>
+          28
+        </td>
+        <td>
+          14487
+        </td>
+        <td>
+          1079
+          -
+          1080
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Decorators.StringDecorator.s
+        </td>
+        <td style="background: #AEF1AE">
+          StringDecorator.this.s
+        </td>
+      </tr><tr>
+        <td>
+          28
+        </td>
+        <td>
+          14490
+        </td>
+        <td>
+          1116
+          -
+          1119
+        </td>
+        <td>
+          Ident
+        </td>
+        <td>
+          dotty.tools.dotc.core.Decorators.StringDecorator.idx
+        </td>
+        <td style="background: #F0ADAD">
+          idx
+        </td>
+      </tr><tr>
+        <td>
+          28
+        </td>
+        <td>
+          14489
+        </td>
+        <td>
+          1103
+          -
+          1110
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          scala.Int.+
+        </td>
+        <td style="background: #AEF1AE">
+          idx.+(1)
+        </td>
+      </tr><tr>
+        <td>
+          30
+        </td>
+        <td>
+          14495
+        </td>
+        <td>
+          1138
+          -
+          1153
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.GenSeqLike.indexWhere
+        </td>
+        <td style="background: #AEF1AE">
+          scala.Predef.augmentString(StringDecorator.this.s).indexWhere(f)
+        </td>
+      </tr><tr>
+        <td>
+          30
+        </td>
+        <td>
+          14496
+        </td>
+        <td>
+          1130
+          -
+          1167
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.core.Decorators.StringDecorator.splitAt
+        </td>
+        <td style="background: #AEF1AE">
+          splitAt(scala.Predef.augmentString(StringDecorator.this.s).indexWhere(f), doDropIndex)
+        </td>
+      </tr><tr>
+        <td>
+          39
+        </td>
+        <td>
+          14504
+        </td>
+        <td>
+          1490
+          -
+          1558
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          {
+  {
+    val sym: dotty.tools.dotc.core.Symbols.Symbol = SymbolIteratorDecorator.this.it.next();
+    if (p.apply(sym))
+      return sym
+    else
+      ()
+  };
+  while$1()
+}
+        </td>
+      </tr><tr>
+        <td>
+          39
+        </td>
+        <td>
+          14503
+        </td>
+        <td>
+          1490
+          -
+          1490
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.core.Decorators.SymbolIteratorDecorator.while$1
+        </td>
+        <td style="background: #AEF1AE">
+          while$1()
+        </td>
+      </tr><tr>
+        <td>
+          39
+        </td>
+        <td>
+          14497
+        </td>
+        <td>
+          1478
+          -
+          1488
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.collection.Iterator.hasNext
+        </td>
+        <td style="background: #AEF1AE">
+          SymbolIteratorDecorator.this.it.hasNext
+        </td>
+      </tr><tr>
+        <td>
+          39
+        </td>
+        <td>
+          14506
+        </td>
+        <td>
+          1471
+          -
+          1471
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          ()
+        </td>
+      </tr><tr>
+        <td>
+          39
+        </td>
+        <td>
+          14505
+        </td>
+        <td>
+          1471
+          -
+          1471
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          ()
+        </td>
+      </tr><tr>
+        <td>
+          40
+        </td>
+        <td>
+          14498
+        </td>
+        <td>
+          1510
+          -
+          1519
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.Iterator.next
+        </td>
+        <td style="background: #AEF1AE">
+          SymbolIteratorDecorator.this.it.next()
+        </td>
+      </tr><tr>
+        <td>
+          41
+        </td>
+        <td>
+          14501
+        </td>
+        <td>
+          1528
+          -
+          1528
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          ()
+        </td>
+      </tr><tr>
+        <td>
+          41
+        </td>
+        <td>
+          14500
+        </td>
+        <td>
+          1540
+          -
+          1550
+        </td>
+        <td>
+          Return
+        </td>
+        <td>
+          dotty.tools.dotc.core.Decorators.SymbolIteratorDecorator.findSymbol
+        </td>
+        <td style="background: #AEF1AE">
+          return sym
+        </td>
+      </tr><tr>
+        <td>
+          41
+        </td>
+        <td>
+          14502
+        </td>
+        <td>
+          1528
+          -
+          1528
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          ()
+        </td>
+      </tr><tr>
+        <td>
+          41
+        </td>
+        <td>
+          14499
+        </td>
+        <td>
+          1532
+          -
+          1538
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Function1.apply
+        </td>
+        <td style="background: #AEF1AE">
+          p.apply(sym)
+        </td>
+      </tr><tr>
+        <td>
+          43
+        </td>
+        <td>
+          14507
+        </td>
+        <td>
+          1565
+          -
+          1573
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Symbols.NoSymbol
+        </td>
+        <td style="background: #AEF1AE">
+          Symbols.NoSymbol
+        </td>
+      </tr><tr>
+        <td>
+          47
+        </td>
+        <td>
+          14508
+        </td>
+        <td>
+          1619
+          -
+          1623
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          1000
+        </td>
+      </tr><tr>
+        <td>
+          57
+        </td>
+        <td>
+          14509
+        </td>
+        <td>
+          1992
+          -
+          2007
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.collection.SeqLike.isEmpty
+        </td>
+        <td style="background: #AEF1AE">
+          pending.isEmpty
+        </td>
+      </tr><tr>
+        <td>
+          58
+        </td>
+        <td>
+          14510
+        </td>
+        <td>
+          2025
+          -
+          2039
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.Object.eq
+        </td>
+        <td style="background: #AEF1AE">
+          mapped.eq(null)
+        </td>
+      </tr><tr>
+        <td>
+          58
+        </td>
+        <td>
+          14511
+        </td>
+        <td>
+          2041
+          -
+          2050
+        </td>
+        <td>
+          Ident
+        </td>
+        <td>
+          dotty.tools.dotc.core.Decorators.ListDecorator.unchanged
+        </td>
+        <td style="background: #AEF1AE">
+          unchanged
+        </td>
+      </tr><tr>
+        <td>
+          58
+        </td>
+        <td>
+          14514
+        </td>
+        <td>
+          2021
+          -
+          2097
+        </td>
+        <td>
+          If
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          if (mapped.eq(null))
+  unchanged
+else
+  mapped.prependToList(unchanged)
+        </td>
+      </tr><tr>
+        <td>
+          59
+        </td>
+        <td>
+          14513
+        </td>
+        <td>
+          2066
+          -
+          2097
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          scala.collection.mutable.ListBuffer.prependToList
+        </td>
+        <td style="background: #AEF1AE">
+          mapped.prependToList(unchanged)
+        </td>
+      </tr><tr>
+        <td>
+          59
+        </td>
+        <td>
+          14512
+        </td>
+        <td>
+          2066
+          -
+          2097
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.mutable.ListBuffer.prependToList
+        </td>
+        <td style="background: #AEF1AE">
+          mapped.prependToList(unchanged)
+        </td>
+      </tr><tr>
+        <td>
+          60
+        </td>
+        <td>
+          14539
+        </td>
+        <td>
+          2113
+          -
+          2663
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          {
+  val head0: T = pending.head;
+  val head1: U = f.apply(head0);
+  if (head1.asInstanceOf[AnyRef].eq(head0.asInstanceOf[AnyRef]))
+    loop(mapped, unchanged, pending.tail)
+  else
+    {
+      val b: scala.collection.mutable.ListBuffer[U] = if (mapped.eq(null))
+        new scala.collection.mutable.ListBuffer[U]()
+      else
+        mapped;
+      var xc: List[U] = unchanged;
+      while$2(){
+        if (xc.ne(pending))
+          {
+            {
+              b.+=(xc.head);
+              xc = xc.tail
+            };
+            while$2()
+          }
+        else
+          ()
+      };
+      b.+=(head1);
+      val tail0: List[T] = pending.tail;
+      loop(b, tail0.asInstanceOf[List[U]], tail0)
+    }
+}
+        </td>
+      </tr><tr>
+        <td>
+          61
+        </td>
+        <td>
+          14515
+        </td>
+        <td>
+          2137
+          -
+          2149
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.collection.IterableLike.head
+        </td>
+        <td style="background: #AEF1AE">
+          pending.head
+        </td>
+      </tr><tr>
+        <td>
+          62
+        </td>
+        <td>
+          14516
+        </td>
+        <td>
+          2172
+          -
+          2180
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Function1.apply
+        </td>
+        <td style="background: #AEF1AE">
+          f.apply(head0)
+        </td>
+      </tr><tr>
+        <td>
+          64
+        </td>
+        <td>
+          14518
+        </td>
+        <td>
+          2196
+          -
+          2252
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.Object.eq
+        </td>
+        <td style="background: #AEF1AE">
+          head1.asInstanceOf[AnyRef].eq(head0.asInstanceOf[AnyRef])
+        </td>
+      </tr><tr>
+        <td>
+          64
+        </td>
+        <td>
+          14517
+        </td>
+        <td>
+          2226
+          -
+          2252
+        </td>
+        <td>
+          TypeApply
+        </td>
+        <td>
+          scala.Any.asInstanceOf
+        </td>
+        <td style="background: #AEF1AE">
+          head0.asInstanceOf[AnyRef]
+        </td>
+      </tr><tr>
+        <td>
+          65
+        </td>
+        <td>
+          14519
+        </td>
+        <td>
+          2290
+          -
+          2302
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.collection.TraversableLike.tail
+        </td>
+        <td style="background: #AEF1AE">
+          pending.tail
+        </td>
+      </tr><tr>
+        <td>
+          65
+        </td>
+        <td>
+          14521
+        </td>
+        <td>
+          2266
+          -
+          2303
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          dotty.tools.dotc.core.Decorators.ListDecorator.loop
+        </td>
+        <td style="background: #AEF1AE">
+          loop(mapped, unchanged, pending.tail)
+        </td>
+      </tr><tr>
+        <td>
+          65
+        </td>
+        <td>
+          14520
+        </td>
+        <td>
+          2266
+          -
+          2303
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.core.Decorators.ListDecorator.loop
+        </td>
+        <td style="background: #AEF1AE">
+          loop(mapped, unchanged, pending.tail)
+        </td>
+      </tr><tr>
+        <td>
+          66
+        </td>
+        <td>
+          14538
+        </td>
+        <td>
+          2319
+          -
+          2653
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          {
+  val b: scala.collection.mutable.ListBuffer[U] = if (mapped.eq(null))
+    new scala.collection.mutable.ListBuffer[U]()
+  else
+    mapped;
+  var xc: List[U] = unchanged;
+  while$2(){
+    if (xc.ne(pending))
+      {
+        {
+          b.+=(xc.head);
+          xc = xc.tail
+        };
+        while$2()
+      }
+    else
+      ()
+  };
+  b.+=(head1);
+  val tail0: List[T] = pending.tail;
+  loop(b, tail0.asInstanceOf[List[U]], tail0)
+}
+        </td>
+      </tr><tr>
+        <td>
+          67
+        </td>
+        <td>
+          14522
+        </td>
+        <td>
+          2345
+          -
+          2359
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.Object.eq
+        </td>
+        <td style="background: #AEF1AE">
+          mapped.eq(null)
+        </td>
+      </tr><tr>
+        <td>
+          67
+        </td>
+        <td>
+          14524
+        </td>
+        <td>
+          2361
+          -
+          2378
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          scala.collection.mutable.ListBuffer.&lt;init&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          new scala.collection.mutable.ListBuffer[U]()
+        </td>
+      </tr><tr>
+        <td>
+          67
+        </td>
+        <td>
+          14523
+        </td>
+        <td>
+          2361
+          -
+          2378
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.mutable.ListBuffer.&lt;init&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          new scala.collection.mutable.ListBuffer[U]()
+        </td>
+      </tr><tr>
+        <td>
+          67
+        </td>
+        <td>
+          14525
+        </td>
+        <td>
+          2384
+          -
+          2390
+        </td>
+        <td>
+          Ident
+        </td>
+        <td>
+          dotty.tools.dotc.core.Decorators.ListDecorator.mapped
+        </td>
+        <td style="background: #AEF1AE">
+          mapped
+        </td>
+      </tr><tr>
+        <td>
+          69
+        </td>
+        <td>
+          14531
+        </td>
+        <td>
+          2456
+          -
+          2525
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          {
+  {
+    b.+=(xc.head);
+    xc = xc.tail
+  };
+  while$2()
+}
+        </td>
+      </tr><tr>
+        <td>
+          69
+        </td>
+        <td>
+          14530
+        </td>
+        <td>
+          2456
+          -
+          2456
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.core.Decorators.ListDecorator.while$2
+        </td>
+        <td style="background: #AEF1AE">
+          while$2()
+        </td>
+      </tr><tr>
+        <td>
+          69
+        </td>
+        <td>
+          14533
+        </td>
+        <td>
+          2434
+          -
+          2434
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          ()
+        </td>
+      </tr><tr>
+        <td>
+          69
+        </td>
+        <td>
+          14526
+        </td>
+        <td>
+          2441
+          -
+          2454
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.Object.ne
+        </td>
+        <td style="background: #AEF1AE">
+          xc.ne(pending)
+        </td>
+      </tr><tr>
+        <td>
+          69
+        </td>
+        <td>
+          14532
+        </td>
+        <td>
+          2434
+          -
+          2434
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          ()
+        </td>
+      </tr><tr>
+        <td>
+          70
+        </td>
+        <td>
+          14528
+        </td>
+        <td>
+          2472
+          -
+          2484
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.mutable.ListBuffer.+=
+        </td>
+        <td style="background: #AEF1AE">
+          b.+=(xc.head)
+        </td>
+      </tr><tr>
+        <td>
+          70
+        </td>
+        <td>
+          14527
+        </td>
+        <td>
+          2477
+          -
+          2484
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.collection.IterableLike.head
+        </td>
+        <td style="background: #AEF1AE">
+          xc.head
+        </td>
+      </tr><tr>
+        <td>
+          71
+        </td>
+        <td>
+          14529
+        </td>
+        <td>
+          2504
+          -
+          2511
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.collection.TraversableLike.tail
+        </td>
+        <td style="background: #AEF1AE">
+          xc.tail
+        </td>
+      </tr><tr>
+        <td>
+          73
+        </td>
+        <td>
+          14534
+        </td>
+        <td>
+          2538
+          -
+          2548
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.mutable.ListBuffer.+=
+        </td>
+        <td style="background: #AEF1AE">
+          b.+=(head1)
+        </td>
+      </tr><tr>
+        <td>
+          74
+        </td>
+        <td>
+          14535
+        </td>
+        <td>
+          2573
+          -
+          2585
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.collection.TraversableLike.tail
+        </td>
+        <td style="background: #AEF1AE">
+          pending.tail
+        </td>
+      </tr><tr>
+        <td>
+          75
+        </td>
+        <td>
+          14537
+        </td>
+        <td>
+          2598
+          -
+          2641
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.core.Decorators.ListDecorator.loop
+        </td>
+        <td style="background: #AEF1AE">
+          loop(b, tail0.asInstanceOf[List[U]], tail0)
+        </td>
+      </tr><tr>
+        <td>
+          75
+        </td>
+        <td>
+          14536
+        </td>
+        <td>
+          2606
+          -
+          2633
+        </td>
+        <td>
+          TypeApply
+        </td>
+        <td>
+          scala.Any.asInstanceOf
+        </td>
+        <td style="background: #AEF1AE">
+          tail0.asInstanceOf[List[U]]
+        </td>
+      </tr><tr>
+        <td>
+          78
+        </td>
+        <td>
+          14542
+        </td>
+        <td>
+          2707
+          -
+          2709
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Decorators.ListDecorator.xs
+        </td>
+        <td style="background: #AEF1AE">
+          ListDecorator.this.xs
+        </td>
+      </tr><tr>
+        <td>
+          78
+        </td>
+        <td>
+          14541
+        </td>
+        <td>
+          2681
+          -
+          2705
+        </td>
+        <td>
+          TypeApply
+        </td>
+        <td>
+          scala.Any.asInstanceOf
+        </td>
+        <td style="background: #AEF1AE">
+          ListDecorator.this.xs.asInstanceOf[List[U]]
+        </td>
+      </tr><tr>
+        <td>
+          78
+        </td>
+        <td>
+          14540
+        </td>
+        <td>
+          2675
+          -
+          2679
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          null
+        </td>
+      </tr><tr>
+        <td>
+          78
+        </td>
+        <td>
+          14543
+        </td>
+        <td>
+          2670
+          -
+          2710
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.core.Decorators.ListDecorator.loop
+        </td>
+        <td style="background: #AEF1AE">
+          loop(null, ListDecorator.this.xs.asInstanceOf[List[U]], ListDecorator.this.xs)
+        </td>
+      </tr><tr>
+        <td>
+          89
+        </td>
+        <td>
+          14554
+        </td>
+        <td>
+          3108
+          -
+          3267
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          {
+  val ys1: List[T] = loop(xs1, nrec.+(1));
+  if (p.apply(x))
+    if (ys1.eq(xs1))
+      xs
+    else
+      {
+        &lt;synthetic&gt; &lt;artifact&gt; val x$1: T = x;
+        ys1.::[T](x$1)
+      }
+  else
+    ys1
+}
+        </td>
+      </tr><tr>
+        <td>
+          89
+        </td>
+        <td>
+          14544
+        </td>
+        <td>
+          3080
+          -
+          3106
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Int.&lt;
+        </td>
+        <td style="background: #AEF1AE">
+          nrec.&lt;(1000)
+        </td>
+      </tr><tr>
+        <td>
+          90
+        </td>
+        <td>
+          14546
+        </td>
+        <td>
+          3132
+          -
+          3151
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.core.Decorators.ListDecorator.loop
+        </td>
+        <td style="background: #AEF1AE">
+          loop(xs1, nrec.+(1))
+        </td>
+      </tr><tr>
+        <td>
+          90
+        </td>
+        <td>
+          14545
+        </td>
+        <td>
+          3142
+          -
+          3150
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Int.+
+        </td>
+        <td style="background: #AEF1AE">
+          nrec.+(1)
+        </td>
+      </tr><tr>
+        <td>
+          91
+        </td>
+        <td>
+          14547
+        </td>
+        <td>
+          3168
+          -
+          3172
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Function1.apply
+        </td>
+        <td style="background: #AEF1AE">
+          p.apply(x)
+        </td>
+      </tr><tr>
+        <td>
+          92
+        </td>
+        <td>
+          14548
+        </td>
+        <td>
+          3192
+          -
+          3202
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.Object.eq
+        </td>
+        <td style="background: #AEF1AE">
+          ys1.eq(xs1)
+        </td>
+      </tr><tr>
+        <td>
+          92
+        </td>
+        <td>
+          14551
+        </td>
+        <td>
+          3212
+          -
+          3220
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          {
+  &lt;synthetic&gt; &lt;artifact&gt; val x$1: T = x;
+  ys1.::[T](x$1)
+}
+        </td>
+      </tr><tr>
+        <td>
+          92
+        </td>
+        <td>
+          14550
+        </td>
+        <td>
+          3214
+          -
+          3220
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.immutable.List.::
+        </td>
+        <td style="background: #AEF1AE">
+          ys1.::[T](x$1)
+        </td>
+      </tr><tr>
+        <td>
+          92
+        </td>
+        <td>
+          14549
+        </td>
+        <td>
+          3204
+          -
+          3206
+        </td>
+        <td>
+          Ident
+        </td>
+        <td>
+          dotty.tools.dotc.core.Decorators.ListDecorator.xs
+        </td>
+        <td style="background: #AEF1AE">
+          xs
+        </td>
+      </tr><tr>
+        <td>
+          92
+        </td>
+        <td>
+          14552
+        </td>
+        <td>
+          3188
+          -
+          3220
+        </td>
+        <td>
+          If
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          if (ys1.eq(xs1))
+  xs
+else
+  {
+    &lt;synthetic&gt; &lt;artifact&gt; val x$1: T = x;
+    ys1.::[T](x$1)
+  }
+        </td>
+      </tr><tr>
+        <td>
+          94
+        </td>
+        <td>
+          14553
+        </td>
+        <td>
+          3252
+          -
+          3255
+        </td>
+        <td>
+          Ident
+        </td>
+        <td>
+          dotty.tools.dotc.core.Decorators.ListDecorator.ys1
+        </td>
+        <td style="background: #AEF1AE">
+          ys1
+        </td>
+      </tr><tr>
+        <td>
+          95
+        </td>
+        <td>
+          14555
+        </td>
+        <td>
+          3273
+          -
+          3284
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.TraversableLike.filter
+        </td>
+        <td style="background: #F0ADAD">
+          xs.filter(p)
+        </td>
+      </tr><tr>
+        <td>
+          95
+        </td>
+        <td>
+          14556
+        </td>
+        <td>
+          3273
+          -
+          3284
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          scala.collection.TraversableLike.filter
+        </td>
+        <td style="background: #F0ADAD">
+          xs.filter(p)
+        </td>
+      </tr><tr>
+        <td>
+          97
+        </td>
+        <td>
+          14557
+        </td>
+        <td>
+          3304
+          -
+          3306
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Decorators.ListDecorator.xs
+        </td>
+        <td style="background: #AEF1AE">
+          ListDecorator.this.xs
+        </td>
+      </tr><tr>
+        <td>
+          97
+        </td>
+        <td>
+          14559
+        </td>
+        <td>
+          3299
+          -
+          3310
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.core.Decorators.ListDecorator.loop
+        </td>
+        <td style="background: #AEF1AE">
+          loop(ListDecorator.this.xs, 0)
+        </td>
+      </tr><tr>
+        <td>
+          97
+        </td>
+        <td>
+          14558
+        </td>
+        <td>
+          3308
+          -
+          3309
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          0
+        </td>
+      </tr><tr>
+        <td>
+          106
+        </td>
+        <td>
+          14563
+        </td>
+        <td>
+          3660
+          -
+          3663
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          scala.collection.immutable.Nil
+        </td>
+        <td style="background: #AEF1AE">
+          scala.collection.immutable.Nil
+        </td>
+      </tr><tr>
+        <td>
+          106
+        </td>
+        <td>
+          14560
+        </td>
+        <td>
+          3648
+          -
+          3658
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.collection.SeqLike.isEmpty
+        </td>
+        <td style="background: #AEF1AE">
+          ys.isEmpty
+        </td>
+      </tr><tr>
+        <td>
+          106
+        </td>
+        <td>
+          14562
+        </td>
+        <td>
+          3660
+          -
+          3663
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.collection.immutable.Nil
+        </td>
+        <td style="background: #AEF1AE">
+          scala.collection.immutable.Nil
+        </td>
+      </tr><tr>
+        <td>
+          106
+        </td>
+        <td>
+          14561
+        </td>
+        <td>
+          3634
+          -
+          3658
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Boolean.||
+        </td>
+        <td style="background: #AEF1AE">
+          ListDecorator.this.xs.isEmpty.||(ys.isEmpty)
+        </td>
+      </tr><tr>
+        <td>
+          107
+        </td>
+        <td>
+          14576
+        </td>
+        <td>
+          3675
+          -
+          3904
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          {
+  val x1: T = f.apply(ListDecorator.this.xs.head, ys.head);
+  val xs1: List[T] = Decorators.this.ListDecorator[T](ListDecorator.this.xs.tail).zipWithConserve[U](ys.tail)(f);
+  if (x1.asInstanceOf[AnyRef].eq(ListDecorator.this.xs.head.asInstanceOf[AnyRef]).&amp;&amp;(xs1.eq(ListDecorator.this.xs.tail)))
+    ListDecorator.this.xs
+  else
+    {
+      &lt;synthetic&gt; &lt;artifact&gt; val x$2: T = x1;
+      xs1.::[T](x$2)
+    }
+}
+        </td>
+      </tr><tr>
+        <td>
+          108
+        </td>
+        <td>
+          14564
+        </td>
+        <td>
+          3696
+          -
+          3703
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.collection.IterableLike.head
+        </td>
+        <td style="background: #AEF1AE">
+          ListDecorator.this.xs.head
+        </td>
+      </tr><tr>
+        <td>
+          108
+        </td>
+        <td>
+          14566
+        </td>
+        <td>
+          3694
+          -
+          3713
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Function2.apply
+        </td>
+        <td style="background: #AEF1AE">
+          f.apply(ListDecorator.this.xs.head, ys.head)
+        </td>
+      </tr><tr>
+        <td>
+          108
+        </td>
+        <td>
+          14565
+        </td>
+        <td>
+          3705
+          -
+          3712
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.collection.IterableLike.head
+        </td>
+        <td style="background: #AEF1AE">
+          ys.head
+        </td>
+      </tr><tr>
+        <td>
+          109
+        </td>
+        <td>
+          14567
+        </td>
+        <td>
+          3732
+          -
+          3767
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.core.Decorators.ListDecorator.zipWithConserve
+        </td>
+        <td style="background: #AEF1AE">
+          Decorators.this.ListDecorator[T](ListDecorator.this.xs.tail).zipWithConserve[U](ys.tail)(f)
+        </td>
+      </tr><tr>
+        <td>
+          110
+        </td>
+        <td>
+          14571
+        </td>
+        <td>
+          3780
+          -
+          3869
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Boolean.&amp;&amp;
+        </td>
+        <td style="background: #AEF1AE">
+          x1.asInstanceOf[AnyRef].eq(ListDecorator.this.xs.head.asInstanceOf[AnyRef]).&amp;&amp;(xs1.eq(ListDecorator.this.xs.tail))
+        </td>
+      </tr><tr>
+        <td>
+          110
+        </td>
+        <td>
+          14568
+        </td>
+        <td>
+          3808
+          -
+          3836
+        </td>
+        <td>
+          TypeApply
+        </td>
+        <td>
+          scala.Any.asInstanceOf
+        </td>
+        <td style="background: #AEF1AE">
+          ListDecorator.this.xs.head.asInstanceOf[AnyRef]
+        </td>
+      </tr><tr>
+        <td>
+          111
+        </td>
+        <td>
+          14573
+        </td>
+        <td>
+          3871
+          -
+          3873
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          dotty.tools.dotc.core.Decorators.ListDecorator.xs
+        </td>
+        <td style="background: #AEF1AE">
+          ListDecorator.this.xs
+        </td>
+      </tr><tr>
+        <td>
+          111
+        </td>
+        <td>
+          14572
+        </td>
+        <td>
+          3871
+          -
+          3873
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Decorators.ListDecorator.xs
+        </td>
+        <td style="background: #AEF1AE">
+          ListDecorator.this.xs
+        </td>
+      </tr><tr>
+        <td>
+          111
+        </td>
+        <td>
+          14569
+        </td>
+        <td>
+          3861
+          -
+          3868
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.collection.TraversableLike.tail
+        </td>
+        <td style="background: #AEF1AE">
+          ListDecorator.this.xs.tail
+        </td>
+      </tr><tr>
+        <td>
+          111
+        </td>
+        <td>
+          14570
+        </td>
+        <td>
+          3854
+          -
+          3868
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.Object.eq
+        </td>
+        <td style="background: #AEF1AE">
+          xs1.eq(ListDecorator.this.xs.tail)
+        </td>
+      </tr><tr>
+        <td>
+          112
+        </td>
+        <td>
+          14575
+        </td>
+        <td>
+          3887
+          -
+          3896
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          {
+  &lt;synthetic&gt; &lt;artifact&gt; val x$2: T = x1;
+  xs1.::[T](x$2)
+}
+        </td>
+      </tr><tr>
+        <td>
+          112
+        </td>
+        <td>
+          14574
+        </td>
+        <td>
+          3890
+          -
+          3896
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.immutable.List.::
+        </td>
+        <td style="background: #AEF1AE">
+          xs1.::[T](x$2)
+        </td>
+      </tr><tr>
+        <td>
+          117
+        </td>
+        <td>
+          14578
+        </td>
+        <td>
+          4050
+          -
+          4060
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.collection.SeqLike.isEmpty
+        </td>
+        <td style="background: #AEF1AE">
+          ys.isEmpty
+        </td>
+      </tr><tr>
+        <td>
+          117
+        </td>
+        <td>
+          14577
+        </td>
+        <td>
+          4038
+          -
+          4048
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.collection.SeqLike.isEmpty
+        </td>
+        <td style="background: #AEF1AE">
+          xs.isEmpty
+        </td>
+      </tr><tr>
+        <td>
+          117
+        </td>
+        <td>
+          14579
+        </td>
+        <td>
+          4050
+          -
+          4060
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          scala.collection.SeqLike.isEmpty
+        </td>
+        <td style="background: #AEF1AE">
+          ys.isEmpty
+        </td>
+      </tr><tr>
+        <td>
+          118
+        </td>
+        <td>
+          14582
+        </td>
+        <td>
+          4089
+          -
+          4111
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.core.Decorators.ListDecorator.loop
+        </td>
+        <td style="background: #AEF1AE">
+          loop(xs.tail, ys.tail)
+        </td>
+      </tr><tr>
+        <td>
+          118
+        </td>
+        <td>
+          14581
+        </td>
+        <td>
+          4103
+          -
+          4110
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.collection.TraversableLike.tail
+        </td>
+        <td style="background: #AEF1AE">
+          ys.tail
+        </td>
+      </tr><tr>
+        <td>
+          118
+        </td>
+        <td>
+          14584
+        </td>
+        <td>
+          4074
+          -
+          4111
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          scala.Boolean.&amp;&amp;
+        </td>
+        <td style="background: #AEF1AE">
+          ys.nonEmpty.&amp;&amp;(loop(xs.tail, ys.tail))
+        </td>
+      </tr><tr>
+        <td>
+          118
+        </td>
+        <td>
+          14580
+        </td>
+        <td>
+          4094
+          -
+          4101
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.collection.TraversableLike.tail
+        </td>
+        <td style="background: #AEF1AE">
+          xs.tail
+        </td>
+      </tr><tr>
+        <td>
+          118
+        </td>
+        <td>
+          14583
+        </td>
+        <td>
+          4074
+          -
+          4111
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Boolean.&amp;&amp;
+        </td>
+        <td style="background: #AEF1AE">
+          ys.nonEmpty.&amp;&amp;(loop(xs.tail, ys.tail))
+        </td>
+      </tr><tr>
+        <td>
+          119
+        </td>
+        <td>
+          14586
+        </td>
+        <td>
+          4118
+          -
+          4130
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.core.Decorators.ListDecorator.loop
+        </td>
+        <td style="background: #AEF1AE">
+          loop(ListDecorator.this.xs, ys)
+        </td>
+      </tr><tr>
+        <td>
+          119
+        </td>
+        <td>
+          14585
+        </td>
+        <td>
+          4123
+          -
+          4125
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Decorators.ListDecorator.xs
+        </td>
+        <td style="background: #AEF1AE">
+          ListDecorator.this.xs
+        </td>
+      </tr><tr>
+        <td>
+          122
+        </td>
+        <td>
+          14587
+        </td>
+        <td>
+          4201
+          -
+          4203
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Decorators.ListDecorator.xs
+        </td>
+        <td style="background: #AEF1AE">
+          ListDecorator.this.xs
+        </td>
+      </tr><tr>
+        <td>
+          126
+        </td>
+        <td>
+          14591
+        </td>
+        <td>
+          4289
+          -
+          4360
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Boolean.&amp;&amp;
+        </td>
+        <td style="background: #AEF1AE">
+          x.asInstanceOf[AnyRef].eq(y).&amp;&amp;(Decorators.this.ListDecorator[T](ListDecorator.this.xs.tail).eqElements(ys.tail))
+        </td>
+      </tr><tr>
+        <td>
+          127
+        </td>
+        <td>
+          14590
+        </td>
+        <td>
+          4333
+          -
+          4360
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.core.Decorators.ListDecorator.eqElements
+        </td>
+        <td style="background: #AEF1AE">
+          Decorators.this.ListDecorator[T](ListDecorator.this.xs.tail).eqElements(ys.tail)
+        </td>
+      </tr><tr>
+        <td>
+          127
+        </td>
+        <td>
+          14589
+        </td>
+        <td>
+          4352
+          -
+          4359
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.collection.TraversableLike.tail
+        </td>
+        <td style="background: #AEF1AE">
+          ys.tail
+        </td>
+      </tr><tr>
+        <td>
+          127
+        </td>
+        <td>
+          14588
+        </td>
+        <td>
+          4333
+          -
+          4340
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.collection.TraversableLike.tail
+        </td>
+        <td style="background: #AEF1AE">
+          ListDecorator.this.xs.tail
+        </td>
+      </tr><tr>
+        <td>
+          128
+        </td>
+        <td>
+          14592
+        </td>
+        <td>
+          4381
+          -
+          4386
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          false
+        </td>
+      </tr><tr>
+        <td>
+          130
+        </td>
+        <td>
+          14593
+        </td>
+        <td>
+          4415
+          -
+          4425
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.collection.SeqLike.isEmpty
+        </td>
+        <td style="background: #AEF1AE">
+          ys.isEmpty
+        </td>
+      </tr><tr>
+        <td>
+          134
+        </td>
+        <td>
+          14596
+        </td>
+        <td>
+          4510
+          -
+          4510
+        </td>
+        <td>
+          TypeApply
+        </td>
+        <td>
+          scala.collection.immutable.List.canBuildFrom
+        </td>
+        <td style="background: #F0ADAD">
+          immutable.this.List.canBuildFrom[T]
+        </td>
+      </tr><tr>
+        <td>
+          134
+        </td>
+        <td>
+          14595
+        </td>
+        <td>
+          4514
+          -
+          4542
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.TraversableLike.filterNot
+        </td>
+        <td style="background: #F0ADAD">
+          ys.filterNot(((x$3: T) =&gt; ListDecorator.this.xs.contains[T](x$3)))
+        </td>
+      </tr><tr>
+        <td>
+          134
+        </td>
+        <td>
+          14594
+        </td>
+        <td>
+          4528
+          -
+          4541
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.LinearSeqOptimized.contains
+        </td>
+        <td style="background: #F0ADAD">
+          ListDecorator.this.xs.contains[T](x$3)
+        </td>
+      </tr><tr>
+        <td>
+          134
+        </td>
+        <td>
+          14597
+        </td>
+        <td>
+          4507
+          -
+          4543
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          scala.collection.immutable.List.++
+        </td>
+        <td style="background: #F0ADAD">
+          ListDecorator.this.xs.++[T, List[T]](ys.filterNot(((x$3: T) =&gt; ListDecorator.this.xs.contains[T](x$3))))(immutable.this.List.canBuildFrom[T])
+        </td>
+      </tr><tr>
+        <td>
+          137
+        </td>
+        <td>
+          14599
+        </td>
+        <td>
+          4626
+          -
+          4651
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.TraversableLike.filter
+        </td>
+        <td style="background: #F0ADAD">
+          ListDecorator.this.xs.filter(((x$4: T) =&gt; ys.contains[T](x$4)))
+        </td>
+      </tr><tr>
+        <td>
+          137
+        </td>
+        <td>
+          14598
+        </td>
+        <td>
+          4637
+          -
+          4650
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.LinearSeqOptimized.contains
+        </td>
+        <td style="background: #F0ADAD">
+          ys.contains[T](x$4)
+        </td>
+      </tr><tr>
+        <td>
+          141
+        </td>
+        <td>
+          14602
+        </td>
+        <td>
+          4791
+          -
+          4791
+        </td>
+        <td>
+          TypeApply
+        </td>
+        <td>
+          scala.collection.immutable.List.canBuildFrom
+        </td>
+        <td style="background: #AEF1AE">
+          immutable.this.List.canBuildFrom[List[U]]
+        </td>
+      </tr><tr>
+        <td>
+          141
+        </td>
+        <td>
+          14601
+        </td>
+        <td>
+          4796
+          -
+          4803
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          scala.collection.immutable.List.map
+        </td>
+        <td style="background: #AEF1AE">
+          x$5.map[U, List[U]](f)(immutable.this.List.canBuildFrom[U])
+        </td>
+      </tr><tr>
+        <td>
+          141
+        </td>
+        <td>
+          14600
+        </td>
+        <td>
+          4798
+          -
+          4798
+        </td>
+        <td>
+          TypeApply
+        </td>
+        <td>
+          scala.collection.immutable.List.canBuildFrom
+        </td>
+        <td style="background: #AEF1AE">
+          immutable.this.List.canBuildFrom[U]
+        </td>
+      </tr><tr>
+        <td>
+          141
+        </td>
+        <td>
+          14603
+        </td>
+        <td>
+          4787
+          -
+          4804
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          scala.collection.immutable.List.map
+        </td>
+        <td style="background: #AEF1AE">
+          ListOfListDecorator.this.xss.map[List[U], List[List[U]]](((x$5: List[T]) =&gt; x$5.map[U, List[U]](f)(immutable.this.List.canBuildFrom[U])))(immutable.this.List.canBuildFrom[List[U]])
+        </td>
+      </tr><tr>
+        <td>
+          142
+        </td>
+        <td>
+          14605
+        </td>
+        <td>
+          4879
+          -
+          4894
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.core.Decorators.ListDecorator.mapconserve
+        </td>
+        <td style="background: #AEF1AE">
+          Decorators.this.ListDecorator[T](x$6).mapconserve[U](f)
+        </td>
+      </tr><tr>
+        <td>
+          142
+        </td>
+        <td>
+          14604
+        </td>
+        <td>
+          4862
+          -
+          4865
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Decorators.ListOfListDecorator.xss
+        </td>
+        <td style="background: #AEF1AE">
+          ListOfListDecorator.this.xss
+        </td>
+      </tr><tr>
+        <td>
+          142
+        </td>
+        <td>
+          14606
+        </td>
+        <td>
+          4862
+          -
+          4895
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.core.Decorators.ListDecorator.mapconserve
+        </td>
+        <td style="background: #AEF1AE">
+          Decorators.this.ListDecorator[List[T]](ListOfListDecorator.this.xss).mapconserve[List[U]](((x$6: List[T]) =&gt; Decorators.this.ListDecorator[T](x$6).mapconserve[U](f)))
+        </td>
+      </tr><tr>
+        <td>
+          146
+        </td>
+        <td>
+          14608
+        </td>
+        <td>
+          5046
+          -
+          5075
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.config.Settings.Setting.SettingDecorator.value
+        </td>
+        <td style="background: #AEF1AE">
+          Settings.this.Setting.SettingDecorator[Boolean](Contexts.this.Context.toBase(ctx).settings.printLines).value(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          146
+        </td>
+        <td>
+          14607
+        </td>
+        <td>
+          5016
+          -
+          5044
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.config.Settings.Setting.SettingDecorator.value
+        </td>
+        <td style="background: #AEF1AE">
+          Settings.this.Setting.SettingDecorator[Int](Contexts.this.Context.toBase(ctx).settings.pageWidth).value(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          146
+        </td>
+        <td>
+          14609
+        </td>
+        <td>
+          5002
+          -
+          5076
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.printing.Texts.Text.mkString
+        </td>
+        <td style="background: #AEF1AE">
+          TextToString.this.text.mkString(Settings.this.Setting.SettingDecorator[Int](Contexts.this.Context.toBase(ctx).settings.pageWidth).value(ctx), Settings.this.Setting.SettingDecorator[Boolean](Contexts.this.Context.toBase(ctx).settings.printLines).value(ctx))
+        </td>
+      </tr><tr>
+        <td>
+          155
+        </td>
+        <td>
+          14611
+        </td>
+        <td>
+          5464
+          -
+          5477
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.core.Decorators.PhaseListDecorator.containsPhase
+        </td>
+        <td style="background: #AEF1AE">
+          PhaseListDecorator.this.containsPhase(phase)
+        </td>
+      </tr><tr>
+        <td>
+          155
+        </td>
+        <td>
+          14610
+        </td>
+        <td>
+          5440
+          -
+          5456
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.transform.MegaPhase.miniPhases
+        </td>
+        <td style="background: #AEF1AE">
+          phase.miniPhases
+        </td>
+      </tr><tr>
+        <td>
+          155
+        </td>
+        <td>
+          14612
+        </td>
+        <td>
+          5440
+          -
+          5478
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.IndexedSeqOptimized.exists
+        </td>
+        <td style="background: #AEF1AE">
+          scala.Predef.refArrayOps[dotty.tools.dotc.transform.MegaPhase.MiniPhase](phase.miniPhases).exists({
+  ((phase: dotty.tools.dotc.core.Phases.Phase) =&gt; PhaseListDecorator.this.containsPhase(phase))
+})
+        </td>
+      </tr><tr>
+        <td>
+          157
+        </td>
+        <td>
+          14620
+        </td>
+        <td>
+          5503
+          -
+          5805
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.LinearSeqOptimized.exists
+        </td>
+        <td style="background: #AEF1AE">
+          PhaseListDecorator.this.names.exists(((name: String) =&gt; name.==(&quot;all&quot;).||({
+  val strippedName: String = scala.Predef.augmentString(name).stripSuffix(&quot;+&quot;);
+  val logNextPhase: Boolean = name.ne(strippedName);
+  phase.phaseName.startsWith(strippedName).||(logNextPhase.&amp;&amp;(phase.prev.phaseName.startsWith(strippedName)))
+})))
+        </td>
+      </tr><tr>
+        <td>
+          158
+        </td>
+        <td>
+          14613
+        </td>
+        <td>
+          5544
+          -
+          5549
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          &quot;all&quot;
+        </td>
+      </tr><tr>
+        <td>
+          158
+        </td>
+        <td>
+          14619
+        </td>
+        <td>
+          5536
+          -
+          5805
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Boolean.||
+        </td>
+        <td style="background: #AEF1AE">
+          name.==(&quot;all&quot;).||({
+  val strippedName: String = scala.Predef.augmentString(name).stripSuffix(&quot;+&quot;);
+  val logNextPhase: Boolean = name.ne(strippedName);
+  phase.phaseName.startsWith(strippedName).||(logNextPhase.&amp;&amp;(phase.prev.phaseName.startsWith(strippedName)))
+})
+        </td>
+      </tr><tr>
+        <td>
+          159
+        </td>
+        <td>
+          14614
+        </td>
+        <td>
+          5586
+          -
+          5607
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.immutable.StringLike.stripSuffix
+        </td>
+        <td style="background: #AEF1AE">
+          scala.Predef.augmentString(name).stripSuffix(&quot;+&quot;)
+        </td>
+      </tr><tr>
+        <td>
+          160
+        </td>
+        <td>
+          14615
+        </td>
+        <td>
+          5639
+          -
+          5659
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.Object.ne
+        </td>
+        <td style="background: #AEF1AE">
+          name.ne(strippedName)
+        </td>
+      </tr><tr>
+        <td>
+          161
+        </td>
+        <td>
+          14618
+        </td>
+        <td>
+          5672
+          -
+          5793
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Boolean.||
+        </td>
+        <td style="background: #AEF1AE">
+          phase.phaseName.startsWith(strippedName).||(logNextPhase.&amp;&amp;(phase.prev.phaseName.startsWith(strippedName)))
+        </td>
+      </tr><tr>
+        <td>
+          162
+        </td>
+        <td>
+          14617
+        </td>
+        <td>
+          5731
+          -
+          5792
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Boolean.&amp;&amp;
+        </td>
+        <td style="background: #AEF1AE">
+          logNextPhase.&amp;&amp;(phase.prev.phaseName.startsWith(strippedName))
+        </td>
+      </tr><tr>
+        <td>
+          162
+        </td>
+        <td>
+          14616
+        </td>
+        <td>
+          5747
+          -
+          5792
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.String.startsWith
+        </td>
+        <td style="background: #F0ADAD">
+          phase.prev.phaseName.startsWith(strippedName)
+        </td>
+      </tr><tr>
+        <td>
+          171
+        </td>
+        <td>
+          14623
+        </td>
+        <td>
+          6046
+          -
+          6120
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.util.SourcePosition.withOuter
+        </td>
+        <td style="background: #AEF1AE">
+          ast.tpd.sourceFile(inlinedCall)(ctx).atPos(pos).withOuter(recur(rest, inlinedCall.pos))
+        </td>
+      </tr><tr>
+        <td>
+          171
+        </td>
+        <td>
+          14622
+        </td>
+        <td>
+          6091
+          -
+          6119
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.core.Decorators.recur
+        </td>
+        <td style="background: #AEF1AE">
+          recur(rest, inlinedCall.pos)
+        </td>
+      </tr><tr>
+        <td>
+          171
+        </td>
+        <td>
+          14621
+        </td>
+        <td>
+          6103
+          -
+          6118
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Positioned.pos
+        </td>
+        <td style="background: #AEF1AE">
+          inlinedCall.pos
+        </td>
+      </tr><tr>
+        <td>
+          173
+        </td>
+        <td>
+          14624
+        </td>
+        <td>
+          6149
+          -
+          6170
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.util.SourceFile.atPos
+        </td>
+        <td style="background: #AEF1AE">
+          ctx.source.atPos(pos)
+        </td>
+      </tr><tr>
+        <td>
+          175
+        </td>
+        <td>
+          14626
+        </td>
+        <td>
+          6181
+          -
+          6210
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.core.Decorators.recur
+        </td>
+        <td style="background: #AEF1AE">
+          recur(ast.tpd.enclosingInlineds(ctx), pos)
+        </td>
+      </tr><tr>
+        <td>
+          175
+        </td>
+        <td>
+          14625
+        </td>
+        <td>
+          6187
+          -
+          6204
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.tpd.enclosingInlineds
+        </td>
+        <td style="background: #AEF1AE">
+          ast.tpd.enclosingInlineds(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          179
+        </td>
+        <td>
+          14629
+        </td>
+        <td>
+          6319
+          -
+          6333
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Predef.println
+        </td>
+        <td style="background: #F0ADAD">
+          scala.Predef.println(op.apply(reportingDeco.this.x))
+        </td>
+      </tr><tr>
+        <td>
+          179
+        </td>
+        <td>
+          14628
+        </td>
+        <td>
+          6327
+          -
+          6332
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Function1.apply
+        </td>
+        <td style="background: #F0ADAD">
+          op.apply(reportingDeco.this.x)
+        </td>
+      </tr><tr>
+        <td>
+          179
+        </td>
+        <td>
+          14627
+        </td>
+        <td>
+          6330
+          -
+          6331
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Decorators.reportingDeco.x
+        </td>
+        <td style="background: #F0ADAD">
+          reportingDeco.this.x
+        </td>
+      </tr><tr>
+        <td>
+          179
+        </td>
+        <td>
+          14630
+        </td>
+        <td>
+          6335
+          -
+          6336
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Decorators.reportingDeco.x
+        </td>
+        <td style="background: #F0ADAD">
+          reportingDeco.this.x
+        </td>
+      </tr><tr>
+        <td>
+          186
+        </td>
+        <td>
+          14631
+        </td>
+        <td>
+          6528
+          -
+          6566
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.printing.Formatting.StringFormatter.assemble
+        </td>
+        <td style="background: #AEF1AE">
+          new printing.Formatting.StringFormatter(StringInterpolators.this.sc).assemble(args)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          192
+        </td>
+        <td>
+          14632
+        </td>
+        <td>
+          6799
+          -
+          6843
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.printing.Formatting.StringFormatter.assemble
+        </td>
+        <td style="background: #AEF1AE">
+          new printing.Formatting.ErrorMessageFormatter(StringInterpolators.this.sc).assemble(args)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          198
+        </td>
+        <td>
+          14633
+        </td>
+        <td>
+          7072
+          -
+          7111
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.printing.Formatting.explained
+        </td>
+        <td style="background: #AEF1AE">
+          printing.Formatting.explained(((implicit ctx: dotty.tools.dotc.core.Contexts.Context) =&gt; StringInterpolators.this.em((args: _*))(ctx)))(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          202
+        </td>
+        <td>
+          14635
+        </td>
+        <td>
+          7253
+          -
+          7303
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.collection.immutable.StringLike.stripMargin
+        </td>
+        <td style="background: #AEF1AE">
+          scala.Predef.augmentString(new printing.Formatting.SyntaxFormatter(StringInterpolators.this.sc).assemble(args)(ctx)).stripMargin
+        </td>
+      </tr><tr>
+        <td>
+          202
+        </td>
+        <td>
+          14634
+        </td>
+        <td>
+          7253
+          -
+          7291
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.printing.Formatting.StringFormatter.assemble
+        </td>
+        <td style="background: #AEF1AE">
+          new printing.Formatting.SyntaxFormatter(StringInterpolators.this.sc).assemble(args)(ctx)
+        </td>
+      </tr>
+    </table>
+          </div>
+        </div>
+      </body>
+    </html>

@@ -1,0 +1,998 @@
+<html>
+      <head>
+        <meta http-equiv="Content-Type" content="text/html; charset=utf-8"/>
+        <title id="title">
+          dotty/tools/backend/jvm/LabelDefs.scala.html
+        </title>
+        <script src="https://ajax.googleapis.com/ajax/libs/jquery/1.10.2/jquery.min.js"></script><link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/jquery.tablesorter/2.20.1/css/theme.default.min.css" type="text/css"/><script src="https://cdnjs.cloudflare.com/ajax/libs/jquery.tablesorter/2.20.1/js/jquery.tablesorter.min.js"></script><link rel="stylesheet" href="https://netdna.bootstrapcdn.com/bootstrap/3.0.3/css/bootstrap.min.css" type="text/css"/><script src="https://netdna.bootstrapcdn.com/bootstrap/3.0.3/js/bootstrap.min.js"></script><script type="text/javascript">
+        $(document).ready(function() {$(".tablesorter").tablesorter();});
+      </script>
+        <style>
+          table.codegrid { font-family: monospace; font-size: 12px; width: auto!important; }table.statementlist { width: auto!important; font-size: 13px; } table.codegrid td { padding: 0!important; border: 0!important } table td.linenumber { width: 40px!important; } 
+        </style>
+      </head>
+      <body style="font-family: monospace;">
+        <ul class="nav nav-tabs">
+          <li>
+            <a href="#codegrid" data-toggle="tab">Codegrid</a>
+          </li>
+          <li>
+            <a href="#statementlist" data-toggle="tab">Statement List</a>
+          </li>
+        </ul>
+        <div class="tab-content">
+          <div class="tab-pane active" id="codegrid">
+            <pre style='font-size: 12pt; font-family: courier;'>1 <span style=''>package dotty.tools.backend.jvm
+</span>2 <span style=''>
+</span>3 <span style=''>import dotty.tools.dotc.ast.tpd
+</span>4 <span style=''>import dotty.tools.dotc.core.Contexts.Context
+</span>5 <span style=''>import dotty.tools.dotc.core.Flags._
+</span>6 <span style=''>import dotty.tools.dotc.core.Symbols._
+</span>7 <span style=''>import dotty.tools.dotc.transform.MegaPhase._
+</span>8 <span style=''>
+</span>9 <span style=''>import scala.collection.mutable
+</span>10 <span style=''>
+</span>11 <span style=''>/**
+</span>12 <span style=''> * Verifies that each Label DefDef has only a single address to jump back and
+</span>13 <span style=''> * reorders them such that they are not nested and this address is a
+</span>14 <span style=''> * fall-through address for the JVM.
+</span>15 <span style=''> *
+</span>16 <span style=''> * ```scala
+</span>17 <span style=''> * &lt;label&gt; def foo(i: Int) = {
+</span>18 <span style=''> *   &lt;label&gt; def bar = 0
+</span>19 <span style=''> *   &lt;label&gt; def dough(i: Int) = if (i == 0) bar else foo(i-1)
+</span>20 <span style=''> *   dough(i)
+</span>21 <span style=''> * }
+</span>22 <span style=''> *
+</span>23 <span style=''> * foo(100)
+</span>24 <span style=''> * ```
+</span>25 <span style=''> *
+</span>26 <span style=''> * will get rewritten to:
+</span>27 <span style=''> *
+</span>28 <span style=''> * ```scala
+</span>29 <span style=''> * &lt;label&gt; def foo(i: Int) = dough(i)
+</span>30 <span style=''> * &lt;label&gt; def dough(i: Int) = if (i == 0) bar else foo(i-1)
+</span>31 <span style=''> * &lt;label&gt; def bar = 2
+</span>32 <span style=''> *   foo(100)
+</span>33 <span style=''> * ```
+</span>34 <span style=''> *
+</span>35 <span style=''> * Proposed way to generate this pattern in backend is:
+</span>36 <span style=''> *
+</span>37 <span style=''> * ```scala
+</span>38 <span style=''> * foo(100)
+</span>39 <span style=''> * &lt;jump foo&gt;
+</span>40 <span style=''> * &lt;label&gt; def foo(i: Int) = dough(i)
+</span>41 <span style=''> * // &lt;jump a&gt;                           // unreachable
+</span>42 <span style=''> * &lt;label&gt; def dough(i: Int) = if (i == 0) bar else foo(i-1)
+</span>43 <span style=''> * // &lt;jump a&gt;                           // unreachable
+</span>44 <span style=''> * &lt;label&gt; def bar = 2
+</span>45 <span style=''> * // &lt;jump a&gt;                           // unreachable
+</span>46 <span style=''> * &lt;asm point a&gt;
+</span>47 <span style=''> * ```
+</span>48 <span style=''> *
+</span>49 <span style=''> * Unreachable jumps will be eliminated by local dead code analysis.
+</span>50 <span style=''> * After JVM is smart enough to remove next-line jumps
+</span>51 <span style=''> *
+</span>52 <span style=''> * Note that his phase Ychecking this phase required softening scoping rules
+</span>53 <span style=''> * as it intentionally allowed to break scoping rules inside methods for labels.
+</span>54 <span style=''> * This is modified by setting `labelsReordered` flag in Phases.
+</span>55 <span style=''> *
+</span>56 <span style=''> * @author Dmitry Petrashko
+</span>57 <span style=''> */
+</span>58 <span style=''>class LabelDefs extends MiniPhase {
+</span>59 <span style=''>  import tpd._
+</span>60 <span style=''>
+</span>61 <span style=''>  def phaseName: String = </span><span style='background: #AEF1AE'>&quot;labelDef&quot;</span><span style=''>
+</span>62 <span style=''>
+</span>63 <span style=''>  override def transformDefDef(tree: DefDef)(implicit ctx: Context): Tree = {
+</span>64 <span style=''>    if (</span><span style='background: #AEF1AE'>tree.symbol is Label</span><span style=''>) </span><span style='background: #AEF1AE'>tree</span><span style=''>
+</span>65 <span style=''>    else </span><span style='background: #AEF1AE'>{
+</span>66 <span style=''></span><span style='background: #AEF1AE'>      val labelDefs = collectLabelDefs(tree.rhs)
+</span>67 <span style=''></span><span style='background: #AEF1AE'>
+</span>68 <span style=''></span><span style='background: #AEF1AE'>      def putLabelDefsNearCallees = new TreeMap() {
+</span>69 <span style=''></span><span style='background: #AEF1AE'>        override def transform(tree: Tree)(implicit ctx: Context): Tree = {
+</span>70 <span style=''></span><span style='background: #AEF1AE'>          tree match {
+</span>71 <span style=''></span><span style='background: #AEF1AE'>            case t: Apply if labelDefs.contains(t.symbol) =&gt;
+</span>72 <span style=''></span><span style='background: #AEF1AE'>              val labelDef = labelDefs(t.symbol)
+</span>73 <span style=''></span><span style='background: #AEF1AE'>              labelDefs -= t.symbol
+</span>74 <span style=''></span><span style='background: #AEF1AE'>              val labelDef2 = cpy.DefDef(labelDef)(rhs = transform(labelDef.rhs))
+</span>75 <span style=''></span><span style='background: #AEF1AE'>              Block(labelDef2:: Nil, t)
+</span>76 <span style=''></span><span style='background: #AEF1AE'>            case t: DefDef =&gt;
+</span>77 <span style=''></span><span style='background: #AEF1AE'>              assert(t.symbol is Label)
+</span>78 <span style=''></span><span style='background: #AEF1AE'>              EmptyTree
+</span>79 <span style=''></span><span style='background: #AEF1AE'>            case _ =&gt; if (!labelDefs.isEmpty) super.transform(tree) else tree
+</span>80 <span style=''></span><span style='background: #AEF1AE'>          }
+</span>81 <span style=''></span><span style='background: #AEF1AE'>        }
+</span>82 <span style=''></span><span style='background: #AEF1AE'>      }
+</span>83 <span style=''></span><span style='background: #AEF1AE'>
+</span>84 <span style=''></span><span style='background: #AEF1AE'>      if (labelDefs.isEmpty) tree
+</span>85 <span style=''></span><span style='background: #AEF1AE'>      else cpy.DefDef(tree)(rhs = putLabelDefsNearCallees.transform(tree.rhs))
+</span>86 <span style=''></span><span style='background: #AEF1AE'>    }</span><span style=''>
+</span>87 <span style=''>  }
+</span>88 <span style=''>
+</span>89 <span style=''>  private def collectLabelDefs(tree: Tree)(implicit ctx: Context): MutableSymbolMap[DefDef] = {
+</span>90 <span style=''>    // labelSymbol -&gt; Defining tree
+</span>91 <span style=''>    val labelDefs = </span><span style='background: #AEF1AE'>newMutableSymbolMap[DefDef]</span><span style=''>
+</span>92 <span style=''>    </span><span style='background: #AEF1AE'>new TreeTraverser {
+</span>93 <span style=''></span><span style='background: #AEF1AE'>      override def traverse(tree: Tree)(implicit ctx: Context): Unit = tree match {
+</span>94 <span style=''></span><span style='background: #AEF1AE'>        case t: DefDef =&gt;
+</span>95 <span style=''></span><span style='background: #AEF1AE'>          assert(t.symbol is Label)
+</span>96 <span style=''></span><span style='background: #AEF1AE'>          labelDefs(t.symbol) = t
+</span>97 <span style=''></span><span style='background: #AEF1AE'>          traverseChildren(t)
+</span>98 <span style=''></span><span style='background: #AEF1AE'>        case _ =&gt; traverseChildren(tree)
+</span>99 <span style=''></span><span style='background: #AEF1AE'>      }
+</span>100 <span style=''></span><span style='background: #AEF1AE'>    }.traverse(tree)</span><span style=''>
+</span>101 <span style=''>    labelDefs
+</span>102 <span style=''>  }
+</span>103 <span style=''>}
+</span></pre>
+          </div>
+          <div class="tab-pane" id="statementlist">
+            <table cellspacing="0" cellpadding="0" class="table statementlist">
+      <tr>
+        <th>Line</th>
+        <th>Stmt Id</th>
+        <th>Pos</th>
+        <th>Tree</th>
+        <th>Symbol</th>
+        <th>Code</th>
+      </tr><tr>
+        <td>
+          61
+        </td>
+        <td>
+          5858
+        </td>
+        <td>
+          1697
+          -
+          1707
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          &quot;labelDef&quot;
+        </td>
+      </tr><tr>
+        <td>
+          64
+        </td>
+        <td>
+          5860
+        </td>
+        <td>
+          1817
+          -
+          1821
+        </td>
+        <td>
+          Ident
+        </td>
+        <td>
+          dotty.tools.backend.jvm.LabelDefs.tree
+        </td>
+        <td style="background: #AEF1AE">
+          tree
+        </td>
+      </tr><tr>
+        <td>
+          64
+        </td>
+        <td>
+          5859
+        </td>
+        <td>
+          1795
+          -
+          1815
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.SymDenotations.SymDenotation.is
+        </td>
+        <td style="background: #AEF1AE">
+          dotty.tools.dotc.core.Symbols.toDenot(tree.symbol(ctx))(ctx).is(dotty.tools.dotc.core.Flags.Label)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          65
+        </td>
+        <td>
+          5892
+        </td>
+        <td>
+          1831
+          -
+          2623
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          {
+  val labelDefs: dotty.tools.dotc.core.Symbols.MutableSymbolMap[dotty.tools.dotc.ast.tpd.DefDef] = LabelDefs.this.collectLabelDefs(tree.rhs(ctx))(ctx);
+  def putLabelDefsNearCallees: dotty.tools.dotc.ast.tpd.TreeMap = {
+    final class $anon extends dotty.tools.dotc.ast.tpd.TreeMap {
+      def &lt;init&gt;(): &lt;$anon: dotty.tools.dotc.ast.tpd.TreeMap&gt; = {
+        $anon.super.&lt;init&gt;(ast.this.tpd.TreeMap.&lt;init&gt;$default$1);
+        ()
+      };
+      override def transform(tree: dotty.tools.dotc.ast.tpd.Tree)(implicit ctx: dotty.tools.dotc.core.Contexts.Context): dotty.tools.dotc.ast.tpd.Tree = tree match {
+        case (t @ (_: dotty.tools.dotc.ast.tpd.Apply)) if labelDefs.contains(t.symbol(ctx)) =&gt; {
+          val labelDef: dotty.tools.dotc.ast.tpd.DefDef = labelDefs.apply(t.symbol(ctx));
+          labelDefs.-=(t.symbol(ctx));
+          val labelDef2: dotty.tools.dotc.ast.tpd.DefDef = {
+            &lt;artifact&gt; val x$2: dotty.tools.dotc.ast.tpd.DefDef = labelDef;
+            &lt;artifact&gt; val x$3: dotty.tools.dotc.ast.tpd.Tree = $anon.this.transform(labelDef.rhs(ctx))(ctx);
+            &lt;artifact&gt; val x$4: dotty.tools.dotc.core.Names.TermName = $anon.this.cpy.DefDef$default$2(x$2);
+            &lt;artifact&gt; val x$5: List[dotty.tools.dotc.ast.tpd.TypeDef] = $anon.this.cpy.DefDef$default$3(x$2);
+            &lt;artifact&gt; val x$6: List[List[dotty.tools.dotc.ast.tpd.ValDef]] = $anon.this.cpy.DefDef$default$4(x$2);
+            &lt;artifact&gt; val x$7: dotty.tools.dotc.ast.tpd.Tree = $anon.this.cpy.DefDef$default$5(x$2);
+            $anon.this.cpy.DefDef(x$2)(x$4, x$5, x$6, x$7, x$3)
+          };
+          dotty.tools.dotc.ast.tpd.Block({
+            &lt;synthetic&gt; &lt;artifact&gt; val x$1: dotty.tools.dotc.ast.tpd.DefDef = labelDef2;
+            scala.collection.immutable.Nil.::[dotty.tools.dotc.ast.tpd.DefDef](x$1)
+          }, t)(ctx)
+        }
+        case (t @ (_: dotty.tools.dotc.ast.tpd.DefDef)) =&gt; {
+          scala.Predef.assert(dotty.tools.dotc.core.Symbols.toDenot(t.symbol(ctx))(ctx).is(dotty.tools.dotc.core.Flags.Label)(ctx));
+          dotty.tools.dotc.ast.tpd.EmptyTree
+        }
+        case _ =&gt; if (labelDefs.isEmpty.unary_!)
+          $anon.super.transform(tree)(ctx)
+        else
+          tree
+      }
+    };
+    new $anon()
+  };
+  if (labelDefs.isEmpty)
+    tree
+  else
+    {
+      &lt;artifact&gt; val x$8: dotty.tools.dotc.ast.tpd.DefDef = tree;
+      &lt;artifact&gt; val x$9: dotty.tools.dotc.ast.tpd.Tree = putLabelDefsNearCallees.transform(tree.rhs(ctx))(ctx);
+      &lt;artifact&gt; val x$10: dotty.tools.dotc.core.Names.TermName = LabelDefs.this.cpy.DefDef$default$2(x$8);
+      &lt;artifact&gt; val x$11: List[dotty.tools.dotc.ast.tpd.TypeDef] = LabelDefs.this.cpy.DefDef$default$3(x$8);
+      &lt;artifact&gt; val x$12: List[List[dotty.tools.dotc.ast.tpd.ValDef]] = LabelDefs.this.cpy.DefDef$default$4(x$8);
+      &lt;artifact&gt; val x$13: dotty.tools.dotc.ast.tpd.Tree = LabelDefs.this.cpy.DefDef$default$5(x$8);
+      LabelDefs.this.cpy.DefDef(x$8)(x$10, x$11, x$12, x$13, x$9)
+    }
+}
+        </td>
+      </tr><tr>
+        <td>
+          66
+        </td>
+        <td>
+          5861
+        </td>
+        <td>
+          1855
+          -
+          1881
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.backend.jvm.LabelDefs.collectLabelDefs
+        </td>
+        <td style="background: #AEF1AE">
+          LabelDefs.this.collectLabelDefs(tree.rhs(ctx))(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          68
+        </td>
+        <td>
+          5882
+        </td>
+        <td>
+          1919
+          -
+          1922
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.backend.jvm.LabelDefs.$anon.&lt;init&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          new $anon()
+        </td>
+      </tr><tr>
+        <td>
+          71
+        </td>
+        <td>
+          5863
+        </td>
+        <td>
+          2063
+          -
+          2091
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.core.Symbols.MutableSymbolMap.contains
+        </td>
+        <td style="background: #AEF1AE">
+          labelDefs.contains(t.symbol(ctx))
+        </td>
+      </tr><tr>
+        <td>
+          71
+        </td>
+        <td>
+          5862
+        </td>
+        <td>
+          2082
+          -
+          2090
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Trees.Tree.symbol
+        </td>
+        <td style="background: #AEF1AE">
+          t.symbol(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          72
+        </td>
+        <td>
+          5864
+        </td>
+        <td>
+          2134
+          -
+          2142
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Trees.Tree.symbol
+        </td>
+        <td style="background: #AEF1AE">
+          t.symbol(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          72
+        </td>
+        <td>
+          5865
+        </td>
+        <td>
+          2124
+          -
+          2143
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.core.Symbols.MutableSymbolMap.apply
+        </td>
+        <td style="background: #AEF1AE">
+          labelDefs.apply(t.symbol(ctx))
+        </td>
+      </tr><tr>
+        <td>
+          73
+        </td>
+        <td>
+          5867
+        </td>
+        <td>
+          2158
+          -
+          2179
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.core.Symbols.MutableSymbolMap.-=
+        </td>
+        <td style="background: #AEF1AE">
+          labelDefs.-=(t.symbol(ctx))
+        </td>
+      </tr><tr>
+        <td>
+          73
+        </td>
+        <td>
+          5866
+        </td>
+        <td>
+          2171
+          -
+          2179
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Trees.Tree.symbol
+        </td>
+        <td style="background: #AEF1AE">
+          t.symbol(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          74
+        </td>
+        <td>
+          5870
+        </td>
+        <td>
+          2220
+          -
+          2220
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Trees.Instance.TreeCopier.DefDef$default$3
+        </td>
+        <td style="background: #AEF1AE">
+          $anon.this.cpy.DefDef$default$3(x$2)
+        </td>
+      </tr><tr>
+        <td>
+          74
+        </td>
+        <td>
+          5873
+        </td>
+        <td>
+          2210
+          -
+          2261
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Trees.Instance.TreeCopier.DefDef
+        </td>
+        <td style="background: #AEF1AE">
+          $anon.this.cpy.DefDef(x$2)(x$4, x$5, x$6, x$7, x$3)
+        </td>
+      </tr><tr>
+        <td>
+          74
+        </td>
+        <td>
+          5869
+        </td>
+        <td>
+          2220
+          -
+          2220
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Trees.Instance.TreeCopier.DefDef$default$2
+        </td>
+        <td style="background: #AEF1AE">
+          $anon.this.cpy.DefDef$default$2(x$2)
+        </td>
+      </tr><tr>
+        <td>
+          74
+        </td>
+        <td>
+          5872
+        </td>
+        <td>
+          2220
+          -
+          2220
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Trees.Instance.TreeCopier.DefDef$default$5
+        </td>
+        <td style="background: #AEF1AE">
+          $anon.this.cpy.DefDef$default$5(x$2)
+        </td>
+      </tr><tr>
+        <td>
+          74
+        </td>
+        <td>
+          5871
+        </td>
+        <td>
+          2220
+          -
+          2220
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Trees.Instance.TreeCopier.DefDef$default$4
+        </td>
+        <td style="background: #AEF1AE">
+          $anon.this.cpy.DefDef$default$4(x$2)
+        </td>
+      </tr><tr>
+        <td>
+          74
+        </td>
+        <td>
+          5868
+        </td>
+        <td>
+          2237
+          -
+          2260
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.backend.jvm.LabelDefs.$anon.transform
+        </td>
+        <td style="background: #AEF1AE">
+          $anon.this.transform(labelDef.rhs(ctx))(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          75
+        </td>
+        <td>
+          5874
+        </td>
+        <td>
+          2276
+          -
+          2301
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.tpd.Block
+        </td>
+        <td style="background: #AEF1AE">
+          dotty.tools.dotc.ast.tpd.Block({
+  &lt;synthetic&gt; &lt;artifact&gt; val x$1: dotty.tools.dotc.ast.tpd.DefDef = labelDef2;
+  scala.collection.immutable.Nil.::[dotty.tools.dotc.ast.tpd.DefDef](x$1)
+}, t)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          77
+        </td>
+        <td>
+          5875
+        </td>
+        <td>
+          2353
+          -
+          2370
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.SymDenotations.SymDenotation.is
+        </td>
+        <td style="background: #AEF1AE">
+          dotty.tools.dotc.core.Symbols.toDenot(t.symbol(ctx))(ctx).is(dotty.tools.dotc.core.Flags.Label)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          77
+        </td>
+        <td>
+          5876
+        </td>
+        <td>
+          2346
+          -
+          2371
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Predef.assert
+        </td>
+        <td style="background: #AEF1AE">
+          scala.Predef.assert(dotty.tools.dotc.core.Symbols.toDenot(t.symbol(ctx))(ctx).is(dotty.tools.dotc.core.Flags.Label)(ctx))
+        </td>
+      </tr><tr>
+        <td>
+          78
+        </td>
+        <td>
+          5877
+        </td>
+        <td>
+          2386
+          -
+          2395
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Trees.Instance.EmptyTree
+        </td>
+        <td style="background: #AEF1AE">
+          dotty.tools.dotc.ast.tpd.EmptyTree
+        </td>
+      </tr><tr>
+        <td>
+          79
+        </td>
+        <td>
+          5879
+        </td>
+        <td>
+          2442
+          -
+          2463
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Trees.Instance.TreeMap.transform
+        </td>
+        <td style="background: #AEF1AE">
+          $anon.super.transform(tree)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          79
+        </td>
+        <td>
+          5878
+        </td>
+        <td>
+          2422
+          -
+          2440
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.Boolean.unary_!
+        </td>
+        <td style="background: #AEF1AE">
+          labelDefs.isEmpty.unary_!
+        </td>
+      </tr><tr>
+        <td>
+          79
+        </td>
+        <td>
+          5881
+        </td>
+        <td>
+          2469
+          -
+          2473
+        </td>
+        <td>
+          Ident
+        </td>
+        <td>
+          dotty.tools.backend.jvm.LabelDefs.$anon.tree
+        </td>
+        <td style="background: #AEF1AE">
+          tree
+        </td>
+      </tr><tr>
+        <td>
+          79
+        </td>
+        <td>
+          5880
+        </td>
+        <td>
+          2442
+          -
+          2463
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Trees.Instance.TreeMap.transform
+        </td>
+        <td style="background: #AEF1AE">
+          $anon.super.transform(tree)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          84
+        </td>
+        <td>
+          5884
+        </td>
+        <td>
+          2534
+          -
+          2538
+        </td>
+        <td>
+          Ident
+        </td>
+        <td>
+          dotty.tools.backend.jvm.LabelDefs.tree
+        </td>
+        <td style="background: #AEF1AE">
+          tree
+        </td>
+      </tr><tr>
+        <td>
+          84
+        </td>
+        <td>
+          5883
+        </td>
+        <td>
+          2515
+          -
+          2532
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Symbols.MutableSymbolMap.isEmpty
+        </td>
+        <td style="background: #AEF1AE">
+          labelDefs.isEmpty
+        </td>
+      </tr><tr>
+        <td>
+          85
+        </td>
+        <td>
+          5888
+        </td>
+        <td>
+          2560
+          -
+          2560
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Trees.Instance.TreeCopier.DefDef$default$4
+        </td>
+        <td style="background: #AEF1AE">
+          LabelDefs.this.cpy.DefDef$default$4(x$8)
+        </td>
+      </tr><tr>
+        <td>
+          85
+        </td>
+        <td>
+          5891
+        </td>
+        <td>
+          2550
+          -
+          2617
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          {
+  &lt;artifact&gt; val x$8: dotty.tools.dotc.ast.tpd.DefDef = tree;
+  &lt;artifact&gt; val x$9: dotty.tools.dotc.ast.tpd.Tree = putLabelDefsNearCallees.transform(tree.rhs(ctx))(ctx);
+  &lt;artifact&gt; val x$10: dotty.tools.dotc.core.Names.TermName = LabelDefs.this.cpy.DefDef$default$2(x$8);
+  &lt;artifact&gt; val x$11: List[dotty.tools.dotc.ast.tpd.TypeDef] = LabelDefs.this.cpy.DefDef$default$3(x$8);
+  &lt;artifact&gt; val x$12: List[List[dotty.tools.dotc.ast.tpd.ValDef]] = LabelDefs.this.cpy.DefDef$default$4(x$8);
+  &lt;artifact&gt; val x$13: dotty.tools.dotc.ast.tpd.Tree = LabelDefs.this.cpy.DefDef$default$5(x$8);
+  LabelDefs.this.cpy.DefDef(x$8)(x$10, x$11, x$12, x$13, x$9)
+}
+        </td>
+      </tr><tr>
+        <td>
+          85
+        </td>
+        <td>
+          5887
+        </td>
+        <td>
+          2560
+          -
+          2560
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Trees.Instance.TreeCopier.DefDef$default$3
+        </td>
+        <td style="background: #AEF1AE">
+          LabelDefs.this.cpy.DefDef$default$3(x$8)
+        </td>
+      </tr><tr>
+        <td>
+          85
+        </td>
+        <td>
+          5890
+        </td>
+        <td>
+          2550
+          -
+          2617
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Trees.Instance.TreeCopier.DefDef
+        </td>
+        <td style="background: #AEF1AE">
+          LabelDefs.this.cpy.DefDef(x$8)(x$10, x$11, x$12, x$13, x$9)
+        </td>
+      </tr><tr>
+        <td>
+          85
+        </td>
+        <td>
+          5889
+        </td>
+        <td>
+          2560
+          -
+          2560
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Trees.Instance.TreeCopier.DefDef$default$5
+        </td>
+        <td style="background: #AEF1AE">
+          LabelDefs.this.cpy.DefDef$default$5(x$8)
+        </td>
+      </tr><tr>
+        <td>
+          85
+        </td>
+        <td>
+          5886
+        </td>
+        <td>
+          2560
+          -
+          2560
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Trees.Instance.TreeCopier.DefDef$default$2
+        </td>
+        <td style="background: #AEF1AE">
+          LabelDefs.this.cpy.DefDef$default$2(x$8)
+        </td>
+      </tr><tr>
+        <td>
+          85
+        </td>
+        <td>
+          5885
+        </td>
+        <td>
+          2573
+          -
+          2616
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Trees.Instance.TreeMap.transform
+        </td>
+        <td style="background: #AEF1AE">
+          putLabelDefsNearCallees.transform(tree.rhs(ctx))(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          91
+        </td>
+        <td>
+          5893
+        </td>
+        <td>
+          2781
+          -
+          2808
+        </td>
+        <td>
+          TypeApply
+        </td>
+        <td>
+          dotty.tools.dotc.core.Symbols.newMutableSymbolMap
+        </td>
+        <td style="background: #AEF1AE">
+          dotty.tools.dotc.core.Symbols.newMutableSymbolMap[dotty.tools.dotc.ast.tpd.DefDef]
+        </td>
+      </tr><tr>
+        <td>
+          100
+        </td>
+        <td>
+          5894
+        </td>
+        <td>
+          2813
+          -
+          3112
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.backend.jvm.LabelDefs.$anon.traverse
+        </td>
+        <td style="background: #AEF1AE">
+          {
+  final class $anon extends dotty.tools.dotc.ast.tpd.TreeTraverser {
+    def &lt;init&gt;(): &lt;$anon: dotty.tools.dotc.ast.tpd.TreeTraverser&gt; = {
+      $anon.super.&lt;init&gt;();
+      ()
+    };
+    override def traverse(tree: dotty.tools.dotc.ast.tpd.Tree)(implicit ctx: dotty.tools.dotc.core.Contexts.Context): Unit = tree match {
+      case (t @ (_: dotty.tools.dotc.ast.tpd.DefDef)) =&gt; {
+        scala.Predef.assert(dotty.tools.dotc.core.Symbols.toDenot(t.symbol(ctx))(ctx).is(dotty.tools.dotc.core.Flags.Label)(ctx));
+        labelDefs.update(t.symbol(ctx), t);
+        $anon.this.traverseChildren(t)(ctx)
+      }
+      case _ =&gt; $anon.this.traverseChildren(tree)(ctx)
+    }
+  };
+  new $anon()
+}.traverse(tree)(ctx)
+        </td>
+      </tr>
+    </table>
+          </div>
+        </div>
+      </body>
+    </html>

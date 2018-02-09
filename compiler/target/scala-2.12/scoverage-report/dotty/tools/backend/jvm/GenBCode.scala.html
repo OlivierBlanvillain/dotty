@@ -1,0 +1,7925 @@
+<html>
+      <head>
+        <meta http-equiv="Content-Type" content="text/html; charset=utf-8"/>
+        <title id="title">
+          dotty/tools/backend/jvm/GenBCode.scala.html
+        </title>
+        <script src="https://ajax.googleapis.com/ajax/libs/jquery/1.10.2/jquery.min.js"></script><link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/jquery.tablesorter/2.20.1/css/theme.default.min.css" type="text/css"/><script src="https://cdnjs.cloudflare.com/ajax/libs/jquery.tablesorter/2.20.1/js/jquery.tablesorter.min.js"></script><link rel="stylesheet" href="https://netdna.bootstrapcdn.com/bootstrap/3.0.3/css/bootstrap.min.css" type="text/css"/><script src="https://netdna.bootstrapcdn.com/bootstrap/3.0.3/js/bootstrap.min.js"></script><script type="text/javascript">
+        $(document).ready(function() {$(".tablesorter").tablesorter();});
+      </script>
+        <style>
+          table.codegrid { font-family: monospace; font-size: 12px; width: auto!important; }table.statementlist { width: auto!important; font-size: 13px; } table.codegrid td { padding: 0!important; border: 0!important } table td.linenumber { width: 40px!important; } 
+        </style>
+      </head>
+      <body style="font-family: monospace;">
+        <ul class="nav nav-tabs">
+          <li>
+            <a href="#codegrid" data-toggle="tab">Codegrid</a>
+          </li>
+          <li>
+            <a href="#statementlist" data-toggle="tab">Statement List</a>
+          </li>
+        </ul>
+        <div class="tab-content">
+          <div class="tab-pane active" id="codegrid">
+            <pre style='font-size: 12pt; font-family: courier;'>1 <span style=''>package dotty.tools.backend.jvm
+</span>2 <span style=''>
+</span>3 <span style=''>import dotty.tools.dotc.CompilationUnit
+</span>4 <span style=''>import dotty.tools.dotc.ast.Trees.{PackageDef, ValDef}
+</span>5 <span style=''>import dotty.tools.dotc.ast.tpd
+</span>6 <span style=''>import dotty.tools.dotc.core.Phases.Phase
+</span>7 <span style=''>import dotty.tools.dotc.core.Names.TypeName
+</span>8 <span style=''>
+</span>9 <span style=''>import scala.collection.mutable
+</span>10 <span style=''>import scala.collection.JavaConverters._
+</span>11 <span style=''>import scala.tools.asm.{ClassVisitor, CustomAttr, FieldVisitor, MethodVisitor}
+</span>12 <span style=''>import scala.tools.nsc.backend.jvm._
+</span>13 <span style=''>import dotty.tools.dotc
+</span>14 <span style=''>import dotty.tools.dotc.backend.jvm.DottyPrimitives
+</span>15 <span style=''>import dotty.tools.dotc.transform.Erasure
+</span>16 <span style=''>import dotty.tools.dotc.interfaces
+</span>17 <span style=''>import java.util.Optional
+</span>18 <span style=''>
+</span>19 <span style=''>import scala.reflect.ClassTag
+</span>20 <span style=''>import dotty.tools.dotc.core._
+</span>21 <span style=''>import Periods._
+</span>22 <span style=''>import SymDenotations._
+</span>23 <span style=''>import Contexts._
+</span>24 <span style=''>import Types._
+</span>25 <span style=''>import Symbols._
+</span>26 <span style=''>import Denotations._
+</span>27 <span style=''>import Decorators._
+</span>28 <span style=''>
+</span>29 <span style=''>import Phases._
+</span>30 <span style=''>import java.lang.AssertionError
+</span>31 <span style=''>import java.io.{DataOutputStream, File =&gt; JFile}
+</span>32 <span style=''>import java.nio.file.{Files, FileSystem, FileSystems, Path =&gt; JPath}
+</span>33 <span style=''>
+</span>34 <span style=''>import dotty.tools.io.{Directory, File, Jar}
+</span>35 <span style=''>
+</span>36 <span style=''>import scala.tools.asm
+</span>37 <span style=''>import scala.tools.asm.tree._
+</span>38 <span style=''>import dotty.tools.dotc.util.{DotClass, Positions}
+</span>39 <span style=''>import tpd._
+</span>40 <span style=''>import StdNames._
+</span>41 <span style=''>import dotty.tools.io._
+</span>42 <span style=''>
+</span>43 <span style=''>class GenBCode extends Phase {
+</span>44 <span style=''>  def phaseName: String = </span><span style='background: #AEF1AE'>&quot;genBCode&quot;</span><span style=''>
+</span>45 <span style=''>  private val entryPoints = </span><span style='background: #AEF1AE'>new mutable.HashSet[Symbol]()</span><span style=''>
+</span>46 <span style=''>  def registerEntryPoint(sym: Symbol) = </span><span style='background: #F0ADAD'>entryPoints += sym</span><span style=''>
+</span>47 <span style=''>
+</span>48 <span style=''>  private val superCallsMap = </span><span style='background: #AEF1AE'>newMutableSymbolMap[Set[ClassSymbol]]</span><span style=''>
+</span>49 <span style=''>  def registerSuperCall(sym: Symbol, calls: ClassSymbol) = {
+</span>50 <span style=''>    val old = </span><span style='background: #AEF1AE'>superCallsMap.getOrElse(sym, Set.empty)</span><span style=''>
+</span>51 <span style=''>    </span><span style='background: #AEF1AE'>superCallsMap.update(sym, old + calls)</span><span style=''>
+</span>52 <span style=''>  }
+</span>53 <span style=''>
+</span>54 <span style=''>  private[this] var myOutput: AbstractFile = _
+</span>55 <span style=''>
+</span>56 <span style=''>  protected def outputDir(implicit ctx: Context): AbstractFile = {
+</span>57 <span style=''>    if (</span><span style='background: #AEF1AE'>myOutput eq null</span><span style=''>) </span><span style='background: #AEF1AE'>{
+</span>58 <span style=''></span><span style='background: #AEF1AE'>      val path = Directory(ctx.settings.outputDir.value)
+</span>59 <span style=''></span><span style='background: #AEF1AE'>      myOutput =
+</span>60 <span style=''></span><span style='background: #AEF1AE'>        if (path.extension == &quot;jar&quot;) JarArchive.create(path)
+</span>61 <span style=''></span><span style='background: #AEF1AE'>        else new PlainDirectory(path)
+</span>62 <span style=''></span><span style='background: #AEF1AE'>    }</span><span style=''>
+</span>63 <span style=''>    </span><span style='background: #AEF1AE'>myOutput</span><span style=''>
+</span>64 <span style=''>  }
+</span>65 <span style=''>
+</span>66 <span style=''>  def run(implicit ctx: Context): Unit = {
+</span>67 <span style=''>    </span><span style='background: #AEF1AE'>new GenBCodePipeline(entryPoints.toList,
+</span>68 <span style=''></span><span style='background: #AEF1AE'>        new DottyBackendInterface(outputDir, superCallsMap.toMap)(ctx))(ctx).run(ctx.compilationUnit.tpdTree)</span><span style=''>
+</span>69 <span style=''>    </span><span style='background: #AEF1AE'>entryPoints.clear()</span><span style=''>
+</span>70 <span style=''>  }
+</span>71 <span style=''>
+</span>72 <span style=''>  override def runOn(units: List[CompilationUnit])(implicit ctx: Context) = {
+</span>73 <span style=''>    try </span><span style='background: #AEF1AE'>super.runOn(units)</span><span style=''>
+</span>74 <span style=''>    finally </span><span style='background: #AEF1AE'>myOutput match {
+</span>75 <span style=''></span><span style='background: #AEF1AE'>      case jar: JarArchive =&gt;
+</span>76 <span style=''></span><span style='background: #AEF1AE'>        jar.close()
+</span>77 <span style=''></span><span style='background: #AEF1AE'>      case _ =&gt;
+</span>78 <span style=''></span><span style='background: #AEF1AE'>    }</span><span style=''>
+</span>79 <span style=''>  }
+</span>80 <span style=''>}
+</span>81 <span style=''>
+</span>82 <span style=''>class GenBCodePipeline(val entryPoints: List[Symbol], val int: DottyBackendInterface)(implicit val ctx: Context) extends BCodeSyncAndTry {
+</span>83 <span style=''>
+</span>84 <span style=''>  var tree: Tree = _
+</span>85 <span style=''>
+</span>86 <span style=''>  val sourceFile = </span><span style='background: #AEF1AE'>ctx.compilationUnit.source</span><span style=''>
+</span>87 <span style=''>
+</span>88 <span style=''>  /** Convert a `dotty.tools.io.AbstractFile` into a
+</span>89 <span style=''>   *  `dotty.tools.dotc.interfaces.AbstractFile`.
+</span>90 <span style=''>   */
+</span>91 <span style=''>  private[this] def convertAbstractFile(absfile: dotty.tools.io.AbstractFile): interfaces.AbstractFile =
+</span>92 <span style=''>    </span><span style='background: #AEF1AE'>new</span><span style=''> interfaces.AbstractFile {
+</span>93 <span style=''>      override def name = </span><span style='background: #F0ADAD'>absfile.name</span><span style=''>
+</span>94 <span style=''>      override def path = </span><span style='background: #F0ADAD'>absfile.path</span><span style=''>
+</span>95 <span style=''>      override def jfile = </span><span style='background: #F0ADAD'>Optional.ofNullable(absfile.file)</span><span style=''>
+</span>96 <span style=''>    }
+</span>97 <span style=''>
+</span>98 <span style=''>  final class PlainClassBuilder(cunit: CompilationUnit) extends SyncAndTryBuilder(cunit)
+</span>99 <span style=''>
+</span>100 <span style=''>
+</span>101 <span style=''>//  class BCodePhase() {
+</span>102 <span style=''>
+</span>103 <span style=''>    private[this] var bytecodeWriter  : BytecodeWriter   = </span><span style='background: #AEF1AE'>null</span><span style=''>
+</span>104 <span style=''>    private[this] var mirrorCodeGen   : JMirrorBuilder   = </span><span style='background: #AEF1AE'>null</span><span style=''>
+</span>105 <span style=''>
+</span>106 <span style=''>    /* ---------------- q1 ---------------- */
+</span>107 <span style=''>
+</span>108 <span style=''>    case class Item1(arrivalPos: Int, cd: TypeDef, cunit: CompilationUnit) {
+</span>109 <span style=''>      def isPoison = { </span><span style='background: #AEF1AE'>arrivalPos == Int.MaxValue</span><span style=''> }
+</span>110 <span style=''>    }
+</span>111 <span style=''>    private val poison1 = </span><span style='background: #AEF1AE'>Item1(Int.MaxValue, null, ctx.compilationUnit)</span><span style=''>
+</span>112 <span style=''>    private val q1 = </span><span style='background: #AEF1AE'>new java.util.LinkedList[Item1]</span><span style=''>
+</span>113 <span style=''>
+</span>114 <span style=''>    /* ---------------- q2 ---------------- */
+</span>115 <span style=''>
+</span>116 <span style=''>    case class Item2(arrivalPos:   Int,
+</span>117 <span style=''>                     mirror:       asm.tree.ClassNode,
+</span>118 <span style=''>                     plain:        asm.tree.ClassNode,
+</span>119 <span style=''>                     outFolder:    scala.tools.nsc.io.AbstractFile) {
+</span>120 <span style=''>      def isPoison = { </span><span style='background: #AEF1AE'>arrivalPos == Int.MaxValue</span><span style=''> }
+</span>121 <span style=''>    }
+</span>122 <span style=''>
+</span>123 <span style=''>    private val poison2 = </span><span style='background: #AEF1AE'>Item2(Int.MaxValue, null, null, null)</span><span style=''>
+</span>124 <span style=''>    private val q2 = </span><span style='background: #AEF1AE'>new _root_.java.util.LinkedList[Item2]</span><span style=''>
+</span>125 <span style=''>
+</span>126 <span style=''>    /* ---------------- q3 ---------------- */
+</span>127 <span style=''>
+</span>128 <span style=''>    /*
+</span>129 <span style=''>     *  An item of queue-3 (the last queue before serializing to disk) contains three of these
+</span>130 <span style=''>     *  (one for each of mirror and plain classes).
+</span>131 <span style=''>     *
+</span>132 <span style=''>     *  @param jclassName  internal name of the class
+</span>133 <span style=''>     *  @param jclassBytes bytecode emitted for the class SubItem3 represents
+</span>134 <span style=''>     */
+</span>135 <span style=''>    case class SubItem3(
+</span>136 <span style=''>                         jclassName:  String,
+</span>137 <span style=''>                         jclassBytes: Array[Byte]
+</span>138 <span style=''>                         )
+</span>139 <span style=''>
+</span>140 <span style=''>    case class Item3(arrivalPos: Int,
+</span>141 <span style=''>                     mirror:     SubItem3,
+</span>142 <span style=''>                     plain:      SubItem3,
+</span>143 <span style=''>                     outFolder:  scala.tools.nsc.io.AbstractFile) {
+</span>144 <span style=''>
+</span>145 <span style=''>      def isPoison  = { </span><span style='background: #AEF1AE'>arrivalPos == Int.MaxValue</span><span style=''> }
+</span>146 <span style=''>    }
+</span>147 <span style=''>    private val i3comparator = </span><span style='background: #AEF1AE'>new</span><span style=''> java.util.Comparator[Item3] {
+</span>148 <span style=''>      override def compare(a: Item3, b: Item3) = {
+</span>149 <span style=''>        if (</span><span style='background: #AEF1AE'>a.arrivalPos &lt; b.arrivalPos</span><span style=''>) </span><span style='background: #AEF1AE'>-1</span><span style=''>
+</span>150 <span style=''>        else </span><span style='background: #AEF1AE'>if (a.arrivalPos == b.arrivalPos) </span><span style='background: #F0ADAD'>0</span><span style='background: #AEF1AE'>
+</span>151 <span style=''></span><span style='background: #AEF1AE'>        else 1</span><span style=''>
+</span>152 <span style=''>      }
+</span>153 <span style=''>    }
+</span>154 <span style=''>    private val poison3 = </span><span style='background: #AEF1AE'>Item3(Int.MaxValue, null, null, null)</span><span style=''>
+</span>155 <span style=''>    private val q3 = </span><span style='background: #AEF1AE'>new java.util.PriorityQueue[Item3](1000, i3comparator)</span><span style=''>
+</span>156 <span style=''>
+</span>157 <span style=''>    /*
+</span>158 <span style=''>     *  Pipeline that takes ClassDefs from queue-1, lowers them into an intermediate form, placing them on queue-2
+</span>159 <span style=''>     */
+</span>160 <span style=''>    class Worker1(needsOutFolder: Boolean) {
+</span>161 <span style=''>
+</span>162 <span style=''>      val caseInsensitively = </span><span style='background: #AEF1AE'>scala.collection.mutable.Map.empty[String, Symbol]</span><span style=''>
+</span>163 <span style=''>
+</span>164 <span style=''>      def run(): Unit = {
+</span>165 <span style=''>        while (</span><span style='background: #AEF1AE'>true</span><span style=''>) </span><span style='background: #AEF1AE'>{
+</span>166 <span style=''></span><span style='background: #AEF1AE'>          val item = q1.poll
+</span>167 <span style=''></span><span style='background: #AEF1AE'>          if (item.isPoison) {
+</span>168 <span style=''></span><span style='background: #AEF1AE'>            q2 add poison2
+</span>169 <span style=''></span><span style='background: #AEF1AE'>            return
+</span>170 <span style=''></span><span style='background: #AEF1AE'>          }
+</span>171 <span style=''></span><span style='background: #AEF1AE'>          else {
+</span>172 <span style=''></span><span style='background: #AEF1AE'>            try   { /*withCurrentUnit(item.cunit)*/(visit(item)) }
+</span>173 <span style=''></span><span style='background: #AEF1AE'>            catch {
+</span>174 <span style=''></span><span style='background: #AEF1AE'>              case ex: Throwable =&gt;
+</span>175 <span style=''></span><span style='background: #AEF1AE'>                </span><span style='background: #F0ADAD'>ex.printStackTrace()</span><span style='background: #AEF1AE'>
+</span>176 <span style=''></span><span style='background: #AEF1AE'>                </span><span style='background: #F0ADAD'>ctx.error(s&quot;Error while emitting ${int.sourceFileFor(item.cunit)}\n${ex.getMessage}&quot;)</span><span style='background: #AEF1AE'>
+</span>177 <span style=''></span><span style='background: #AEF1AE'>            }
+</span>178 <span style=''></span><span style='background: #AEF1AE'>          }
+</span>179 <span style=''></span><span style='background: #AEF1AE'>        }</span><span style=''>
+</span>180 <span style=''>      }
+</span>181 <span style=''>
+</span>182 <span style=''>      /*
+</span>183 <span style=''>       *  Checks for duplicate internal names case-insensitively,
+</span>184 <span style=''>       *  builds ASM ClassNodes for mirror and plain classes;
+</span>185 <span style=''>       *  enqueues them in queue-2.
+</span>186 <span style=''>       *
+</span>187 <span style=''>       */
+</span>188 <span style=''>      def visit(item: Item1) = {
+</span>189 <span style=''>        val Item1(arrivalPos, cd, cunit) = item
+</span>190 <span style=''>        val claszSymbol = </span><span style='background: #AEF1AE'>cd.symbol</span><span style=''>
+</span>191 <span style=''>
+</span>192 <span style=''>        // GenASM checks this before classfiles are emitted, https://github.com/scala/scala/commit/e4d1d930693ac75d8eb64c2c3c69f2fc22bec739
+</span>193 <span style=''>        val lowercaseJavaClassName = </span><span style='background: #AEF1AE'>claszSymbol.name.toString.toLowerCase</span><span style=''>
+</span>194 <span style=''>        </span><span style='background: #AEF1AE'>caseInsensitively.get(lowercaseJavaClassName)</span><span style=''> match {
+</span>195 <span style=''>          case None =&gt;
+</span>196 <span style=''>            </span><span style='background: #AEF1AE'>caseInsensitively.put(lowercaseJavaClassName, claszSymbol)</span><span style=''>
+</span>197 <span style=''>          case Some(dupClassSym) =&gt;
+</span>198 <span style=''>            // Order is not deterministic so we enforce lexicographic order between the duplicates for error-reporting
+</span>199 <span style=''>            if (</span><span style='background: #AEF1AE'>claszSymbol.name.toString &lt; dupClassSym.name.toString</span><span style=''>)
+</span>200 <span style=''>              </span><span style='background: #F0ADAD'>ctx.warning(s&quot;Class ${claszSymbol.name} differs only in case from ${dupClassSym.name}. &quot; +
+</span>201 <span style=''></span><span style='background: #F0ADAD'>                          &quot;Such classes will overwrite one another on case-insensitive filesystems.&quot;, claszSymbol.pos)</span><span style=''>
+</span>202 <span style=''>            else
+</span>203 <span style=''>              </span><span style='background: #AEF1AE'>ctx.warning(s&quot;Class ${dupClassSym.name} differs only in case from ${claszSymbol.name}. &quot; +
+</span>204 <span style=''></span><span style='background: #AEF1AE'>                          &quot;Such classes will overwrite one another on case-insensitive filesystems.&quot;, dupClassSym.pos)</span><span style=''>
+</span>205 <span style=''>        }
+</span>206 <span style=''>
+</span>207 <span style=''>        // -------------- mirror class, if needed --------------
+</span>208 <span style=''>        val mirrorC =
+</span>209 <span style=''>          if (</span><span style='background: #AEF1AE'>int.symHelper(claszSymbol).isTopLevelModuleClass</span><span style=''>) {
+</span>210 <span style=''>            </span><span style='background: #AEF1AE'>if (claszSymbol.companionClass == NoSymbol) {
+</span>211 <span style=''></span><span style='background: #AEF1AE'>              mirrorCodeGen.genMirrorClass(claszSymbol, cunit)
+</span>212 <span style=''></span><span style='background: #AEF1AE'>            } else {
+</span>213 <span style=''></span><span style='background: #AEF1AE'>              ctx.log(</span><span style='background: #F0ADAD'>s&quot;No mirror class for module with linked class: ${claszSymbol.fullName}&quot;</span><span style='background: #AEF1AE'>)
+</span>214 <span style=''></span><span style='background: #AEF1AE'>              null
+</span>215 <span style=''></span><span style='background: #AEF1AE'>            }</span><span style=''>
+</span>216 <span style=''>          } else </span><span style='background: #AEF1AE'>null</span><span style=''>
+</span>217 <span style=''>
+</span>218 <span style=''>        // -------------- &quot;plain&quot; class --------------
+</span>219 <span style=''>        val pcb = </span><span style='background: #AEF1AE'>new PlainClassBuilder(cunit)</span><span style=''>
+</span>220 <span style=''>        </span><span style='background: #AEF1AE'>pcb.genPlainClass(cd)</span><span style=''>
+</span>221 <span style=''>        val outF = if (</span><span style='background: #AEF1AE'>needsOutFolder</span><span style=''>) </span><span style='background: #AEF1AE'>getOutFolder(claszSymbol, pcb.thisName)</span><span style=''> else </span><span style='background: #F0ADAD'>null</span><span style=''>;
+</span>222 <span style=''>        val plainC = </span><span style='background: #AEF1AE'>pcb.cnode</span><span style=''>
+</span>223 <span style=''>
+</span>224 <span style=''>        if (</span><span style='background: #AEF1AE'>claszSymbol.isClass</span><span style=''>) // @DarkDimius is this test needed here?
+</span>225 <span style=''>          </span><span style='background: #AEF1AE'>for (binary &lt;- ctx.compilationUnit.pickled.get(claszSymbol.asClass)) {
+</span>226 <span style=''></span><span style='background: #AEF1AE'>            val store = if (mirrorC ne null) mirrorC else plainC
+</span>227 <span style=''></span><span style='background: #AEF1AE'>            val tasty =
+</span>228 <span style=''></span><span style='background: #AEF1AE'>              if (ctx.settings.YemitTasty.value) {
+</span>229 <span style=''></span><span style='background: #AEF1AE'>                val outTastyFile = getFileForClassfile(outF, store.name, &quot;.tasty&quot;)
+</span>230 <span style=''></span><span style='background: #AEF1AE'>                val outstream = new DataOutputStream(outTastyFile.bufferedOutput)
+</span>231 <span style=''></span><span style='background: #AEF1AE'>                try outstream.write(binary)
+</span>232 <span style=''></span><span style='background: #AEF1AE'>                finally outstream.close()
+</span>233 <span style=''></span><span style='background: #AEF1AE'>                // TASTY attribute is created but 0 bytes are stored in it.
+</span>234 <span style=''></span><span style='background: #AEF1AE'>                // A TASTY attribute has length 0 if and only if the .tasty file exists.
+</span>235 <span style=''></span><span style='background: #AEF1AE'>                Array.empty[Byte]
+</span>236 <span style=''></span><span style='background: #AEF1AE'>              } else {
+</span>237 <span style=''></span><span style='background: #AEF1AE'>                // Create an empty file to signal that a tasty section exist in the corresponding .class
+</span>238 <span style=''></span><span style='background: #AEF1AE'>                // This is much cheaper and simpler to check than doing classfile parsing
+</span>239 <span style=''></span><span style='background: #AEF1AE'>                getFileForClassfile(outF, store.name, &quot;.hasTasty&quot;)
+</span>240 <span style=''></span><span style='background: #AEF1AE'>                binary
+</span>241 <span style=''></span><span style='background: #AEF1AE'>              }
+</span>242 <span style=''></span><span style='background: #AEF1AE'>            val dataAttr = new CustomAttr(nme.TASTYATTR.mangledString, tasty)
+</span>243 <span style=''></span><span style='background: #AEF1AE'>            store.visitAttribute(dataAttr)
+</span>244 <span style=''></span><span style='background: #AEF1AE'>          }</span><span style=''>
+</span>245 <span style=''>
+</span>246 <span style=''>
+</span>247 <span style=''>        // ----------- hand over to pipeline-2
+</span>248 <span style=''>
+</span>249 <span style=''>        val item2 =
+</span>250 <span style=''>          </span><span style='background: #AEF1AE'>Item2(arrivalPos,
+</span>251 <span style=''></span><span style='background: #AEF1AE'>            mirrorC, plainC,
+</span>252 <span style=''></span><span style='background: #AEF1AE'>            outF)</span><span style=''>
+</span>253 <span style=''>
+</span>254 <span style=''>        </span><span style='background: #AEF1AE'>q2 add item2</span><span style=''> // at the very end of this method so that no Worker2 thread starts mutating before we're done.
+</span>255 <span style=''>
+</span>256 <span style=''>      } // end of method visit(Item1)
+</span>257 <span style=''>
+</span>258 <span style=''>    } // end of class BCodePhase.Worker1
+</span>259 <span style=''>
+</span>260 <span style=''>    /*
+</span>261 <span style=''>     *  Pipeline that takes ClassNodes from queue-2. The unit of work depends on the optimization level:
+</span>262 <span style=''>     *
+</span>263 <span style=''>     *    (a) no optimization involves:
+</span>264 <span style=''>     *          - converting the plain ClassNode to byte array and placing it on queue-3
+</span>265 <span style=''>     */
+</span>266 <span style=''>    class Worker2 {
+</span>267 <span style=''>      // lazy val localOpt = new LocalOpt(new Settings())
+</span>268 <span style=''>
+</span>269 <span style=''>      def localOptimizations(classNode: ClassNode): Unit = </span><span style='background: #AEF1AE'>{
+</span>270 <span style=''></span><span style='background: #AEF1AE'>        // BackendStats.timed(BackendStats.methodOptTimer)(localOpt.methodOptimizations(classNode))
+</span>271 <span style=''></span><span style='background: #AEF1AE'>      }</span><span style=''>
+</span>272 <span style=''>
+</span>273 <span style=''>      def run(): Unit = {
+</span>274 <span style=''>        while (</span><span style='background: #AEF1AE'>true</span><span style=''>) </span><span style='background: #AEF1AE'>{
+</span>275 <span style=''></span><span style='background: #AEF1AE'>          val item = q2.poll
+</span>276 <span style=''></span><span style='background: #AEF1AE'>          if (item.isPoison) {
+</span>277 <span style=''></span><span style='background: #AEF1AE'>            q3 add poison3
+</span>278 <span style=''></span><span style='background: #AEF1AE'>            return
+</span>279 <span style=''></span><span style='background: #AEF1AE'>          }
+</span>280 <span style=''></span><span style='background: #AEF1AE'>          else {
+</span>281 <span style=''></span><span style='background: #AEF1AE'>            try {
+</span>282 <span style=''></span><span style='background: #AEF1AE'>              localOptimizations(item.plain)
+</span>283 <span style=''></span><span style='background: #AEF1AE'>              addToQ3(item)
+</span>284 <span style=''></span><span style='background: #AEF1AE'>            } catch {
+</span>285 <span style=''></span><span style='background: #AEF1AE'>              case ex: Throwable =&gt;
+</span>286 <span style=''></span><span style='background: #AEF1AE'>                </span><span style='background: #F0ADAD'>ex.printStackTrace()</span><span style='background: #AEF1AE'>
+</span>287 <span style=''></span><span style='background: #AEF1AE'>                </span><span style='background: #F0ADAD'>ctx.error(s&quot;Error while emitting ${item.plain.name}\n${ex.getMessage}&quot;)</span><span style='background: #AEF1AE'>
+</span>288 <span style=''></span><span style='background: #AEF1AE'>            }
+</span>289 <span style=''></span><span style='background: #AEF1AE'>          }
+</span>290 <span style=''></span><span style='background: #AEF1AE'>        }</span><span style=''>
+</span>291 <span style=''>      }
+</span>292 <span style=''>
+</span>293 <span style=''>      private def addToQ3(item: Item2) = {
+</span>294 <span style=''>
+</span>295 <span style=''>        def getByteArray(cn: asm.tree.ClassNode): Array[Byte] = {
+</span>296 <span style=''>          val cw = </span><span style='background: #AEF1AE'>new CClassWriter(extraProc)</span><span style=''>
+</span>297 <span style=''>          </span><span style='background: #AEF1AE'>cn.accept(cw)</span><span style=''>
+</span>298 <span style=''>          </span><span style='background: #AEF1AE'>cw.toByteArray</span><span style=''>
+</span>299 <span style=''>        }
+</span>300 <span style=''>
+</span>301 <span style=''>        val Item2(arrivalPos, mirror, plain, outFolder) = item
+</span>302 <span style=''>
+</span>303 <span style=''>        val mirrorC = if (</span><span style='background: #AEF1AE'>mirror == null</span><span style=''>) </span><span style='background: #AEF1AE'>null</span><span style=''> else </span><span style='background: #AEF1AE'>SubItem3(mirror.name, getByteArray(mirror))</span><span style=''>
+</span>304 <span style=''>        val plainC  = </span><span style='background: #AEF1AE'>SubItem3(plain.name, getByteArray(plain))</span><span style=''>
+</span>305 <span style=''>
+</span>306 <span style=''>        if (</span><span style='background: #AEF1AE'>AsmUtils.traceSerializedClassEnabled &amp;&amp; </span><span style='background: #F0ADAD'>plain.name.contains(AsmUtils.traceSerializedClassPattern)</span><span style=''>) </span><span style='background: #F0ADAD'>{
+</span>307 <span style=''></span><span style='background: #F0ADAD'>          if (mirrorC != null) AsmUtils.traceClass(mirrorC.jclassBytes)
+</span>308 <span style=''></span><span style='background: #F0ADAD'>          AsmUtils.traceClass(plainC.jclassBytes)
+</span>309 <span style=''></span><span style='background: #F0ADAD'>        }</span><span style=''>
+</span>310 <span style=''>
+</span>311 <span style=''>        </span><span style='background: #AEF1AE'>q3 add Item3(arrivalPos, mirrorC, plainC, outFolder)</span><span style=''>
+</span>312 <span style=''>
+</span>313 <span style=''>      }
+</span>314 <span style=''>
+</span>315 <span style=''>    } // end of class BCodePhase.Worker2
+</span>316 <span style=''>
+</span>317 <span style=''>    var arrivalPos = </span><span style='background: #AEF1AE'>0</span><span style=''>
+</span>318 <span style=''>
+</span>319 <span style=''>    /*
+</span>320 <span style=''>     *  A run of the BCodePhase phase comprises:
+</span>321 <span style=''>     *
+</span>322 <span style=''>     *    (a) set-up steps (most notably supporting maps in `BCodeTypes`,
+</span>323 <span style=''>     *        but also &quot;the&quot; writer where class files in byte-array form go)
+</span>324 <span style=''>     *
+</span>325 <span style=''>     *    (b) building of ASM ClassNodes, their optimization and serialization.
+</span>326 <span style=''>     *
+</span>327 <span style=''>     *    (c) tear down (closing the classfile-writer and clearing maps)
+</span>328 <span style=''>     *
+</span>329 <span style=''>     */
+</span>330 <span style=''>    def run(t: Tree) = {
+</span>331 <span style=''>      </span><span style='background: #AEF1AE'>this.tree = t</span><span style=''>
+</span>332 <span style=''>
+</span>333 <span style=''>      // val bcodeStart = Statistics.startTimer(BackendStats.bcodeTimer)
+</span>334 <span style=''>
+</span>335 <span style=''>      // val initStart = Statistics.startTimer(BackendStats.bcodeInitTimer)
+</span>336 <span style=''>      </span><span style='background: #AEF1AE'>arrivalPos = 0</span><span style=''> // just in case
+</span>337 <span style=''>      // scalaPrimitives.init()
+</span>338 <span style=''>      </span><span style='background: #AEF1AE'>bTypes.intializeCoreBTypes()</span><span style=''>
+</span>339 <span style=''>      // Statistics.stopTimer(BackendStats.bcodeInitTimer, initStart)
+</span>340 <span style=''>
+</span>341 <span style=''>      // initBytecodeWriter invokes fullName, thus we have to run it before the typer-dependent thread is activated.
+</span>342 <span style=''>      bytecodeWriter  = </span><span style='background: #AEF1AE'>initBytecodeWriter(entryPoints)</span><span style=''>
+</span>343 <span style=''>      mirrorCodeGen   = </span><span style='background: #AEF1AE'>new JMirrorBuilder</span><span style=''>
+</span>344 <span style=''>
+</span>345 <span style=''>      val needsOutfileForSymbol = </span><span style='background: #AEF1AE'>bytecodeWriter.isInstanceOf[ClassBytecodeWriter]</span><span style=''>
+</span>346 <span style=''>      </span><span style='background: #AEF1AE'>buildAndSendToDisk(needsOutfileForSymbol)</span><span style=''>
+</span>347 <span style=''>
+</span>348 <span style=''>      // closing output files.
+</span>349 <span style=''>      </span><span style='background: #AEF1AE'>bytecodeWriter.close()</span><span style=''>
+</span>350 <span style=''>      // Statistics.stopTimer(BackendStats.bcodeTimer, bcodeStart)
+</span>351 <span style=''>
+</span>352 <span style=''>      if (</span><span style='background: #AEF1AE'>ctx.compilerCallback != null</span><span style=''>)
+</span>353 <span style=''>        </span><span style='background: #AEF1AE'>ctx.compilerCallback.onSourceCompiled(sourceFile)</span><span style=''>
+</span>354 <span style=''>
+</span>355 <span style=''>      /* TODO Bytecode can be verified (now that all classfiles have been written to disk)
+</span>356 <span style=''>       *
+</span>357 <span style=''>       * (1) asm.util.CheckAdapter.verify()
+</span>358 <span style=''>       *       public static void verify(ClassReader cr, ClassLoader loader, boolean dump, PrintWriter pw)
+</span>359 <span style=''>       *     passing a custom ClassLoader to verify inter-dependent classes.
+</span>360 <span style=''>       *     Alternatively,
+</span>361 <span style=''>       *       - an offline-bytecode verifier could be used (e.g. Maxine brings one as separate tool).
+</span>362 <span style=''>       *       - -Xverify:all
+</span>363 <span style=''>       *
+</span>364 <span style=''>       * (2) if requested, check-java-signatures, over and beyond the syntactic checks in `getGenericSignature()`
+</span>365 <span style=''>       *
+</span>366 <span style=''>       */
+</span>367 <span style=''>    }
+</span>368 <span style=''>
+</span>369 <span style=''>    /*
+</span>370 <span style=''>     *  Sequentially:
+</span>371 <span style=''>     *    (a) place all ClassDefs in queue-1
+</span>372 <span style=''>     *    (b) dequeue one at a time from queue-1, convert it to ASM ClassNode, place in queue-2
+</span>373 <span style=''>     *    (c) dequeue one at a time from queue-2, convert it to byte-array,    place in queue-3
+</span>374 <span style=''>     *    (d) serialize to disk by draining queue-3.
+</span>375 <span style=''>     */
+</span>376 <span style=''>    private def buildAndSendToDisk(needsOutFolder: Boolean) = {
+</span>377 <span style=''>
+</span>378 <span style=''>      </span><span style='background: #AEF1AE'>feedPipeline1()</span><span style=''>
+</span>379 <span style=''>      // val genStart = Statistics.startTimer(BackendStats.bcodeGenStat)
+</span>380 <span style=''>      (</span><span style='background: #AEF1AE'>new Worker1(needsOutFolder)).run()</span><span style=''>
+</span>381 <span style=''>      // Statistics.stopTimer(BackendStats.bcodeGenStat, genStart)
+</span>382 <span style=''>
+</span>383 <span style=''>      (</span><span style='background: #AEF1AE'>new Worker2).run()</span><span style=''>
+</span>384 <span style=''>
+</span>385 <span style=''>      // val writeStart = Statistics.startTimer(BackendStats.bcodeWriteTimer)
+</span>386 <span style=''>      </span><span style='background: #AEF1AE'>drainQ3()</span><span style=''>
+</span>387 <span style=''>      // Statistics.stopTimer(BackendStats.bcodeWriteTimer, writeStart)
+</span>388 <span style=''>
+</span>389 <span style=''>    }
+</span>390 <span style=''>
+</span>391 <span style=''>    /* Feed pipeline-1: place all ClassDefs on q1, recording their arrival position. */
+</span>392 <span style=''>    private def feedPipeline1() = {
+</span>393 <span style=''>      def gen(tree: Tree): Unit = {
+</span>394 <span style=''>        tree match {
+</span>395 <span style=''>          case EmptyTree            =&gt; </span><span style='background: #AEF1AE'>()</span><span style=''>
+</span>396 <span style=''>          case PackageDef(_, stats) =&gt; </span><span style='background: #AEF1AE'>stats foreach gen</span><span style=''>
+</span>397 <span style=''>          case ValDef(name, tpt, rhs) =&gt; </span><span style='background: #AEF1AE'>()</span><span style=''> // module val not emitted
+</span>398 <span style=''>          case cd: TypeDef         =&gt;
+</span>399 <span style=''>            </span><span style='background: #AEF1AE'>q1 add Item1(arrivalPos, cd, int.currentUnit)</span><span style=''>
+</span>400 <span style=''>            </span><span style='background: #AEF1AE'>arrivalPos += 1</span><span style=''>
+</span>401 <span style=''>        }
+</span>402 <span style=''>      }
+</span>403 <span style=''>      </span><span style='background: #AEF1AE'>gen(tree)</span><span style=''>
+</span>404 <span style=''>      </span><span style='background: #AEF1AE'>q1 add poison1</span><span style=''>
+</span>405 <span style=''>    }
+</span>406 <span style=''>
+</span>407 <span style=''>    /* Pipeline that writes classfile representations to disk. */
+</span>408 <span style=''>    private def drainQ3() = {
+</span>409 <span style=''>
+</span>410 <span style=''>      def sendToDisk(cfr: SubItem3, outFolder: scala.tools.nsc.io.AbstractFile): Unit = {
+</span>411 <span style=''>        if (</span><span style='background: #AEF1AE'>cfr != null</span><span style=''>)</span><span style='background: #AEF1AE'>{
+</span>412 <span style=''></span><span style='background: #AEF1AE'>          val SubItem3(jclassName, jclassBytes) = cfr
+</span>413 <span style=''></span><span style='background: #AEF1AE'>          try {
+</span>414 <span style=''></span><span style='background: #AEF1AE'>            val outFile =
+</span>415 <span style=''></span><span style='background: #AEF1AE'>              if (outFolder == null) </span><span style='background: #F0ADAD'>null</span><span style='background: #AEF1AE'>
+</span>416 <span style=''></span><span style='background: #AEF1AE'>              else getFileForClassfile(outFolder, jclassName, &quot;.class&quot;)
+</span>417 <span style=''></span><span style='background: #AEF1AE'>            bytecodeWriter.writeClass(jclassName, jclassName, jclassBytes, outFile)
+</span>418 <span style=''></span><span style='background: #AEF1AE'>
+</span>419 <span style=''></span><span style='background: #AEF1AE'>            val className = jclassName.replace('/', '.')
+</span>420 <span style=''></span><span style='background: #AEF1AE'>            if (ctx.compilerCallback != null)
+</span>421 <span style=''></span><span style='background: #AEF1AE'>              ctx.compilerCallback.onClassGenerated(sourceFile, convertAbstractFile(outFile), className)
+</span>422 <span style=''></span><span style='background: #AEF1AE'>            if (ctx.sbtCallback != null)
+</span>423 <span style=''></span><span style='background: #AEF1AE'>              ctx.sbtCallback.generatedClass(sourceFile.jfile.orElse(null), outFile.file, className)
+</span>424 <span style=''></span><span style='background: #AEF1AE'>          }
+</span>425 <span style=''></span><span style='background: #AEF1AE'>          catch {
+</span>426 <span style=''></span><span style='background: #AEF1AE'>            case e: FileConflictException =&gt;
+</span>427 <span style=''></span><span style='background: #AEF1AE'>              </span><span style='background: #F0ADAD'>ctx.error(s&quot;error writing $jclassName: ${e.getMessage}&quot;)</span><span style='background: #AEF1AE'>
+</span>428 <span style=''></span><span style='background: #AEF1AE'>          }
+</span>429 <span style=''></span><span style='background: #AEF1AE'>        }</span><span style=''>
+</span>430 <span style=''>      }
+</span>431 <span style=''>
+</span>432 <span style=''>      var moreComing = </span><span style='background: #AEF1AE'>true</span><span style=''>
+</span>433 <span style=''>      // `expected` denotes the arrivalPos whose Item3 should be serialized next
+</span>434 <span style=''>      var expected = </span><span style='background: #AEF1AE'>0</span><span style=''>
+</span>435 <span style=''>
+</span>436 <span style=''>      while (moreComing) </span><span style='background: #AEF1AE'>{
+</span>437 <span style=''></span><span style='background: #AEF1AE'>        val incoming = q3.poll
+</span>438 <span style=''></span><span style='background: #AEF1AE'>        moreComing   = !incoming.isPoison
+</span>439 <span style=''></span><span style='background: #AEF1AE'>        if (moreComing) {
+</span>440 <span style=''></span><span style='background: #AEF1AE'>          val item = incoming
+</span>441 <span style=''></span><span style='background: #AEF1AE'>          val outFolder = item.outFolder
+</span>442 <span style=''></span><span style='background: #AEF1AE'>          sendToDisk(item.mirror, outFolder)
+</span>443 <span style=''></span><span style='background: #AEF1AE'>          sendToDisk(item.plain,  outFolder)
+</span>444 <span style=''></span><span style='background: #AEF1AE'>          expected += 1
+</span>445 <span style=''></span><span style='background: #AEF1AE'>        }
+</span>446 <span style=''></span><span style='background: #AEF1AE'>      }</span><span style=''>
+</span>447 <span style=''>
+</span>448 <span style=''>      // we're done
+</span>449 <span style=''>      </span><span style='background: #AEF1AE'>assert(q1.isEmpty, </span><span style='background: #F0ADAD'>s&quot;Some ClassDefs remained in the first queue: $q1&quot;</span><span style='background: #AEF1AE'>)</span><span style=''>
+</span>450 <span style=''>      </span><span style='background: #AEF1AE'>assert(q2.isEmpty, </span><span style='background: #F0ADAD'>s&quot;Some classfiles remained in the second queue: $q2&quot;</span><span style='background: #AEF1AE'>)</span><span style=''>
+</span>451 <span style=''>      </span><span style='background: #AEF1AE'>assert(q3.isEmpty, </span><span style='background: #F0ADAD'>s&quot;Some classfiles weren't written to disk: $q3&quot;</span><span style='background: #AEF1AE'>)</span><span style=''>
+</span>452 <span style=''>
+</span>453 <span style=''>    }
+</span>454 <span style=''>  //} // end of class BCodePhase
+</span>455 <span style=''>}
+</span></pre>
+          </div>
+          <div class="tab-pane" id="statementlist">
+            <table cellspacing="0" cellpadding="0" class="table statementlist">
+      <tr>
+        <th>Line</th>
+        <th>Stmt Id</th>
+        <th>Pos</th>
+        <th>Tree</th>
+        <th>Symbol</th>
+        <th>Code</th>
+      </tr><tr>
+        <td>
+          44
+        </td>
+        <td>
+          5509
+        </td>
+        <td>
+          1240
+          -
+          1250
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          &quot;genBCode&quot;
+        </td>
+      </tr><tr>
+        <td>
+          45
+        </td>
+        <td>
+          5510
+        </td>
+        <td>
+          1279
+          -
+          1308
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.mutable.HashSet.&lt;init&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          new scala.collection.mutable.HashSet[dotty.tools.dotc.core.Symbols.Symbol]()
+        </td>
+      </tr><tr>
+        <td>
+          46
+        </td>
+        <td>
+          5511
+        </td>
+        <td>
+          1349
+          -
+          1367
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.mutable.HashSet.+=
+        </td>
+        <td style="background: #F0ADAD">
+          GenBCode.this.entryPoints.+=(sym)
+        </td>
+      </tr><tr>
+        <td>
+          48
+        </td>
+        <td>
+          5512
+        </td>
+        <td>
+          1399
+          -
+          1436
+        </td>
+        <td>
+          TypeApply
+        </td>
+        <td>
+          dotty.tools.dotc.core.Symbols.newMutableSymbolMap
+        </td>
+        <td style="background: #AEF1AE">
+          dotty.tools.dotc.core.Symbols.newMutableSymbolMap[Set[dotty.tools.dotc.core.Symbols.ClassSymbol]]
+        </td>
+      </tr><tr>
+        <td>
+          50
+        </td>
+        <td>
+          5514
+        </td>
+        <td>
+          1512
+          -
+          1551
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.core.Symbols.MutableSymbolMap.getOrElse
+        </td>
+        <td style="background: #AEF1AE">
+          GenBCode.this.superCallsMap.getOrElse[Set[dotty.tools.dotc.core.Symbols.ClassSymbol]](sym, scala.Predef.Set.empty[dotty.tools.dotc.core.Symbols.ClassSymbol])
+        </td>
+      </tr><tr>
+        <td>
+          50
+        </td>
+        <td>
+          5513
+        </td>
+        <td>
+          1541
+          -
+          1550
+        </td>
+        <td>
+          TypeApply
+        </td>
+        <td>
+          scala.collection.generic.ImmutableSetFactory.empty
+        </td>
+        <td style="background: #AEF1AE">
+          scala.Predef.Set.empty[dotty.tools.dotc.core.Symbols.ClassSymbol]
+        </td>
+      </tr><tr>
+        <td>
+          51
+        </td>
+        <td>
+          5516
+        </td>
+        <td>
+          1556
+          -
+          1594
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.core.Symbols.MutableSymbolMap.update
+        </td>
+        <td style="background: #AEF1AE">
+          GenBCode.this.superCallsMap.update(sym, old.+(calls))
+        </td>
+      </tr><tr>
+        <td>
+          51
+        </td>
+        <td>
+          5515
+        </td>
+        <td>
+          1582
+          -
+          1593
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.SetLike.+
+        </td>
+        <td style="background: #AEF1AE">
+          old.+(calls)
+        </td>
+      </tr><tr>
+        <td>
+          57
+        </td>
+        <td>
+          5526
+        </td>
+        <td>
+          1719
+          -
+          1719
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          ()
+        </td>
+      </tr><tr>
+        <td>
+          57
+        </td>
+        <td>
+          5517
+        </td>
+        <td>
+          1723
+          -
+          1739
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.Object.eq
+        </td>
+        <td style="background: #AEF1AE">
+          GenBCode.this.myOutput.eq(null)
+        </td>
+      </tr><tr>
+        <td>
+          57
+        </td>
+        <td>
+          5525
+        </td>
+        <td>
+          1741
+          -
+          1921
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          {
+  val path: dotty.tools.io.Directory = dotty.tools.io.Directory.apply(Settings.this.Setting.SettingDecorator[String](Contexts.this.Context.toBase(ctx).settings.outputDir).value(ctx));
+  GenBCode.this.myOutput = if (path.extension.==(&quot;jar&quot;))
+    dotty.tools.io.JarArchive.create(path)
+  else
+    new dotty.tools.io.PlainDirectory(path)
+}
+        </td>
+      </tr><tr>
+        <td>
+          57
+        </td>
+        <td>
+          5527
+        </td>
+        <td>
+          1719
+          -
+          1719
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          ()
+        </td>
+      </tr><tr>
+        <td>
+          58
+        </td>
+        <td>
+          5519
+        </td>
+        <td>
+          1760
+          -
+          1799
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.io.Directory.apply
+        </td>
+        <td style="background: #AEF1AE">
+          dotty.tools.io.Directory.apply(Settings.this.Setting.SettingDecorator[String](Contexts.this.Context.toBase(ctx).settings.outputDir).value(ctx))
+        </td>
+      </tr><tr>
+        <td>
+          58
+        </td>
+        <td>
+          5518
+        </td>
+        <td>
+          1770
+          -
+          1798
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.config.Settings.Setting.SettingDecorator.value
+        </td>
+        <td style="background: #AEF1AE">
+          Settings.this.Setting.SettingDecorator[String](Contexts.this.Context.toBase(ctx).settings.outputDir).value(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          60
+        </td>
+        <td>
+          5520
+        </td>
+        <td>
+          1829
+          -
+          1852
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.Object.==
+        </td>
+        <td style="background: #AEF1AE">
+          path.extension.==(&quot;jar&quot;)
+        </td>
+      </tr><tr>
+        <td>
+          60
+        </td>
+        <td>
+          5522
+        </td>
+        <td>
+          1854
+          -
+          1877
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          dotty.tools.io.JarArchive.create
+        </td>
+        <td style="background: #AEF1AE">
+          dotty.tools.io.JarArchive.create(path)
+        </td>
+      </tr><tr>
+        <td>
+          60
+        </td>
+        <td>
+          5521
+        </td>
+        <td>
+          1854
+          -
+          1877
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.io.JarArchive.create
+        </td>
+        <td style="background: #AEF1AE">
+          dotty.tools.io.JarArchive.create(path)
+        </td>
+      </tr><tr>
+        <td>
+          61
+        </td>
+        <td>
+          5523
+        </td>
+        <td>
+          1891
+          -
+          1915
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.io.PlainDirectory.&lt;init&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          new dotty.tools.io.PlainDirectory(path)
+        </td>
+      </tr><tr>
+        <td>
+          61
+        </td>
+        <td>
+          5524
+        </td>
+        <td>
+          1891
+          -
+          1915
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          dotty.tools.io.PlainDirectory.&lt;init&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          new dotty.tools.io.PlainDirectory(path)
+        </td>
+      </tr><tr>
+        <td>
+          63
+        </td>
+        <td>
+          5528
+        </td>
+        <td>
+          1926
+          -
+          1934
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.backend.jvm.GenBCode.myOutput
+        </td>
+        <td style="background: #AEF1AE">
+          GenBCode.this.myOutput
+        </td>
+      </tr><tr>
+        <td>
+          67
+        </td>
+        <td>
+          5529
+        </td>
+        <td>
+          2008
+          -
+          2026
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.collection.TraversableOnce.toList
+        </td>
+        <td style="background: #AEF1AE">
+          GenBCode.this.entryPoints.toList
+        </td>
+      </tr><tr>
+        <td>
+          68
+        </td>
+        <td>
+          5532
+        </td>
+        <td>
+          1987
+          -
+          2137
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.backend.jvm.GenBCodePipeline.run
+        </td>
+        <td style="background: #AEF1AE">
+          new GenBCodePipeline(GenBCode.this.entryPoints.toList, new DottyBackendInterface(GenBCode.this.outputDir(ctx), GenBCode.this.superCallsMap.toMap)(ctx))(ctx).run(ctx.compilationUnit.tpdTree)
+        </td>
+      </tr><tr>
+        <td>
+          68
+        </td>
+        <td>
+          5531
+        </td>
+        <td>
+          2109
+          -
+          2136
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.CompilationUnit.tpdTree
+        </td>
+        <td style="background: #AEF1AE">
+          ctx.compilationUnit.tpdTree
+        </td>
+      </tr><tr>
+        <td>
+          68
+        </td>
+        <td>
+          5530
+        </td>
+        <td>
+          2036
+          -
+          2098
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.backend.jvm.DottyBackendInterface.&lt;init&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          new DottyBackendInterface(GenBCode.this.outputDir(ctx), GenBCode.this.superCallsMap.toMap)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          69
+        </td>
+        <td>
+          5533
+        </td>
+        <td>
+          2142
+          -
+          2161
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.mutable.HashSet.clear
+        </td>
+        <td style="background: #AEF1AE">
+          GenBCode.this.entryPoints.clear()
+        </td>
+      </tr><tr>
+        <td>
+          73
+        </td>
+        <td>
+          5535
+        </td>
+        <td>
+          2253
+          -
+          2271
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          dotty.tools.dotc.core.Phases.Phase.runOn
+        </td>
+        <td style="background: #AEF1AE">
+          GenBCode.super.runOn(units)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          73
+        </td>
+        <td>
+          5534
+        </td>
+        <td>
+          2253
+          -
+          2271
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.Phases.Phase.runOn
+        </td>
+        <td style="background: #AEF1AE">
+          GenBCode.super.runOn(units)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          74
+        </td>
+        <td>
+          5539
+        </td>
+        <td>
+          2284
+          -
+          2372
+        </td>
+        <td>
+          Match
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          GenBCode.this.myOutput match {
+  case (jar @ (_: dotty.tools.io.JarArchive)) =&gt; jar.close()
+  case _ =&gt; ()
+}
+        </td>
+      </tr><tr>
+        <td>
+          74
+        </td>
+        <td>
+          5536
+        </td>
+        <td>
+          2284
+          -
+          2292
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.backend.jvm.GenBCode.myOutput
+        </td>
+        <td style="background: #AEF1AE">
+          GenBCode.this.myOutput
+        </td>
+      </tr><tr>
+        <td>
+          76
+        </td>
+        <td>
+          5537
+        </td>
+        <td>
+          2339
+          -
+          2350
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.io.JarArchive.close
+        </td>
+        <td style="background: #AEF1AE">
+          jar.close()
+        </td>
+      </tr><tr>
+        <td>
+          77
+        </td>
+        <td>
+          5538
+        </td>
+        <td>
+          2364
+          -
+          2366
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          ()
+        </td>
+      </tr><tr>
+        <td>
+          86
+        </td>
+        <td>
+          5540
+        </td>
+        <td>
+          2561
+          -
+          2587
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.CompilationUnit.source
+        </td>
+        <td style="background: #AEF1AE">
+          GenBCodePipeline.this.ctx.compilationUnit.source
+        </td>
+      </tr><tr>
+        <td>
+          92
+        </td>
+        <td>
+          5545
+        </td>
+        <td>
+          2807
+          -
+          2810
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.backend.jvm.GenBCodePipeline.$anon.&lt;init&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          new $anon()
+        </td>
+      </tr><tr>
+        <td>
+          93
+        </td>
+        <td>
+          5541
+        </td>
+        <td>
+          2863
+          -
+          2875
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.io.AbstractFile.name
+        </td>
+        <td style="background: #F0ADAD">
+          absfile.name
+        </td>
+      </tr><tr>
+        <td>
+          94
+        </td>
+        <td>
+          5542
+        </td>
+        <td>
+          2902
+          -
+          2914
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.io.AbstractFile.path
+        </td>
+        <td style="background: #F0ADAD">
+          absfile.path
+        </td>
+      </tr><tr>
+        <td>
+          95
+        </td>
+        <td>
+          5544
+        </td>
+        <td>
+          2942
+          -
+          2975
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.util.Optional.ofNullable
+        </td>
+        <td style="background: #F0ADAD">
+          java.util.Optional.ofNullable[dotty.tools.io.JFile](absfile.file)
+        </td>
+      </tr><tr>
+        <td>
+          95
+        </td>
+        <td>
+          5543
+        </td>
+        <td>
+          2962
+          -
+          2974
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.io.AbstractFile.file
+        </td>
+        <td style="background: #F0ADAD">
+          absfile.file
+        </td>
+      </tr><tr>
+        <td>
+          103
+        </td>
+        <td>
+          5546
+        </td>
+        <td>
+          3159
+          -
+          3163
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          null
+        </td>
+      </tr><tr>
+        <td>
+          104
+        </td>
+        <td>
+          5547
+        </td>
+        <td>
+          3223
+          -
+          3227
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          null
+        </td>
+      </tr><tr>
+        <td>
+          109
+        </td>
+        <td>
+          5548
+        </td>
+        <td>
+          3377
+          -
+          3403
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Int.==
+        </td>
+        <td style="background: #AEF1AE">
+          Item1.this.arrivalPos.==(2147483647)
+        </td>
+      </tr><tr>
+        <td>
+          111
+        </td>
+        <td>
+          5550
+        </td>
+        <td>
+          3458
+          -
+          3462
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          null
+        </td>
+      </tr><tr>
+        <td>
+          111
+        </td>
+        <td>
+          5552
+        </td>
+        <td>
+          3438
+          -
+          3484
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.backend.jvm.GenBCodePipeline.Item1.apply
+        </td>
+        <td style="background: #AEF1AE">
+          GenBCodePipeline.this.Item1.apply(2147483647, null, GenBCodePipeline.this.ctx.compilationUnit)
+        </td>
+      </tr><tr>
+        <td>
+          111
+        </td>
+        <td>
+          5549
+        </td>
+        <td>
+          3444
+          -
+          3456
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          2147483647
+        </td>
+      </tr><tr>
+        <td>
+          111
+        </td>
+        <td>
+          5551
+        </td>
+        <td>
+          3464
+          -
+          3483
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Contexts.Context.compilationUnit
+        </td>
+        <td style="background: #AEF1AE">
+          GenBCodePipeline.this.ctx.compilationUnit
+        </td>
+      </tr><tr>
+        <td>
+          112
+        </td>
+        <td>
+          5553
+        </td>
+        <td>
+          3506
+          -
+          3537
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.util.LinkedList.&lt;init&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          new java.util.LinkedList[GenBCodePipeline.this.Item1]()
+        </td>
+      </tr><tr>
+        <td>
+          120
+        </td>
+        <td>
+          5554
+        </td>
+        <td>
+          3830
+          -
+          3856
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Int.==
+        </td>
+        <td style="background: #AEF1AE">
+          Item2.this.arrivalPos.==(2147483647)
+        </td>
+      </tr><tr>
+        <td>
+          123
+        </td>
+        <td>
+          5555
+        </td>
+        <td>
+          3892
+          -
+          3929
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.backend.jvm.GenBCodePipeline.Item2.apply
+        </td>
+        <td style="background: #AEF1AE">
+          GenBCodePipeline.this.Item2.apply(2147483647, null, null, null)
+        </td>
+      </tr><tr>
+        <td>
+          124
+        </td>
+        <td>
+          5556
+        </td>
+        <td>
+          3951
+          -
+          3989
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.util.LinkedList.&lt;init&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          new java.util.LinkedList[GenBCodePipeline.this.Item2]()
+        </td>
+      </tr><tr>
+        <td>
+          145
+        </td>
+        <td>
+          5557
+        </td>
+        <td>
+          4706
+          -
+          4732
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Int.==
+        </td>
+        <td style="background: #AEF1AE">
+          Item3.this.arrivalPos.==(2147483647)
+        </td>
+      </tr><tr>
+        <td>
+          147
+        </td>
+        <td>
+          5569
+        </td>
+        <td>
+          4772
+          -
+          4775
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.backend.jvm.GenBCodePipeline.$anon.&lt;init&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          new $anon()
+        </td>
+      </tr><tr>
+        <td>
+          149
+        </td>
+        <td>
+          5559
+        </td>
+        <td>
+          4869
+          -
+          4896
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Int.&lt;
+        </td>
+        <td style="background: #AEF1AE">
+          a.arrivalPos.&lt;(b.arrivalPos)
+        </td>
+      </tr><tr>
+        <td>
+          149
+        </td>
+        <td>
+          5561
+        </td>
+        <td>
+          4898
+          -
+          4900
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          -1
+        </td>
+      </tr><tr>
+        <td>
+          149
+        </td>
+        <td>
+          5558
+        </td>
+        <td>
+          4884
+          -
+          4896
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.backend.jvm.GenBCodePipeline.Item3.arrivalPos
+        </td>
+        <td style="background: #AEF1AE">
+          b.arrivalPos
+        </td>
+      </tr><tr>
+        <td>
+          149
+        </td>
+        <td>
+          5560
+        </td>
+        <td>
+          4898
+          -
+          4900
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          -1
+        </td>
+      </tr><tr>
+        <td>
+          150
+        </td>
+        <td>
+          5565
+        </td>
+        <td>
+          4948
+          -
+          4949
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          0
+        </td>
+      </tr><tr>
+        <td>
+          150
+        </td>
+        <td>
+          5568
+        </td>
+        <td>
+          4914
+          -
+          4964
+        </td>
+        <td>
+          If
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          if (a.arrivalPos.==(b.arrivalPos))
+  0
+else
+  1
+        </td>
+      </tr><tr>
+        <td>
+          150
+        </td>
+        <td>
+          5564
+        </td>
+        <td>
+          4948
+          -
+          4949
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          0
+        </td>
+      </tr><tr>
+        <td>
+          150
+        </td>
+        <td>
+          5563
+        </td>
+        <td>
+          4918
+          -
+          4946
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Int.==
+        </td>
+        <td style="background: #AEF1AE">
+          a.arrivalPos.==(b.arrivalPos)
+        </td>
+      </tr><tr>
+        <td>
+          150
+        </td>
+        <td>
+          5562
+        </td>
+        <td>
+          4934
+          -
+          4946
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.backend.jvm.GenBCodePipeline.Item3.arrivalPos
+        </td>
+        <td style="background: #AEF1AE">
+          b.arrivalPos
+        </td>
+      </tr><tr>
+        <td>
+          151
+        </td>
+        <td>
+          5567
+        </td>
+        <td>
+          4963
+          -
+          4964
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          1
+        </td>
+      </tr><tr>
+        <td>
+          151
+        </td>
+        <td>
+          5566
+        </td>
+        <td>
+          4963
+          -
+          4964
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          1
+        </td>
+      </tr><tr>
+        <td>
+          154
+        </td>
+        <td>
+          5570
+        </td>
+        <td>
+          5005
+          -
+          5042
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.backend.jvm.GenBCodePipeline.Item3.apply
+        </td>
+        <td style="background: #AEF1AE">
+          GenBCodePipeline.this.Item3.apply(2147483647, null, null, null)
+        </td>
+      </tr><tr>
+        <td>
+          155
+        </td>
+        <td>
+          5573
+        </td>
+        <td>
+          5064
+          -
+          5118
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.util.PriorityQueue.&lt;init&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          new java.util.PriorityQueue[GenBCodePipeline.this.Item3](1000, GenBCodePipeline.this.i3comparator)
+        </td>
+      </tr><tr>
+        <td>
+          155
+        </td>
+        <td>
+          5572
+        </td>
+        <td>
+          5105
+          -
+          5117
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.backend.jvm.GenBCodePipeline.i3comparator
+        </td>
+        <td style="background: #AEF1AE">
+          GenBCodePipeline.this.i3comparator
+        </td>
+      </tr><tr>
+        <td>
+          155
+        </td>
+        <td>
+          5571
+        </td>
+        <td>
+          5099
+          -
+          5103
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          1000
+        </td>
+      </tr><tr>
+        <td>
+          162
+        </td>
+        <td>
+          5574
+        </td>
+        <td>
+          5326
+          -
+          5376
+        </td>
+        <td>
+          TypeApply
+        </td>
+        <td>
+          scala.collection.mutable.Map.empty
+        </td>
+        <td style="background: #AEF1AE">
+          scala.collection.mutable.Map.empty[String, dotty.tools.dotc.core.Symbols.Symbol]
+        </td>
+      </tr><tr>
+        <td>
+          165
+        </td>
+        <td>
+          5597
+        </td>
+        <td>
+          5425
+          -
+          5859
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          {
+  {
+    val item: GenBCodePipeline.this.Item1 = GenBCodePipeline.this.q1.poll();
+    if (item.isPoison)
+      {
+        GenBCodePipeline.this.q2.add(GenBCodePipeline.this.poison2);
+        return ()
+      }
+    else
+      try {
+        Worker1.this.visit(item)
+      } catch {
+        case (ex @ (_: Throwable)) =&gt; {
+          ex.printStackTrace();
+          GenBCodePipeline.this.ctx.error(diagnostic.this.Message.toNoExplanation(scala.StringContext.apply(&quot;Error while emitting &quot;, &quot;\\n&quot;, &quot;&quot;).s(GenBCodePipeline.this.int.sourceFileFor(item.cunit), ex.getMessage())), GenBCodePipeline.this.ctx.error$default$2)
+        }
+      }
+  };
+  while$1()
+}
+        </td>
+      </tr><tr>
+        <td>
+          165
+        </td>
+        <td>
+          5599
+        </td>
+        <td>
+          5412
+          -
+          5412
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          ()
+        </td>
+      </tr><tr>
+        <td>
+          165
+        </td>
+        <td>
+          5575
+        </td>
+        <td>
+          5419
+          -
+          5423
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          true
+        </td>
+      </tr><tr>
+        <td>
+          165
+        </td>
+        <td>
+          5596
+        </td>
+        <td>
+          5425
+          -
+          5425
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.backend.jvm.GenBCodePipeline.Worker1.while$1
+        </td>
+        <td style="background: #AEF1AE">
+          while$1()
+        </td>
+      </tr><tr>
+        <td>
+          165
+        </td>
+        <td>
+          5598
+        </td>
+        <td>
+          5412
+          -
+          5412
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          ()
+        </td>
+      </tr><tr>
+        <td>
+          166
+        </td>
+        <td>
+          5576
+        </td>
+        <td>
+          5448
+          -
+          5455
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.util.LinkedList.poll
+        </td>
+        <td style="background: #AEF1AE">
+          GenBCodePipeline.this.q1.poll()
+        </td>
+      </tr><tr>
+        <td>
+          167
+        </td>
+        <td>
+          5577
+        </td>
+        <td>
+          5470
+          -
+          5483
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.backend.jvm.GenBCodePipeline.Item1.isPoison
+        </td>
+        <td style="background: #AEF1AE">
+          item.isPoison
+        </td>
+      </tr><tr>
+        <td>
+          167
+        </td>
+        <td>
+          5581
+        </td>
+        <td>
+          5485
+          -
+          5544
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          {
+  GenBCodePipeline.this.q2.add(GenBCodePipeline.this.poison2);
+  return ()
+}
+        </td>
+      </tr><tr>
+        <td>
+          168
+        </td>
+        <td>
+          5579
+        </td>
+        <td>
+          5499
+          -
+          5513
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.util.LinkedList.add
+        </td>
+        <td style="background: #AEF1AE">
+          GenBCodePipeline.this.q2.add(GenBCodePipeline.this.poison2)
+        </td>
+      </tr><tr>
+        <td>
+          168
+        </td>
+        <td>
+          5578
+        </td>
+        <td>
+          5506
+          -
+          5513
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.backend.jvm.GenBCodePipeline.poison2
+        </td>
+        <td style="background: #AEF1AE">
+          GenBCodePipeline.this.poison2
+        </td>
+      </tr><tr>
+        <td>
+          169
+        </td>
+        <td>
+          5580
+        </td>
+        <td>
+          5526
+          -
+          5532
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          ()
+        </td>
+      </tr><tr>
+        <td>
+          172
+        </td>
+        <td>
+          5583
+        </td>
+        <td>
+          5614
+          -
+          5625
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          dotty.tools.backend.jvm.GenBCodePipeline.Worker1.visit
+        </td>
+        <td style="background: #AEF1AE">
+          Worker1.this.visit(item)
+        </td>
+      </tr><tr>
+        <td>
+          172
+        </td>
+        <td>
+          5595
+        </td>
+        <td>
+          5574
+          -
+          5837
+        </td>
+        <td>
+          Try
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          try {
+  Worker1.this.visit(item)
+} catch {
+  case (ex @ (_: Throwable)) =&gt; {
+    ex.printStackTrace();
+    GenBCodePipeline.this.ctx.error(diagnostic.this.Message.toNoExplanation(scala.StringContext.apply(&quot;Error while emitting &quot;, &quot;\\n&quot;, &quot;&quot;).s(GenBCodePipeline.this.int.sourceFileFor(item.cunit), ex.getMessage())), GenBCodePipeline.this.ctx.error$default$2)
+  }
+}
+        </td>
+      </tr><tr>
+        <td>
+          172
+        </td>
+        <td>
+          5582
+        </td>
+        <td>
+          5614
+          -
+          5625
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.backend.jvm.GenBCodePipeline.Worker1.visit
+        </td>
+        <td style="background: #AEF1AE">
+          Worker1.this.visit(item)
+        </td>
+      </tr><tr>
+        <td>
+          175
+        </td>
+        <td>
+          5584
+        </td>
+        <td>
+          5701
+          -
+          5721
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.Throwable.printStackTrace
+        </td>
+        <td style="background: #F0ADAD">
+          ex.printStackTrace()
+        </td>
+      </tr><tr>
+        <td>
+          176
+        </td>
+        <td>
+          5592
+        </td>
+        <td>
+          5748
+          -
+          5822
+        </td>
+        <td>
+          ApplyImplicitView
+        </td>
+        <td>
+          dotty.tools.dotc.reporting.diagnostic.Message.toNoExplanation
+        </td>
+        <td style="background: #F0ADAD">
+          diagnostic.this.Message.toNoExplanation(scala.StringContext.apply(&quot;Error while emitting &quot;, &quot;\\n&quot;, &quot;&quot;).s(GenBCodePipeline.this.int.sourceFileFor(item.cunit), ex.getMessage()))
+        </td>
+      </tr><tr>
+        <td>
+          176
+        </td>
+        <td>
+          5586
+        </td>
+        <td>
+          5803
+          -
+          5806
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          &quot;\\n&quot;
+        </td>
+      </tr><tr>
+        <td>
+          176
+        </td>
+        <td>
+          5585
+        </td>
+        <td>
+          5750
+          -
+          5772
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          &quot;Error while emitting &quot;
+        </td>
+      </tr><tr>
+        <td>
+          176
+        </td>
+        <td>
+          5594
+        </td>
+        <td>
+          5738
+          -
+          5823
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.reporting.Reporting.error
+        </td>
+        <td style="background: #F0ADAD">
+          GenBCodePipeline.this.ctx.error(diagnostic.this.Message.toNoExplanation(scala.StringContext.apply(&quot;Error while emitting &quot;, &quot;\\n&quot;, &quot;&quot;).s(GenBCodePipeline.this.int.sourceFileFor(item.cunit), ex.getMessage())), GenBCodePipeline.this.ctx.error$default$2)
+        </td>
+      </tr><tr>
+        <td>
+          176
+        </td>
+        <td>
+          5588
+        </td>
+        <td>
+          5791
+          -
+          5801
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.backend.jvm.GenBCodePipeline.Item1.cunit
+        </td>
+        <td style="background: #F0ADAD">
+          item.cunit
+        </td>
+      </tr><tr>
+        <td>
+          176
+        </td>
+        <td>
+          5591
+        </td>
+        <td>
+          5748
+          -
+          5822
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.StringContext.s
+        </td>
+        <td style="background: #F0ADAD">
+          scala.StringContext.apply(&quot;Error while emitting &quot;, &quot;\\n&quot;, &quot;&quot;).s(GenBCodePipeline.this.int.sourceFileFor(item.cunit), ex.getMessage())
+        </td>
+      </tr><tr>
+        <td>
+          176
+        </td>
+        <td>
+          5593
+        </td>
+        <td>
+          5742
+          -
+          5742
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.reporting.Reporting.error$default$2
+        </td>
+        <td style="background: #F0ADAD">
+          GenBCodePipeline.this.ctx.error$default$2
+        </td>
+      </tr><tr>
+        <td>
+          176
+        </td>
+        <td>
+          5587
+        </td>
+        <td>
+          5821
+          -
+          5822
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          &quot;&quot;
+        </td>
+      </tr><tr>
+        <td>
+          176
+        </td>
+        <td>
+          5590
+        </td>
+        <td>
+          5807
+          -
+          5820
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.Throwable.getMessage
+        </td>
+        <td style="background: #F0ADAD">
+          ex.getMessage()
+        </td>
+      </tr><tr>
+        <td>
+          176
+        </td>
+        <td>
+          5589
+        </td>
+        <td>
+          5773
+          -
+          5802
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.backend.jvm.DottyBackendInterface.sourceFileFor
+        </td>
+        <td style="background: #F0ADAD">
+          GenBCodePipeline.this.int.sourceFileFor(item.cunit)
+        </td>
+      </tr><tr>
+        <td>
+          189
+        </td>
+        <td>
+          5601
+        </td>
+        <td>
+          6124
+          -
+          6124
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.Tuple3._2
+        </td>
+        <td style="background: #AEF1AE">
+          x$1._2
+        </td>
+      </tr><tr>
+        <td>
+          189
+        </td>
+        <td>
+          5600
+        </td>
+        <td>
+          6112
+          -
+          6112
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.Tuple3._1
+        </td>
+        <td style="background: #AEF1AE">
+          x$1._1
+        </td>
+      </tr><tr>
+        <td>
+          189
+        </td>
+        <td>
+          5602
+        </td>
+        <td>
+          6128
+          -
+          6128
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.Tuple3._3
+        </td>
+        <td style="background: #AEF1AE">
+          x$1._3
+        </td>
+      </tr><tr>
+        <td>
+          190
+        </td>
+        <td>
+          5604
+        </td>
+        <td>
+          6168
+          -
+          6177
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Trees.Tree.symbol
+        </td>
+        <td style="background: #AEF1AE">
+          cd.symbol(GenBCodePipeline.this.ctx)
+        </td>
+      </tr><tr>
+        <td>
+          190
+        </td>
+        <td>
+          5603
+        </td>
+        <td>
+          6171
+          -
+          6171
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.backend.jvm.GenBCodePipeline.ctx
+        </td>
+        <td style="background: #AEF1AE">
+          GenBCodePipeline.this.ctx
+        </td>
+      </tr><tr>
+        <td>
+          193
+        </td>
+        <td>
+          5605
+        </td>
+        <td>
+          6356
+          -
+          6393
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.String.toLowerCase
+        </td>
+        <td style="background: #AEF1AE">
+          claszSymbol.name(GenBCodePipeline.this.ctx).toString().toLowerCase()
+        </td>
+      </tr><tr>
+        <td>
+          194
+        </td>
+        <td>
+          5606
+        </td>
+        <td>
+          6402
+          -
+          6447
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.MapLike.get
+        </td>
+        <td style="background: #AEF1AE">
+          Worker1.this.caseInsensitively.get(lowercaseJavaClassName)
+        </td>
+      </tr><tr>
+        <td>
+          196
+        </td>
+        <td>
+          5607
+        </td>
+        <td>
+          6491
+          -
+          6549
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.mutable.MapLike.put
+        </td>
+        <td style="background: #AEF1AE">
+          Worker1.this.caseInsensitively.put(lowercaseJavaClassName, claszSymbol)
+        </td>
+      </tr><tr>
+        <td>
+          199
+        </td>
+        <td>
+          5610
+        </td>
+        <td>
+          6721
+          -
+          6774
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.math.Ordered.&lt;
+        </td>
+        <td style="background: #AEF1AE">
+          scala.Predef.augmentString(claszSymbol.name(GenBCodePipeline.this.ctx).toString()).&lt;(dupClassSym.name(GenBCodePipeline.this.ctx).toString())
+        </td>
+      </tr><tr>
+        <td>
+          199
+        </td>
+        <td>
+          5609
+        </td>
+        <td>
+          6749
+          -
+          6774
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.Object.toString
+        </td>
+        <td style="background: #AEF1AE">
+          dupClassSym.name(GenBCodePipeline.this.ctx).toString()
+        </td>
+      </tr><tr>
+        <td>
+          199
+        </td>
+        <td>
+          5608
+        </td>
+        <td>
+          6721
+          -
+          6746
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.Object.toString
+        </td>
+        <td style="background: #AEF1AE">
+          claszSymbol.name(GenBCodePipeline.this.ctx).toString()
+        </td>
+      </tr><tr>
+        <td>
+          200
+        </td>
+        <td>
+          5612
+        </td>
+        <td>
+          6802
+          -
+          6981
+        </td>
+        <td>
+          ApplyImplicitView
+        </td>
+        <td>
+          dotty.tools.dotc.reporting.diagnostic.Message.toNoExplanation
+        </td>
+        <td style="background: #F0ADAD">
+          diagnostic.this.Message.toNoExplanation(scala.StringContext.apply(&quot;Class &quot;, &quot; differs only in case from &quot;, &quot;. &quot;).s(claszSymbol.name(GenBCodePipeline.this.ctx), dupClassSym.name(GenBCodePipeline.this.ctx)).+(&quot;Such classes will overwrite one another on case-insensitive filesystems.&quot;))
+        </td>
+      </tr><tr>
+        <td>
+          200
+        </td>
+        <td>
+          5617
+        </td>
+        <td>
+          6790
+          -
+          6999
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          dotty.tools.dotc.reporting.Reporting.warning
+        </td>
+        <td style="background: #F0ADAD">
+          GenBCodePipeline.this.ctx.warning(diagnostic.this.Message.toNoExplanation(scala.StringContext.apply(&quot;Class &quot;, &quot; differs only in case from &quot;, &quot;. &quot;).s(claszSymbol.name(GenBCodePipeline.this.ctx), dupClassSym.name(GenBCodePipeline.this.ctx)).+(&quot;Such classes will overwrite one another on case-insensitive filesystems.&quot;)), dotty.tools.dotc.core.Decorators.sourcePos(claszSymbol.pos)(GenBCodePipeline.this.ctx))
+        </td>
+      </tr><tr>
+        <td>
+          200
+        </td>
+        <td>
+          5611
+        </td>
+        <td>
+          6802
+          -
+          6981
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.String.+
+        </td>
+        <td style="background: #F0ADAD">
+          scala.StringContext.apply(&quot;Class &quot;, &quot; differs only in case from &quot;, &quot;. &quot;).s(claszSymbol.name(GenBCodePipeline.this.ctx), dupClassSym.name(GenBCodePipeline.this.ctx)).+(&quot;Such classes will overwrite one another on case-insensitive filesystems.&quot;)
+        </td>
+      </tr><tr>
+        <td>
+          200
+        </td>
+        <td>
+          5616
+        </td>
+        <td>
+          6790
+          -
+          6999
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.reporting.Reporting.warning
+        </td>
+        <td style="background: #F0ADAD">
+          GenBCodePipeline.this.ctx.warning(diagnostic.this.Message.toNoExplanation(scala.StringContext.apply(&quot;Class &quot;, &quot; differs only in case from &quot;, &quot;. &quot;).s(claszSymbol.name(GenBCodePipeline.this.ctx), dupClassSym.name(GenBCodePipeline.this.ctx)).+(&quot;Such classes will overwrite one another on case-insensitive filesystems.&quot;)), dotty.tools.dotc.core.Decorators.sourcePos(claszSymbol.pos)(GenBCodePipeline.this.ctx))
+        </td>
+      </tr><tr>
+        <td>
+          201
+        </td>
+        <td>
+          5613
+        </td>
+        <td>
+          6983
+          -
+          6998
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Symbols.Symbol.pos
+        </td>
+        <td style="background: #F0ADAD">
+          claszSymbol.pos
+        </td>
+      </tr><tr>
+        <td>
+          201
+        </td>
+        <td>
+          5615
+        </td>
+        <td>
+          6983
+          -
+          6998
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.Decorators.sourcePos
+        </td>
+        <td style="background: #F0ADAD">
+          dotty.tools.dotc.core.Decorators.sourcePos(claszSymbol.pos)(GenBCodePipeline.this.ctx)
+        </td>
+      </tr><tr>
+        <td>
+          201
+        </td>
+        <td>
+          5614
+        </td>
+        <td>
+          6995
+          -
+          6995
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.backend.jvm.GenBCodePipeline.ctx
+        </td>
+        <td style="background: #F0ADAD">
+          GenBCodePipeline.this.ctx
+        </td>
+      </tr><tr>
+        <td>
+          203
+        </td>
+        <td>
+          5619
+        </td>
+        <td>
+          7043
+          -
+          7222
+        </td>
+        <td>
+          ApplyImplicitView
+        </td>
+        <td>
+          dotty.tools.dotc.reporting.diagnostic.Message.toNoExplanation
+        </td>
+        <td style="background: #AEF1AE">
+          diagnostic.this.Message.toNoExplanation(scala.StringContext.apply(&quot;Class &quot;, &quot; differs only in case from &quot;, &quot;. &quot;).s(dupClassSym.name(GenBCodePipeline.this.ctx), claszSymbol.name(GenBCodePipeline.this.ctx)).+(&quot;Such classes will overwrite one another on case-insensitive filesystems.&quot;))
+        </td>
+      </tr><tr>
+        <td>
+          203
+        </td>
+        <td>
+          5624
+        </td>
+        <td>
+          7031
+          -
+          7240
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          dotty.tools.dotc.reporting.Reporting.warning
+        </td>
+        <td style="background: #AEF1AE">
+          GenBCodePipeline.this.ctx.warning(diagnostic.this.Message.toNoExplanation(scala.StringContext.apply(&quot;Class &quot;, &quot; differs only in case from &quot;, &quot;. &quot;).s(dupClassSym.name(GenBCodePipeline.this.ctx), claszSymbol.name(GenBCodePipeline.this.ctx)).+(&quot;Such classes will overwrite one another on case-insensitive filesystems.&quot;)), dotty.tools.dotc.core.Decorators.sourcePos(dupClassSym.pos)(GenBCodePipeline.this.ctx))
+        </td>
+      </tr><tr>
+        <td>
+          203
+        </td>
+        <td>
+          5618
+        </td>
+        <td>
+          7043
+          -
+          7222
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.String.+
+        </td>
+        <td style="background: #AEF1AE">
+          scala.StringContext.apply(&quot;Class &quot;, &quot; differs only in case from &quot;, &quot;. &quot;).s(dupClassSym.name(GenBCodePipeline.this.ctx), claszSymbol.name(GenBCodePipeline.this.ctx)).+(&quot;Such classes will overwrite one another on case-insensitive filesystems.&quot;)
+        </td>
+      </tr><tr>
+        <td>
+          203
+        </td>
+        <td>
+          5623
+        </td>
+        <td>
+          7031
+          -
+          7240
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.reporting.Reporting.warning
+        </td>
+        <td style="background: #AEF1AE">
+          GenBCodePipeline.this.ctx.warning(diagnostic.this.Message.toNoExplanation(scala.StringContext.apply(&quot;Class &quot;, &quot; differs only in case from &quot;, &quot;. &quot;).s(dupClassSym.name(GenBCodePipeline.this.ctx), claszSymbol.name(GenBCodePipeline.this.ctx)).+(&quot;Such classes will overwrite one another on case-insensitive filesystems.&quot;)), dotty.tools.dotc.core.Decorators.sourcePos(dupClassSym.pos)(GenBCodePipeline.this.ctx))
+        </td>
+      </tr><tr>
+        <td>
+          204
+        </td>
+        <td>
+          5621
+        </td>
+        <td>
+          7236
+          -
+          7236
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.backend.jvm.GenBCodePipeline.ctx
+        </td>
+        <td style="background: #AEF1AE">
+          GenBCodePipeline.this.ctx
+        </td>
+      </tr><tr>
+        <td>
+          204
+        </td>
+        <td>
+          5620
+        </td>
+        <td>
+          7224
+          -
+          7239
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Symbols.Symbol.pos
+        </td>
+        <td style="background: #AEF1AE">
+          dupClassSym.pos
+        </td>
+      </tr><tr>
+        <td>
+          204
+        </td>
+        <td>
+          5622
+        </td>
+        <td>
+          7224
+          -
+          7239
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.Decorators.sourcePos
+        </td>
+        <td style="background: #AEF1AE">
+          dotty.tools.dotc.core.Decorators.sourcePos(dupClassSym.pos)(GenBCodePipeline.this.ctx)
+        </td>
+      </tr><tr>
+        <td>
+          209
+        </td>
+        <td>
+          5625
+        </td>
+        <td>
+          7353
+          -
+          7401
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BackendInterface.SymbolHelper.isTopLevelModuleClass
+        </td>
+        <td style="background: #AEF1AE">
+          GenBCodePipeline.this.int.symHelper(claszSymbol).isTopLevelModuleClass
+        </td>
+      </tr><tr>
+        <td>
+          210
+        </td>
+        <td>
+          5628
+        </td>
+        <td>
+          7451
+          -
+          7459
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Symbols.NoSymbol
+        </td>
+        <td style="background: #AEF1AE">
+          dotty.tools.dotc.core.Symbols.NoSymbol
+        </td>
+      </tr><tr>
+        <td>
+          210
+        </td>
+        <td>
+          5642
+        </td>
+        <td>
+          7417
+          -
+          7675
+        </td>
+        <td>
+          If
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          if (dotty.tools.dotc.core.Symbols.toDenot(claszSymbol)(GenBCodePipeline.this.ctx).companionClass(GenBCodePipeline.this.ctx).==(dotty.tools.dotc.core.Symbols.NoSymbol))
+  GenBCodePipeline.this.mirrorCodeGen.genMirrorClass(claszSymbol, cunit)
+else
+  {
+    GenBCodePipeline.this.ctx.log(scala.StringContext.apply(&quot;No mirror class for module with linked class: &quot;, &quot;&quot;).s(dotty.tools.dotc.core.Symbols.toDenot(claszSymbol)(GenBCodePipeline.this.ctx).fullName(GenBCodePipeline.this.ctx)), GenBCodePipeline.this.ctx.log$default$2);
+    null
+  }
+        </td>
+      </tr><tr>
+        <td>
+          210
+        </td>
+        <td>
+          5627
+        </td>
+        <td>
+          7433
+          -
+          7433
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.backend.jvm.GenBCodePipeline.ctx
+        </td>
+        <td style="background: #AEF1AE">
+          GenBCodePipeline.this.ctx
+        </td>
+      </tr><tr>
+        <td>
+          210
+        </td>
+        <td>
+          5626
+        </td>
+        <td>
+          7421
+          -
+          7421
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.backend.jvm.GenBCodePipeline.ctx
+        </td>
+        <td style="background: #AEF1AE">
+          GenBCodePipeline.this.ctx
+        </td>
+      </tr><tr>
+        <td>
+          210
+        </td>
+        <td>
+          5629
+        </td>
+        <td>
+          7421
+          -
+          7459
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.Object.==
+        </td>
+        <td style="background: #AEF1AE">
+          dotty.tools.dotc.core.Symbols.toDenot(claszSymbol)(GenBCodePipeline.this.ctx).companionClass(GenBCodePipeline.this.ctx).==(dotty.tools.dotc.core.Symbols.NoSymbol)
+        </td>
+      </tr><tr>
+        <td>
+          211
+        </td>
+        <td>
+          5630
+        </td>
+        <td>
+          7477
+          -
+          7525
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BCodeHelpers.JMirrorBuilder.genMirrorClass
+        </td>
+        <td style="background: #AEF1AE">
+          GenBCodePipeline.this.mirrorCodeGen.genMirrorClass(claszSymbol, cunit)
+        </td>
+      </tr><tr>
+        <td>
+          211
+        </td>
+        <td>
+          5631
+        </td>
+        <td>
+          7477
+          -
+          7525
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BCodeHelpers.JMirrorBuilder.genMirrorClass
+        </td>
+        <td style="background: #AEF1AE">
+          GenBCodePipeline.this.mirrorCodeGen.genMirrorClass(claszSymbol, cunit)
+        </td>
+      </tr><tr>
+        <td>
+          212
+        </td>
+        <td>
+          5641
+        </td>
+        <td>
+          7545
+          -
+          7675
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          {
+  GenBCodePipeline.this.ctx.log(scala.StringContext.apply(&quot;No mirror class for module with linked class: &quot;, &quot;&quot;).s(dotty.tools.dotc.core.Symbols.toDenot(claszSymbol)(GenBCodePipeline.this.ctx).fullName(GenBCodePipeline.this.ctx)), GenBCodePipeline.this.ctx.log$default$2);
+  null
+}
+        </td>
+      </tr><tr>
+        <td>
+          213
+        </td>
+        <td>
+          5637
+        </td>
+        <td>
+          7569
+          -
+          7641
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.StringContext.s
+        </td>
+        <td style="background: #F0ADAD">
+          scala.StringContext.apply(&quot;No mirror class for module with linked class: &quot;, &quot;&quot;).s(dotty.tools.dotc.core.Symbols.toDenot(claszSymbol)(GenBCodePipeline.this.ctx).fullName(GenBCodePipeline.this.ctx))
+        </td>
+      </tr><tr>
+        <td>
+          213
+        </td>
+        <td>
+          5636
+        </td>
+        <td>
+          7619
+          -
+          7639
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.SymDenotations.SymDenotation.fullName
+        </td>
+        <td style="background: #F0ADAD">
+          dotty.tools.dotc.core.Symbols.toDenot(claszSymbol)(GenBCodePipeline.this.ctx).fullName(GenBCodePipeline.this.ctx)
+        </td>
+      </tr><tr>
+        <td>
+          213
+        </td>
+        <td>
+          5639
+        </td>
+        <td>
+          7561
+          -
+          7642
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.reporting.Reporting.log
+        </td>
+        <td style="background: #AEF1AE">
+          GenBCodePipeline.this.ctx.log(scala.StringContext.apply(&quot;No mirror class for module with linked class: &quot;, &quot;&quot;).s(dotty.tools.dotc.core.Symbols.toDenot(claszSymbol)(GenBCodePipeline.this.ctx).fullName(GenBCodePipeline.this.ctx)), GenBCodePipeline.this.ctx.log$default$2)
+        </td>
+      </tr><tr>
+        <td>
+          213
+        </td>
+        <td>
+          5633
+        </td>
+        <td>
+          7640
+          -
+          7641
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          &quot;&quot;
+        </td>
+      </tr><tr>
+        <td>
+          213
+        </td>
+        <td>
+          5635
+        </td>
+        <td>
+          7631
+          -
+          7631
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.backend.jvm.GenBCodePipeline.ctx
+        </td>
+        <td style="background: #F0ADAD">
+          GenBCodePipeline.this.ctx
+        </td>
+      </tr><tr>
+        <td>
+          213
+        </td>
+        <td>
+          5638
+        </td>
+        <td>
+          7565
+          -
+          7565
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.reporting.Reporting.log$default$2
+        </td>
+        <td style="background: #AEF1AE">
+          GenBCodePipeline.this.ctx.log$default$2
+        </td>
+      </tr><tr>
+        <td>
+          213
+        </td>
+        <td>
+          5632
+        </td>
+        <td>
+          7571
+          -
+          7618
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          &quot;No mirror class for module with linked class: &quot;
+        </td>
+      </tr><tr>
+        <td>
+          213
+        </td>
+        <td>
+          5634
+        </td>
+        <td>
+          7619
+          -
+          7619
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.backend.jvm.GenBCodePipeline.ctx
+        </td>
+        <td style="background: #F0ADAD">
+          GenBCodePipeline.this.ctx
+        </td>
+      </tr><tr>
+        <td>
+          214
+        </td>
+        <td>
+          5640
+        </td>
+        <td>
+          7657
+          -
+          7661
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          null
+        </td>
+      </tr><tr>
+        <td>
+          216
+        </td>
+        <td>
+          5644
+        </td>
+        <td>
+          7693
+          -
+          7697
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          null
+        </td>
+      </tr><tr>
+        <td>
+          216
+        </td>
+        <td>
+          5643
+        </td>
+        <td>
+          7693
+          -
+          7697
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          null
+        </td>
+      </tr><tr>
+        <td>
+          219
+        </td>
+        <td>
+          5645
+        </td>
+        <td>
+          7772
+          -
+          7800
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.backend.jvm.GenBCodePipeline.PlainClassBuilder.&lt;init&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          new GenBCodePipeline.this.PlainClassBuilder(cunit)
+        </td>
+      </tr><tr>
+        <td>
+          220
+        </td>
+        <td>
+          5646
+        </td>
+        <td>
+          7809
+          -
+          7830
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BCodeSkelBuilder.PlainSkelBuilder.genPlainClass
+        </td>
+        <td style="background: #AEF1AE">
+          pcb.genPlainClass(cd)
+        </td>
+      </tr><tr>
+        <td>
+          221
+        </td>
+        <td>
+          5648
+        </td>
+        <td>
+          7896
+          -
+          7908
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BCodeSkelBuilder.PlainSkelBuilder.thisName
+        </td>
+        <td style="background: #AEF1AE">
+          pcb.thisName
+        </td>
+      </tr><tr>
+        <td>
+          221
+        </td>
+        <td>
+          5651
+        </td>
+        <td>
+          7915
+          -
+          7919
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          null
+        </td>
+      </tr><tr>
+        <td>
+          221
+        </td>
+        <td>
+          5647
+        </td>
+        <td>
+          7854
+          -
+          7868
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.backend.jvm.GenBCodePipeline.Worker1.needsOutFolder
+        </td>
+        <td style="background: #AEF1AE">
+          Worker1.this.needsOutFolder
+        </td>
+      </tr><tr>
+        <td>
+          221
+        </td>
+        <td>
+          5650
+        </td>
+        <td>
+          7870
+          -
+          7909
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BCodeHelpers.getOutFolder
+        </td>
+        <td style="background: #AEF1AE">
+          GenBCodePipeline.this.getOutFolder(claszSymbol, pcb.thisName)
+        </td>
+      </tr><tr>
+        <td>
+          221
+        </td>
+        <td>
+          5649
+        </td>
+        <td>
+          7870
+          -
+          7909
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BCodeHelpers.getOutFolder
+        </td>
+        <td style="background: #AEF1AE">
+          GenBCodePipeline.this.getOutFolder(claszSymbol, pcb.thisName)
+        </td>
+      </tr><tr>
+        <td>
+          221
+        </td>
+        <td>
+          5652
+        </td>
+        <td>
+          7915
+          -
+          7919
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          null
+        </td>
+      </tr><tr>
+        <td>
+          222
+        </td>
+        <td>
+          5653
+        </td>
+        <td>
+          7942
+          -
+          7951
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BCodeSkelBuilder.PlainSkelBuilder.cnode
+        </td>
+        <td style="background: #AEF1AE">
+          pcb.cnode
+        </td>
+      </tr><tr>
+        <td>
+          224
+        </td>
+        <td>
+          5654
+        </td>
+        <td>
+          7965
+          -
+          7984
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Symbols.Symbol.isClass
+        </td>
+        <td style="background: #AEF1AE">
+          claszSymbol.isClass
+        </td>
+      </tr><tr>
+        <td>
+          224
+        </td>
+        <td>
+          5684
+        </td>
+        <td>
+          7961
+          -
+          7961
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          ()
+        </td>
+      </tr><tr>
+        <td>
+          224
+        </td>
+        <td>
+          5683
+        </td>
+        <td>
+          7961
+          -
+          7961
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          ()
+        </td>
+      </tr><tr>
+        <td>
+          225
+        </td>
+        <td>
+          5655
+        </td>
+        <td>
+          8084
+          -
+          8103
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Symbols.Symbol.asClass
+        </td>
+        <td style="background: #AEF1AE">
+          claszSymbol.asClass
+        </td>
+      </tr><tr>
+        <td>
+          225
+        </td>
+        <td>
+          5681
+        </td>
+        <td>
+          8037
+          -
+          9154
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Option.foreach
+        </td>
+        <td style="background: #AEF1AE">
+          GenBCodePipeline.this.ctx.compilationUnit.pickled.get(claszSymbol.asClass).foreach[Unit](((binary: Array[Byte]) =&gt; {
+  val store: scala.tools.asm.tree.ClassNode = if (mirrorC.ne(null))
+    mirrorC
+  else
+    plainC;
+  val tasty: Array[Byte] = if (Settings.this.Setting.SettingDecorator[Boolean](Contexts.this.Context.toBase(GenBCodePipeline.this.ctx).settings.YemitTasty).value(GenBCodePipeline.this.ctx))
+    {
+      val outTastyFile: tools.nsc.io.AbstractFile = GenBCodePipeline.this.getFileForClassfile(outF, store.name, &quot;.tasty&quot;);
+      val outstream: java.io.DataOutputStream = new java.io.DataOutputStream(outTastyFile.bufferedOutput);
+      try {
+        outstream.write(binary)
+      } finally outstream.close();
+      scala.Array.empty[Byte]((ClassTag.Byte: scala.reflect.ClassTag[Byte]))
+    }
+  else
+    {
+      GenBCodePipeline.this.getFileForClassfile(outF, store.name, &quot;.hasTasty&quot;);
+      binary
+    };
+  val dataAttr: scala.tools.asm.CustomAttr = new scala.tools.asm.CustomAttr(dotty.tools.dotc.core.StdNames.nme.TASTYATTR.mangledString, tasty);
+  store.visitAttribute(dataAttr)
+}))
+        </td>
+      </tr><tr>
+        <td>
+          225
+        </td>
+        <td>
+          5682
+        </td>
+        <td>
+          8037
+          -
+          9154
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          scala.Option.foreach
+        </td>
+        <td style="background: #AEF1AE">
+          GenBCodePipeline.this.ctx.compilationUnit.pickled.get(claszSymbol.asClass).foreach[Unit](((binary: Array[Byte]) =&gt; {
+  val store: scala.tools.asm.tree.ClassNode = if (mirrorC.ne(null))
+    mirrorC
+  else
+    plainC;
+  val tasty: Array[Byte] = if (Settings.this.Setting.SettingDecorator[Boolean](Contexts.this.Context.toBase(GenBCodePipeline.this.ctx).settings.YemitTasty).value(GenBCodePipeline.this.ctx))
+    {
+      val outTastyFile: tools.nsc.io.AbstractFile = GenBCodePipeline.this.getFileForClassfile(outF, store.name, &quot;.tasty&quot;);
+      val outstream: java.io.DataOutputStream = new java.io.DataOutputStream(outTastyFile.bufferedOutput);
+      try {
+        outstream.write(binary)
+      } finally outstream.close();
+      scala.Array.empty[Byte]((ClassTag.Byte: scala.reflect.ClassTag[Byte]))
+    }
+  else
+    {
+      GenBCodePipeline.this.getFileForClassfile(outF, store.name, &quot;.hasTasty&quot;);
+      binary
+    };
+  val dataAttr: scala.tools.asm.CustomAttr = new scala.tools.asm.CustomAttr(dotty.tools.dotc.core.StdNames.nme.TASTYATTR.mangledString, tasty);
+  store.visitAttribute(dataAttr)
+}))
+        </td>
+      </tr><tr>
+        <td>
+          226
+        </td>
+        <td>
+          5657
+        </td>
+        <td>
+          8153
+          -
+          8160
+        </td>
+        <td>
+          Ident
+        </td>
+        <td>
+          dotty.tools.backend.jvm.GenBCodePipeline.Worker1.mirrorC
+        </td>
+        <td style="background: #AEF1AE">
+          mirrorC
+        </td>
+      </tr><tr>
+        <td>
+          226
+        </td>
+        <td>
+          5656
+        </td>
+        <td>
+          8136
+          -
+          8151
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.Object.ne
+        </td>
+        <td style="background: #AEF1AE">
+          mirrorC.ne(null)
+        </td>
+      </tr><tr>
+        <td>
+          226
+        </td>
+        <td>
+          5658
+        </td>
+        <td>
+          8166
+          -
+          8172
+        </td>
+        <td>
+          Ident
+        </td>
+        <td>
+          dotty.tools.backend.jvm.GenBCodePipeline.Worker1.plainC
+        </td>
+        <td style="background: #AEF1AE">
+          plainC
+        </td>
+      </tr><tr>
+        <td>
+          228
+        </td>
+        <td>
+          5673
+        </td>
+        <td>
+          8246
+          -
+          8713
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          {
+  val outTastyFile: tools.nsc.io.AbstractFile = GenBCodePipeline.this.getFileForClassfile(outF, store.name, &quot;.tasty&quot;);
+  val outstream: java.io.DataOutputStream = new java.io.DataOutputStream(outTastyFile.bufferedOutput);
+  try {
+    outstream.write(binary)
+  } finally outstream.close();
+  scala.Array.empty[Byte]((ClassTag.Byte: scala.reflect.ClassTag[Byte]))
+}
+        </td>
+      </tr><tr>
+        <td>
+          228
+        </td>
+        <td>
+          5660
+        </td>
+        <td>
+          8215
+          -
+          8238
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.config.ScalaSettings.YemitTasty
+        </td>
+        <td style="background: #AEF1AE">
+          Contexts.this.Context.toBase(GenBCodePipeline.this.ctx).settings.YemitTasty
+        </td>
+      </tr><tr>
+        <td>
+          228
+        </td>
+        <td>
+          5659
+        </td>
+        <td>
+          8215
+          -
+          8218
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.backend.jvm.GenBCodePipeline.ctx
+        </td>
+        <td style="background: #AEF1AE">
+          GenBCodePipeline.this.ctx
+        </td>
+      </tr><tr>
+        <td>
+          228
+        </td>
+        <td>
+          5662
+        </td>
+        <td>
+          8215
+          -
+          8244
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.config.Settings.Setting.SettingDecorator.value
+        </td>
+        <td style="background: #AEF1AE">
+          Settings.this.Setting.SettingDecorator[Boolean](Contexts.this.Context.toBase(GenBCodePipeline.this.ctx).settings.YemitTasty).value(GenBCodePipeline.this.ctx)
+        </td>
+      </tr><tr>
+        <td>
+          228
+        </td>
+        <td>
+          5661
+        </td>
+        <td>
+          8239
+          -
+          8239
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.backend.jvm.GenBCodePipeline.ctx
+        </td>
+        <td style="background: #AEF1AE">
+          GenBCodePipeline.this.ctx
+        </td>
+      </tr><tr>
+        <td>
+          229
+        </td>
+        <td>
+          5664
+        </td>
+        <td>
+          8321
+          -
+          8329
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          &quot;.tasty&quot;
+        </td>
+      </tr><tr>
+        <td>
+          229
+        </td>
+        <td>
+          5663
+        </td>
+        <td>
+          8309
+          -
+          8319
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.tools.asm.tree.ClassNode.name
+        </td>
+        <td style="background: #AEF1AE">
+          store.name
+        </td>
+      </tr><tr>
+        <td>
+          229
+        </td>
+        <td>
+          5665
+        </td>
+        <td>
+          8283
+          -
+          8330
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BCodeHelpers.getFileForClassfile
+        </td>
+        <td style="background: #AEF1AE">
+          GenBCodePipeline.this.getFileForClassfile(outF, store.name, &quot;.tasty&quot;)
+        </td>
+      </tr><tr>
+        <td>
+          230
+        </td>
+        <td>
+          5666
+        </td>
+        <td>
+          8384
+          -
+          8411
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.io.AbstractFile.bufferedOutput
+        </td>
+        <td style="background: #AEF1AE">
+          outTastyFile.bufferedOutput
+        </td>
+      </tr><tr>
+        <td>
+          230
+        </td>
+        <td>
+          5667
+        </td>
+        <td>
+          8363
+          -
+          8412
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.io.DataOutputStream.&lt;init&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          new java.io.DataOutputStream(outTastyFile.bufferedOutput)
+        </td>
+      </tr><tr>
+        <td>
+          231
+        </td>
+        <td>
+          5669
+        </td>
+        <td>
+          8433
+          -
+          8456
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          java.io.FilterOutputStream.write
+        </td>
+        <td style="background: #AEF1AE">
+          outstream.write(binary)
+        </td>
+      </tr><tr>
+        <td>
+          231
+        </td>
+        <td>
+          5668
+        </td>
+        <td>
+          8433
+          -
+          8456
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.io.FilterOutputStream.write
+        </td>
+        <td style="background: #AEF1AE">
+          outstream.write(binary)
+        </td>
+      </tr><tr>
+        <td>
+          232
+        </td>
+        <td>
+          5671
+        </td>
+        <td>
+          8481
+          -
+          8498
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          java.io.FilterOutputStream.close
+        </td>
+        <td style="background: #AEF1AE">
+          outstream.close()
+        </td>
+      </tr><tr>
+        <td>
+          232
+        </td>
+        <td>
+          5670
+        </td>
+        <td>
+          8481
+          -
+          8498
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.io.FilterOutputStream.close
+        </td>
+        <td style="background: #AEF1AE">
+          outstream.close()
+        </td>
+      </tr><tr>
+        <td>
+          235
+        </td>
+        <td>
+          5672
+        </td>
+        <td>
+          8680
+          -
+          8697
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          scala.Array.empty
+        </td>
+        <td style="background: #AEF1AE">
+          scala.Array.empty[Byte]((ClassTag.Byte: scala.reflect.ClassTag[Byte]))
+        </td>
+      </tr><tr>
+        <td>
+          236
+        </td>
+        <td>
+          5677
+        </td>
+        <td>
+          8719
+          -
+          9021
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          {
+  GenBCodePipeline.this.getFileForClassfile(outF, store.name, &quot;.hasTasty&quot;);
+  binary
+}
+        </td>
+      </tr><tr>
+        <td>
+          239
+        </td>
+        <td>
+          5675
+        </td>
+        <td>
+          8970
+          -
+          8981
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          &quot;.hasTasty&quot;
+        </td>
+      </tr><tr>
+        <td>
+          239
+        </td>
+        <td>
+          5674
+        </td>
+        <td>
+          8958
+          -
+          8968
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.tools.asm.tree.ClassNode.name
+        </td>
+        <td style="background: #AEF1AE">
+          store.name
+        </td>
+      </tr><tr>
+        <td>
+          239
+        </td>
+        <td>
+          5676
+        </td>
+        <td>
+          8932
+          -
+          8982
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BCodeHelpers.getFileForClassfile
+        </td>
+        <td style="background: #AEF1AE">
+          GenBCodePipeline.this.getFileForClassfile(outF, store.name, &quot;.hasTasty&quot;)
+        </td>
+      </tr><tr>
+        <td>
+          242
+        </td>
+        <td>
+          5678
+        </td>
+        <td>
+          9064
+          -
+          9091
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Names.TermName.mangledString
+        </td>
+        <td style="background: #AEF1AE">
+          dotty.tools.dotc.core.StdNames.nme.TASTYATTR.mangledString
+        </td>
+      </tr><tr>
+        <td>
+          242
+        </td>
+        <td>
+          5679
+        </td>
+        <td>
+          9049
+          -
+          9099
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.tools.asm.CustomAttr.&lt;init&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          new scala.tools.asm.CustomAttr(dotty.tools.dotc.core.StdNames.nme.TASTYATTR.mangledString, tasty)
+        </td>
+      </tr><tr>
+        <td>
+          243
+        </td>
+        <td>
+          5680
+        </td>
+        <td>
+          9112
+          -
+          9142
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.tools.asm.tree.ClassNode.visitAttribute
+        </td>
+        <td style="background: #AEF1AE">
+          store.visitAttribute(dataAttr)
+        </td>
+      </tr><tr>
+        <td>
+          250
+        </td>
+        <td>
+          5685
+        </td>
+        <td>
+          9235
+          -
+          9299
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.backend.jvm.GenBCodePipeline.Item2.apply
+        </td>
+        <td style="background: #AEF1AE">
+          GenBCodePipeline.this.Item2.apply(arrivalPos, mirrorC, plainC, outF)
+        </td>
+      </tr><tr>
+        <td>
+          254
+        </td>
+        <td>
+          5686
+        </td>
+        <td>
+          9309
+          -
+          9321
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.util.LinkedList.add
+        </td>
+        <td style="background: #AEF1AE">
+          GenBCodePipeline.this.q2.add(item2)
+        </td>
+      </tr><tr>
+        <td>
+          269
+        </td>
+        <td>
+          5687
+        </td>
+        <td>
+          9893
+          -
+          10002
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          ()
+        </td>
+      </tr><tr>
+        <td>
+          274
+        </td>
+        <td>
+          5711
+        </td>
+        <td>
+          10051
+          -
+          10497
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          {
+  {
+    val item: GenBCodePipeline.this.Item2 = GenBCodePipeline.this.q2.poll();
+    if (item.isPoison)
+      {
+        GenBCodePipeline.this.q3.add(GenBCodePipeline.this.poison3);
+        return ()
+      }
+    else
+      try {
+        Worker2.this.localOptimizations(item.plain);
+        Worker2.this.addToQ3(item)
+      } catch {
+        case (ex @ (_: Throwable)) =&gt; {
+          ex.printStackTrace();
+          GenBCodePipeline.this.ctx.error(diagnostic.this.Message.toNoExplanation(scala.StringContext.apply(&quot;Error while emitting &quot;, &quot;\\n&quot;, &quot;&quot;).s(item.plain.name, ex.getMessage())), GenBCodePipeline.this.ctx.error$default$2)
+        }
+      }
+  };
+  while$2()
+}
+        </td>
+      </tr><tr>
+        <td>
+          274
+        </td>
+        <td>
+          5713
+        </td>
+        <td>
+          10038
+          -
+          10038
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          ()
+        </td>
+      </tr><tr>
+        <td>
+          274
+        </td>
+        <td>
+          5710
+        </td>
+        <td>
+          10051
+          -
+          10051
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.backend.jvm.GenBCodePipeline.Worker2.while$2
+        </td>
+        <td style="background: #AEF1AE">
+          while$2()
+        </td>
+      </tr><tr>
+        <td>
+          274
+        </td>
+        <td>
+          5712
+        </td>
+        <td>
+          10038
+          -
+          10038
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          ()
+        </td>
+      </tr><tr>
+        <td>
+          274
+        </td>
+        <td>
+          5688
+        </td>
+        <td>
+          10045
+          -
+          10049
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          true
+        </td>
+      </tr><tr>
+        <td>
+          275
+        </td>
+        <td>
+          5689
+        </td>
+        <td>
+          10074
+          -
+          10081
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.util.LinkedList.poll
+        </td>
+        <td style="background: #AEF1AE">
+          GenBCodePipeline.this.q2.poll()
+        </td>
+      </tr><tr>
+        <td>
+          276
+        </td>
+        <td>
+          5690
+        </td>
+        <td>
+          10096
+          -
+          10109
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.backend.jvm.GenBCodePipeline.Item2.isPoison
+        </td>
+        <td style="background: #AEF1AE">
+          item.isPoison
+        </td>
+      </tr><tr>
+        <td>
+          276
+        </td>
+        <td>
+          5694
+        </td>
+        <td>
+          10111
+          -
+          10170
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          {
+  GenBCodePipeline.this.q3.add(GenBCodePipeline.this.poison3);
+  return ()
+}
+        </td>
+      </tr><tr>
+        <td>
+          277
+        </td>
+        <td>
+          5692
+        </td>
+        <td>
+          10125
+          -
+          10139
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.util.PriorityQueue.add
+        </td>
+        <td style="background: #AEF1AE">
+          GenBCodePipeline.this.q3.add(GenBCodePipeline.this.poison3)
+        </td>
+      </tr><tr>
+        <td>
+          277
+        </td>
+        <td>
+          5691
+        </td>
+        <td>
+          10132
+          -
+          10139
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.backend.jvm.GenBCodePipeline.poison3
+        </td>
+        <td style="background: #AEF1AE">
+          GenBCodePipeline.this.poison3
+        </td>
+      </tr><tr>
+        <td>
+          278
+        </td>
+        <td>
+          5693
+        </td>
+        <td>
+          10152
+          -
+          10158
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          ()
+        </td>
+      </tr><tr>
+        <td>
+          281
+        </td>
+        <td>
+          5698
+        </td>
+        <td>
+          10220
+          -
+          10278
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          {
+  Worker2.this.localOptimizations(item.plain);
+  Worker2.this.addToQ3(item)
+}
+        </td>
+      </tr><tr>
+        <td>
+          281
+        </td>
+        <td>
+          5709
+        </td>
+        <td>
+          10200
+          -
+          10475
+        </td>
+        <td>
+          Try
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          try {
+  Worker2.this.localOptimizations(item.plain);
+  Worker2.this.addToQ3(item)
+} catch {
+  case (ex @ (_: Throwable)) =&gt; {
+    ex.printStackTrace();
+    GenBCodePipeline.this.ctx.error(diagnostic.this.Message.toNoExplanation(scala.StringContext.apply(&quot;Error while emitting &quot;, &quot;\\n&quot;, &quot;&quot;).s(item.plain.name, ex.getMessage())), GenBCodePipeline.this.ctx.error$default$2)
+  }
+}
+        </td>
+      </tr><tr>
+        <td>
+          282
+        </td>
+        <td>
+          5696
+        </td>
+        <td>
+          10220
+          -
+          10250
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.backend.jvm.GenBCodePipeline.Worker2.localOptimizations
+        </td>
+        <td style="background: #AEF1AE">
+          Worker2.this.localOptimizations(item.plain)
+        </td>
+      </tr><tr>
+        <td>
+          282
+        </td>
+        <td>
+          5695
+        </td>
+        <td>
+          10239
+          -
+          10249
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.backend.jvm.GenBCodePipeline.Item2.plain
+        </td>
+        <td style="background: #AEF1AE">
+          item.plain
+        </td>
+      </tr><tr>
+        <td>
+          283
+        </td>
+        <td>
+          5697
+        </td>
+        <td>
+          10265
+          -
+          10278
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.backend.jvm.GenBCodePipeline.Worker2.addToQ3
+        </td>
+        <td style="background: #AEF1AE">
+          Worker2.this.addToQ3(item)
+        </td>
+      </tr><tr>
+        <td>
+          286
+        </td>
+        <td>
+          5699
+        </td>
+        <td>
+          10353
+          -
+          10373
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.Throwable.printStackTrace
+        </td>
+        <td style="background: #F0ADAD">
+          ex.printStackTrace()
+        </td>
+      </tr><tr>
+        <td>
+          287
+        </td>
+        <td>
+          5705
+        </td>
+        <td>
+          10400
+          -
+          10460
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.StringContext.s
+        </td>
+        <td style="background: #F0ADAD">
+          scala.StringContext.apply(&quot;Error while emitting &quot;, &quot;\\n&quot;, &quot;&quot;).s(item.plain.name, ex.getMessage())
+        </td>
+      </tr><tr>
+        <td>
+          287
+        </td>
+        <td>
+          5708
+        </td>
+        <td>
+          10390
+          -
+          10461
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.reporting.Reporting.error
+        </td>
+        <td style="background: #F0ADAD">
+          GenBCodePipeline.this.ctx.error(diagnostic.this.Message.toNoExplanation(scala.StringContext.apply(&quot;Error while emitting &quot;, &quot;\\n&quot;, &quot;&quot;).s(item.plain.name, ex.getMessage())), GenBCodePipeline.this.ctx.error$default$2)
+        </td>
+      </tr><tr>
+        <td>
+          287
+        </td>
+        <td>
+          5702
+        </td>
+        <td>
+          10459
+          -
+          10460
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          &quot;&quot;
+        </td>
+      </tr><tr>
+        <td>
+          287
+        </td>
+        <td>
+          5704
+        </td>
+        <td>
+          10445
+          -
+          10458
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.Throwable.getMessage
+        </td>
+        <td style="background: #F0ADAD">
+          ex.getMessage()
+        </td>
+      </tr><tr>
+        <td>
+          287
+        </td>
+        <td>
+          5707
+        </td>
+        <td>
+          10394
+          -
+          10394
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.reporting.Reporting.error$default$2
+        </td>
+        <td style="background: #F0ADAD">
+          GenBCodePipeline.this.ctx.error$default$2
+        </td>
+      </tr><tr>
+        <td>
+          287
+        </td>
+        <td>
+          5701
+        </td>
+        <td>
+          10441
+          -
+          10444
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          &quot;\\n&quot;
+        </td>
+      </tr><tr>
+        <td>
+          287
+        </td>
+        <td>
+          5700
+        </td>
+        <td>
+          10402
+          -
+          10424
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          &quot;Error while emitting &quot;
+        </td>
+      </tr><tr>
+        <td>
+          287
+        </td>
+        <td>
+          5703
+        </td>
+        <td>
+          10425
+          -
+          10440
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.tools.asm.tree.ClassNode.name
+        </td>
+        <td style="background: #F0ADAD">
+          item.plain.name
+        </td>
+      </tr><tr>
+        <td>
+          287
+        </td>
+        <td>
+          5706
+        </td>
+        <td>
+          10400
+          -
+          10460
+        </td>
+        <td>
+          ApplyImplicitView
+        </td>
+        <td>
+          dotty.tools.dotc.reporting.diagnostic.Message.toNoExplanation
+        </td>
+        <td style="background: #F0ADAD">
+          diagnostic.this.Message.toNoExplanation(scala.StringContext.apply(&quot;Error while emitting &quot;, &quot;\\n&quot;, &quot;&quot;).s(item.plain.name, ex.getMessage()))
+        </td>
+      </tr><tr>
+        <td>
+          296
+        </td>
+        <td>
+          5714
+        </td>
+        <td>
+          10653
+          -
+          10662
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BCodeIdiomatic.extraProc
+        </td>
+        <td style="background: #AEF1AE">
+          GenBCodePipeline.this.extraProc
+        </td>
+      </tr><tr>
+        <td>
+          296
+        </td>
+        <td>
+          5715
+        </td>
+        <td>
+          10636
+          -
+          10663
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BCodeHelpers.CClassWriter.&lt;init&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          new GenBCodePipeline.this.CClassWriter(GenBCodePipeline.this.extraProc)
+        </td>
+      </tr><tr>
+        <td>
+          297
+        </td>
+        <td>
+          5716
+        </td>
+        <td>
+          10674
+          -
+          10687
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.tools.asm.tree.ClassNode.accept
+        </td>
+        <td style="background: #AEF1AE">
+          cn.accept(cw)
+        </td>
+      </tr><tr>
+        <td>
+          298
+        </td>
+        <td>
+          5717
+        </td>
+        <td>
+          10698
+          -
+          10712
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.tools.asm.ClassWriter.toByteArray
+        </td>
+        <td style="background: #AEF1AE">
+          cw.toByteArray()
+        </td>
+      </tr><tr>
+        <td>
+          301
+        </td>
+        <td>
+          5720
+        </td>
+        <td>
+          10762
+          -
+          10762
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.Tuple4._3
+        </td>
+        <td style="background: #AEF1AE">
+          x$2._3
+        </td>
+      </tr><tr>
+        <td>
+          301
+        </td>
+        <td>
+          5719
+        </td>
+        <td>
+          10754
+          -
+          10754
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.Tuple4._2
+        </td>
+        <td style="background: #AEF1AE">
+          x$2._2
+        </td>
+      </tr><tr>
+        <td>
+          301
+        </td>
+        <td>
+          5718
+        </td>
+        <td>
+          10742
+          -
+          10742
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.Tuple4._1
+        </td>
+        <td style="background: #AEF1AE">
+          x$2._1
+        </td>
+      </tr><tr>
+        <td>
+          301
+        </td>
+        <td>
+          5721
+        </td>
+        <td>
+          10769
+          -
+          10769
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.Tuple4._4
+        </td>
+        <td style="background: #AEF1AE">
+          x$2._4
+        </td>
+      </tr><tr>
+        <td>
+          303
+        </td>
+        <td>
+          5723
+        </td>
+        <td>
+          10830
+          -
+          10834
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          null
+        </td>
+      </tr><tr>
+        <td>
+          303
+        </td>
+        <td>
+          5726
+        </td>
+        <td>
+          10862
+          -
+          10882
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.backend.jvm.GenBCodePipeline.Worker2.getByteArray
+        </td>
+        <td style="background: #AEF1AE">
+          getByteArray(mirror)
+        </td>
+      </tr><tr>
+        <td>
+          303
+        </td>
+        <td>
+          5728
+        </td>
+        <td>
+          10840
+          -
+          10883
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          dotty.tools.backend.jvm.GenBCodePipeline.SubItem3.apply
+        </td>
+        <td style="background: #AEF1AE">
+          GenBCodePipeline.this.SubItem3.apply(mirror.name, getByteArray(mirror))
+        </td>
+      </tr><tr>
+        <td>
+          303
+        </td>
+        <td>
+          5722
+        </td>
+        <td>
+          10814
+          -
+          10828
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.Object.==
+        </td>
+        <td style="background: #AEF1AE">
+          mirror.==(null)
+        </td>
+      </tr><tr>
+        <td>
+          303
+        </td>
+        <td>
+          5725
+        </td>
+        <td>
+          10849
+          -
+          10860
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.tools.asm.tree.ClassNode.name
+        </td>
+        <td style="background: #AEF1AE">
+          mirror.name
+        </td>
+      </tr><tr>
+        <td>
+          303
+        </td>
+        <td>
+          5727
+        </td>
+        <td>
+          10840
+          -
+          10883
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.backend.jvm.GenBCodePipeline.SubItem3.apply
+        </td>
+        <td style="background: #AEF1AE">
+          GenBCodePipeline.this.SubItem3.apply(mirror.name, getByteArray(mirror))
+        </td>
+      </tr><tr>
+        <td>
+          303
+        </td>
+        <td>
+          5724
+        </td>
+        <td>
+          10830
+          -
+          10834
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          null
+        </td>
+      </tr><tr>
+        <td>
+          304
+        </td>
+        <td>
+          5729
+        </td>
+        <td>
+          10915
+          -
+          10925
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.tools.asm.tree.ClassNode.name
+        </td>
+        <td style="background: #AEF1AE">
+          plain.name
+        </td>
+      </tr><tr>
+        <td>
+          304
+        </td>
+        <td>
+          5731
+        </td>
+        <td>
+          10906
+          -
+          10947
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.backend.jvm.GenBCodePipeline.SubItem3.apply
+        </td>
+        <td style="background: #AEF1AE">
+          GenBCodePipeline.this.SubItem3.apply(plain.name, getByteArray(plain))
+        </td>
+      </tr><tr>
+        <td>
+          304
+        </td>
+        <td>
+          5730
+        </td>
+        <td>
+          10927
+          -
+          10946
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.backend.jvm.GenBCodePipeline.Worker2.getByteArray
+        </td>
+        <td style="background: #AEF1AE">
+          getByteArray(plain)
+        </td>
+      </tr><tr>
+        <td>
+          306
+        </td>
+        <td>
+          5732
+        </td>
+        <td>
+          10961
+          -
+          10997
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          false
+        </td>
+      </tr><tr>
+        <td>
+          306
+        </td>
+        <td>
+          5744
+        </td>
+        <td>
+          10957
+          -
+          10957
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          ()
+        </td>
+      </tr><tr>
+        <td>
+          306
+        </td>
+        <td>
+          5734
+        </td>
+        <td>
+          10961
+          -
+          11058
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Boolean.&amp;&amp;
+        </td>
+        <td style="background: #AEF1AE">
+          false.&amp;&amp;(plain.name.contains(&quot;&quot;))
+        </td>
+      </tr><tr>
+        <td>
+          306
+        </td>
+        <td>
+          5743
+        </td>
+        <td>
+          11060
+          -
+          11193
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          {
+  if (mirrorC.!=(null))
+    scala.tools.nsc.backend.jvm.AsmUtils.traceClass(mirrorC.jclassBytes)
+  else
+    ();
+  scala.tools.nsc.backend.jvm.AsmUtils.traceClass(plainC.jclassBytes)
+}
+        </td>
+      </tr><tr>
+        <td>
+          306
+        </td>
+        <td>
+          5745
+        </td>
+        <td>
+          10957
+          -
+          10957
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          ()
+        </td>
+      </tr><tr>
+        <td>
+          306
+        </td>
+        <td>
+          5733
+        </td>
+        <td>
+          11001
+          -
+          11058
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.String.contains
+        </td>
+        <td style="background: #F0ADAD">
+          plain.name.contains(&quot;&quot;)
+        </td>
+      </tr><tr>
+        <td>
+          307
+        </td>
+        <td>
+          5735
+        </td>
+        <td>
+          11076
+          -
+          11091
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.Object.!=
+        </td>
+        <td style="background: #F0ADAD">
+          mirrorC.!=(null)
+        </td>
+      </tr><tr>
+        <td>
+          307
+        </td>
+        <td>
+          5738
+        </td>
+        <td>
+          11093
+          -
+          11133
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.AsmUtils.traceClass
+        </td>
+        <td style="background: #F0ADAD">
+          scala.tools.nsc.backend.jvm.AsmUtils.traceClass(mirrorC.jclassBytes)
+        </td>
+      </tr><tr>
+        <td>
+          307
+        </td>
+        <td>
+          5737
+        </td>
+        <td>
+          11093
+          -
+          11133
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.AsmUtils.traceClass
+        </td>
+        <td style="background: #F0ADAD">
+          scala.tools.nsc.backend.jvm.AsmUtils.traceClass(mirrorC.jclassBytes)
+        </td>
+      </tr><tr>
+        <td>
+          307
+        </td>
+        <td>
+          5740
+        </td>
+        <td>
+          11072
+          -
+          11072
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          ()
+        </td>
+      </tr><tr>
+        <td>
+          307
+        </td>
+        <td>
+          5736
+        </td>
+        <td>
+          11113
+          -
+          11132
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.backend.jvm.GenBCodePipeline.SubItem3.jclassBytes
+        </td>
+        <td style="background: #F0ADAD">
+          mirrorC.jclassBytes
+        </td>
+      </tr><tr>
+        <td>
+          307
+        </td>
+        <td>
+          5739
+        </td>
+        <td>
+          11072
+          -
+          11072
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          ()
+        </td>
+      </tr><tr>
+        <td>
+          308
+        </td>
+        <td>
+          5741
+        </td>
+        <td>
+          11164
+          -
+          11182
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.backend.jvm.GenBCodePipeline.SubItem3.jclassBytes
+        </td>
+        <td style="background: #F0ADAD">
+          plainC.jclassBytes
+        </td>
+      </tr><tr>
+        <td>
+          308
+        </td>
+        <td>
+          5742
+        </td>
+        <td>
+          11144
+          -
+          11183
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.AsmUtils.traceClass
+        </td>
+        <td style="background: #F0ADAD">
+          scala.tools.nsc.backend.jvm.AsmUtils.traceClass(plainC.jclassBytes)
+        </td>
+      </tr><tr>
+        <td>
+          311
+        </td>
+        <td>
+          5747
+        </td>
+        <td>
+          11203
+          -
+          11255
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.util.PriorityQueue.add
+        </td>
+        <td style="background: #AEF1AE">
+          GenBCodePipeline.this.q3.add(GenBCodePipeline.this.Item3.apply(arrivalPos, mirrorC, plainC, outFolder))
+        </td>
+      </tr><tr>
+        <td>
+          311
+        </td>
+        <td>
+          5746
+        </td>
+        <td>
+          11210
+          -
+          11255
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.backend.jvm.GenBCodePipeline.Item3.apply
+        </td>
+        <td style="background: #AEF1AE">
+          GenBCodePipeline.this.Item3.apply(arrivalPos, mirrorC, plainC, outFolder)
+        </td>
+      </tr><tr>
+        <td>
+          317
+        </td>
+        <td>
+          5748
+        </td>
+        <td>
+          11329
+          -
+          11330
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          0
+        </td>
+      </tr><tr>
+        <td>
+          331
+        </td>
+        <td>
+          5749
+        </td>
+        <td>
+          11759
+          -
+          11772
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.backend.jvm.GenBCodePipeline.tree_=
+        </td>
+        <td style="background: #AEF1AE">
+          this.tree_=(t)
+        </td>
+      </tr><tr>
+        <td>
+          336
+        </td>
+        <td>
+          5750
+        </td>
+        <td>
+          11930
+          -
+          11944
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.backend.jvm.GenBCodePipeline.arrivalPos_=
+        </td>
+        <td style="background: #AEF1AE">
+          GenBCodePipeline.this.arrivalPos_=(0)
+        </td>
+      </tr><tr>
+        <td>
+          338
+        </td>
+        <td>
+          5751
+        </td>
+        <td>
+          11999
+          -
+          12027
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BTypesFromSymbols.intializeCoreBTypes
+        </td>
+        <td style="background: #AEF1AE">
+          GenBCodePipeline.this.bTypes.intializeCoreBTypes()
+        </td>
+      </tr><tr>
+        <td>
+          342
+        </td>
+        <td>
+          5753
+        </td>
+        <td>
+          12240
+          -
+          12271
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BCodeHelpers.initBytecodeWriter
+        </td>
+        <td style="background: #AEF1AE">
+          GenBCodePipeline.this.initBytecodeWriter(GenBCodePipeline.this.entryPoints)
+        </td>
+      </tr><tr>
+        <td>
+          342
+        </td>
+        <td>
+          5752
+        </td>
+        <td>
+          12259
+          -
+          12270
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.backend.jvm.GenBCodePipeline.entryPoints
+        </td>
+        <td style="background: #AEF1AE">
+          GenBCodePipeline.this.entryPoints
+        </td>
+      </tr><tr>
+        <td>
+          343
+        </td>
+        <td>
+          5754
+        </td>
+        <td>
+          12296
+          -
+          12314
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BCodeHelpers.JMirrorBuilder.&lt;init&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          new GenBCodePipeline.this.JMirrorBuilder()
+        </td>
+      </tr><tr>
+        <td>
+          345
+        </td>
+        <td>
+          5755
+        </td>
+        <td>
+          12350
+          -
+          12398
+        </td>
+        <td>
+          TypeApply
+        </td>
+        <td>
+          scala.Any.isInstanceOf
+        </td>
+        <td style="background: #AEF1AE">
+          GenBCodePipeline.this.bytecodeWriter.isInstanceOf[GenBCodePipeline.this.ClassBytecodeWriter]
+        </td>
+      </tr><tr>
+        <td>
+          346
+        </td>
+        <td>
+          5756
+        </td>
+        <td>
+          12405
+          -
+          12446
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.backend.jvm.GenBCodePipeline.buildAndSendToDisk
+        </td>
+        <td style="background: #AEF1AE">
+          GenBCodePipeline.this.buildAndSendToDisk(needsOutfileForSymbol)
+        </td>
+      </tr><tr>
+        <td>
+          349
+        </td>
+        <td>
+          5757
+        </td>
+        <td>
+          12485
+          -
+          12507
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BytecodeWriters.BytecodeWriter.close
+        </td>
+        <td style="background: #AEF1AE">
+          GenBCodePipeline.this.bytecodeWriter.close()
+        </td>
+      </tr><tr>
+        <td>
+          352
+        </td>
+        <td>
+          5762
+        </td>
+        <td>
+          12582
+          -
+          12582
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          ()
+        </td>
+      </tr><tr>
+        <td>
+          352
+        </td>
+        <td>
+          5758
+        </td>
+        <td>
+          12586
+          -
+          12614
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.Object.!=
+        </td>
+        <td style="background: #AEF1AE">
+          GenBCodePipeline.this.ctx.compilerCallback.!=(null)
+        </td>
+      </tr><tr>
+        <td>
+          352
+        </td>
+        <td>
+          5763
+        </td>
+        <td>
+          12582
+          -
+          12582
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          ()
+        </td>
+      </tr><tr>
+        <td>
+          353
+        </td>
+        <td>
+          5759
+        </td>
+        <td>
+          12662
+          -
+          12672
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.backend.jvm.GenBCodePipeline.sourceFile
+        </td>
+        <td style="background: #AEF1AE">
+          GenBCodePipeline.this.sourceFile
+        </td>
+      </tr><tr>
+        <td>
+          353
+        </td>
+        <td>
+          5761
+        </td>
+        <td>
+          12624
+          -
+          12673
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          dotty.tools.dotc.interfaces.CompilerCallback.onSourceCompiled
+        </td>
+        <td style="background: #AEF1AE">
+          GenBCodePipeline.this.ctx.compilerCallback.onSourceCompiled(GenBCodePipeline.this.sourceFile)
+        </td>
+      </tr><tr>
+        <td>
+          353
+        </td>
+        <td>
+          5760
+        </td>
+        <td>
+          12624
+          -
+          12673
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.interfaces.CompilerCallback.onSourceCompiled
+        </td>
+        <td style="background: #AEF1AE">
+          GenBCodePipeline.this.ctx.compilerCallback.onSourceCompiled(GenBCodePipeline.this.sourceFile)
+        </td>
+      </tr><tr>
+        <td>
+          378
+        </td>
+        <td>
+          5764
+        </td>
+        <td>
+          13711
+          -
+          13726
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.backend.jvm.GenBCodePipeline.feedPipeline1
+        </td>
+        <td style="background: #AEF1AE">
+          GenBCodePipeline.this.feedPipeline1()
+        </td>
+      </tr><tr>
+        <td>
+          380
+        </td>
+        <td>
+          5765
+        </td>
+        <td>
+          13807
+          -
+          13841
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.backend.jvm.GenBCodePipeline.Worker1.run
+        </td>
+        <td style="background: #AEF1AE">
+          new GenBCodePipeline.this.Worker1(needsOutFolder).run()
+        </td>
+      </tr><tr>
+        <td>
+          383
+        </td>
+        <td>
+          5766
+        </td>
+        <td>
+          13917
+          -
+          13935
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.backend.jvm.GenBCodePipeline.Worker2.run
+        </td>
+        <td style="background: #AEF1AE">
+          new GenBCodePipeline.this.Worker2().run()
+        </td>
+      </tr><tr>
+        <td>
+          386
+        </td>
+        <td>
+          5767
+        </td>
+        <td>
+          14021
+          -
+          14030
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.backend.jvm.GenBCodePipeline.drainQ3
+        </td>
+        <td style="background: #AEF1AE">
+          GenBCodePipeline.this.drainQ3()
+        </td>
+      </tr><tr>
+        <td>
+          395
+        </td>
+        <td>
+          5768
+        </td>
+        <td>
+          14331
+          -
+          14333
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          ()
+        </td>
+      </tr><tr>
+        <td>
+          396
+        </td>
+        <td>
+          5770
+        </td>
+        <td>
+          14373
+          -
+          14390
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.immutable.List.foreach
+        </td>
+        <td style="background: #AEF1AE">
+          stats.foreach[Unit]({
+  ((tree: dotty.tools.dotc.ast.tpd.Tree) =&gt; gen(tree))
+})
+        </td>
+      </tr><tr>
+        <td>
+          396
+        </td>
+        <td>
+          5769
+        </td>
+        <td>
+          14387
+          -
+          14390
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.backend.jvm.GenBCodePipeline.gen
+        </td>
+        <td style="background: #AEF1AE">
+          gen(tree)
+        </td>
+      </tr><tr>
+        <td>
+          397
+        </td>
+        <td>
+          5771
+        </td>
+        <td>
+          14432
+          -
+          14434
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          ()
+        </td>
+      </tr><tr>
+        <td>
+          399
+        </td>
+        <td>
+          5774
+        </td>
+        <td>
+          14518
+          -
+          14556
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.backend.jvm.GenBCodePipeline.Item1.apply
+        </td>
+        <td style="background: #AEF1AE">
+          GenBCodePipeline.this.Item1.apply(GenBCodePipeline.this.arrivalPos, cd, GenBCodePipeline.this.int.currentUnit)
+        </td>
+      </tr><tr>
+        <td>
+          399
+        </td>
+        <td>
+          5773
+        </td>
+        <td>
+          14540
+          -
+          14555
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.backend.jvm.DottyBackendInterface.currentUnit
+        </td>
+        <td style="background: #AEF1AE">
+          GenBCodePipeline.this.int.currentUnit
+        </td>
+      </tr><tr>
+        <td>
+          399
+        </td>
+        <td>
+          5772
+        </td>
+        <td>
+          14524
+          -
+          14534
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.backend.jvm.GenBCodePipeline.arrivalPos
+        </td>
+        <td style="background: #AEF1AE">
+          GenBCodePipeline.this.arrivalPos
+        </td>
+      </tr><tr>
+        <td>
+          399
+        </td>
+        <td>
+          5775
+        </td>
+        <td>
+          14511
+          -
+          14556
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.util.LinkedList.add
+        </td>
+        <td style="background: #AEF1AE">
+          GenBCodePipeline.this.q1.add(GenBCodePipeline.this.Item1.apply(GenBCodePipeline.this.arrivalPos, cd, GenBCodePipeline.this.int.currentUnit))
+        </td>
+      </tr><tr>
+        <td>
+          400
+        </td>
+        <td>
+          5777
+        </td>
+        <td>
+          14569
+          -
+          14584
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.backend.jvm.GenBCodePipeline.arrivalPos_=
+        </td>
+        <td style="background: #AEF1AE">
+          GenBCodePipeline.this.arrivalPos_=(GenBCodePipeline.this.arrivalPos.+(1))
+        </td>
+      </tr><tr>
+        <td>
+          400
+        </td>
+        <td>
+          5776
+        </td>
+        <td>
+          14569
+          -
+          14584
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Int.+
+        </td>
+        <td style="background: #AEF1AE">
+          GenBCodePipeline.this.arrivalPos.+(1)
+        </td>
+      </tr><tr>
+        <td>
+          403
+        </td>
+        <td>
+          5779
+        </td>
+        <td>
+          14609
+          -
+          14618
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.backend.jvm.GenBCodePipeline.gen
+        </td>
+        <td style="background: #AEF1AE">
+          gen(GenBCodePipeline.this.tree)
+        </td>
+      </tr><tr>
+        <td>
+          403
+        </td>
+        <td>
+          5778
+        </td>
+        <td>
+          14613
+          -
+          14617
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.backend.jvm.GenBCodePipeline.tree
+        </td>
+        <td style="background: #AEF1AE">
+          GenBCodePipeline.this.tree
+        </td>
+      </tr><tr>
+        <td>
+          404
+        </td>
+        <td>
+          5780
+        </td>
+        <td>
+          14632
+          -
+          14639
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.backend.jvm.GenBCodePipeline.poison1
+        </td>
+        <td style="background: #AEF1AE">
+          GenBCodePipeline.this.poison1
+        </td>
+      </tr><tr>
+        <td>
+          404
+        </td>
+        <td>
+          5781
+        </td>
+        <td>
+          14625
+          -
+          14639
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.util.LinkedList.add
+        </td>
+        <td style="background: #AEF1AE">
+          GenBCodePipeline.this.q1.add(GenBCodePipeline.this.poison1)
+        </td>
+      </tr><tr>
+        <td>
+          411
+        </td>
+        <td>
+          5816
+        </td>
+        <td>
+          14842
+          -
+          14842
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          ()
+        </td>
+      </tr><tr>
+        <td>
+          411
+        </td>
+        <td>
+          5815
+        </td>
+        <td>
+          14858
+          -
+          15672
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          {
+  &lt;synthetic&gt; &lt;artifact&gt; private[this] val x$3: (String, Array[Byte]) = (cfr: GenBCodePipeline.this.SubItem3 @unchecked) match {
+    case (jclassName: String, jclassBytes: Array[Byte])GenBCodePipeline.this.SubItem3((jclassName @ _), (jclassBytes @ _)) =&gt; scala.Tuple2.apply[String, Array[Byte]](jclassName, jclassBytes)
+  };
+  val jclassName: String = x$3._1;
+  val jclassBytes: Array[Byte] = x$3._2;
+  try {
+    val outFile: tools.nsc.io.AbstractFile = if (outFolder.==(null))
+      null
+    else
+      GenBCodePipeline.this.getFileForClassfile(outFolder, jclassName, &quot;.class&quot;);
+    GenBCodePipeline.this.bytecodeWriter.writeClass(jclassName, jclassName, jclassBytes, outFile);
+    val className: String = jclassName.replace('/', '.');
+    if (GenBCodePipeline.this.ctx.compilerCallback.!=(null))
+      GenBCodePipeline.this.ctx.compilerCallback.onClassGenerated(GenBCodePipeline.this.sourceFile, GenBCodePipeline.this.convertAbstractFile(outFile), className)
+    else
+      ();
+    if (GenBCodePipeline.this.ctx.sbtCallback.!=(null))
+      GenBCodePipeline.this.ctx.sbtCallback.generatedClass(GenBCodePipeline.this.sourceFile.jfile().orElse(null), outFile.file, className)
+    else
+      ()
+  } catch {
+    case (e @ (_: scala.tools.nsc.backend.jvm.FileConflictException)) =&gt; GenBCodePipeline.this.ctx.error(diagnostic.this.Message.toNoExplanation(scala.StringContext.apply(&quot;error writing &quot;, &quot;: &quot;, &quot;&quot;).s(jclassName, e.getMessage())), GenBCodePipeline.this.ctx.error$default$2)
+  }
+}
+        </td>
+      </tr><tr>
+        <td>
+          411
+        </td>
+        <td>
+          5782
+        </td>
+        <td>
+          14846
+          -
+          14857
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.Object.!=
+        </td>
+        <td style="background: #AEF1AE">
+          cfr.!=(null)
+        </td>
+      </tr><tr>
+        <td>
+          411
+        </td>
+        <td>
+          5817
+        </td>
+        <td>
+          14842
+          -
+          14842
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          ()
+        </td>
+      </tr><tr>
+        <td>
+          412
+        </td>
+        <td>
+          5783
+        </td>
+        <td>
+          14883
+          -
+          14883
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.Tuple2._1
+        </td>
+        <td style="background: #AEF1AE">
+          x$3._1
+        </td>
+      </tr><tr>
+        <td>
+          412
+        </td>
+        <td>
+          5784
+        </td>
+        <td>
+          14895
+          -
+          14895
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.Tuple2._2
+        </td>
+        <td style="background: #AEF1AE">
+          x$3._2
+        </td>
+      </tr><tr>
+        <td>
+          413
+        </td>
+        <td>
+          5806
+        </td>
+        <td>
+          14942
+          -
+          15504
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          {
+  val outFile: tools.nsc.io.AbstractFile = if (outFolder.==(null))
+    null
+  else
+    GenBCodePipeline.this.getFileForClassfile(outFolder, jclassName, &quot;.class&quot;);
+  GenBCodePipeline.this.bytecodeWriter.writeClass(jclassName, jclassName, jclassBytes, outFile);
+  val className: String = jclassName.replace('/', '.');
+  if (GenBCodePipeline.this.ctx.compilerCallback.!=(null))
+    GenBCodePipeline.this.ctx.compilerCallback.onClassGenerated(GenBCodePipeline.this.sourceFile, GenBCodePipeline.this.convertAbstractFile(outFile), className)
+  else
+    ();
+  if (GenBCodePipeline.this.ctx.sbtCallback.!=(null))
+    GenBCodePipeline.this.ctx.sbtCallback.generatedClass(GenBCodePipeline.this.sourceFile.jfile().orElse(null), outFile.file, className)
+  else
+    ()
+}
+        </td>
+      </tr><tr>
+        <td>
+          415
+        </td>
+        <td>
+          5786
+        </td>
+        <td>
+          14993
+          -
+          14997
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          null
+        </td>
+      </tr><tr>
+        <td>
+          415
+        </td>
+        <td>
+          5785
+        </td>
+        <td>
+          14974
+          -
+          14991
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.Object.==
+        </td>
+        <td style="background: #AEF1AE">
+          outFolder.==(null)
+        </td>
+      </tr><tr>
+        <td>
+          415
+        </td>
+        <td>
+          5787
+        </td>
+        <td>
+          14993
+          -
+          14997
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          null
+        </td>
+      </tr><tr>
+        <td>
+          416
+        </td>
+        <td>
+          5789
+        </td>
+        <td>
+          15017
+          -
+          15069
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BCodeHelpers.getFileForClassfile
+        </td>
+        <td style="background: #AEF1AE">
+          GenBCodePipeline.this.getFileForClassfile(outFolder, jclassName, &quot;.class&quot;)
+        </td>
+      </tr><tr>
+        <td>
+          416
+        </td>
+        <td>
+          5788
+        </td>
+        <td>
+          15017
+          -
+          15069
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BCodeHelpers.getFileForClassfile
+        </td>
+        <td style="background: #AEF1AE">
+          GenBCodePipeline.this.getFileForClassfile(outFolder, jclassName, &quot;.class&quot;)
+        </td>
+      </tr><tr>
+        <td>
+          417
+        </td>
+        <td>
+          5790
+        </td>
+        <td>
+          15082
+          -
+          15153
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BytecodeWriters.BytecodeWriter.writeClass
+        </td>
+        <td style="background: #AEF1AE">
+          GenBCodePipeline.this.bytecodeWriter.writeClass(jclassName, jclassName, jclassBytes, outFile)
+        </td>
+      </tr><tr>
+        <td>
+          419
+        </td>
+        <td>
+          5791
+        </td>
+        <td>
+          15183
+          -
+          15211
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.String.replace
+        </td>
+        <td style="background: #AEF1AE">
+          jclassName.replace('/', '.')
+        </td>
+      </tr><tr>
+        <td>
+          420
+        </td>
+        <td>
+          5792
+        </td>
+        <td>
+          15228
+          -
+          15256
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.Object.!=
+        </td>
+        <td style="background: #AEF1AE">
+          GenBCodePipeline.this.ctx.compilerCallback.!=(null)
+        </td>
+      </tr><tr>
+        <td>
+          420
+        </td>
+        <td>
+          5798
+        </td>
+        <td>
+          15224
+          -
+          15224
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          ()
+        </td>
+      </tr><tr>
+        <td>
+          420
+        </td>
+        <td>
+          5797
+        </td>
+        <td>
+          15224
+          -
+          15224
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          ()
+        </td>
+      </tr><tr>
+        <td>
+          421
+        </td>
+        <td>
+          5795
+        </td>
+        <td>
+          15272
+          -
+          15362
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.interfaces.CompilerCallback.onClassGenerated
+        </td>
+        <td style="background: #AEF1AE">
+          GenBCodePipeline.this.ctx.compilerCallback.onClassGenerated(GenBCodePipeline.this.sourceFile, GenBCodePipeline.this.convertAbstractFile(outFile), className)
+        </td>
+      </tr><tr>
+        <td>
+          421
+        </td>
+        <td>
+          5794
+        </td>
+        <td>
+          15322
+          -
+          15350
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.backend.jvm.GenBCodePipeline.convertAbstractFile
+        </td>
+        <td style="background: #AEF1AE">
+          GenBCodePipeline.this.convertAbstractFile(outFile)
+        </td>
+      </tr><tr>
+        <td>
+          421
+        </td>
+        <td>
+          5796
+        </td>
+        <td>
+          15272
+          -
+          15362
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          dotty.tools.dotc.interfaces.CompilerCallback.onClassGenerated
+        </td>
+        <td style="background: #AEF1AE">
+          GenBCodePipeline.this.ctx.compilerCallback.onClassGenerated(GenBCodePipeline.this.sourceFile, GenBCodePipeline.this.convertAbstractFile(outFile), className)
+        </td>
+      </tr><tr>
+        <td>
+          421
+        </td>
+        <td>
+          5793
+        </td>
+        <td>
+          15310
+          -
+          15320
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.backend.jvm.GenBCodePipeline.sourceFile
+        </td>
+        <td style="background: #AEF1AE">
+          GenBCodePipeline.this.sourceFile
+        </td>
+      </tr><tr>
+        <td>
+          422
+        </td>
+        <td>
+          5804
+        </td>
+        <td>
+          15375
+          -
+          15375
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          ()
+        </td>
+      </tr><tr>
+        <td>
+          422
+        </td>
+        <td>
+          5805
+        </td>
+        <td>
+          15375
+          -
+          15375
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          ()
+        </td>
+      </tr><tr>
+        <td>
+          422
+        </td>
+        <td>
+          5799
+        </td>
+        <td>
+          15379
+          -
+          15402
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.Object.!=
+        </td>
+        <td style="background: #AEF1AE">
+          GenBCodePipeline.this.ctx.sbtCallback.!=(null)
+        </td>
+      </tr><tr>
+        <td>
+          423
+        </td>
+        <td>
+          5801
+        </td>
+        <td>
+          15480
+          -
+          15492
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.io.AbstractFile.file
+        </td>
+        <td style="background: #AEF1AE">
+          outFile.file
+        </td>
+      </tr><tr>
+        <td>
+          423
+        </td>
+        <td>
+          5800
+        </td>
+        <td>
+          15449
+          -
+          15478
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.util.Optional.orElse
+        </td>
+        <td style="background: #AEF1AE">
+          GenBCodePipeline.this.sourceFile.jfile().orElse(null)
+        </td>
+      </tr><tr>
+        <td>
+          423
+        </td>
+        <td>
+          5803
+        </td>
+        <td>
+          15418
+          -
+          15504
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          xsbti.AnalysisCallback.generatedClass
+        </td>
+        <td style="background: #AEF1AE">
+          GenBCodePipeline.this.ctx.sbtCallback.generatedClass(GenBCodePipeline.this.sourceFile.jfile().orElse(null), outFile.file, className)
+        </td>
+      </tr><tr>
+        <td>
+          423
+        </td>
+        <td>
+          5802
+        </td>
+        <td>
+          15418
+          -
+          15504
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          xsbti.AnalysisCallback.generatedClass
+        </td>
+        <td style="background: #AEF1AE">
+          GenBCodePipeline.this.ctx.sbtCallback.generatedClass(GenBCodePipeline.this.sourceFile.jfile().orElse(null), outFile.file, className)
+        </td>
+      </tr><tr>
+        <td>
+          427
+        </td>
+        <td>
+          5810
+        </td>
+        <td>
+          15635
+          -
+          15647
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.Throwable.getMessage
+        </td>
+        <td style="background: #F0ADAD">
+          e.getMessage()
+        </td>
+      </tr><tr>
+        <td>
+          427
+        </td>
+        <td>
+          5813
+        </td>
+        <td>
+          15598
+          -
+          15598
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.reporting.Reporting.error$default$2
+        </td>
+        <td style="background: #F0ADAD">
+          GenBCodePipeline.this.ctx.error$default$2
+        </td>
+      </tr><tr>
+        <td>
+          427
+        </td>
+        <td>
+          5807
+        </td>
+        <td>
+          15606
+          -
+          15621
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          &quot;error writing &quot;
+        </td>
+      </tr><tr>
+        <td>
+          427
+        </td>
+        <td>
+          5809
+        </td>
+        <td>
+          15648
+          -
+          15649
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          &quot;&quot;
+        </td>
+      </tr><tr>
+        <td>
+          427
+        </td>
+        <td>
+          5812
+        </td>
+        <td>
+          15604
+          -
+          15649
+        </td>
+        <td>
+          ApplyImplicitView
+        </td>
+        <td>
+          dotty.tools.dotc.reporting.diagnostic.Message.toNoExplanation
+        </td>
+        <td style="background: #F0ADAD">
+          diagnostic.this.Message.toNoExplanation(scala.StringContext.apply(&quot;error writing &quot;, &quot;: &quot;, &quot;&quot;).s(jclassName, e.getMessage()))
+        </td>
+      </tr><tr>
+        <td>
+          427
+        </td>
+        <td>
+          5811
+        </td>
+        <td>
+          15604
+          -
+          15649
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.StringContext.s
+        </td>
+        <td style="background: #F0ADAD">
+          scala.StringContext.apply(&quot;error writing &quot;, &quot;: &quot;, &quot;&quot;).s(jclassName, e.getMessage())
+        </td>
+      </tr><tr>
+        <td>
+          427
+        </td>
+        <td>
+          5814
+        </td>
+        <td>
+          15594
+          -
+          15650
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.reporting.Reporting.error
+        </td>
+        <td style="background: #F0ADAD">
+          GenBCodePipeline.this.ctx.error(diagnostic.this.Message.toNoExplanation(scala.StringContext.apply(&quot;error writing &quot;, &quot;: &quot;, &quot;&quot;).s(jclassName, e.getMessage())), GenBCodePipeline.this.ctx.error$default$2)
+        </td>
+      </tr><tr>
+        <td>
+          427
+        </td>
+        <td>
+          5808
+        </td>
+        <td>
+          15631
+          -
+          15634
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          &quot;: &quot;
+        </td>
+      </tr><tr>
+        <td>
+          432
+        </td>
+        <td>
+          5818
+        </td>
+        <td>
+          15705
+          -
+          15709
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          true
+        </td>
+      </tr><tr>
+        <td>
+          434
+        </td>
+        <td>
+          5819
+        </td>
+        <td>
+          15812
+          -
+          15813
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          0
+        </td>
+      </tr><tr>
+        <td>
+          436
+        </td>
+        <td>
+          5834
+        </td>
+        <td>
+          15821
+          -
+          15821
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          ()
+        </td>
+      </tr><tr>
+        <td>
+          436
+        </td>
+        <td>
+          5831
+        </td>
+        <td>
+          15840
+          -
+          15840
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.backend.jvm.GenBCodePipeline.while$3
+        </td>
+        <td style="background: #AEF1AE">
+          while$3()
+        </td>
+      </tr><tr>
+        <td>
+          436
+        </td>
+        <td>
+          5833
+        </td>
+        <td>
+          15821
+          -
+          15821
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          ()
+        </td>
+      </tr><tr>
+        <td>
+          436
+        </td>
+        <td>
+          5832
+        </td>
+        <td>
+          15840
+          -
+          16143
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          {
+  {
+    val incoming: GenBCodePipeline.this.Item3 = GenBCodePipeline.this.q3.poll();
+    moreComing = incoming.isPoison.unary_!;
+    if (moreComing)
+      {
+        val item: GenBCodePipeline.this.Item3 = incoming;
+        val outFolder: tools.nsc.io.AbstractFile = item.outFolder;
+        sendToDisk(item.mirror, outFolder);
+        sendToDisk(item.plain, outFolder);
+        expected = expected.+(1)
+      }
+    else
+      ()
+  };
+  while$3()
+}
+        </td>
+      </tr><tr>
+        <td>
+          437
+        </td>
+        <td>
+          5820
+        </td>
+        <td>
+          15865
+          -
+          15872
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.util.PriorityQueue.poll
+        </td>
+        <td style="background: #AEF1AE">
+          GenBCodePipeline.this.q3.poll()
+        </td>
+      </tr><tr>
+        <td>
+          438
+        </td>
+        <td>
+          5821
+        </td>
+        <td>
+          15896
+          -
+          15914
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.Boolean.unary_!
+        </td>
+        <td style="background: #AEF1AE">
+          incoming.isPoison.unary_!
+        </td>
+      </tr><tr>
+        <td>
+          439
+        </td>
+        <td>
+          5828
+        </td>
+        <td>
+          15939
+          -
+          16135
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          {
+  val item: GenBCodePipeline.this.Item3 = incoming;
+  val outFolder: tools.nsc.io.AbstractFile = item.outFolder;
+  sendToDisk(item.mirror, outFolder);
+  sendToDisk(item.plain, outFolder);
+  expected = expected.+(1)
+}
+        </td>
+      </tr><tr>
+        <td>
+          439
+        </td>
+        <td>
+          5830
+        </td>
+        <td>
+          15923
+          -
+          15923
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          ()
+        </td>
+      </tr><tr>
+        <td>
+          439
+        </td>
+        <td>
+          5829
+        </td>
+        <td>
+          15923
+          -
+          15923
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          ()
+        </td>
+      </tr><tr>
+        <td>
+          441
+        </td>
+        <td>
+          5822
+        </td>
+        <td>
+          15997
+          -
+          16011
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.backend.jvm.GenBCodePipeline.Item3.outFolder
+        </td>
+        <td style="background: #AEF1AE">
+          item.outFolder
+        </td>
+      </tr><tr>
+        <td>
+          442
+        </td>
+        <td>
+          5824
+        </td>
+        <td>
+          16022
+          -
+          16056
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.backend.jvm.GenBCodePipeline.sendToDisk
+        </td>
+        <td style="background: #AEF1AE">
+          sendToDisk(item.mirror, outFolder)
+        </td>
+      </tr><tr>
+        <td>
+          442
+        </td>
+        <td>
+          5823
+        </td>
+        <td>
+          16033
+          -
+          16044
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.backend.jvm.GenBCodePipeline.Item3.mirror
+        </td>
+        <td style="background: #AEF1AE">
+          item.mirror
+        </td>
+      </tr><tr>
+        <td>
+          443
+        </td>
+        <td>
+          5825
+        </td>
+        <td>
+          16078
+          -
+          16088
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.backend.jvm.GenBCodePipeline.Item3.plain
+        </td>
+        <td style="background: #AEF1AE">
+          item.plain
+        </td>
+      </tr><tr>
+        <td>
+          443
+        </td>
+        <td>
+          5826
+        </td>
+        <td>
+          16067
+          -
+          16101
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.backend.jvm.GenBCodePipeline.sendToDisk
+        </td>
+        <td style="background: #AEF1AE">
+          sendToDisk(item.plain, outFolder)
+        </td>
+      </tr><tr>
+        <td>
+          444
+        </td>
+        <td>
+          5827
+        </td>
+        <td>
+          16112
+          -
+          16125
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Int.+
+        </td>
+        <td style="background: #AEF1AE">
+          expected.+(1)
+        </td>
+      </tr><tr>
+        <td>
+          449
+        </td>
+        <td>
+          5837
+        </td>
+        <td>
+          16239
+          -
+          16240
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          &quot;&quot;
+        </td>
+      </tr><tr>
+        <td>
+          449
+        </td>
+        <td>
+          5840
+        </td>
+        <td>
+          16171
+          -
+          16241
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Predef.assert
+        </td>
+        <td style="background: #AEF1AE">
+          scala.Predef.assert(GenBCodePipeline.this.q1.isEmpty(), scala.StringContext.apply(&quot;Some ClassDefs remained in the first queue: &quot;, &quot;&quot;).s(GenBCodePipeline.this.q1))
+        </td>
+      </tr><tr>
+        <td>
+          449
+        </td>
+        <td>
+          5839
+        </td>
+        <td>
+          16190
+          -
+          16240
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.StringContext.s
+        </td>
+        <td style="background: #F0ADAD">
+          scala.StringContext.apply(&quot;Some ClassDefs remained in the first queue: &quot;, &quot;&quot;).s(GenBCodePipeline.this.q1)
+        </td>
+      </tr><tr>
+        <td>
+          449
+        </td>
+        <td>
+          5836
+        </td>
+        <td>
+          16192
+          -
+          16237
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          &quot;Some ClassDefs remained in the first queue: &quot;
+        </td>
+      </tr><tr>
+        <td>
+          449
+        </td>
+        <td>
+          5838
+        </td>
+        <td>
+          16237
+          -
+          16239
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.backend.jvm.GenBCodePipeline.q1
+        </td>
+        <td style="background: #F0ADAD">
+          GenBCodePipeline.this.q1
+        </td>
+      </tr><tr>
+        <td>
+          449
+        </td>
+        <td>
+          5835
+        </td>
+        <td>
+          16178
+          -
+          16188
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.util.AbstractCollection.isEmpty
+        </td>
+        <td style="background: #AEF1AE">
+          GenBCodePipeline.this.q1.isEmpty()
+        </td>
+      </tr><tr>
+        <td>
+          450
+        </td>
+        <td>
+          5843
+        </td>
+        <td>
+          16318
+          -
+          16319
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          &quot;&quot;
+        </td>
+      </tr><tr>
+        <td>
+          450
+        </td>
+        <td>
+          5846
+        </td>
+        <td>
+          16248
+          -
+          16320
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Predef.assert
+        </td>
+        <td style="background: #AEF1AE">
+          scala.Predef.assert(GenBCodePipeline.this.q2.isEmpty(), scala.StringContext.apply(&quot;Some classfiles remained in the second queue: &quot;, &quot;&quot;).s(GenBCodePipeline.this.q2))
+        </td>
+      </tr><tr>
+        <td>
+          450
+        </td>
+        <td>
+          5842
+        </td>
+        <td>
+          16269
+          -
+          16316
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          &quot;Some classfiles remained in the second queue: &quot;
+        </td>
+      </tr><tr>
+        <td>
+          450
+        </td>
+        <td>
+          5845
+        </td>
+        <td>
+          16267
+          -
+          16319
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.StringContext.s
+        </td>
+        <td style="background: #F0ADAD">
+          scala.StringContext.apply(&quot;Some classfiles remained in the second queue: &quot;, &quot;&quot;).s(GenBCodePipeline.this.q2)
+        </td>
+      </tr><tr>
+        <td>
+          450
+        </td>
+        <td>
+          5841
+        </td>
+        <td>
+          16255
+          -
+          16265
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.util.AbstractCollection.isEmpty
+        </td>
+        <td style="background: #AEF1AE">
+          GenBCodePipeline.this.q2.isEmpty()
+        </td>
+      </tr><tr>
+        <td>
+          450
+        </td>
+        <td>
+          5844
+        </td>
+        <td>
+          16316
+          -
+          16318
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.backend.jvm.GenBCodePipeline.q2
+        </td>
+        <td style="background: #F0ADAD">
+          GenBCodePipeline.this.q2
+        </td>
+      </tr><tr>
+        <td>
+          451
+        </td>
+        <td>
+          5852
+        </td>
+        <td>
+          16327
+          -
+          16394
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Predef.assert
+        </td>
+        <td style="background: #AEF1AE">
+          scala.Predef.assert(GenBCodePipeline.this.q3.isEmpty(), scala.StringContext.apply(&quot;Some classfiles weren\'t written to disk: &quot;, &quot;&quot;).s(GenBCodePipeline.this.q3))
+        </td>
+      </tr><tr>
+        <td>
+          451
+        </td>
+        <td>
+          5849
+        </td>
+        <td>
+          16392
+          -
+          16393
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          &quot;&quot;
+        </td>
+      </tr><tr>
+        <td>
+          451
+        </td>
+        <td>
+          5848
+        </td>
+        <td>
+          16348
+          -
+          16390
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          &quot;Some classfiles weren\'t written to disk: &quot;
+        </td>
+      </tr><tr>
+        <td>
+          451
+        </td>
+        <td>
+          5851
+        </td>
+        <td>
+          16346
+          -
+          16393
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.StringContext.s
+        </td>
+        <td style="background: #F0ADAD">
+          scala.StringContext.apply(&quot;Some classfiles weren\'t written to disk: &quot;, &quot;&quot;).s(GenBCodePipeline.this.q3)
+        </td>
+      </tr><tr>
+        <td>
+          451
+        </td>
+        <td>
+          5847
+        </td>
+        <td>
+          16334
+          -
+          16344
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.util.AbstractCollection.isEmpty
+        </td>
+        <td style="background: #AEF1AE">
+          GenBCodePipeline.this.q3.isEmpty()
+        </td>
+      </tr><tr>
+        <td>
+          451
+        </td>
+        <td>
+          5850
+        </td>
+        <td>
+          16390
+          -
+          16392
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.backend.jvm.GenBCodePipeline.q3
+        </td>
+        <td style="background: #F0ADAD">
+          GenBCodePipeline.this.q3
+        </td>
+      </tr>
+    </table>
+          </div>
+        </div>
+      </body>
+    </html>

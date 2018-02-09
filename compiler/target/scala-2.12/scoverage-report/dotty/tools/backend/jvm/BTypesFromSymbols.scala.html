@@ -1,0 +1,4647 @@
+<html>
+      <head>
+        <meta http-equiv="Content-Type" content="text/html; charset=utf-8"/>
+        <title id="title">
+          dotty/tools/backend/jvm/BTypesFromSymbols.scala.html
+        </title>
+        <script src="https://ajax.googleapis.com/ajax/libs/jquery/1.10.2/jquery.min.js"></script><link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/jquery.tablesorter/2.20.1/css/theme.default.min.css" type="text/css"/><script src="https://cdnjs.cloudflare.com/ajax/libs/jquery.tablesorter/2.20.1/js/jquery.tablesorter.min.js"></script><link rel="stylesheet" href="https://netdna.bootstrapcdn.com/bootstrap/3.0.3/css/bootstrap.min.css" type="text/css"/><script src="https://netdna.bootstrapcdn.com/bootstrap/3.0.3/js/bootstrap.min.js"></script><script type="text/javascript">
+        $(document).ready(function() {$(".tablesorter").tablesorter();});
+      </script>
+        <style>
+          table.codegrid { font-family: monospace; font-size: 12px; width: auto!important; }table.statementlist { width: auto!important; font-size: 13px; } table.codegrid td { padding: 0!important; border: 0!important } table td.linenumber { width: 40px!important; } 
+        </style>
+      </head>
+      <body style="font-family: monospace;">
+        <ul class="nav nav-tabs">
+          <li>
+            <a href="#codegrid" data-toggle="tab">Codegrid</a>
+          </li>
+          <li>
+            <a href="#statementlist" data-toggle="tab">Statement List</a>
+          </li>
+        </ul>
+        <div class="tab-content">
+          <div class="tab-pane active" id="codegrid">
+            <pre style='font-size: 12pt; font-family: courier;'>1 <span style=''>/* NSC -- new Scala compiler
+</span>2 <span style=''> * Copyright 2005-2014 LAMP/EPFL
+</span>3 <span style=''> * @author  Martin Odersky
+</span>4 <span style=''> */
+</span>5 <span style=''>
+</span>6 <span style=''>package scala.tools.nsc
+</span>7 <span style=''>package backend.jvm
+</span>8 <span style=''>
+</span>9 <span style=''>import scala.tools.asm
+</span>10 <span style=''>
+</span>11 <span style=''>/**
+</span>12 <span style=''> * This class mainly contains the method classBTypeFromSymbol, which extracts the necessary
+</span>13 <span style=''> * information from a symbol and its type to create the correpsonding ClassBType. It requires
+</span>14 <span style=''> * access to the compiler (global parameter).
+</span>15 <span style=''> *
+</span>16 <span style=''> * The mixin CoreBTypes defines core BTypes that are used in the backend. Building these BTypes
+</span>17 <span style=''> * uses classBTypeFromSymbol, hence requires access to the compiler (global).
+</span>18 <span style=''> *
+</span>19 <span style=''> * BTypesFromSymbols extends BTypes because the implementation of BTypes requires access to some
+</span>20 <span style=''> * of the core btypes. They are declared in BTypes as abstract members. Note that BTypes does
+</span>21 <span style=''> * not have access to the compiler instance.
+</span>22 <span style=''> */
+</span>23 <span style=''>class BTypesFromSymbols[I &lt;: BackendInterface](val int: I) extends BTypes {
+</span>24 <span style=''>  import int._
+</span>25 <span style=''>
+</span>26 <span style=''>  val bCodeAsmCommon: BCodeAsmCommon[int.type ] = </span><span style='background: #AEF1AE'>new BCodeAsmCommon(int)</span><span style=''>
+</span>27 <span style=''>  import bCodeAsmCommon._
+</span>28 <span style=''>
+</span>29 <span style=''>  // Why the proxy, see documentation of class [[CoreBTypes]].
+</span>30 <span style=''>  val coreBTypes: CoreBTypesProxy[this.type] = </span><span style='background: #AEF1AE'>new CoreBTypesProxy[this.type](this)</span><span style=''>
+</span>31 <span style=''>  import coreBTypes._
+</span>32 <span style=''>
+</span>33 <span style=''>  final def intializeCoreBTypes(): Unit = {
+</span>34 <span style=''>    </span><span style='background: #AEF1AE'>coreBTypes.setBTypes(new CoreBTypes[this.type](this))</span><span style=''>
+</span>35 <span style=''>  }
+</span>36 <span style=''>
+</span>37 <span style=''>  protected lazy val classBTypeFromInternalNameMap = {
+</span>38 <span style=''>    perRunCaches.recordCache(collection.concurrent.TrieMap.empty[String, ClassBType])
+</span>39 <span style=''>  }
+</span>40 <span style=''>
+</span>41 <span style=''>  /**
+</span>42 <span style=''>   * Cache for the method classBTypeFromSymbol.
+</span>43 <span style=''>   */
+</span>44 <span style=''>  private lazy val convertedClasses = perRunCaches.newMap[Symbol, ClassBType]()
+</span>45 <span style=''>
+</span>46 <span style=''>  /**
+</span>47 <span style=''>   * The ClassBType for a class symbol `sym`.
+</span>48 <span style=''>   */
+</span>49 <span style=''>  final def classBTypeFromSymbol(classSym: Symbol): ClassBType = {
+</span>50 <span style=''>    </span><span style='background: #AEF1AE'>assert(classSym != NoSymbol, </span><span style='background: #F0ADAD'>&quot;Cannot create ClassBType from NoSymbol&quot;</span><span style='background: #AEF1AE'>)</span><span style=''>
+</span>51 <span style=''>    </span><span style='background: #AEF1AE'>assert(classSym.isClass, </span><span style='background: #F0ADAD'>s&quot;Cannot create ClassBType from non-class symbol $classSym&quot;</span><span style='background: #AEF1AE'>)</span><span style=''>
+</span>52 <span style=''>    </span><span style='background: #AEF1AE'>assert(
+</span>53 <span style=''></span><span style='background: #AEF1AE'>      (!primitiveTypeMap.contains(classSym) || </span><span style='background: #F0ADAD'>isCompilingPrimitive</span><span style='background: #AEF1AE'>) &amp;&amp;
+</span>54 <span style=''></span><span style='background: #AEF1AE'>      (classSym != NothingClass &amp;&amp; classSym != NullClass),
+</span>55 <span style=''></span><span style='background: #AEF1AE'>      </span><span style='background: #F0ADAD'>s&quot;Cannot create ClassBType for special class symbol ${classSym.fullName}&quot;</span><span style='background: #AEF1AE'>)</span><span style=''>
+</span>56 <span style=''>
+</span>57 <span style=''>    </span><span style='background: #AEF1AE'>convertedClasses.getOrElse(classSym, {
+</span>58 <span style=''></span><span style='background: #AEF1AE'>      val internalName = classSym.javaBinaryName
+</span>59 <span style=''></span><span style='background: #AEF1AE'>      // We first create and add the ClassBType to the hash map before computing its info. This
+</span>60 <span style=''></span><span style='background: #AEF1AE'>      // allows initializing cylic dependencies, see the comment on variable ClassBType._info.
+</span>61 <span style=''></span><span style='background: #AEF1AE'>      val classBType = new ClassBType(internalName)
+</span>62 <span style=''></span><span style='background: #AEF1AE'>      convertedClasses(classSym) = classBType
+</span>63 <span style=''></span><span style='background: #AEF1AE'>      setClassInfo(classSym, classBType)
+</span>64 <span style=''></span><span style='background: #AEF1AE'>    })</span><span style=''>
+</span>65 <span style=''>  }
+</span>66 <span style=''>
+</span>67 <span style=''>  private def setClassInfo(classSym: Symbol, classBType: ClassBType): ClassBType = {
+</span>68 <span style=''>    val superClassSym = if (</span><span style='background: #AEF1AE'>classSym.isImplClass</span><span style=''>) </span><span style='background: #F0ADAD'>ObjectClass</span><span style=''> else </span><span style='background: #AEF1AE'>classSym.superClass</span><span style=''>
+</span>69 <span style=''>    </span><span style='background: #AEF1AE'>assert(
+</span>70 <span style=''></span><span style='background: #AEF1AE'>      if (classSym == ObjectClass)
+</span>71 <span style=''></span><span style='background: #AEF1AE'>        superClassSym == NoSymbol
+</span>72 <span style=''></span><span style='background: #AEF1AE'>      else if (classSym.isInterface)
+</span>73 <span style=''></span><span style='background: #AEF1AE'>        superClassSym == ObjectClass
+</span>74 <span style=''></span><span style='background: #AEF1AE'>      else
+</span>75 <span style=''></span><span style='background: #AEF1AE'>        // A ClassBType for a primitive class (scala.Boolean et al) is only created when compiling these classes.
+</span>76 <span style=''></span><span style='background: #AEF1AE'>        ((superClassSym != NoSymbol) &amp;&amp; !superClassSym.isInterface) || (</span><span style='background: #F0ADAD'>isCompilingPrimitive &amp;&amp; primitiveTypeMap.contains(classSym)</span><span style='background: #AEF1AE'>),
+</span>77 <span style=''></span><span style='background: #AEF1AE'>      </span><span style='background: #F0ADAD'>s&quot;Bad superClass for $classSym: $superClassSym&quot;</span><span style='background: #AEF1AE'>
+</span>78 <span style=''></span><span style='background: #AEF1AE'>    )</span><span style=''>
+</span>79 <span style=''>    val superClass = if (</span><span style='background: #AEF1AE'>superClassSym == NoSymbol</span><span style=''>) </span><span style='background: #AEF1AE'>None</span><span style=''>
+</span>80 <span style=''>                     else </span><span style='background: #AEF1AE'>Some(classBTypeFromSymbol(superClassSym))</span><span style=''>
+</span>81 <span style=''>
+</span>82 <span style=''>    val interfaces = </span><span style='background: #AEF1AE'>classSym.superInterfaces.map(classBTypeFromSymbol)</span><span style=''>
+</span>83 <span style=''>
+</span>84 <span style=''>    val flags = </span><span style='background: #AEF1AE'>javaFlags(classSym)</span><span style=''>
+</span>85 <span style=''>
+</span>86 <span style=''>    /* The InnerClass table of a class C must contain all nested classes of C, even if they are only
+</span>87 <span style=''>     * declared but not otherwise referenced in C (from the bytecode or a method / field signature).
+</span>88 <span style=''>     * We collect them here.
+</span>89 <span style=''>     *
+</span>90 <span style=''>     * Nested classes that are also referenced in C will be added to the innerClassBufferASM during
+</span>91 <span style=''>     * code generation, but those duplicates will be eliminated when emitting the InnerClass
+</span>92 <span style=''>     * attribute.
+</span>93 <span style=''>     *
+</span>94 <span style=''>     * Why doe we need to collect classes into innerClassBufferASM at all? To collect references to
+</span>95 <span style=''>     * nested classes, but NOT nested in C, that are used within C.
+</span>96 <span style=''>     */
+</span>97 <span style=''>    val nestedClassSymbols = {
+</span>98 <span style=''>      // The lambdalift phase lifts all nested classes to the enclosing class, so if we collect
+</span>99 <span style=''>      // member classes right after lambdalift, we obtain all nested classes, including local and
+</span>100 <span style=''>      // anonymous ones.
+</span>101 <span style=''>      val nestedClasses = </span><span style='background: #AEF1AE'>classSym.nestedClasses</span><span style=''>
+</span>102 <span style=''>
+</span>103 <span style=''>      // If this is a top-level class, and it has a companion object, the member classes of the
+</span>104 <span style=''>      // companion are added as members of the class. For example:
+</span>105 <span style=''>      //   class C { }
+</span>106 <span style=''>      //   object C {
+</span>107 <span style=''>      //     class D
+</span>108 <span style=''>      //     def f = { class E }
+</span>109 <span style=''>      //   }
+</span>110 <span style=''>      // The class D is added as a member of class C. The reason is that the InnerClass attribute
+</span>111 <span style=''>      // for D will containt class &quot;C&quot; and NOT the module class &quot;C$&quot; as the outer class of D.
+</span>112 <span style=''>      // This is done by buildNestedInfo, the reason is Java compatibility, see comment in BTypes.
+</span>113 <span style=''>      // For consistency, the InnerClass entry for D needs to be present in C - to Java it looks
+</span>114 <span style=''>      // like D is a member of C, not C$.
+</span>115 <span style=''>      val linkedClass = </span><span style='background: #AEF1AE'>classSym.linkedClass</span><span style=''>
+</span>116 <span style=''>      val companionModuleMembers = </span><span style='background: #AEF1AE'>classSym.companionModuleMembers</span><span style=''>
+</span>117 <span style=''>
+</span>118 <span style=''>      </span><span style='background: #AEF1AE'>nestedClasses ++ companionModuleMembers</span><span style=''>
+</span>119 <span style=''>    }
+</span>120 <span style=''>
+</span>121 <span style=''>    /**
+</span>122 <span style=''>     * For nested java classes, the scala compiler creates both a class and a module (and therefore
+</span>123 <span style=''>     * a module class) symbol. For example, in `class A { class B {} }`, the nestedClassSymbols
+</span>124 <span style=''>     * for A contain both the class B and the module class B.
+</span>125 <span style=''>     * Here we get rid of the module class B, making sure that the class B is present.
+</span>126 <span style=''>     */
+</span>127 <span style=''>    val nestedClassSymbolsNoJavaModuleClasses = </span><span style='background: #AEF1AE'>nestedClassSymbols.filter(s =&gt; {
+</span>128 <span style=''></span><span style='background: #AEF1AE'>      if (s.isJavaDefined &amp;&amp; </span><span style='background: #F0ADAD'>s.isModuleClass</span><span style='background: #AEF1AE'>) </span><span style='background: #F0ADAD'>{
+</span>129 <span style=''></span><span style='background: #F0ADAD'>        // We could also search in nestedClassSymbols for s.linkedClassOfClass, but sometimes that
+</span>130 <span style=''></span><span style='background: #F0ADAD'>        // returns NoSymbol, so it doesn't work.
+</span>131 <span style=''></span><span style='background: #F0ADAD'>        val nb = nestedClassSymbols.count(mc =&gt; mc.name == s.name &amp;&amp; mc.owner == s.owner)
+</span>132 <span style=''></span><span style='background: #F0ADAD'>        // this assertion is specific to how ScalaC works. It doesn't apply to dotty, as n dotty there will be B &amp; B$
+</span>133 <span style=''></span><span style='background: #F0ADAD'>        // assert(nb == 2, s&quot;Java member module without member class: $s - $nestedClassSymbols&quot;)
+</span>134 <span style=''></span><span style='background: #F0ADAD'>        false
+</span>135 <span style=''></span><span style='background: #F0ADAD'>      }</span><span style='background: #AEF1AE'> else true
+</span>136 <span style=''></span><span style='background: #AEF1AE'>    })</span><span style=''>
+</span>137 <span style=''>
+</span>138 <span style=''>    val memberClasses = </span><span style='background: #AEF1AE'>nestedClassSymbolsNoJavaModuleClasses.map(classBTypeFromSymbol)</span><span style=''>
+</span>139 <span style=''>
+</span>140 <span style=''>    val nestedInfo = </span><span style='background: #AEF1AE'>buildNestedInfo(classSym)</span><span style=''>
+</span>141 <span style=''>
+</span>142 <span style=''>    </span><span style='background: #AEF1AE'>classBType.info = ClassInfo(superClass, interfaces, flags, memberClasses, nestedInfo)</span><span style=''>
+</span>143 <span style=''>    classBType
+</span>144 <span style=''>  }
+</span>145 <span style=''>
+</span>146 <span style=''>
+</span>147 <span style=''>  private def buildNestedInfo(innerClassSym: Symbol): Option[NestedInfo] = {
+</span>148 <span style=''>    </span><span style='background: #AEF1AE'>assert(innerClassSym.isClass, </span><span style='background: #F0ADAD'>s&quot;Cannot build NestedInfo for non-class symbol $innerClassSym&quot;</span><span style='background: #AEF1AE'>)</span><span style=''>
+</span>149 <span style=''>
+</span>150 <span style=''>    val isNested = </span><span style='background: #AEF1AE'>!innerClassSym.rawowner.isPackageClass</span><span style=''>
+</span>151 <span style=''>    if (</span><span style='background: #AEF1AE'>!isNested</span><span style=''>) </span><span style='background: #AEF1AE'>None</span><span style=''>
+</span>152 <span style=''>    else </span><span style='background: #AEF1AE'>{
+</span>153 <span style=''></span><span style='background: #AEF1AE'>      // See comment in BTypes, when is a class marked static in the InnerClass table.
+</span>154 <span style=''></span><span style='background: #AEF1AE'>      val isStaticNestedClass = innerClassSym.originalOwner.isOriginallyStaticOwner
+</span>155 <span style=''></span><span style='background: #AEF1AE'>
+</span>156 <span style=''></span><span style='background: #AEF1AE'>      // After lambdalift (which is where we are), the rawowoner field contains the enclosing class.
+</span>157 <span style=''></span><span style='background: #AEF1AE'>      val enclosingClassSym = innerClassSym.enclosingClassSym
+</span>158 <span style=''></span><span style='background: #AEF1AE'>      val enclosingClass: ClassBType = classBTypeFromSymbol(enclosingClassSym)
+</span>159 <span style=''></span><span style='background: #AEF1AE'>
+</span>160 <span style=''></span><span style='background: #AEF1AE'>      val outerName: Option[String] = {
+</span>161 <span style=''></span><span style='background: #AEF1AE'>        if (isAnonymousOrLocalClass(innerClassSym)) {
+</span>162 <span style=''></span><span style='background: #AEF1AE'>          None
+</span>163 <span style=''></span><span style='background: #AEF1AE'>        } else {
+</span>164 <span style=''></span><span style='background: #AEF1AE'>          val outerName = innerClassSym.rawowner.javaBinaryName
+</span>165 <span style=''></span><span style='background: #AEF1AE'>          // Java compatibility. See the big comment in BTypes that summarizes the InnerClass spec.
+</span>166 <span style=''></span><span style='background: #AEF1AE'>          val outerNameModule =
+</span>167 <span style=''></span><span style='background: #AEF1AE'>            if (innerClassSym.rawowner.isTopLevelModuleClass) dropModule(outerName)
+</span>168 <span style=''></span><span style='background: #AEF1AE'>            else outerName
+</span>169 <span style=''></span><span style='background: #AEF1AE'>          Some(outerNameModule.toString)
+</span>170 <span style=''></span><span style='background: #AEF1AE'>        }
+</span>171 <span style=''></span><span style='background: #AEF1AE'>      }
+</span>172 <span style=''></span><span style='background: #AEF1AE'>
+</span>173 <span style=''></span><span style='background: #AEF1AE'>      val innerName: Option[String] = {
+</span>174 <span style=''></span><span style='background: #AEF1AE'>        if (innerClassSym.isAnonymousClass || innerClassSym.isAnonymousFunction) None
+</span>175 <span style=''></span><span style='background: #AEF1AE'>        else Some(innerClassSym.rawname + innerClassSym.moduleSuffix) // moduleSuffix for module classes
+</span>176 <span style=''></span><span style='background: #AEF1AE'>      }
+</span>177 <span style=''></span><span style='background: #AEF1AE'>
+</span>178 <span style=''></span><span style='background: #AEF1AE'>      Some(NestedInfo(enclosingClass, outerName, innerName, isStaticNestedClass))
+</span>179 <span style=''></span><span style='background: #AEF1AE'>    }</span><span style=''>
+</span>180 <span style=''>  }
+</span>181 <span style=''>
+</span>182 <span style=''>  /**
+</span>183 <span style=''>   * Return the Java modifiers for the given symbol.
+</span>184 <span style=''>   * Java modifiers for classes:
+</span>185 <span style=''>   *  - public, abstract, final, strictfp (not used)
+</span>186 <span style=''>   * for interfaces:
+</span>187 <span style=''>   *  - the same as for classes, without 'final'
+</span>188 <span style=''>   * for fields:
+</span>189 <span style=''>   *  - public, private (*)
+</span>190 <span style=''>   *  - static, final
+</span>191 <span style=''>   * for methods:
+</span>192 <span style=''>   *  - the same as for fields, plus:
+</span>193 <span style=''>   *  - abstract, synchronized (not used), strictfp (not used), native (not used)
+</span>194 <span style=''>   * for all:
+</span>195 <span style=''>   *  - deprecated
+</span>196 <span style=''>   *
+</span>197 <span style=''>   *  (*) protected cannot be used, since inner classes 'see' protected members,
+</span>198 <span style=''>   *      and they would fail verification after lifted.
+</span>199 <span style=''>   */
+</span>200 <span style=''>  final def javaFlags(sym: Symbol): Int = {
+</span>201 <span style=''>
+</span>202 <span style=''>
+</span>203 <span style=''>    val privateFlag = </span><span style='background: #AEF1AE'>sym.getsJavaPrivateFlag</span><span style=''>
+</span>204 <span style=''>
+</span>205 <span style=''>    val finalFlag = </span><span style='background: #AEF1AE'>sym.getsJavaFinalFlag</span><span style=''>
+</span>206 <span style=''>
+</span>207 <span style=''>    // Primitives are &quot;abstract final&quot; to prohibit instantiation
+</span>208 <span style=''>    // without having to provide any implementations, but that is an
+</span>209 <span style=''>    // illegal combination of modifiers at the bytecode level so
+</span>210 <span style=''>    // suppress final if abstract if present.
+</span>211 <span style=''>    import asm.Opcodes._
+</span>212 <span style=''>    </span><span style='background: #AEF1AE'>GenBCodeOps.mkFlags(
+</span>213 <span style=''></span><span style='background: #AEF1AE'>      if (privateFlag) ACC_PRIVATE else ACC_PUBLIC,
+</span>214 <span style=''></span><span style='background: #AEF1AE'>      if (sym.isDeferred || sym.hasAbstractFlag) ACC_ABSTRACT else 0,
+</span>215 <span style=''></span><span style='background: #AEF1AE'>      if (sym.isInterface) ACC_INTERFACE else 0,
+</span>216 <span style=''></span><span style='background: #AEF1AE'>      if (finalFlag &amp;&amp; !sym.hasAbstractFlag) ACC_FINAL else 0,
+</span>217 <span style=''></span><span style='background: #AEF1AE'>      if (sym.isStaticMember) ACC_STATIC else 0,
+</span>218 <span style=''></span><span style='background: #AEF1AE'>      if (sym.isBridge) ACC_BRIDGE | ACC_SYNTHETIC else 0,
+</span>219 <span style=''></span><span style='background: #AEF1AE'>      if (sym.isArtifact) ACC_SYNTHETIC else 0,
+</span>220 <span style=''></span><span style='background: #AEF1AE'>      if (sym.isClass &amp;&amp; !sym.isInterface) ACC_SUPER else 0,
+</span>221 <span style=''></span><span style='background: #AEF1AE'>      if (sym.hasEnumFlag) ACC_ENUM else 0,
+</span>222 <span style=''></span><span style='background: #AEF1AE'>      if (sym.isVarargsMethod) </span><span style='background: #F0ADAD'>ACC_VARARGS</span><span style='background: #AEF1AE'> else 0,
+</span>223 <span style=''></span><span style='background: #AEF1AE'>      if (sym.isSynchronized) </span><span style='background: #F0ADAD'>ACC_SYNCHRONIZED</span><span style='background: #AEF1AE'> else 0,
+</span>224 <span style=''></span><span style='background: #AEF1AE'>      if (sym.isDeprecated) </span><span style='background: #F0ADAD'>asm.Opcodes.ACC_DEPRECATED</span><span style='background: #AEF1AE'> else 0
+</span>225 <span style=''></span><span style='background: #AEF1AE'>    )</span><span style=''>
+</span>226 <span style=''>  }
+</span>227 <span style=''>
+</span>228 <span style=''>  def javaFieldFlags(sym: Symbol) = {
+</span>229 <span style=''>    </span><span style='background: #AEF1AE'>javaFlags(sym) | GenBCodeOps.mkFlags(
+</span>230 <span style=''></span><span style='background: #AEF1AE'>      if (sym hasAnnotation TransientAttr) asm.Opcodes.ACC_TRANSIENT else 0,
+</span>231 <span style=''></span><span style='background: #AEF1AE'>      if (sym hasAnnotation VolatileAttr)  asm.Opcodes.ACC_VOLATILE  else 0,
+</span>232 <span style=''></span><span style='background: #AEF1AE'>      if (sym.isMutable) 0 else asm.Opcodes.ACC_FINAL
+</span>233 <span style=''></span><span style='background: #AEF1AE'>    )</span><span style=''>
+</span>234 <span style=''>  }
+</span>235 <span style=''>}
+</span></pre>
+          </div>
+          <div class="tab-pane" id="statementlist">
+            <table cellspacing="0" cellpadding="0" class="table statementlist">
+      <tr>
+        <th>Line</th>
+        <th>Stmt Id</th>
+        <th>Pos</th>
+        <th>Tree</th>
+        <th>Symbol</th>
+        <th>Code</th>
+      </tr><tr>
+        <td>
+          26
+        </td>
+        <td>
+          3766
+        </td>
+        <td>
+          961
+          -
+          984
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BCodeAsmCommon.&lt;init&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          new scala.tools.nsc.backend.jvm.BCodeAsmCommon[BTypesFromSymbols.this.int.type](BTypesFromSymbols.this.int)
+        </td>
+      </tr><tr>
+        <td>
+          26
+        </td>
+        <td>
+          3765
+        </td>
+        <td>
+          980
+          -
+          983
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BTypesFromSymbols.int
+        </td>
+        <td style="background: #AEF1AE">
+          BTypesFromSymbols.this.int
+        </td>
+      </tr><tr>
+        <td>
+          30
+        </td>
+        <td>
+          3767
+        </td>
+        <td>
+          1122
+          -
+          1158
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.CoreBTypesProxy.&lt;init&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          new scala.tools.nsc.backend.jvm.CoreBTypesProxy[BTypesFromSymbols.this.type](this)
+        </td>
+      </tr><tr>
+        <td>
+          34
+        </td>
+        <td>
+          3769
+        </td>
+        <td>
+          1230
+          -
+          1283
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.CoreBTypesProxy.setBTypes
+        </td>
+        <td style="background: #AEF1AE">
+          BTypesFromSymbols.this.coreBTypes.setBTypes(new scala.tools.nsc.backend.jvm.CoreBTypes[BTypesFromSymbols.this.type](this))
+        </td>
+      </tr><tr>
+        <td>
+          34
+        </td>
+        <td>
+          3768
+        </td>
+        <td>
+          1251
+          -
+          1282
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.CoreBTypes.&lt;init&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          new scala.tools.nsc.backend.jvm.CoreBTypes[BTypesFromSymbols.this.type](this)
+        </td>
+      </tr><tr>
+        <td>
+          50
+        </td>
+        <td>
+          3770
+        </td>
+        <td>
+          1724
+          -
+          1732
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BackendInterfaceDefinitions.NoSymbol
+        </td>
+        <td style="background: #AEF1AE">
+          BTypesFromSymbols.this.int.NoSymbol
+        </td>
+      </tr><tr>
+        <td>
+          50
+        </td>
+        <td>
+          3773
+        </td>
+        <td>
+          1705
+          -
+          1775
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Predef.assert
+        </td>
+        <td style="background: #AEF1AE">
+          scala.Predef.assert(classSym.!=(BTypesFromSymbols.this.int.NoSymbol), &quot;Cannot create ClassBType from NoSymbol&quot;)
+        </td>
+      </tr><tr>
+        <td>
+          50
+        </td>
+        <td>
+          3772
+        </td>
+        <td>
+          1734
+          -
+          1774
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          &quot;Cannot create ClassBType from NoSymbol&quot;
+        </td>
+      </tr><tr>
+        <td>
+          50
+        </td>
+        <td>
+          3771
+        </td>
+        <td>
+          1712
+          -
+          1732
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.Object.!=
+        </td>
+        <td style="background: #AEF1AE">
+          classSym.!=(BTypesFromSymbols.this.int.NoSymbol)
+        </td>
+      </tr><tr>
+        <td>
+          51
+        </td>
+        <td>
+          3776
+        </td>
+        <td>
+          1780
+          -
+          1865
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Predef.assert
+        </td>
+        <td style="background: #AEF1AE">
+          scala.Predef.assert(BTypesFromSymbols.this.int.symHelper(classSym).isClass, scala.StringContext.apply(&quot;Cannot create ClassBType from non-class symbol &quot;, &quot;&quot;).s(classSym))
+        </td>
+      </tr><tr>
+        <td>
+          51
+        </td>
+        <td>
+          3775
+        </td>
+        <td>
+          1805
+          -
+          1864
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.StringContext.s
+        </td>
+        <td style="background: #F0ADAD">
+          scala.StringContext.apply(&quot;Cannot create ClassBType from non-class symbol &quot;, &quot;&quot;).s(classSym)
+        </td>
+      </tr><tr>
+        <td>
+          51
+        </td>
+        <td>
+          3774
+        </td>
+        <td>
+          1787
+          -
+          1803
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BackendInterface.SymbolHelper.isClass
+        </td>
+        <td style="background: #AEF1AE">
+          BTypesFromSymbols.this.int.symHelper(classSym).isClass
+        </td>
+      </tr><tr>
+        <td>
+          52
+        </td>
+        <td>
+          3787
+        </td>
+        <td>
+          1870
+          -
+          2089
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Predef.assert
+        </td>
+        <td style="background: #AEF1AE">
+          scala.Predef.assert(BTypesFromSymbols.this.coreBTypes.primitiveTypeMap.contains(classSym).unary_!.||(BTypesFromSymbols.this.int.isCompilingPrimitive).&amp;&amp;(classSym.!=(BTypesFromSymbols.this.int.NothingClass).&amp;&amp;(classSym.!=(BTypesFromSymbols.this.int.NullClass))), scala.StringContext.apply(&quot;Cannot create ClassBType for special class symbol &quot;, &quot;&quot;).s(BTypesFromSymbols.this.int.symHelper(classSym).fullName))
+        </td>
+      </tr><tr>
+        <td>
+          53
+        </td>
+        <td>
+          3782
+        </td>
+        <td>
+          1884
+          -
+          2007
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Boolean.&amp;&amp;
+        </td>
+        <td style="background: #AEF1AE">
+          BTypesFromSymbols.this.coreBTypes.primitiveTypeMap.contains(classSym).unary_!.||(BTypesFromSymbols.this.int.isCompilingPrimitive).&amp;&amp;(classSym.!=(BTypesFromSymbols.this.int.NothingClass).&amp;&amp;(classSym.!=(BTypesFromSymbols.this.int.NullClass)))
+        </td>
+      </tr><tr>
+        <td>
+          53
+        </td>
+        <td>
+          3777
+        </td>
+        <td>
+          1925
+          -
+          1945
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BackendInterfaceDefinitions.isCompilingPrimitive
+        </td>
+        <td style="background: #F0ADAD">
+          BTypesFromSymbols.this.int.isCompilingPrimitive
+        </td>
+      </tr><tr>
+        <td>
+          54
+        </td>
+        <td>
+          3779
+        </td>
+        <td>
+          1997
+          -
+          2006
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BackendInterfaceDefinitions.NullClass
+        </td>
+        <td style="background: #AEF1AE">
+          BTypesFromSymbols.this.int.NullClass
+        </td>
+      </tr><tr>
+        <td>
+          54
+        </td>
+        <td>
+          3778
+        </td>
+        <td>
+          1969
+          -
+          1981
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BackendInterfaceDefinitions.NothingClass
+        </td>
+        <td style="background: #AEF1AE">
+          BTypesFromSymbols.this.int.NothingClass
+        </td>
+      </tr><tr>
+        <td>
+          54
+        </td>
+        <td>
+          3781
+        </td>
+        <td>
+          1957
+          -
+          2006
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Boolean.&amp;&amp;
+        </td>
+        <td style="background: #AEF1AE">
+          classSym.!=(BTypesFromSymbols.this.int.NothingClass).&amp;&amp;(classSym.!=(BTypesFromSymbols.this.int.NullClass))
+        </td>
+      </tr><tr>
+        <td>
+          54
+        </td>
+        <td>
+          3780
+        </td>
+        <td>
+          1985
+          -
+          2006
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.Object.!=
+        </td>
+        <td style="background: #AEF1AE">
+          classSym.!=(BTypesFromSymbols.this.int.NullClass)
+        </td>
+      </tr><tr>
+        <td>
+          55
+        </td>
+        <td>
+          3785
+        </td>
+        <td>
+          2069
+          -
+          2086
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BackendInterface.SymbolHelper.fullName
+        </td>
+        <td style="background: #F0ADAD">
+          BTypesFromSymbols.this.int.symHelper(classSym).fullName
+        </td>
+      </tr><tr>
+        <td>
+          55
+        </td>
+        <td>
+          3784
+        </td>
+        <td>
+          2087
+          -
+          2088
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          &quot;&quot;
+        </td>
+      </tr><tr>
+        <td>
+          55
+        </td>
+        <td>
+          3783
+        </td>
+        <td>
+          2017
+          -
+          2068
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          &quot;Cannot create ClassBType for special class symbol &quot;
+        </td>
+      </tr><tr>
+        <td>
+          55
+        </td>
+        <td>
+          3786
+        </td>
+        <td>
+          2015
+          -
+          2088
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.StringContext.s
+        </td>
+        <td style="background: #F0ADAD">
+          scala.StringContext.apply(&quot;Cannot create ClassBType for special class symbol &quot;, &quot;&quot;).s(BTypesFromSymbols.this.int.symHelper(classSym).fullName)
+        </td>
+      </tr><tr>
+        <td>
+          57
+        </td>
+        <td>
+          3792
+        </td>
+        <td>
+          2095
+          -
+          2519
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.MapLike.getOrElse
+        </td>
+        <td style="background: #AEF1AE">
+          BTypesFromSymbols.this.convertedClasses.getOrElse[BTypesFromSymbols.this.ClassBType](classSym, {
+  val internalName: String = BTypesFromSymbols.this.int.symHelper(classSym).javaBinaryName;
+  val classBType: BTypesFromSymbols.this.ClassBType = new BTypesFromSymbols.this.ClassBType(internalName);
+  BTypesFromSymbols.this.convertedClasses.update(classSym, classBType);
+  BTypesFromSymbols.this.setClassInfo(classSym, classBType)
+})
+        </td>
+      </tr><tr>
+        <td>
+          58
+        </td>
+        <td>
+          3788
+        </td>
+        <td>
+          2159
+          -
+          2182
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BackendInterface.SymbolHelper.javaBinaryName
+        </td>
+        <td style="background: #AEF1AE">
+          BTypesFromSymbols.this.int.symHelper(classSym).javaBinaryName
+        </td>
+      </tr><tr>
+        <td>
+          61
+        </td>
+        <td>
+          3789
+        </td>
+        <td>
+          2397
+          -
+          2425
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BTypes.ClassBType.&lt;init&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          new BTypesFromSymbols.this.ClassBType(internalName)
+        </td>
+      </tr><tr>
+        <td>
+          62
+        </td>
+        <td>
+          3790
+        </td>
+        <td>
+          2432
+          -
+          2471
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.mutable.HashMap.update
+        </td>
+        <td style="background: #AEF1AE">
+          BTypesFromSymbols.this.convertedClasses.update(classSym, classBType)
+        </td>
+      </tr><tr>
+        <td>
+          63
+        </td>
+        <td>
+          3791
+        </td>
+        <td>
+          2478
+          -
+          2512
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BTypesFromSymbols.setClassInfo
+        </td>
+        <td style="background: #AEF1AE">
+          BTypesFromSymbols.this.setClassInfo(classSym, classBType)
+        </td>
+      </tr><tr>
+        <td>
+          68
+        </td>
+        <td>
+          3794
+        </td>
+        <td>
+          2660
+          -
+          2671
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BackendInterfaceDefinitions.ObjectClass
+        </td>
+        <td style="background: #F0ADAD">
+          BTypesFromSymbols.this.int.ObjectClass
+        </td>
+      </tr><tr>
+        <td>
+          68
+        </td>
+        <td>
+          3797
+        </td>
+        <td>
+          2677
+          -
+          2696
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BackendInterface.SymbolHelper.superClass
+        </td>
+        <td style="background: #AEF1AE">
+          BTypesFromSymbols.this.int.symHelper(classSym).superClass
+        </td>
+      </tr><tr>
+        <td>
+          68
+        </td>
+        <td>
+          3793
+        </td>
+        <td>
+          2638
+          -
+          2658
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BackendInterface.SymbolHelper.isImplClass
+        </td>
+        <td style="background: #AEF1AE">
+          BTypesFromSymbols.this.int.symHelper(classSym).isImplClass
+        </td>
+      </tr><tr>
+        <td>
+          68
+        </td>
+        <td>
+          3796
+        </td>
+        <td>
+          2677
+          -
+          2696
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BackendInterface.SymbolHelper.superClass
+        </td>
+        <td style="background: #AEF1AE">
+          BTypesFromSymbols.this.int.symHelper(classSym).superClass
+        </td>
+      </tr><tr>
+        <td>
+          68
+        </td>
+        <td>
+          3795
+        </td>
+        <td>
+          2660
+          -
+          2671
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BackendInterfaceDefinitions.ObjectClass
+        </td>
+        <td style="background: #F0ADAD">
+          BTypesFromSymbols.this.int.ObjectClass
+        </td>
+      </tr><tr>
+        <td>
+          69
+        </td>
+        <td>
+          3815
+        </td>
+        <td>
+          2701
+          -
+          3170
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Predef.assert
+        </td>
+        <td style="background: #AEF1AE">
+          scala.Predef.assert(if (classSym.==(BTypesFromSymbols.this.int.ObjectClass))
+  superClassSym.==(BTypesFromSymbols.this.int.NoSymbol)
+else
+  if (BTypesFromSymbols.this.int.symHelper(classSym).isInterface)
+    superClassSym.==(BTypesFromSymbols.this.int.ObjectClass)
+  else
+    superClassSym.!=(BTypesFromSymbols.this.int.NoSymbol).&amp;&amp;(BTypesFromSymbols.this.int.symHelper(superClassSym).isInterface.unary_!).||(BTypesFromSymbols.this.int.isCompilingPrimitive.&amp;&amp;(BTypesFromSymbols.this.coreBTypes.primitiveTypeMap.contains(classSym))), scala.StringContext.apply(&quot;Bad superClass for &quot;, &quot;: &quot;, &quot;&quot;).s(classSym, superClassSym))
+        </td>
+      </tr><tr>
+        <td>
+          70
+        </td>
+        <td>
+          3799
+        </td>
+        <td>
+          2719
+          -
+          2742
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.Object.==
+        </td>
+        <td style="background: #AEF1AE">
+          classSym.==(BTypesFromSymbols.this.int.ObjectClass)
+        </td>
+      </tr><tr>
+        <td>
+          70
+        </td>
+        <td>
+          3798
+        </td>
+        <td>
+          2731
+          -
+          2742
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BackendInterfaceDefinitions.ObjectClass
+        </td>
+        <td style="background: #AEF1AE">
+          BTypesFromSymbols.this.int.ObjectClass
+        </td>
+      </tr><tr>
+        <td>
+          71
+        </td>
+        <td>
+          3800
+        </td>
+        <td>
+          2769
+          -
+          2777
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BackendInterfaceDefinitions.NoSymbol
+        </td>
+        <td style="background: #AEF1AE">
+          BTypesFromSymbols.this.int.NoSymbol
+        </td>
+      </tr><tr>
+        <td>
+          71
+        </td>
+        <td>
+          3802
+        </td>
+        <td>
+          2752
+          -
+          2777
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          java.lang.Object.==
+        </td>
+        <td style="background: #AEF1AE">
+          superClassSym.==(BTypesFromSymbols.this.int.NoSymbol)
+        </td>
+      </tr><tr>
+        <td>
+          71
+        </td>
+        <td>
+          3801
+        </td>
+        <td>
+          2752
+          -
+          2777
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.Object.==
+        </td>
+        <td style="background: #AEF1AE">
+          superClassSym.==(BTypesFromSymbols.this.int.NoSymbol)
+        </td>
+      </tr><tr>
+        <td>
+          72
+        </td>
+        <td>
+          3803
+        </td>
+        <td>
+          2793
+          -
+          2813
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BackendInterface.SymbolHelper.isInterface
+        </td>
+        <td style="background: #AEF1AE">
+          BTypesFromSymbols.this.int.symHelper(classSym).isInterface
+        </td>
+      </tr><tr>
+        <td>
+          72
+        </td>
+        <td>
+          3813
+        </td>
+        <td>
+          2789
+          -
+          3109
+        </td>
+        <td>
+          If
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          if (BTypesFromSymbols.this.int.symHelper(classSym).isInterface)
+  superClassSym.==(BTypesFromSymbols.this.int.ObjectClass)
+else
+  superClassSym.!=(BTypesFromSymbols.this.int.NoSymbol).&amp;&amp;(BTypesFromSymbols.this.int.symHelper(superClassSym).isInterface.unary_!).||(BTypesFromSymbols.this.int.isCompilingPrimitive.&amp;&amp;(BTypesFromSymbols.this.coreBTypes.primitiveTypeMap.contains(classSym)))
+        </td>
+      </tr><tr>
+        <td>
+          73
+        </td>
+        <td>
+          3806
+        </td>
+        <td>
+          2823
+          -
+          2851
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          java.lang.Object.==
+        </td>
+        <td style="background: #AEF1AE">
+          superClassSym.==(BTypesFromSymbols.this.int.ObjectClass)
+        </td>
+      </tr><tr>
+        <td>
+          73
+        </td>
+        <td>
+          3805
+        </td>
+        <td>
+          2823
+          -
+          2851
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.Object.==
+        </td>
+        <td style="background: #AEF1AE">
+          superClassSym.==(BTypesFromSymbols.this.int.ObjectClass)
+        </td>
+      </tr><tr>
+        <td>
+          73
+        </td>
+        <td>
+          3804
+        </td>
+        <td>
+          2840
+          -
+          2851
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BackendInterfaceDefinitions.ObjectClass
+        </td>
+        <td style="background: #AEF1AE">
+          BTypesFromSymbols.this.int.ObjectClass
+        </td>
+      </tr><tr>
+        <td>
+          76
+        </td>
+        <td>
+          3812
+        </td>
+        <td>
+          2985
+          -
+          3109
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          scala.Boolean.||
+        </td>
+        <td style="background: #AEF1AE">
+          superClassSym.!=(BTypesFromSymbols.this.int.NoSymbol).&amp;&amp;(BTypesFromSymbols.this.int.symHelper(superClassSym).isInterface.unary_!).||(BTypesFromSymbols.this.int.isCompilingPrimitive.&amp;&amp;(BTypesFromSymbols.this.coreBTypes.primitiveTypeMap.contains(classSym)))
+        </td>
+      </tr><tr>
+        <td>
+          76
+        </td>
+        <td>
+          3809
+        </td>
+        <td>
+          3073
+          -
+          3108
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.MapLike.contains
+        </td>
+        <td style="background: #F0ADAD">
+          BTypesFromSymbols.this.coreBTypes.primitiveTypeMap.contains(classSym)
+        </td>
+      </tr><tr>
+        <td>
+          76
+        </td>
+        <td>
+          3808
+        </td>
+        <td>
+          3017
+          -
+          3043
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.Boolean.unary_!
+        </td>
+        <td style="background: #AEF1AE">
+          BTypesFromSymbols.this.int.symHelper(superClassSym).isInterface.unary_!
+        </td>
+      </tr><tr>
+        <td>
+          76
+        </td>
+        <td>
+          3811
+        </td>
+        <td>
+          2985
+          -
+          3109
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Boolean.||
+        </td>
+        <td style="background: #AEF1AE">
+          superClassSym.!=(BTypesFromSymbols.this.int.NoSymbol).&amp;&amp;(BTypesFromSymbols.this.int.symHelper(superClassSym).isInterface.unary_!).||(BTypesFromSymbols.this.int.isCompilingPrimitive.&amp;&amp;(BTypesFromSymbols.this.coreBTypes.primitiveTypeMap.contains(classSym)))
+        </td>
+      </tr><tr>
+        <td>
+          76
+        </td>
+        <td>
+          3807
+        </td>
+        <td>
+          3004
+          -
+          3012
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BackendInterfaceDefinitions.NoSymbol
+        </td>
+        <td style="background: #AEF1AE">
+          BTypesFromSymbols.this.int.NoSymbol
+        </td>
+      </tr><tr>
+        <td>
+          76
+        </td>
+        <td>
+          3810
+        </td>
+        <td>
+          3049
+          -
+          3108
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Boolean.&amp;&amp;
+        </td>
+        <td style="background: #F0ADAD">
+          BTypesFromSymbols.this.int.isCompilingPrimitive.&amp;&amp;(BTypesFromSymbols.this.coreBTypes.primitiveTypeMap.contains(classSym))
+        </td>
+      </tr><tr>
+        <td>
+          77
+        </td>
+        <td>
+          3814
+        </td>
+        <td>
+          3117
+          -
+          3164
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.StringContext.s
+        </td>
+        <td style="background: #F0ADAD">
+          scala.StringContext.apply(&quot;Bad superClass for &quot;, &quot;: &quot;, &quot;&quot;).s(classSym, superClassSym)
+        </td>
+      </tr><tr>
+        <td>
+          79
+        </td>
+        <td>
+          3818
+        </td>
+        <td>
+          3223
+          -
+          3227
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.None
+        </td>
+        <td style="background: #AEF1AE">
+          scala.None
+        </td>
+      </tr><tr>
+        <td>
+          79
+        </td>
+        <td>
+          3817
+        </td>
+        <td>
+          3196
+          -
+          3221
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.Object.==
+        </td>
+        <td style="background: #AEF1AE">
+          superClassSym.==(BTypesFromSymbols.this.int.NoSymbol)
+        </td>
+      </tr><tr>
+        <td>
+          79
+        </td>
+        <td>
+          3816
+        </td>
+        <td>
+          3213
+          -
+          3221
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BackendInterfaceDefinitions.NoSymbol
+        </td>
+        <td style="background: #AEF1AE">
+          BTypesFromSymbols.this.int.NoSymbol
+        </td>
+      </tr><tr>
+        <td>
+          79
+        </td>
+        <td>
+          3819
+        </td>
+        <td>
+          3223
+          -
+          3227
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          scala.None
+        </td>
+        <td style="background: #AEF1AE">
+          scala.None
+        </td>
+      </tr><tr>
+        <td>
+          80
+        </td>
+        <td>
+          3821
+        </td>
+        <td>
+          3254
+          -
+          3295
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Some.apply
+        </td>
+        <td style="background: #AEF1AE">
+          scala.Some.apply[BTypesFromSymbols.this.ClassBType](BTypesFromSymbols.this.classBTypeFromSymbol(superClassSym))
+        </td>
+      </tr><tr>
+        <td>
+          80
+        </td>
+        <td>
+          3820
+        </td>
+        <td>
+          3259
+          -
+          3294
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BTypesFromSymbols.classBTypeFromSymbol
+        </td>
+        <td style="background: #AEF1AE">
+          BTypesFromSymbols.this.classBTypeFromSymbol(superClassSym)
+        </td>
+      </tr><tr>
+        <td>
+          80
+        </td>
+        <td>
+          3822
+        </td>
+        <td>
+          3254
+          -
+          3295
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          scala.Some.apply
+        </td>
+        <td style="background: #AEF1AE">
+          scala.Some.apply[BTypesFromSymbols.this.ClassBType](BTypesFromSymbols.this.classBTypeFromSymbol(superClassSym))
+        </td>
+      </tr><tr>
+        <td>
+          82
+        </td>
+        <td>
+          3824
+        </td>
+        <td>
+          3346
+          -
+          3346
+        </td>
+        <td>
+          TypeApply
+        </td>
+        <td>
+          scala.collection.immutable.List.canBuildFrom
+        </td>
+        <td style="background: #AEF1AE">
+          immutable.this.List.canBuildFrom[BTypesFromSymbols.this.ClassBType]
+        </td>
+      </tr><tr>
+        <td>
+          82
+        </td>
+        <td>
+          3823
+        </td>
+        <td>
+          3347
+          -
+          3367
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BTypesFromSymbols.classBTypeFromSymbol
+        </td>
+        <td style="background: #AEF1AE">
+          BTypesFromSymbols.this.classBTypeFromSymbol(classSym)
+        </td>
+      </tr><tr>
+        <td>
+          82
+        </td>
+        <td>
+          3825
+        </td>
+        <td>
+          3318
+          -
+          3368
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          scala.collection.immutable.List.map
+        </td>
+        <td style="background: #AEF1AE">
+          BTypesFromSymbols.this.int.symHelper(classSym).superInterfaces.map[BTypesFromSymbols.this.ClassBType, List[BTypesFromSymbols.this.ClassBType]]({
+  ((classSym: BTypesFromSymbols.this.int.Symbol) =&gt; BTypesFromSymbols.this.classBTypeFromSymbol(classSym))
+})(immutable.this.List.canBuildFrom[BTypesFromSymbols.this.ClassBType])
+        </td>
+      </tr><tr>
+        <td>
+          84
+        </td>
+        <td>
+          3826
+        </td>
+        <td>
+          3386
+          -
+          3405
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BTypesFromSymbols.javaFlags
+        </td>
+        <td style="background: #AEF1AE">
+          BTypesFromSymbols.this.javaFlags(classSym)
+        </td>
+      </tr><tr>
+        <td>
+          101
+        </td>
+        <td>
+          3827
+        </td>
+        <td>
+          4315
+          -
+          4337
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BackendInterface.SymbolHelper.nestedClasses
+        </td>
+        <td style="background: #AEF1AE">
+          BTypesFromSymbols.this.int.symHelper(classSym).nestedClasses
+        </td>
+      </tr><tr>
+        <td>
+          115
+        </td>
+        <td>
+          3828
+        </td>
+        <td>
+          5068
+          -
+          5088
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BackendInterface.SymbolHelper.linkedClass
+        </td>
+        <td style="background: #AEF1AE">
+          BTypesFromSymbols.this.int.symHelper(classSym).linkedClass
+        </td>
+      </tr><tr>
+        <td>
+          116
+        </td>
+        <td>
+          3829
+        </td>
+        <td>
+          5124
+          -
+          5155
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BackendInterface.SymbolHelper.companionModuleMembers
+        </td>
+        <td style="background: #AEF1AE">
+          BTypesFromSymbols.this.int.symHelper(classSym).companionModuleMembers
+        </td>
+      </tr><tr>
+        <td>
+          118
+        </td>
+        <td>
+          3830
+        </td>
+        <td>
+          5177
+          -
+          5177
+        </td>
+        <td>
+          TypeApply
+        </td>
+        <td>
+          scala.collection.immutable.List.canBuildFrom
+        </td>
+        <td style="background: #AEF1AE">
+          immutable.this.List.canBuildFrom[BTypesFromSymbols.this.int.Symbol]
+        </td>
+      </tr><tr>
+        <td>
+          118
+        </td>
+        <td>
+          3831
+        </td>
+        <td>
+          5163
+          -
+          5202
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          scala.collection.immutable.List.++
+        </td>
+        <td style="background: #AEF1AE">
+          nestedClasses.++[BTypesFromSymbols.this.int.Symbol, List[BTypesFromSymbols.this.int.Symbol]](companionModuleMembers)(immutable.this.List.canBuildFrom[BTypesFromSymbols.this.int.Symbol])
+        </td>
+      </tr><tr>
+        <td>
+          127
+        </td>
+        <td>
+          3843
+        </td>
+        <td>
+          5619
+          -
+          6191
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.TraversableLike.filter
+        </td>
+        <td style="background: #AEF1AE">
+          nestedClassSymbols.filter(((s: BTypesFromSymbols.this.int.Symbol) =&gt; if (BTypesFromSymbols.this.int.symHelper(s).isJavaDefined.&amp;&amp;(BTypesFromSymbols.this.int.symHelper(s).isModuleClass))
+  {
+    val nb: Int = nestedClassSymbols.count(((mc: BTypesFromSymbols.this.int.Symbol) =&gt; BTypesFromSymbols.this.int.symHelper(mc).name.==(BTypesFromSymbols.this.int.symHelper(s).name).&amp;&amp;(BTypesFromSymbols.this.int.symHelper(mc).owner.==(BTypesFromSymbols.this.int.symHelper(s).owner))));
+    false
+  }
+else
+  true))
+        </td>
+      </tr><tr>
+        <td>
+          128
+        </td>
+        <td>
+          3833
+        </td>
+        <td>
+          5662
+          -
+          5696
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Boolean.&amp;&amp;
+        </td>
+        <td style="background: #AEF1AE">
+          BTypesFromSymbols.this.int.symHelper(s).isJavaDefined.&amp;&amp;(BTypesFromSymbols.this.int.symHelper(s).isModuleClass)
+        </td>
+      </tr><tr>
+        <td>
+          128
+        </td>
+        <td>
+          3832
+        </td>
+        <td>
+          5681
+          -
+          5696
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BackendInterface.SymbolHelper.isModuleClass
+        </td>
+        <td style="background: #F0ADAD">
+          BTypesFromSymbols.this.int.symHelper(s).isModuleClass
+        </td>
+      </tr><tr>
+        <td>
+          128
+        </td>
+        <td>
+          3840
+        </td>
+        <td>
+          5698
+          -
+          6174
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          {
+  val nb: Int = nestedClassSymbols.count(((mc: BTypesFromSymbols.this.int.Symbol) =&gt; BTypesFromSymbols.this.int.symHelper(mc).name.==(BTypesFromSymbols.this.int.symHelper(s).name).&amp;&amp;(BTypesFromSymbols.this.int.symHelper(mc).owner.==(BTypesFromSymbols.this.int.symHelper(s).owner))));
+  false
+}
+        </td>
+      </tr><tr>
+        <td>
+          131
+        </td>
+        <td>
+          3836
+        </td>
+        <td>
+          5917
+          -
+          5936
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.Object.==
+        </td>
+        <td style="background: #F0ADAD">
+          BTypesFromSymbols.this.int.symHelper(mc).owner.==(BTypesFromSymbols.this.int.symHelper(s).owner)
+        </td>
+      </tr><tr>
+        <td>
+          131
+        </td>
+        <td>
+          3835
+        </td>
+        <td>
+          5929
+          -
+          5936
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BackendInterface.SymbolHelper.owner
+        </td>
+        <td style="background: #F0ADAD">
+          BTypesFromSymbols.this.int.symHelper(s).owner
+        </td>
+      </tr><tr>
+        <td>
+          131
+        </td>
+        <td>
+          3838
+        </td>
+        <td>
+          5865
+          -
+          5937
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.TraversableOnce.count
+        </td>
+        <td style="background: #F0ADAD">
+          nestedClassSymbols.count(((mc: BTypesFromSymbols.this.int.Symbol) =&gt; BTypesFromSymbols.this.int.symHelper(mc).name.==(BTypesFromSymbols.this.int.symHelper(s).name).&amp;&amp;(BTypesFromSymbols.this.int.symHelper(mc).owner.==(BTypesFromSymbols.this.int.symHelper(s).owner))))
+        </td>
+      </tr><tr>
+        <td>
+          131
+        </td>
+        <td>
+          3834
+        </td>
+        <td>
+          5907
+          -
+          5913
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BackendInterface.SymbolHelper.name
+        </td>
+        <td style="background: #F0ADAD">
+          BTypesFromSymbols.this.int.symHelper(s).name
+        </td>
+      </tr><tr>
+        <td>
+          131
+        </td>
+        <td>
+          3837
+        </td>
+        <td>
+          5896
+          -
+          5936
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Boolean.&amp;&amp;
+        </td>
+        <td style="background: #F0ADAD">
+          BTypesFromSymbols.this.int.symHelper(mc).name.==(BTypesFromSymbols.this.int.symHelper(s).name).&amp;&amp;(BTypesFromSymbols.this.int.symHelper(mc).owner.==(BTypesFromSymbols.this.int.symHelper(s).owner))
+        </td>
+      </tr><tr>
+        <td>
+          134
+        </td>
+        <td>
+          3839
+        </td>
+        <td>
+          6161
+          -
+          6166
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          false
+        </td>
+      </tr><tr>
+        <td>
+          135
+        </td>
+        <td>
+          3842
+        </td>
+        <td>
+          6180
+          -
+          6184
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          true
+        </td>
+      </tr><tr>
+        <td>
+          135
+        </td>
+        <td>
+          3841
+        </td>
+        <td>
+          6180
+          -
+          6184
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          true
+        </td>
+      </tr><tr>
+        <td>
+          138
+        </td>
+        <td>
+          3845
+        </td>
+        <td>
+          6258
+          -
+          6258
+        </td>
+        <td>
+          TypeApply
+        </td>
+        <td>
+          scala.collection.immutable.List.canBuildFrom
+        </td>
+        <td style="background: #AEF1AE">
+          immutable.this.List.canBuildFrom[BTypesFromSymbols.this.ClassBType]
+        </td>
+      </tr><tr>
+        <td>
+          138
+        </td>
+        <td>
+          3844
+        </td>
+        <td>
+          6259
+          -
+          6279
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BTypesFromSymbols.classBTypeFromSymbol
+        </td>
+        <td style="background: #AEF1AE">
+          BTypesFromSymbols.this.classBTypeFromSymbol(classSym)
+        </td>
+      </tr><tr>
+        <td>
+          138
+        </td>
+        <td>
+          3846
+        </td>
+        <td>
+          6217
+          -
+          6280
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          scala.collection.immutable.List.map
+        </td>
+        <td style="background: #AEF1AE">
+          nestedClassSymbolsNoJavaModuleClasses.map[BTypesFromSymbols.this.ClassBType, List[BTypesFromSymbols.this.ClassBType]]({
+  ((classSym: BTypesFromSymbols.this.int.Symbol) =&gt; BTypesFromSymbols.this.classBTypeFromSymbol(classSym))
+})(immutable.this.List.canBuildFrom[BTypesFromSymbols.this.ClassBType])
+        </td>
+      </tr><tr>
+        <td>
+          140
+        </td>
+        <td>
+          3847
+        </td>
+        <td>
+          6303
+          -
+          6328
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BTypesFromSymbols.buildNestedInfo
+        </td>
+        <td style="background: #AEF1AE">
+          BTypesFromSymbols.this.buildNestedInfo(classSym)
+        </td>
+      </tr><tr>
+        <td>
+          142
+        </td>
+        <td>
+          3848
+        </td>
+        <td>
+          6352
+          -
+          6419
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BTypes.ClassInfo.apply
+        </td>
+        <td style="background: #AEF1AE">
+          BTypesFromSymbols.this.ClassInfo.apply(superClass, interfaces, flags, memberClasses, nestedInfo)
+        </td>
+      </tr><tr>
+        <td>
+          142
+        </td>
+        <td>
+          3849
+        </td>
+        <td>
+          6334
+          -
+          6419
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BTypes.ClassBType.info_=
+        </td>
+        <td style="background: #AEF1AE">
+          classBType.info_=(BTypesFromSymbols.this.ClassInfo.apply(superClass, interfaces, flags, memberClasses, nestedInfo))
+        </td>
+      </tr><tr>
+        <td>
+          148
+        </td>
+        <td>
+          3851
+        </td>
+        <td>
+          6552
+          -
+          6614
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.StringContext.s
+        </td>
+        <td style="background: #F0ADAD">
+          scala.StringContext.apply(&quot;Cannot build NestedInfo for non-class symbol &quot;, &quot;&quot;).s(innerClassSym)
+        </td>
+      </tr><tr>
+        <td>
+          148
+        </td>
+        <td>
+          3850
+        </td>
+        <td>
+          6529
+          -
+          6550
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BackendInterface.SymbolHelper.isClass
+        </td>
+        <td style="background: #AEF1AE">
+          BTypesFromSymbols.this.int.symHelper(innerClassSym).isClass
+        </td>
+      </tr><tr>
+        <td>
+          148
+        </td>
+        <td>
+          3852
+        </td>
+        <td>
+          6522
+          -
+          6615
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Predef.assert
+        </td>
+        <td style="background: #AEF1AE">
+          scala.Predef.assert(BTypesFromSymbols.this.int.symHelper(innerClassSym).isClass, scala.StringContext.apply(&quot;Cannot build NestedInfo for non-class symbol &quot;, &quot;&quot;).s(innerClassSym))
+        </td>
+      </tr><tr>
+        <td>
+          150
+        </td>
+        <td>
+          3854
+        </td>
+        <td>
+          6636
+          -
+          6674
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.Boolean.unary_!
+        </td>
+        <td style="background: #AEF1AE">
+          BTypesFromSymbols.this.int.symHelper(BTypesFromSymbols.this.int.symHelper(innerClassSym).rawowner).isPackageClass.unary_!
+        </td>
+      </tr><tr>
+        <td>
+          150
+        </td>
+        <td>
+          3853
+        </td>
+        <td>
+          6637
+          -
+          6659
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BackendInterface.SymbolHelper.rawowner
+        </td>
+        <td style="background: #AEF1AE">
+          BTypesFromSymbols.this.int.symHelper(innerClassSym).rawowner
+        </td>
+      </tr><tr>
+        <td>
+          151
+        </td>
+        <td>
+          3857
+        </td>
+        <td>
+          6694
+          -
+          6698
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          scala.None
+        </td>
+        <td style="background: #AEF1AE">
+          scala.None
+        </td>
+      </tr><tr>
+        <td>
+          151
+        </td>
+        <td>
+          3856
+        </td>
+        <td>
+          6694
+          -
+          6698
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.None
+        </td>
+        <td style="background: #AEF1AE">
+          scala.None
+        </td>
+      </tr><tr>
+        <td>
+          151
+        </td>
+        <td>
+          3855
+        </td>
+        <td>
+          6683
+          -
+          6692
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.Boolean.unary_!
+        </td>
+        <td style="background: #AEF1AE">
+          isNested.unary_!
+        </td>
+      </tr><tr>
+        <td>
+          152
+        </td>
+        <td>
+          3885
+        </td>
+        <td>
+          6708
+          -
+          7945
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          {
+  val isStaticNestedClass: Boolean = BTypesFromSymbols.this.int.symHelper(BTypesFromSymbols.this.int.symHelper(innerClassSym).originalOwner).isOriginallyStaticOwner;
+  val enclosingClassSym: BTypesFromSymbols.this.int.Symbol = BTypesFromSymbols.this.int.symHelper(innerClassSym).enclosingClassSym;
+  val enclosingClass: BTypesFromSymbols.this.ClassBType = BTypesFromSymbols.this.classBTypeFromSymbol(enclosingClassSym);
+  val outerName: Option[String] = if (BTypesFromSymbols.this.bCodeAsmCommon.isAnonymousOrLocalClass(innerClassSym))
+    scala.None
+  else
+    {
+      val outerName: String = BTypesFromSymbols.this.int.symHelper(BTypesFromSymbols.this.int.symHelper(innerClassSym).rawowner).javaBinaryName;
+      val outerNameModule: String = if (BTypesFromSymbols.this.int.symHelper(BTypesFromSymbols.this.int.symHelper(innerClassSym).rawowner).isTopLevelModuleClass)
+        BTypesFromSymbols.this.int.dropModule(outerName)
+      else
+        outerName;
+      scala.Some.apply[String](outerNameModule.toString())
+    };
+  val innerName: Option[String] = if (BTypesFromSymbols.this.int.symHelper(innerClassSym).isAnonymousClass.||(BTypesFromSymbols.this.int.symHelper(innerClassSym).isAnonymousFunction))
+    scala.None
+  else
+    scala.Some.apply[String](BTypesFromSymbols.this.int.symHelper(innerClassSym).rawname.+(BTypesFromSymbols.this.int.symHelper(innerClassSym).moduleSuffix));
+  scala.Some.apply[BTypesFromSymbols.this.NestedInfo](BTypesFromSymbols.this.NestedInfo.apply(enclosingClass, outerName, innerName, isStaticNestedClass))
+}
+        </td>
+      </tr><tr>
+        <td>
+          154
+        </td>
+        <td>
+          3859
+        </td>
+        <td>
+          6829
+          -
+          6880
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BackendInterface.SymbolHelper.isOriginallyStaticOwner
+        </td>
+        <td style="background: #AEF1AE">
+          BTypesFromSymbols.this.int.symHelper(BTypesFromSymbols.this.int.symHelper(innerClassSym).originalOwner).isOriginallyStaticOwner
+        </td>
+      </tr><tr>
+        <td>
+          154
+        </td>
+        <td>
+          3858
+        </td>
+        <td>
+          6829
+          -
+          6856
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BackendInterface.SymbolHelper.originalOwner
+        </td>
+        <td style="background: #AEF1AE">
+          BTypesFromSymbols.this.int.symHelper(innerClassSym).originalOwner
+        </td>
+      </tr><tr>
+        <td>
+          157
+        </td>
+        <td>
+          3860
+        </td>
+        <td>
+          7013
+          -
+          7044
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BackendInterface.SymbolHelper.enclosingClassSym
+        </td>
+        <td style="background: #AEF1AE">
+          BTypesFromSymbols.this.int.symHelper(innerClassSym).enclosingClassSym
+        </td>
+      </tr><tr>
+        <td>
+          158
+        </td>
+        <td>
+          3861
+        </td>
+        <td>
+          7084
+          -
+          7123
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BTypesFromSymbols.classBTypeFromSymbol
+        </td>
+        <td style="background: #AEF1AE">
+          BTypesFromSymbols.this.classBTypeFromSymbol(enclosingClassSym)
+        </td>
+      </tr><tr>
+        <td>
+          161
+        </td>
+        <td>
+          3862
+        </td>
+        <td>
+          7177
+          -
+          7215
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BCodeAsmCommon.isAnonymousOrLocalClass
+        </td>
+        <td style="background: #AEF1AE">
+          BTypesFromSymbols.this.bCodeAsmCommon.isAnonymousOrLocalClass(innerClassSym)
+        </td>
+      </tr><tr>
+        <td>
+          162
+        </td>
+        <td>
+          3863
+        </td>
+        <td>
+          7229
+          -
+          7233
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.None
+        </td>
+        <td style="background: #AEF1AE">
+          scala.None
+        </td>
+      </tr><tr>
+        <td>
+          162
+        </td>
+        <td>
+          3864
+        </td>
+        <td>
+          7229
+          -
+          7233
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          scala.None
+        </td>
+        <td style="background: #AEF1AE">
+          scala.None
+        </td>
+      </tr><tr>
+        <td>
+          163
+        </td>
+        <td>
+          3874
+        </td>
+        <td>
+          7249
+          -
+          7608
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          {
+  val outerName: String = BTypesFromSymbols.this.int.symHelper(BTypesFromSymbols.this.int.symHelper(innerClassSym).rawowner).javaBinaryName;
+  val outerNameModule: String = if (BTypesFromSymbols.this.int.symHelper(BTypesFromSymbols.this.int.symHelper(innerClassSym).rawowner).isTopLevelModuleClass)
+    BTypesFromSymbols.this.int.dropModule(outerName)
+  else
+    outerName;
+  scala.Some.apply[String](outerNameModule.toString())
+}
+        </td>
+      </tr><tr>
+        <td>
+          164
+        </td>
+        <td>
+          3866
+        </td>
+        <td>
+          7277
+          -
+          7314
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BackendInterface.SymbolHelper.javaBinaryName
+        </td>
+        <td style="background: #AEF1AE">
+          BTypesFromSymbols.this.int.symHelper(BTypesFromSymbols.this.int.symHelper(innerClassSym).rawowner).javaBinaryName
+        </td>
+      </tr><tr>
+        <td>
+          164
+        </td>
+        <td>
+          3865
+        </td>
+        <td>
+          7277
+          -
+          7299
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BackendInterface.SymbolHelper.rawowner
+        </td>
+        <td style="background: #AEF1AE">
+          BTypesFromSymbols.this.int.symHelper(innerClassSym).rawowner
+        </td>
+      </tr><tr>
+        <td>
+          167
+        </td>
+        <td>
+          3869
+        </td>
+        <td>
+          7509
+          -
+          7530
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BackendInterface.dropModule
+        </td>
+        <td style="background: #AEF1AE">
+          BTypesFromSymbols.this.int.dropModule(outerName)
+        </td>
+      </tr><tr>
+        <td>
+          167
+        </td>
+        <td>
+          3868
+        </td>
+        <td>
+          7463
+          -
+          7507
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BackendInterface.SymbolHelper.isTopLevelModuleClass
+        </td>
+        <td style="background: #AEF1AE">
+          BTypesFromSymbols.this.int.symHelper(BTypesFromSymbols.this.int.symHelper(innerClassSym).rawowner).isTopLevelModuleClass
+        </td>
+      </tr><tr>
+        <td>
+          167
+        </td>
+        <td>
+          3867
+        </td>
+        <td>
+          7463
+          -
+          7485
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BackendInterface.SymbolHelper.rawowner
+        </td>
+        <td style="background: #AEF1AE">
+          BTypesFromSymbols.this.int.symHelper(innerClassSym).rawowner
+        </td>
+      </tr><tr>
+        <td>
+          167
+        </td>
+        <td>
+          3870
+        </td>
+        <td>
+          7509
+          -
+          7530
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BackendInterface.dropModule
+        </td>
+        <td style="background: #AEF1AE">
+          BTypesFromSymbols.this.int.dropModule(outerName)
+        </td>
+      </tr><tr>
+        <td>
+          168
+        </td>
+        <td>
+          3871
+        </td>
+        <td>
+          7548
+          -
+          7557
+        </td>
+        <td>
+          Ident
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BTypesFromSymbols.outerName
+        </td>
+        <td style="background: #AEF1AE">
+          outerName
+        </td>
+      </tr><tr>
+        <td>
+          169
+        </td>
+        <td>
+          3872
+        </td>
+        <td>
+          7573
+          -
+          7597
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.String.toString
+        </td>
+        <td style="background: #AEF1AE">
+          outerNameModule.toString()
+        </td>
+      </tr><tr>
+        <td>
+          169
+        </td>
+        <td>
+          3873
+        </td>
+        <td>
+          7568
+          -
+          7598
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Some.apply
+        </td>
+        <td style="background: #AEF1AE">
+          scala.Some.apply[String](outerNameModule.toString())
+        </td>
+      </tr><tr>
+        <td>
+          174
+        </td>
+        <td>
+          3875
+        </td>
+        <td>
+          7704
+          -
+          7737
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BackendInterface.SymbolHelper.isAnonymousFunction
+        </td>
+        <td style="background: #AEF1AE">
+          BTypesFromSymbols.this.int.symHelper(innerClassSym).isAnonymousFunction
+        </td>
+      </tr><tr>
+        <td>
+          174
+        </td>
+        <td>
+          3878
+        </td>
+        <td>
+          7739
+          -
+          7743
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          scala.None
+        </td>
+        <td style="background: #AEF1AE">
+          scala.None
+        </td>
+      </tr><tr>
+        <td>
+          174
+        </td>
+        <td>
+          3877
+        </td>
+        <td>
+          7739
+          -
+          7743
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.None
+        </td>
+        <td style="background: #AEF1AE">
+          scala.None
+        </td>
+      </tr><tr>
+        <td>
+          174
+        </td>
+        <td>
+          3876
+        </td>
+        <td>
+          7670
+          -
+          7737
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Boolean.||
+        </td>
+        <td style="background: #AEF1AE">
+          BTypesFromSymbols.this.int.symHelper(innerClassSym).isAnonymousClass.||(BTypesFromSymbols.this.int.symHelper(innerClassSym).isAnonymousFunction)
+        </td>
+      </tr><tr>
+        <td>
+          175
+        </td>
+        <td>
+          3881
+        </td>
+        <td>
+          7757
+          -
+          7813
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Some.apply
+        </td>
+        <td style="background: #AEF1AE">
+          scala.Some.apply[String](BTypesFromSymbols.this.int.symHelper(innerClassSym).rawname.+(BTypesFromSymbols.this.int.symHelper(innerClassSym).moduleSuffix))
+        </td>
+      </tr><tr>
+        <td>
+          175
+        </td>
+        <td>
+          3880
+        </td>
+        <td>
+          7762
+          -
+          7812
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.String.+
+        </td>
+        <td style="background: #AEF1AE">
+          BTypesFromSymbols.this.int.symHelper(innerClassSym).rawname.+(BTypesFromSymbols.this.int.symHelper(innerClassSym).moduleSuffix)
+        </td>
+      </tr><tr>
+        <td>
+          175
+        </td>
+        <td>
+          3879
+        </td>
+        <td>
+          7786
+          -
+          7812
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BackendInterface.SymbolHelper.moduleSuffix
+        </td>
+        <td style="background: #AEF1AE">
+          BTypesFromSymbols.this.int.symHelper(innerClassSym).moduleSuffix
+        </td>
+      </tr><tr>
+        <td>
+          175
+        </td>
+        <td>
+          3882
+        </td>
+        <td>
+          7757
+          -
+          7813
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          scala.Some.apply
+        </td>
+        <td style="background: #AEF1AE">
+          scala.Some.apply[String](BTypesFromSymbols.this.int.symHelper(innerClassSym).rawname.+(BTypesFromSymbols.this.int.symHelper(innerClassSym).moduleSuffix))
+        </td>
+      </tr><tr>
+        <td>
+          178
+        </td>
+        <td>
+          3884
+        </td>
+        <td>
+          7864
+          -
+          7939
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Some.apply
+        </td>
+        <td style="background: #AEF1AE">
+          scala.Some.apply[BTypesFromSymbols.this.NestedInfo](BTypesFromSymbols.this.NestedInfo.apply(enclosingClass, outerName, innerName, isStaticNestedClass))
+        </td>
+      </tr><tr>
+        <td>
+          178
+        </td>
+        <td>
+          3883
+        </td>
+        <td>
+          7869
+          -
+          7938
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BTypes.NestedInfo.apply
+        </td>
+        <td style="background: #AEF1AE">
+          BTypesFromSymbols.this.NestedInfo.apply(enclosingClass, outerName, innerName, isStaticNestedClass)
+        </td>
+      </tr><tr>
+        <td>
+          203
+        </td>
+        <td>
+          3886
+        </td>
+        <td>
+          8621
+          -
+          8644
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BackendInterface.SymbolHelper.getsJavaPrivateFlag
+        </td>
+        <td style="background: #AEF1AE">
+          BTypesFromSymbols.this.int.symHelper(sym).getsJavaPrivateFlag
+        </td>
+      </tr><tr>
+        <td>
+          205
+        </td>
+        <td>
+          3887
+        </td>
+        <td>
+          8666
+          -
+          8687
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BackendInterface.SymbolHelper.getsJavaFinalFlag
+        </td>
+        <td style="background: #AEF1AE">
+          BTypesFromSymbols.this.int.symHelper(sym).getsJavaFinalFlag
+        </td>
+      </tr><tr>
+        <td>
+          212
+        </td>
+        <td>
+          3950
+        </td>
+        <td>
+          8963
+          -
+          9652
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.GenBCodeOps.mkFlags
+        </td>
+        <td style="background: #AEF1AE">
+          GenBCodeOps.mkFlags(if (privateFlag)
+  2
+else
+  1, if (BTypesFromSymbols.this.int.symHelper(sym).isDeferred.||(BTypesFromSymbols.this.int.symHelper(sym).hasAbstractFlag))
+  1024
+else
+  0, if (BTypesFromSymbols.this.int.symHelper(sym).isInterface)
+  512
+else
+  0, if (finalFlag.&amp;&amp;(BTypesFromSymbols.this.int.symHelper(sym).hasAbstractFlag.unary_!))
+  16
+else
+  0, if (BTypesFromSymbols.this.int.symHelper(sym).isStaticMember)
+  8
+else
+  0, if (BTypesFromSymbols.this.int.symHelper(sym).isBridge)
+  4160
+else
+  0, if (BTypesFromSymbols.this.int.symHelper(sym).isArtifact)
+  4096
+else
+  0, if (BTypesFromSymbols.this.int.symHelper(sym).isClass.&amp;&amp;(BTypesFromSymbols.this.int.symHelper(sym).isInterface.unary_!))
+  32
+else
+  0, if (BTypesFromSymbols.this.int.symHelper(sym).hasEnumFlag)
+  16384
+else
+  0, if (BTypesFromSymbols.this.int.symHelper(sym).isVarargsMethod)
+  128
+else
+  0, if (BTypesFromSymbols.this.int.symHelper(sym).isSynchronized)
+  32
+else
+  0, if (BTypesFromSymbols.this.int.symHelper(sym).isDeprecated)
+  131072
+else
+  0)
+        </td>
+      </tr><tr>
+        <td>
+          213
+        </td>
+        <td>
+          3890
+        </td>
+        <td>
+          9024
+          -
+          9034
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          1
+        </td>
+      </tr><tr>
+        <td>
+          213
+        </td>
+        <td>
+          3889
+        </td>
+        <td>
+          9007
+          -
+          9018
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          2
+        </td>
+      </tr><tr>
+        <td>
+          213
+        </td>
+        <td>
+          3891
+        </td>
+        <td>
+          9024
+          -
+          9034
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          1
+        </td>
+      </tr><tr>
+        <td>
+          213
+        </td>
+        <td>
+          3888
+        </td>
+        <td>
+          9007
+          -
+          9018
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          2
+        </td>
+      </tr><tr>
+        <td>
+          214
+        </td>
+        <td>
+          3893
+        </td>
+        <td>
+          9046
+          -
+          9083
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Boolean.||
+        </td>
+        <td style="background: #AEF1AE">
+          BTypesFromSymbols.this.int.symHelper(sym).isDeferred.||(BTypesFromSymbols.this.int.symHelper(sym).hasAbstractFlag)
+        </td>
+      </tr><tr>
+        <td>
+          214
+        </td>
+        <td>
+          3896
+        </td>
+        <td>
+          9103
+          -
+          9104
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          0
+        </td>
+      </tr><tr>
+        <td>
+          214
+        </td>
+        <td>
+          3895
+        </td>
+        <td>
+          9085
+          -
+          9097
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          1024
+        </td>
+      </tr><tr>
+        <td>
+          214
+        </td>
+        <td>
+          3892
+        </td>
+        <td>
+          9064
+          -
+          9083
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BackendInterface.SymbolHelper.hasAbstractFlag
+        </td>
+        <td style="background: #AEF1AE">
+          BTypesFromSymbols.this.int.symHelper(sym).hasAbstractFlag
+        </td>
+      </tr><tr>
+        <td>
+          214
+        </td>
+        <td>
+          3894
+        </td>
+        <td>
+          9085
+          -
+          9097
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          1024
+        </td>
+      </tr><tr>
+        <td>
+          214
+        </td>
+        <td>
+          3897
+        </td>
+        <td>
+          9103
+          -
+          9104
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          0
+        </td>
+      </tr><tr>
+        <td>
+          215
+        </td>
+        <td>
+          3899
+        </td>
+        <td>
+          9133
+          -
+          9146
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          512
+        </td>
+      </tr><tr>
+        <td>
+          215
+        </td>
+        <td>
+          3902
+        </td>
+        <td>
+          9152
+          -
+          9153
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          0
+        </td>
+      </tr><tr>
+        <td>
+          215
+        </td>
+        <td>
+          3898
+        </td>
+        <td>
+          9116
+          -
+          9131
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BackendInterface.SymbolHelper.isInterface
+        </td>
+        <td style="background: #AEF1AE">
+          BTypesFromSymbols.this.int.symHelper(sym).isInterface
+        </td>
+      </tr><tr>
+        <td>
+          215
+        </td>
+        <td>
+          3901
+        </td>
+        <td>
+          9152
+          -
+          9153
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          0
+        </td>
+      </tr><tr>
+        <td>
+          215
+        </td>
+        <td>
+          3900
+        </td>
+        <td>
+          9133
+          -
+          9146
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          512
+        </td>
+      </tr><tr>
+        <td>
+          216
+        </td>
+        <td>
+          3905
+        </td>
+        <td>
+          9200
+          -
+          9209
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          16
+        </td>
+      </tr><tr>
+        <td>
+          216
+        </td>
+        <td>
+          3908
+        </td>
+        <td>
+          9215
+          -
+          9216
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          0
+        </td>
+      </tr><tr>
+        <td>
+          216
+        </td>
+        <td>
+          3904
+        </td>
+        <td>
+          9165
+          -
+          9198
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Boolean.&amp;&amp;
+        </td>
+        <td style="background: #AEF1AE">
+          finalFlag.&amp;&amp;(BTypesFromSymbols.this.int.symHelper(sym).hasAbstractFlag.unary_!)
+        </td>
+      </tr><tr>
+        <td>
+          216
+        </td>
+        <td>
+          3907
+        </td>
+        <td>
+          9215
+          -
+          9216
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          0
+        </td>
+      </tr><tr>
+        <td>
+          216
+        </td>
+        <td>
+          3903
+        </td>
+        <td>
+          9178
+          -
+          9198
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.Boolean.unary_!
+        </td>
+        <td style="background: #AEF1AE">
+          BTypesFromSymbols.this.int.symHelper(sym).hasAbstractFlag.unary_!
+        </td>
+      </tr><tr>
+        <td>
+          216
+        </td>
+        <td>
+          3906
+        </td>
+        <td>
+          9200
+          -
+          9209
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          16
+        </td>
+      </tr><tr>
+        <td>
+          217
+        </td>
+        <td>
+          3911
+        </td>
+        <td>
+          9248
+          -
+          9258
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          8
+        </td>
+      </tr><tr>
+        <td>
+          217
+        </td>
+        <td>
+          3913
+        </td>
+        <td>
+          9264
+          -
+          9265
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          0
+        </td>
+      </tr><tr>
+        <td>
+          217
+        </td>
+        <td>
+          3910
+        </td>
+        <td>
+          9248
+          -
+          9258
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          8
+        </td>
+      </tr><tr>
+        <td>
+          217
+        </td>
+        <td>
+          3909
+        </td>
+        <td>
+          9228
+          -
+          9246
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BackendInterface.SymbolHelper.isStaticMember
+        </td>
+        <td style="background: #AEF1AE">
+          BTypesFromSymbols.this.int.symHelper(sym).isStaticMember
+        </td>
+      </tr><tr>
+        <td>
+          217
+        </td>
+        <td>
+          3912
+        </td>
+        <td>
+          9264
+          -
+          9265
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          0
+        </td>
+      </tr><tr>
+        <td>
+          218
+        </td>
+        <td>
+          3914
+        </td>
+        <td>
+          9277
+          -
+          9289
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BackendInterface.SymbolHelper.isBridge
+        </td>
+        <td style="background: #AEF1AE">
+          BTypesFromSymbols.this.int.symHelper(sym).isBridge
+        </td>
+      </tr><tr>
+        <td>
+          218
+        </td>
+        <td>
+          3917
+        </td>
+        <td>
+          9323
+          -
+          9324
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          0
+        </td>
+      </tr><tr>
+        <td>
+          218
+        </td>
+        <td>
+          3916
+        </td>
+        <td>
+          9291
+          -
+          9317
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          4160
+        </td>
+      </tr><tr>
+        <td>
+          218
+        </td>
+        <td>
+          3918
+        </td>
+        <td>
+          9323
+          -
+          9324
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          0
+        </td>
+      </tr><tr>
+        <td>
+          218
+        </td>
+        <td>
+          3915
+        </td>
+        <td>
+          9291
+          -
+          9317
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          4160
+        </td>
+      </tr><tr>
+        <td>
+          219
+        </td>
+        <td>
+          3923
+        </td>
+        <td>
+          9371
+          -
+          9372
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          0
+        </td>
+      </tr><tr>
+        <td>
+          219
+        </td>
+        <td>
+          3920
+        </td>
+        <td>
+          9352
+          -
+          9365
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          4096
+        </td>
+      </tr><tr>
+        <td>
+          219
+        </td>
+        <td>
+          3922
+        </td>
+        <td>
+          9371
+          -
+          9372
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          0
+        </td>
+      </tr><tr>
+        <td>
+          219
+        </td>
+        <td>
+          3919
+        </td>
+        <td>
+          9336
+          -
+          9350
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BackendInterface.SymbolHelper.isArtifact
+        </td>
+        <td style="background: #AEF1AE">
+          BTypesFromSymbols.this.int.symHelper(sym).isArtifact
+        </td>
+      </tr><tr>
+        <td>
+          219
+        </td>
+        <td>
+          3921
+        </td>
+        <td>
+          9352
+          -
+          9365
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          4096
+        </td>
+      </tr><tr>
+        <td>
+          220
+        </td>
+        <td>
+          3926
+        </td>
+        <td>
+          9417
+          -
+          9426
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          32
+        </td>
+      </tr><tr>
+        <td>
+          220
+        </td>
+        <td>
+          3929
+        </td>
+        <td>
+          9432
+          -
+          9433
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          0
+        </td>
+      </tr><tr>
+        <td>
+          220
+        </td>
+        <td>
+          3928
+        </td>
+        <td>
+          9432
+          -
+          9433
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          0
+        </td>
+      </tr><tr>
+        <td>
+          220
+        </td>
+        <td>
+          3925
+        </td>
+        <td>
+          9384
+          -
+          9415
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Boolean.&amp;&amp;
+        </td>
+        <td style="background: #AEF1AE">
+          BTypesFromSymbols.this.int.symHelper(sym).isClass.&amp;&amp;(BTypesFromSymbols.this.int.symHelper(sym).isInterface.unary_!)
+        </td>
+      </tr><tr>
+        <td>
+          220
+        </td>
+        <td>
+          3927
+        </td>
+        <td>
+          9417
+          -
+          9426
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          32
+        </td>
+      </tr><tr>
+        <td>
+          220
+        </td>
+        <td>
+          3924
+        </td>
+        <td>
+          9399
+          -
+          9415
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.Boolean.unary_!
+        </td>
+        <td style="background: #AEF1AE">
+          BTypesFromSymbols.this.int.symHelper(sym).isInterface.unary_!
+        </td>
+      </tr><tr>
+        <td>
+          221
+        </td>
+        <td>
+          3932
+        </td>
+        <td>
+          9462
+          -
+          9470
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          16384
+        </td>
+      </tr><tr>
+        <td>
+          221
+        </td>
+        <td>
+          3931
+        </td>
+        <td>
+          9462
+          -
+          9470
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          16384
+        </td>
+      </tr><tr>
+        <td>
+          221
+        </td>
+        <td>
+          3934
+        </td>
+        <td>
+          9476
+          -
+          9477
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          0
+        </td>
+      </tr><tr>
+        <td>
+          221
+        </td>
+        <td>
+          3930
+        </td>
+        <td>
+          9445
+          -
+          9460
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BackendInterface.SymbolHelper.hasEnumFlag
+        </td>
+        <td style="background: #AEF1AE">
+          BTypesFromSymbols.this.int.symHelper(sym).hasEnumFlag
+        </td>
+      </tr><tr>
+        <td>
+          221
+        </td>
+        <td>
+          3933
+        </td>
+        <td>
+          9476
+          -
+          9477
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          0
+        </td>
+      </tr><tr>
+        <td>
+          222
+        </td>
+        <td>
+          3935
+        </td>
+        <td>
+          9489
+          -
+          9508
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BackendInterface.SymbolHelper.isVarargsMethod
+        </td>
+        <td style="background: #AEF1AE">
+          BTypesFromSymbols.this.int.symHelper(sym).isVarargsMethod
+        </td>
+      </tr><tr>
+        <td>
+          222
+        </td>
+        <td>
+          3938
+        </td>
+        <td>
+          9527
+          -
+          9528
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          0
+        </td>
+      </tr><tr>
+        <td>
+          222
+        </td>
+        <td>
+          3937
+        </td>
+        <td>
+          9510
+          -
+          9521
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          128
+        </td>
+      </tr><tr>
+        <td>
+          222
+        </td>
+        <td>
+          3936
+        </td>
+        <td>
+          9510
+          -
+          9521
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          128
+        </td>
+      </tr><tr>
+        <td>
+          222
+        </td>
+        <td>
+          3939
+        </td>
+        <td>
+          9527
+          -
+          9528
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          0
+        </td>
+      </tr><tr>
+        <td>
+          223
+        </td>
+        <td>
+          3941
+        </td>
+        <td>
+          9560
+          -
+          9576
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          32
+        </td>
+      </tr><tr>
+        <td>
+          223
+        </td>
+        <td>
+          3944
+        </td>
+        <td>
+          9582
+          -
+          9583
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          0
+        </td>
+      </tr><tr>
+        <td>
+          223
+        </td>
+        <td>
+          3940
+        </td>
+        <td>
+          9540
+          -
+          9558
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BackendInterface.SymbolHelper.isSynchronized
+        </td>
+        <td style="background: #AEF1AE">
+          BTypesFromSymbols.this.int.symHelper(sym).isSynchronized
+        </td>
+      </tr><tr>
+        <td>
+          223
+        </td>
+        <td>
+          3943
+        </td>
+        <td>
+          9582
+          -
+          9583
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          0
+        </td>
+      </tr><tr>
+        <td>
+          223
+        </td>
+        <td>
+          3942
+        </td>
+        <td>
+          9560
+          -
+          9576
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          32
+        </td>
+      </tr><tr>
+        <td>
+          224
+        </td>
+        <td>
+          3947
+        </td>
+        <td>
+          9613
+          -
+          9639
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          131072
+        </td>
+      </tr><tr>
+        <td>
+          224
+        </td>
+        <td>
+          3946
+        </td>
+        <td>
+          9613
+          -
+          9639
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          131072
+        </td>
+      </tr><tr>
+        <td>
+          224
+        </td>
+        <td>
+          3949
+        </td>
+        <td>
+          9645
+          -
+          9646
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          0
+        </td>
+      </tr><tr>
+        <td>
+          224
+        </td>
+        <td>
+          3945
+        </td>
+        <td>
+          9595
+          -
+          9611
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BackendInterface.SymbolHelper.isDeprecated
+        </td>
+        <td style="background: #AEF1AE">
+          BTypesFromSymbols.this.int.symHelper(sym).isDeprecated
+        </td>
+      </tr><tr>
+        <td>
+          224
+        </td>
+        <td>
+          3948
+        </td>
+        <td>
+          9645
+          -
+          9646
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          0
+        </td>
+      </tr><tr>
+        <td>
+          229
+        </td>
+        <td>
+          3967
+        </td>
+        <td>
+          9700
+          -
+          9951
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Int.|
+        </td>
+        <td style="background: #AEF1AE">
+          BTypesFromSymbols.this.javaFlags(sym).|(GenBCodeOps.mkFlags(if (BTypesFromSymbols.this.int.symHelper(sym).hasAnnotation(BTypesFromSymbols.this.int.TransientAttr))
+  128
+else
+  0, if (BTypesFromSymbols.this.int.symHelper(sym).hasAnnotation(BTypesFromSymbols.this.int.VolatileAttr))
+  64
+else
+  0, if (BTypesFromSymbols.this.int.symHelper(sym).isMutable)
+  0
+else
+  16))
+        </td>
+      </tr><tr>
+        <td>
+          229
+        </td>
+        <td>
+          3966
+        </td>
+        <td>
+          9717
+          -
+          9951
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.GenBCodeOps.mkFlags
+        </td>
+        <td style="background: #AEF1AE">
+          GenBCodeOps.mkFlags(if (BTypesFromSymbols.this.int.symHelper(sym).hasAnnotation(BTypesFromSymbols.this.int.TransientAttr))
+  128
+else
+  0, if (BTypesFromSymbols.this.int.symHelper(sym).hasAnnotation(BTypesFromSymbols.this.int.VolatileAttr))
+  64
+else
+  0, if (BTypesFromSymbols.this.int.symHelper(sym).isMutable)
+  0
+else
+  16)
+        </td>
+      </tr><tr>
+        <td>
+          230
+        </td>
+        <td>
+          3953
+        </td>
+        <td>
+          9781
+          -
+          9806
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          128
+        </td>
+      </tr><tr>
+        <td>
+          230
+        </td>
+        <td>
+          3955
+        </td>
+        <td>
+          9812
+          -
+          9813
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          0
+        </td>
+      </tr><tr>
+        <td>
+          230
+        </td>
+        <td>
+          3952
+        </td>
+        <td>
+          9781
+          -
+          9806
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          128
+        </td>
+      </tr><tr>
+        <td>
+          230
+        </td>
+        <td>
+          3951
+        </td>
+        <td>
+          9748
+          -
+          9779
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BackendInterface.SymbolHelper.hasAnnotation
+        </td>
+        <td style="background: #AEF1AE">
+          BTypesFromSymbols.this.int.symHelper(sym).hasAnnotation(BTypesFromSymbols.this.int.TransientAttr)
+        </td>
+      </tr><tr>
+        <td>
+          230
+        </td>
+        <td>
+          3954
+        </td>
+        <td>
+          9812
+          -
+          9813
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          0
+        </td>
+      </tr><tr>
+        <td>
+          231
+        </td>
+        <td>
+          3959
+        </td>
+        <td>
+          9889
+          -
+          9890
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          0
+        </td>
+      </tr><tr>
+        <td>
+          231
+        </td>
+        <td>
+          3956
+        </td>
+        <td>
+          9825
+          -
+          9855
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BackendInterface.SymbolHelper.hasAnnotation
+        </td>
+        <td style="background: #AEF1AE">
+          BTypesFromSymbols.this.int.symHelper(sym).hasAnnotation(BTypesFromSymbols.this.int.VolatileAttr)
+        </td>
+      </tr><tr>
+        <td>
+          231
+        </td>
+        <td>
+          3958
+        </td>
+        <td>
+          9858
+          -
+          9882
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          64
+        </td>
+      </tr><tr>
+        <td>
+          231
+        </td>
+        <td>
+          3960
+        </td>
+        <td>
+          9889
+          -
+          9890
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          0
+        </td>
+      </tr><tr>
+        <td>
+          231
+        </td>
+        <td>
+          3957
+        </td>
+        <td>
+          9858
+          -
+          9882
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          64
+        </td>
+      </tr><tr>
+        <td>
+          232
+        </td>
+        <td>
+          3962
+        </td>
+        <td>
+          9917
+          -
+          9918
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          0
+        </td>
+      </tr><tr>
+        <td>
+          232
+        </td>
+        <td>
+          3964
+        </td>
+        <td>
+          9924
+          -
+          9945
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          16
+        </td>
+      </tr><tr>
+        <td>
+          232
+        </td>
+        <td>
+          3961
+        </td>
+        <td>
+          9902
+          -
+          9915
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BackendInterface.SymbolHelper.isMutable
+        </td>
+        <td style="background: #AEF1AE">
+          BTypesFromSymbols.this.int.symHelper(sym).isMutable
+        </td>
+      </tr><tr>
+        <td>
+          232
+        </td>
+        <td>
+          3963
+        </td>
+        <td>
+          9917
+          -
+          9918
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          0
+        </td>
+      </tr><tr>
+        <td>
+          232
+        </td>
+        <td>
+          3965
+        </td>
+        <td>
+          9924
+          -
+          9945
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          16
+        </td>
+      </tr>
+    </table>
+          </div>
+        </div>
+      </body>
+    </html>

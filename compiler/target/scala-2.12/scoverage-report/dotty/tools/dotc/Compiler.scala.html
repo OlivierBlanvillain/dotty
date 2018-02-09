@@ -1,0 +1,588 @@
+<html>
+      <head>
+        <meta http-equiv="Content-Type" content="text/html; charset=utf-8"/>
+        <title id="title">
+          dotty/tools/dotc/Compiler.scala.html
+        </title>
+        <script src="https://ajax.googleapis.com/ajax/libs/jquery/1.10.2/jquery.min.js"></script><link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/jquery.tablesorter/2.20.1/css/theme.default.min.css" type="text/css"/><script src="https://cdnjs.cloudflare.com/ajax/libs/jquery.tablesorter/2.20.1/js/jquery.tablesorter.min.js"></script><link rel="stylesheet" href="https://netdna.bootstrapcdn.com/bootstrap/3.0.3/css/bootstrap.min.css" type="text/css"/><script src="https://netdna.bootstrapcdn.com/bootstrap/3.0.3/js/bootstrap.min.js"></script><script type="text/javascript">
+        $(document).ready(function() {$(".tablesorter").tablesorter();});
+      </script>
+        <style>
+          table.codegrid { font-family: monospace; font-size: 12px; width: auto!important; }table.statementlist { width: auto!important; font-size: 13px; } table.codegrid td { padding: 0!important; border: 0!important } table td.linenumber { width: 40px!important; } 
+        </style>
+      </head>
+      <body style="font-family: monospace;">
+        <ul class="nav nav-tabs">
+          <li>
+            <a href="#codegrid" data-toggle="tab">Codegrid</a>
+          </li>
+          <li>
+            <a href="#statementlist" data-toggle="tab">Statement List</a>
+          </li>
+        </ul>
+        <div class="tab-content">
+          <div class="tab-pane active" id="codegrid">
+            <pre style='font-size: 12pt; font-family: courier;'>1 <span style=''>package dotty.tools
+</span>2 <span style=''>package dotc
+</span>3 <span style=''>
+</span>4 <span style=''>import core._
+</span>5 <span style=''>import Contexts._
+</span>6 <span style=''>import Periods._
+</span>7 <span style=''>import Symbols._
+</span>8 <span style=''>import Types._
+</span>9 <span style=''>import Scopes._
+</span>10 <span style=''>import typer.{FrontEnd, Typer, ImportInfo, RefChecks}
+</span>11 <span style=''>import reporting.{Reporter, ConsoleReporter}
+</span>12 <span style=''>import Phases.Phase
+</span>13 <span style=''>import transform._
+</span>14 <span style=''>import util.FreshNameCreator
+</span>15 <span style=''>import core.DenotTransformers.DenotTransformer
+</span>16 <span style=''>import core.Denotations.SingleDenotation
+</span>17 <span style=''>
+</span>18 <span style=''>import dotty.tools.backend.jvm.{LabelDefs, GenBCode, CollectSuperCalls}
+</span>19 <span style=''>import dotty.tools.dotc.transform.localopt.Simplify
+</span>20 <span style=''>
+</span>21 <span style=''>/** The central class of the dotc compiler. The job of a compiler is to create
+</span>22 <span style=''> *  runs, which process given `phases` in a given `rootContext`.
+</span>23 <span style=''> */
+</span>24 <span style=''>class Compiler {
+</span>25 <span style=''>
+</span>26 <span style=''>  /** Meta-ordering constraint:
+</span>27 <span style=''>   *
+</span>28 <span style=''>   *  DenotTransformers that change the signature of their denotation's info must go
+</span>29 <span style=''>   *  after erasure. The reason is that denotations are permanently referred to by
+</span>30 <span style=''>   *  TermRefs which contain a signature. If the signature of a symbol would change,
+</span>31 <span style=''>   *  all refs to it would become outdated - they could not be dereferenced in the
+</span>32 <span style=''>   *  new phase.
+</span>33 <span style=''>   *
+</span>34 <span style=''>   *  After erasure, signature changing denot-transformers are OK because erasure
+</span>35 <span style=''>   *  will make sure that only term refs with fixed SymDenotations survive beyond it. This
+</span>36 <span style=''>   *  is possible because:
+</span>37 <span style=''>   *
+</span>38 <span style=''>   *   - splitter has run, so every ident or select refers to a unique symbol
+</span>39 <span style=''>   *   - after erasure, asSeenFrom is the identity, so every reference has a
+</span>40 <span style=''>   *     plain SymDenotation, as opposed to a UniqueRefDenotation.
+</span>41 <span style=''>   */
+</span>42 <span style=''>  def phases: List[List[Phase]] =
+</span>43 <span style=''>    frontendPhases </span><span style='background: #AEF1AE'>::: picklerPhases ::: transformPhases ::: backendPhases</span><span style=''>
+</span>44 <span style=''>
+</span>45 <span style=''>  /** Phases dealing with the frontend up to trees ready for TASTY pickling */
+</span>46 <span style=''>  protected def frontendPhases: List[List[Phase]] =
+</span>47 <span style=''>    List(new FrontEnd) </span><span style='background: #AEF1AE'>::           // Compiler frontend: scanner, parser, namer, typer
+</span>48 <span style=''></span><span style='background: #AEF1AE'>    List(new sbt.ExtractDependencies) :: // Sends information on classes' dependencies to sbt via callbacks
+</span>49 <span style=''></span><span style='background: #AEF1AE'>    List(new PostTyper) ::          // Additional checks and cleanups after type checking
+</span>50 <span style=''></span><span style='background: #AEF1AE'>    List(new sbt.ExtractAPI) ::     // Sends a representation of the API of classes to sbt via callbacks
+</span>51 <span style=''></span><span style='background: #AEF1AE'>    Nil</span><span style=''>
+</span>52 <span style=''>
+</span>53 <span style=''>  /** Phases dealing with TASTY tree pickling and unpickling */
+</span>54 <span style=''>  protected def picklerPhases: List[List[Phase]] =
+</span>55 <span style=''>    List(new Pickler) </span><span style='background: #AEF1AE'>::            // Generate TASTY info
+</span>56 <span style=''></span><span style='background: #AEF1AE'>    List(new LinkAll) ::            // Reload compilation units from TASTY for library code (if needed)
+</span>57 <span style=''></span><span style='background: #AEF1AE'>    List(new ReifyQuotes) ::        // Turn quoted trees into explicit run-time data structures
+</span>58 <span style=''></span><span style='background: #AEF1AE'>    Nil</span><span style=''>
+</span>59 <span style=''>
+</span>60 <span style=''>  /** Phases dealing with the transformation from pickled trees to backend trees */
+</span>61 <span style=''>  protected def transformPhases: List[List[Phase]] =
+</span>62 <span style=''>    List(new FirstTransform,         // Some transformations to put trees into a canonical form
+</span>63 <span style=''>         new CheckReentrant,         // Internal use only: Check that compiled program has no data races involving global vars
+</span>64 <span style=''>         new ElimPackagePrefixes) </span><span style='background: #AEF1AE'>:: // Eliminate references to package prefixes in Select nodes
+</span>65 <span style=''></span><span style='background: #AEF1AE'>    List(new CheckStatic,            // Check restrictions that apply to @static members
+</span>66 <span style=''></span><span style='background: #AEF1AE'>         new ElimRepeated,           // Rewrite vararg parameters and arguments
+</span>67 <span style=''></span><span style='background: #AEF1AE'>         new NormalizeFlags,         // Rewrite some definition flags
+</span>68 <span style=''></span><span style='background: #AEF1AE'>         new ExtensionMethods,       // Expand methods of value classes with extension methods
+</span>69 <span style=''></span><span style='background: #AEF1AE'>         new ExpandSAMs,             // Expand single abstract method closures to anonymous classes
+</span>70 <span style=''></span><span style='background: #AEF1AE'>         new TailRec,                // Rewrite tail recursion to loops
+</span>71 <span style=''></span><span style='background: #AEF1AE'>         new ByNameClosures,         // Expand arguments to by-name parameters to closures
+</span>72 <span style=''></span><span style='background: #AEF1AE'>         new LiftTry,                // Put try expressions that might execute on non-empty stacks into their own methods
+</span>73 <span style=''></span><span style='background: #AEF1AE'>         new HoistSuperArgs,         // Hoist complex arguments of supercalls to enclosing scope
+</span>74 <span style=''></span><span style='background: #AEF1AE'>         new ClassOf,                // Expand `Predef.classOf` calls.
+</span>75 <span style=''></span><span style='background: #AEF1AE'>         new RefChecks) ::           // Various checks mostly related to abstract members and overriding
+</span>76 <span style=''></span><span style='background: #AEF1AE'>    List(new TryCatchPatterns,       // Compile cases in try/catch
+</span>77 <span style=''></span><span style='background: #AEF1AE'>         new PatternMatcher,         // Compile pattern matches
+</span>78 <span style=''></span><span style='background: #AEF1AE'>         new ExplicitOuter,          // Add accessors to outer classes from nested ones.
+</span>79 <span style=''></span><span style='background: #AEF1AE'>         new ExplicitSelf,           // Make references to non-trivial self types explicit as casts
+</span>80 <span style=''></span><span style='background: #AEF1AE'>         new ShortcutImplicits,      // Allow implicit functions without creating closures
+</span>81 <span style=''></span><span style='background: #AEF1AE'>         new CrossCastAnd,           // Normalize selections involving intersection types.
+</span>82 <span style=''></span><span style='background: #AEF1AE'>         new Splitter) ::            // Expand selections involving union types into conditionals
+</span>83 <span style=''></span><span style='background: #AEF1AE'>    List(new PhantomArgLift,         // Extracts the evaluation of phantom arguments placing them before the call.
+</span>84 <span style=''></span><span style='background: #AEF1AE'>         new VCInlineMethods,        // Inlines calls to value class methods
+</span>85 <span style=''></span><span style='background: #AEF1AE'>         new SeqLiterals,            // Express vararg arguments as arrays
+</span>86 <span style=''></span><span style='background: #AEF1AE'>         new InterceptedMethods,     // Special handling of `==`, `|=`, `getClass` methods
+</span>87 <span style=''></span><span style='background: #AEF1AE'>         new Getters,                // Replace non-private vals and vars with getter defs (fields are added later)
+</span>88 <span style=''></span><span style='background: #AEF1AE'>         new ElimByName,             // Expand by-name parameter references
+</span>89 <span style=''></span><span style='background: #AEF1AE'>         new ElimOuterSelect,        // Expand outer selections
+</span>90 <span style=''></span><span style='background: #AEF1AE'>         new AugmentScala2Traits,    // Expand traits defined in Scala 2.x to simulate old-style rewritings
+</span>91 <span style=''></span><span style='background: #AEF1AE'>         new ResolveSuper,           // Implement super accessors and add forwarders to trait methods
+</span>92 <span style=''></span><span style='background: #AEF1AE'>         new Simplify,               // Perform local optimizations, simplified versions of what linker does.
+</span>93 <span style=''></span><span style='background: #AEF1AE'>         new PrimitiveForwarders,    // Add forwarders to trait methods that have a mismatch between generic and primitives
+</span>94 <span style=''></span><span style='background: #AEF1AE'>         new FunctionXXLForwarders,  // Add forwarders for FunctionXXL apply method
+</span>95 <span style=''></span><span style='background: #AEF1AE'>         new ArrayConstructors) ::   // Intercept creation of (non-generic) arrays and intrinsify.
+</span>96 <span style=''></span><span style='background: #AEF1AE'>    List(new Erasure) ::             // Rewrite types to JVM model, erasing all type parameters, abstract types and refinements.
+</span>97 <span style=''></span><span style='background: #AEF1AE'>    List(new ElimErasedValueType,    // Expand erased value types to their underlying implmementation types
+</span>98 <span style=''></span><span style='background: #AEF1AE'>         new VCElideAllocations,     // Peep-hole optimization to eliminate unnecessary value class allocations
+</span>99 <span style=''></span><span style='background: #AEF1AE'>         new Mixin,                   // Expand trait fields and trait initializers
+</span>100 <span style=''></span><span style='background: #AEF1AE'>         new LazyVals,               // Expand lazy vals
+</span>101 <span style=''></span><span style='background: #AEF1AE'>         new Memoize,                // Add private fields to getters and setters
+</span>102 <span style=''></span><span style='background: #AEF1AE'>         new NonLocalReturns,        // Expand non-local returns
+</span>103 <span style=''></span><span style='background: #AEF1AE'>         new CapturedVars) ::        // Represent vars captured by closures as heap objects
+</span>104 <span style=''></span><span style='background: #AEF1AE'>    List(new Constructors,           // Collect initialization code in primary constructors
+</span>105 <span style=''></span><span style='background: #AEF1AE'>                                        // Note: constructors changes decls in transformTemplate, no InfoTransformers should be added after it
+</span>106 <span style=''></span><span style='background: #AEF1AE'>         new FunctionalInterfaces,   // Rewrites closures to implement @specialized types of Functions.
+</span>107 <span style=''></span><span style='background: #AEF1AE'>         new GetClass,               // Rewrites getClass calls on primitive types.
+</span>108 <span style=''></span><span style='background: #AEF1AE'>         new Simplify) ::            // Perform local optimizations, simplified versions of what linker does.
+</span>109 <span style=''></span><span style='background: #AEF1AE'>    List(new LinkScala2Impls,        // Redirect calls to trait methods defined by Scala 2.x, so that they now go to their implementations
+</span>110 <span style=''></span><span style='background: #AEF1AE'>         new LambdaLift,             // Lifts out nested functions to class scope, storing free variables in environments
+</span>111 <span style=''></span><span style='background: #AEF1AE'>                                        // Note: in this mini-phase block scopes are incorrect. No phases that rely on scopes should be here
+</span>112 <span style=''></span><span style='background: #AEF1AE'>         new ElimStaticThis) ::      // Replace `this` references to static objects by global identifiers
+</span>113 <span style=''></span><span style='background: #AEF1AE'>    List(new Flatten,                // Lift all inner classes to package scope
+</span>114 <span style=''></span><span style='background: #AEF1AE'>         new RenameLifted,           // Renames lifted classes to local numbering scheme
+</span>115 <span style=''></span><span style='background: #AEF1AE'>         new TransformWildcards,     // Replace wildcards with default values
+</span>116 <span style=''></span><span style='background: #AEF1AE'>         new MoveStatics,            // Move static methods to companion classes
+</span>117 <span style=''></span><span style='background: #AEF1AE'>         new ExpandPrivate,          // Widen private definitions accessed from nested classes
+</span>118 <span style=''></span><span style='background: #AEF1AE'>         new RestoreScopes,          // Repair scopes rendered invalid by moving definitions in prior phases of the group
+</span>119 <span style=''></span><span style='background: #AEF1AE'>         new SelectStatic,           // get rid of selects that would be compiled into GetStatic
+</span>120 <span style=''></span><span style='background: #AEF1AE'>         new CollectEntryPoints,     // Find classes with main methods
+</span>121 <span style=''></span><span style='background: #AEF1AE'>         new CollectSuperCalls,      // Find classes that are called with super
+</span>122 <span style=''></span><span style='background: #AEF1AE'>         new DropInlined,            // Drop Inlined nodes, since backend has no use for them
+</span>123 <span style=''></span><span style='background: #AEF1AE'>         new LabelDefs) ::           // Converts calls to labels to jumps
+</span>124 <span style=''></span><span style='background: #AEF1AE'>    Nil</span><span style=''>
+</span>125 <span style=''>
+</span>126 <span style=''>  /** Generate the output of the compilation */
+</span>127 <span style=''>  protected def backendPhases: List[List[Phase]] =
+</span>128 <span style=''>    List(new GenBCode) </span><span style='background: #AEF1AE'>::            // Generate JVM bytecode
+</span>129 <span style=''></span><span style='background: #AEF1AE'>    Nil</span><span style=''>
+</span>130 <span style=''>
+</span>131 <span style=''>  var runId = </span><span style='background: #AEF1AE'>1</span><span style=''>
+</span>132 <span style=''>  def nextRunId = {
+</span>133 <span style=''>    </span><span style='background: #AEF1AE'>runId += 1</span><span style=''>; </span><span style='background: #AEF1AE'>runId</span><span style=''>
+</span>134 <span style=''>  }
+</span>135 <span style=''>
+</span>136 <span style=''>  def reset()(implicit ctx: Context): Unit = {
+</span>137 <span style=''>    </span><span style='background: #AEF1AE'>ctx.base.reset()</span><span style=''>
+</span>138 <span style=''>    if (</span><span style='background: #AEF1AE'>ctx.run != null</span><span style=''>) </span><span style='background: #F0ADAD'>ctx.run.reset()</span><span style=''>
+</span>139 <span style=''>  }
+</span>140 <span style=''>
+</span>141 <span style=''>  def newRun(implicit ctx: Context): Run = {
+</span>142 <span style=''>    </span><span style='background: #AEF1AE'>reset()</span><span style=''>
+</span>143 <span style=''>    </span><span style='background: #AEF1AE'>new Run(this, ctx)</span><span style=''>
+</span>144 <span style=''>  }
+</span>145 <span style=''>}
+</span></pre>
+          </div>
+          <div class="tab-pane" id="statementlist">
+            <table cellspacing="0" cellpadding="0" class="table statementlist">
+      <tr>
+        <th>Line</th>
+        <th>Stmt Id</th>
+        <th>Pos</th>
+        <th>Tree</th>
+        <th>Symbol</th>
+        <th>Code</th>
+      </tr><tr>
+        <td>
+          43
+        </td>
+        <td>
+          6284
+        </td>
+        <td>
+          1559
+          -
+          1614
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.immutable.List.:::
+        </td>
+        <td style="background: #AEF1AE">
+          {
+  &lt;synthetic&gt; &lt;artifact&gt; val x$2: List[List[dotty.tools.dotc.core.Phases.Phase]] = Compiler.this.picklerPhases;
+  {
+  &lt;synthetic&gt; &lt;artifact&gt; val x$1: List[List[dotty.tools.dotc.core.Phases.Phase]] = Compiler.this.transformPhases;
+  Compiler.this.backendPhases.:::[List[dotty.tools.dotc.core.Phases.Phase]](x$1)
+}.:::[List[dotty.tools.dotc.core.Phases.Phase]](x$2)
+}.:::[List[dotty.tools.dotc.core.Phases.Phase]](x$3)
+        </td>
+      </tr><tr>
+        <td>
+          47
+        </td>
+        <td>
+          6285
+        </td>
+        <td>
+          1770
+          -
+          2145
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.immutable.List.::
+        </td>
+        <td style="background: #AEF1AE">
+          {
+  &lt;synthetic&gt; &lt;artifact&gt; val x$6: List[dotty.tools.dotc.sbt.ExtractDependencies] = scala.collection.immutable.List.apply[dotty.tools.dotc.sbt.ExtractDependencies](new sbt.ExtractDependencies());
+  {
+  &lt;synthetic&gt; &lt;artifact&gt; val x$5: List[dotty.tools.dotc.transform.PostTyper] = scala.collection.immutable.List.apply[dotty.tools.dotc.transform.PostTyper](new transform.PostTyper());
+  {
+  &lt;synthetic&gt; &lt;artifact&gt; val x$4: List[dotty.tools.dotc.sbt.ExtractAPI] = scala.collection.immutable.List.apply[dotty.tools.dotc.sbt.ExtractAPI](new sbt.ExtractAPI());
+  scala.collection.immutable.Nil.::[List[dotty.tools.dotc.sbt.ExtractAPI]](x$4)
+}.::[List[dotty.tools.dotc.core.Phases.Phase]](x$5)
+}.::[List[dotty.tools.dotc.core.Phases.Phase]](x$6)
+}.::[List[dotty.tools.dotc.core.Phases.Phase]](x$7)
+        </td>
+      </tr><tr>
+        <td>
+          55
+        </td>
+        <td>
+          6286
+        </td>
+        <td>
+          2284
+          -
+          2528
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.immutable.List.::
+        </td>
+        <td style="background: #AEF1AE">
+          {
+  &lt;synthetic&gt; &lt;artifact&gt; val x$9: List[dotty.tools.dotc.transform.LinkAll] = scala.collection.immutable.List.apply[dotty.tools.dotc.transform.LinkAll](new transform.LinkAll());
+  {
+  &lt;synthetic&gt; &lt;artifact&gt; val x$8: List[dotty.tools.dotc.transform.ReifyQuotes] = scala.collection.immutable.List.apply[dotty.tools.dotc.transform.ReifyQuotes](new transform.ReifyQuotes());
+  scala.collection.immutable.Nil.::[List[dotty.tools.dotc.transform.ReifyQuotes]](x$8)
+}.::[List[dotty.tools.dotc.core.Phases.Phase]](x$9)
+}.::[List[dotty.tools.dotc.core.Phases.Phase]](x$10)
+        </td>
+      </tr><tr>
+        <td>
+          64
+        </td>
+        <td>
+          6287
+        </td>
+        <td>
+          2924
+          -
+          8558
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.immutable.List.::
+        </td>
+        <td style="background: #AEF1AE">
+          {
+  &lt;synthetic&gt; &lt;artifact&gt; val x$18: List[dotty.tools.dotc.transform.MegaPhase.MiniPhase] = scala.collection.immutable.List.apply[dotty.tools.dotc.transform.MegaPhase.MiniPhase](new transform.CheckStatic(), new transform.ElimRepeated(), new transform.NormalizeFlags(), new transform.ExtensionMethods(), new transform.ExpandSAMs(), new transform.TailRec(), new transform.ByNameClosures(), new transform.LiftTry(), new transform.HoistSuperArgs(), new transform.ClassOf(), new typer.RefChecks());
+  {
+  &lt;synthetic&gt; &lt;artifact&gt; val x$17: List[dotty.tools.dotc.transform.MegaPhase.MiniPhase] = scala.collection.immutable.List.apply[dotty.tools.dotc.transform.MegaPhase.MiniPhase](new transform.TryCatchPatterns(), new transform.PatternMatcher(), new transform.ExplicitOuter(), new transform.ExplicitSelf(), new transform.ShortcutImplicits(), new transform.CrossCastAnd(), new transform.Splitter());
+  {
+  &lt;synthetic&gt; &lt;artifact&gt; val x$16: List[dotty.tools.dotc.transform.MegaPhase.MiniPhase] = scala.collection.immutable.List.apply[dotty.tools.dotc.transform.MegaPhase.MiniPhase](new transform.PhantomArgLift(), new transform.VCInlineMethods(), new transform.SeqLiterals(), new transform.InterceptedMethods(), new transform.Getters(), new transform.ElimByName(), new transform.ElimOuterSelect(), new transform.AugmentScala2Traits(), new transform.ResolveSuper(), new dotty.tools.dotc.transform.localopt.Simplify(), new transform.PrimitiveForwarders(), new transform.FunctionXXLForwarders(), new transform.ArrayConstructors());
+  {
+  &lt;synthetic&gt; &lt;artifact&gt; val x$15: List[dotty.tools.dotc.transform.Erasure] = scala.collection.immutable.List.apply[dotty.tools.dotc.transform.Erasure](new transform.Erasure());
+  {
+  &lt;synthetic&gt; &lt;artifact&gt; val x$14: List[dotty.tools.dotc.transform.MegaPhase.MiniPhase] = scala.collection.immutable.List.apply[dotty.tools.dotc.transform.MegaPhase.MiniPhase](new transform.ElimErasedValueType(), new transform.VCElideAllocations(), new transform.Mixin(), new transform.LazyVals(), new transform.Memoize(), new transform.NonLocalReturns(), new transform.CapturedVars());
+  {
+  &lt;synthetic&gt; &lt;artifact&gt; val x$13: List[dotty.tools.dotc.transform.MegaPhase.MiniPhase] = scala.collection.immutable.List.apply[dotty.tools.dotc.transform.MegaPhase.MiniPhase](new transform.Constructors(), new transform.FunctionalInterfaces(), new transform.GetClass(), new dotty.tools.dotc.transform.localopt.Simplify());
+  {
+  &lt;synthetic&gt; &lt;artifact&gt; val x$12: List[dotty.tools.dotc.transform.MegaPhase.MiniPhase] = scala.collection.immutable.List.apply[dotty.tools.dotc.transform.MegaPhase.MiniPhase](new transform.LinkScala2Impls(), new transform.LambdaLift(), new transform.ElimStaticThis());
+  {
+  &lt;synthetic&gt; &lt;artifact&gt; val x$11: List[dotty.tools.dotc.transform.MegaPhase.MiniPhase] = scala.collection.immutable.List.apply[dotty.tools.dotc.transform.MegaPhase.MiniPhase](new transform.Flatten(), new transform.RenameLifted(), new transform.TransformWildcards(), new transform.MoveStatics(), new transform.ExpandPrivate(), new transform.RestoreScopes(), new transform.SelectStatic(), new transform.CollectEntryPoints(), new dotty.tools.backend.jvm.CollectSuperCalls(), new transform.DropInlined(), new dotty.tools.backend.jvm.LabelDefs());
+  scala.collection.immutable.Nil.::[List[dotty.tools.dotc.transform.MegaPhase.MiniPhase]](x$11)
+}.::[List[dotty.tools.dotc.transform.MegaPhase.MiniPhase]](x$12)
+}.::[List[dotty.tools.dotc.transform.MegaPhase.MiniPhase]](x$13)
+}.::[List[dotty.tools.dotc.transform.MegaPhase.MiniPhase]](x$14)
+}.::[List[dotty.tools.dotc.core.Phases.Phase]](x$15)
+}.::[List[dotty.tools.dotc.core.Phases.Phase]](x$16)
+}.::[List[dotty.tools.dotc.core.Phases.Phase]](x$17)
+}.::[List[dotty.tools.dotc.core.Phases.Phase]](x$18)
+}.::[List[dotty.tools.dotc.core.Phases.Phase]](x$19)
+        </td>
+      </tr><tr>
+        <td>
+          128
+        </td>
+        <td>
+          6288
+        </td>
+        <td>
+          8682
+          -
+          8728
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.immutable.List.::
+        </td>
+        <td style="background: #AEF1AE">
+          scala.collection.immutable.Nil.::[List[dotty.tools.backend.jvm.GenBCode]](x$20)
+        </td>
+      </tr><tr>
+        <td>
+          131
+        </td>
+        <td>
+          6289
+        </td>
+        <td>
+          8744
+          -
+          8745
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          1
+        </td>
+      </tr><tr>
+        <td>
+          133
+        </td>
+        <td>
+          6292
+        </td>
+        <td>
+          8782
+          -
+          8787
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.Compiler.runId
+        </td>
+        <td style="background: #AEF1AE">
+          Compiler.this.runId
+        </td>
+      </tr><tr>
+        <td>
+          133
+        </td>
+        <td>
+          6291
+        </td>
+        <td>
+          8770
+          -
+          8780
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.Compiler.runId_=
+        </td>
+        <td style="background: #AEF1AE">
+          Compiler.this.runId_=(Compiler.this.runId.+(1))
+        </td>
+      </tr><tr>
+        <td>
+          133
+        </td>
+        <td>
+          6290
+        </td>
+        <td>
+          8770
+          -
+          8780
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Int.+
+        </td>
+        <td style="background: #AEF1AE">
+          Compiler.this.runId.+(1)
+        </td>
+      </tr><tr>
+        <td>
+          137
+        </td>
+        <td>
+          6293
+        </td>
+        <td>
+          8844
+          -
+          8860
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.core.Contexts.ContextState.reset
+        </td>
+        <td style="background: #AEF1AE">
+          ctx.base.reset()
+        </td>
+      </tr><tr>
+        <td>
+          138
+        </td>
+        <td>
+          6294
+        </td>
+        <td>
+          8869
+          -
+          8884
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.Object.!=
+        </td>
+        <td style="background: #AEF1AE">
+          ctx.run.!=(null)
+        </td>
+      </tr><tr>
+        <td>
+          138
+        </td>
+        <td>
+          6297
+        </td>
+        <td>
+          8865
+          -
+          8865
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          ()
+        </td>
+      </tr><tr>
+        <td>
+          138
+        </td>
+        <td>
+          6296
+        </td>
+        <td>
+          8886
+          -
+          8901
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          dotty.tools.dotc.Run.reset
+        </td>
+        <td style="background: #F0ADAD">
+          ctx.run.reset()
+        </td>
+      </tr><tr>
+        <td>
+          138
+        </td>
+        <td>
+          6295
+        </td>
+        <td>
+          8886
+          -
+          8901
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.Run.reset
+        </td>
+        <td style="background: #F0ADAD">
+          ctx.run.reset()
+        </td>
+      </tr><tr>
+        <td>
+          138
+        </td>
+        <td>
+          6298
+        </td>
+        <td>
+          8865
+          -
+          8865
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          ()
+        </td>
+      </tr><tr>
+        <td>
+          142
+        </td>
+        <td>
+          6299
+        </td>
+        <td>
+          8956
+          -
+          8963
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.Compiler.reset
+        </td>
+        <td style="background: #AEF1AE">
+          Compiler.this.reset()(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          143
+        </td>
+        <td>
+          6300
+        </td>
+        <td>
+          8968
+          -
+          8986
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.Run.&lt;init&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          new Run(this, ctx)
+        </td>
+      </tr>
+    </table>
+          </div>
+        </div>
+      </body>
+    </html>

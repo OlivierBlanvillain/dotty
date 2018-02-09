@@ -1,0 +1,1784 @@
+<html>
+      <head>
+        <meta http-equiv="Content-Type" content="text/html; charset=utf-8"/>
+        <title id="title">
+          dotty/tools/dotc/transform/ElimRepeated.scala.html
+        </title>
+        <script src="https://ajax.googleapis.com/ajax/libs/jquery/1.10.2/jquery.min.js"></script><link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/jquery.tablesorter/2.20.1/css/theme.default.min.css" type="text/css"/><script src="https://cdnjs.cloudflare.com/ajax/libs/jquery.tablesorter/2.20.1/js/jquery.tablesorter.min.js"></script><link rel="stylesheet" href="https://netdna.bootstrapcdn.com/bootstrap/3.0.3/css/bootstrap.min.css" type="text/css"/><script src="https://netdna.bootstrapcdn.com/bootstrap/3.0.3/js/bootstrap.min.js"></script><script type="text/javascript">
+        $(document).ready(function() {$(".tablesorter").tablesorter();});
+      </script>
+        <style>
+          table.codegrid { font-family: monospace; font-size: 12px; width: auto!important; }table.statementlist { width: auto!important; font-size: 13px; } table.codegrid td { padding: 0!important; border: 0!important } table td.linenumber { width: 40px!important; } 
+        </style>
+      </head>
+      <body style="font-family: monospace;">
+        <ul class="nav nav-tabs">
+          <li>
+            <a href="#codegrid" data-toggle="tab">Codegrid</a>
+          </li>
+          <li>
+            <a href="#statementlist" data-toggle="tab">Statement List</a>
+          </li>
+        </ul>
+        <div class="tab-content">
+          <div class="tab-pane active" id="codegrid">
+            <pre style='font-size: 12pt; font-family: courier;'>1 <span style=''>package dotty.tools.dotc
+</span>2 <span style=''>package transform
+</span>3 <span style=''>
+</span>4 <span style=''>import core._
+</span>5 <span style=''>import Names._
+</span>6 <span style=''>import StdNames.nme
+</span>7 <span style=''>import Types._
+</span>8 <span style=''>import dotty.tools.dotc.transform.MegaPhase._
+</span>9 <span style=''>import ast.Trees._
+</span>10 <span style=''>import Flags._
+</span>11 <span style=''>import Contexts.Context
+</span>12 <span style=''>import Symbols._
+</span>13 <span style=''>import Constants._
+</span>14 <span style=''>import Decorators._
+</span>15 <span style=''>import Denotations._, SymDenotations._
+</span>16 <span style=''>import Decorators.StringInterpolators
+</span>17 <span style=''>import dotty.tools.dotc.ast.tpd
+</span>18 <span style=''>import dotty.tools.dotc.core.Annotations.ConcreteAnnotation
+</span>19 <span style=''>import scala.collection.mutable
+</span>20 <span style=''>import DenotTransformers._
+</span>21 <span style=''>import Names.Name
+</span>22 <span style=''>import NameOps._
+</span>23 <span style=''>import TypeUtils._
+</span>24 <span style=''>
+</span>25 <span style=''>/** A transformer that removes repeated parameters (T*) from all types, replacing
+</span>26 <span style=''> *  them with Seq types.
+</span>27 <span style=''> */
+</span>28 <span style=''>class ElimRepeated extends MiniPhase with InfoTransformer { thisPhase =&gt;
+</span>29 <span style=''>  import ast.tpd._
+</span>30 <span style=''>
+</span>31 <span style=''>  override def phaseName = </span><span style='background: #AEF1AE'>&quot;elimRepeated&quot;</span><span style=''>
+</span>32 <span style=''>
+</span>33 <span style=''>  override def changesMembers = </span><span style='background: #AEF1AE'>true</span><span style=''> // the phase adds vararg bridges
+</span>34 <span style=''>
+</span>35 <span style=''>  def transformInfo(tp: Type, sym: Symbol)(implicit ctx: Context): Type =
+</span>36 <span style=''>    </span><span style='background: #AEF1AE'>elimRepeated(tp)</span><span style=''>
+</span>37 <span style=''>
+</span>38 <span style=''>  override def transform(ref: SingleDenotation)(implicit ctx: Context): SingleDenotation =
+</span>39 <span style=''>    </span><span style='background: #AEF1AE'>super.transform(ref)</span><span style=''> match {
+</span>40 <span style=''>      case ref1: SymDenotation if </span><span style='background: #AEF1AE'>(ref1 ne ref) &amp;&amp; overridesJava(ref1.symbol)</span><span style=''> =&gt;
+</span>41 <span style=''>        // This method won't override the corresponding Java method at the end of this phase,
+</span>42 <span style=''>        // only the bridge added by `addVarArgsBridge` will.
+</span>43 <span style=''>        </span><span style='background: #AEF1AE'>ref1.copySymDenotation(initFlags = ref1.flags &amp;~ Override)</span><span style=''>
+</span>44 <span style=''>      case ref1 =&gt;
+</span>45 <span style=''>        ref1
+</span>46 <span style=''>    }
+</span>47 <span style=''>
+</span>48 <span style=''>  override def mayChange(sym: Symbol)(implicit ctx: Context): Boolean = </span><span style='background: #AEF1AE'>sym is Method</span><span style=''>
+</span>49 <span style=''>
+</span>50 <span style=''>  private def overridesJava(sym: Symbol)(implicit ctx: Context) = </span><span style='background: #AEF1AE'>sym.allOverriddenSymbols.exists(_ is JavaDefined)</span><span style=''>
+</span>51 <span style=''>
+</span>52 <span style=''>  private def elimRepeated(tp: Type)(implicit ctx: Context): Type = </span><span style='background: #AEF1AE'>tp.stripTypeVar</span><span style=''> match {
+</span>53 <span style=''>    case tp @ MethodTpe(paramNames, paramTypes, resultType) =&gt;
+</span>54 <span style=''>      val resultType1 = </span><span style='background: #AEF1AE'>elimRepeated(resultType)</span><span style=''>
+</span>55 <span style=''>      val paramTypes1 =
+</span>56 <span style=''>        if (</span><span style='background: #AEF1AE'>paramTypes.nonEmpty &amp;&amp; paramTypes.last.isRepeatedParam</span><span style=''>) </span><span style='background: #AEF1AE'>{
+</span>57 <span style=''></span><span style='background: #AEF1AE'>          val last = paramTypes.last.underlyingIfRepeated(tp.isJavaMethod)
+</span>58 <span style=''></span><span style='background: #AEF1AE'>          paramTypes.init :+ last
+</span>59 <span style=''></span><span style='background: #AEF1AE'>        }</span><span style=''> else </span><span style='background: #AEF1AE'>paramTypes</span><span style=''>
+</span>60 <span style=''>      </span><span style='background: #AEF1AE'>tp.derivedLambdaType(paramNames, paramTypes1, resultType1)</span><span style=''>
+</span>61 <span style=''>    case tp: PolyType =&gt;
+</span>62 <span style=''>      </span><span style='background: #AEF1AE'>tp.derivedLambdaType(tp.paramNames, tp.paramInfos, elimRepeated(tp.resultType))</span><span style=''>
+</span>63 <span style=''>    case tp =&gt;
+</span>64 <span style=''>      tp
+</span>65 <span style=''>  }
+</span>66 <span style=''>
+</span>67 <span style=''>  def transformTypeOfTree(tree: Tree)(implicit ctx: Context): Tree =
+</span>68 <span style=''>    </span><span style='background: #AEF1AE'>tree.withType(elimRepeated(tree.tpe))</span><span style=''>
+</span>69 <span style=''>
+</span>70 <span style=''>  override def transformIdent(tree: Ident)(implicit ctx: Context): Tree =
+</span>71 <span style=''>    </span><span style='background: #AEF1AE'>transformTypeOfTree(tree)</span><span style=''>
+</span>72 <span style=''>
+</span>73 <span style=''>  override def transformSelect(tree: Select)(implicit ctx: Context): Tree =
+</span>74 <span style=''>    </span><span style='background: #AEF1AE'>transformTypeOfTree(tree)</span><span style=''>
+</span>75 <span style=''>
+</span>76 <span style=''>  override def transformApply(tree: Apply)(implicit ctx: Context): Tree = {
+</span>77 <span style=''>    val formals =
+</span>78 <span style=''>      </span><span style='background: #AEF1AE'>ctx.atPhase(thisPhase) { implicit ctx =&gt;
+</span>79 <span style=''></span><span style='background: #AEF1AE'>        tree.fun.tpe.widen.asInstanceOf[MethodType].paramInfos
+</span>80 <span style=''></span><span style='background: #AEF1AE'>      }</span><span style=''>
+</span>81 <span style=''>    val args1 = </span><span style='background: #AEF1AE'>tree.args.zipWithConserve(formals) { (arg, formal) =&gt;
+</span>82 <span style=''></span><span style='background: #AEF1AE'>      arg match {
+</span>83 <span style=''></span><span style='background: #AEF1AE'>        case arg: Typed if isWildcardStarArg(arg) =&gt;
+</span>84 <span style=''></span><span style='background: #AEF1AE'>          if (tree.fun.symbol.is(JavaDefined) &amp;&amp; arg.expr.tpe.derivesFrom(defn.SeqClass))
+</span>85 <span style=''></span><span style='background: #AEF1AE'>            seqToArray(arg.expr, formal.translateParameterized(defn.RepeatedParamClass, defn.ArrayClass))
+</span>86 <span style=''></span><span style='background: #AEF1AE'>          else arg.expr
+</span>87 <span style=''></span><span style='background: #AEF1AE'>        case arg =&gt; arg
+</span>88 <span style=''></span><span style='background: #AEF1AE'>      }
+</span>89 <span style=''></span><span style='background: #AEF1AE'>    }</span><span style=''>
+</span>90 <span style=''>    </span><span style='background: #AEF1AE'>transformTypeOfTree(cpy.Apply(tree)(tree.fun, args1))</span><span style=''>
+</span>91 <span style=''>  }
+</span>92 <span style=''>
+</span>93 <span style=''>  /** Convert sequence argument to Java array of type `pt` */
+</span>94 <span style=''>  private def seqToArray(tree: Tree, pt: Type)(implicit ctx: Context): Tree = tree match {
+</span>95 <span style=''>    case SeqLiteral(elems, elemtpt) =&gt;
+</span>96 <span style=''>      </span><span style='background: #AEF1AE'>JavaSeqLiteral(elems, elemtpt)</span><span style=''>
+</span>97 <span style=''>    case app@Apply(fun, args) if </span><span style='background: #AEF1AE'>defn.Predef_wrapArray().contains(fun.symbol)</span><span style=''> =&gt; // rewrite a call to `wrapXArray(arr)` to `arr`
+</span>98 <span style=''>      </span><span style='background: #AEF1AE'>args.head</span><span style=''>
+</span>99 <span style=''>    case _ =&gt;
+</span>100 <span style=''>      val elemType = </span><span style='background: #AEF1AE'>tree.tpe.elemType</span><span style=''>
+</span>101 <span style=''>      var elemClass = </span><span style='background: #AEF1AE'>elemType.classSymbol</span><span style=''>
+</span>102 <span style=''>      if (</span><span style='background: #AEF1AE'>defn.NotRuntimeClasses contains elemClass</span><span style=''>) </span><span style='background: #AEF1AE'>elemClass = defn.ObjectClass</span><span style=''>
+</span>103 <span style=''>      </span><span style='background: #AEF1AE'>ref(defn.DottyArraysModule)
+</span>104 <span style=''></span><span style='background: #AEF1AE'>        .select(nme.seqToArray)
+</span>105 <span style=''></span><span style='background: #AEF1AE'>        .appliedToType(elemType)
+</span>106 <span style=''></span><span style='background: #AEF1AE'>        .appliedTo(tree, Literal(Constant(elemClass.typeRef)))
+</span>107 <span style=''></span><span style='background: #AEF1AE'>        .ensureConforms(pt)</span><span style=''>
+</span>108 <span style=''>          // Because of phantomclasses, the Java array's type might not conform to the return type
+</span>109 <span style=''>  }
+</span>110 <span style=''>
+</span>111 <span style=''>  override def transformTypeApply(tree: TypeApply)(implicit ctx: Context): Tree =
+</span>112 <span style=''>    </span><span style='background: #AEF1AE'>transformTypeOfTree(tree)</span><span style=''>
+</span>113 <span style=''>
+</span>114 <span style=''>  /** If method overrides a Java varargs method, add a varargs bridge.
+</span>115 <span style=''>   *  Also transform trees inside method annotation
+</span>116 <span style=''>   */
+</span>117 <span style=''>  override def transformDefDef(tree: DefDef)(implicit ctx: Context): Tree =
+</span>118 <span style=''>    </span><span style='background: #AEF1AE'>ctx.atPhase(thisPhase) { implicit ctx =&gt;
+</span>119 <span style=''></span><span style='background: #AEF1AE'>      if (tree.symbol.info.isVarArgsMethod &amp;&amp; overridesJava(tree.symbol))
+</span>120 <span style=''></span><span style='background: #AEF1AE'>        addVarArgsBridge(tree)
+</span>121 <span style=''></span><span style='background: #AEF1AE'>      else
+</span>122 <span style=''></span><span style='background: #AEF1AE'>        tree
+</span>123 <span style=''></span><span style='background: #AEF1AE'>    }</span><span style=''>
+</span>124 <span style=''>
+</span>125 <span style=''>  /** Add a Java varargs bridge
+</span>126 <span style=''>   *  @param  ddef  the original method definition which is assumed to override
+</span>127 <span style=''>   *                a Java varargs method JM up to this phase.
+</span>128 <span style=''>   *  @return  a thicket consisting of `ddef` and a varargs bridge method
+</span>129 <span style=''>   *           which overrides the Java varargs method JM from this phase on
+</span>130 <span style=''>   *           and forwards to `ddef`.
+</span>131 <span style=''>   */
+</span>132 <span style=''>  private def addVarArgsBridge(ddef: DefDef)(implicit ctx: Context): Tree = {
+</span>133 <span style=''>    val original = </span><span style='background: #AEF1AE'>ddef.symbol.asTerm</span><span style=''>
+</span>134 <span style=''>    val bridge = </span><span style='background: #AEF1AE'>original.copy(
+</span>135 <span style=''></span><span style='background: #AEF1AE'>      flags = ddef.symbol.flags &amp;~ Private | Artifact,
+</span>136 <span style=''></span><span style='background: #AEF1AE'>      info = toJavaVarArgs(ddef.symbol.info)).enteredAfter(thisPhase).asTerm</span><span style=''>
+</span>137 <span style=''>    val bridgeDef = </span><span style='background: #AEF1AE'>polyDefDef(bridge, trefs =&gt; vrefss =&gt; {
+</span>138 <span style=''></span><span style='background: #AEF1AE'>      val (vrefs :+ varArgRef) :: vrefss1 = vrefss
+</span>139 <span style=''></span><span style='background: #AEF1AE'>      val elemtp = varArgRef.tpe.widen.argTypes.head
+</span>140 <span style=''></span><span style='background: #AEF1AE'>      ref(original.termRef)
+</span>141 <span style=''></span><span style='background: #AEF1AE'>        .appliedToTypes(trefs)
+</span>142 <span style=''></span><span style='background: #AEF1AE'>        .appliedToArgs(vrefs :+ TreeGen.wrapArray(varArgRef, elemtp))
+</span>143 <span style=''></span><span style='background: #AEF1AE'>        .appliedToArgss(vrefss1)
+</span>144 <span style=''></span><span style='background: #AEF1AE'>    })</span><span style=''>
+</span>145 <span style=''>
+</span>146 <span style=''>    </span><span style='background: #AEF1AE'>Thicket(ddef, bridgeDef)</span><span style=''>
+</span>147 <span style=''>  }
+</span>148 <span style=''>
+</span>149 <span style=''>  /** Convert type from Scala to Java varargs method */
+</span>150 <span style=''>  private def toJavaVarArgs(tp: Type)(implicit ctx: Context): Type = tp match {
+</span>151 <span style=''>    case tp: PolyType =&gt;
+</span>152 <span style=''>      </span><span style='background: #F0ADAD'>tp.derivedLambdaType(tp.paramNames, tp.paramInfos, toJavaVarArgs(tp.resultType))</span><span style=''>
+</span>153 <span style=''>    case tp: MethodType =&gt;
+</span>154 <span style=''>      val inits :+ last = tp.paramInfos
+</span>155 <span style=''>      val last1 = </span><span style='background: #AEF1AE'>last.underlyingIfRepeated(isJava = true)</span><span style=''>
+</span>156 <span style=''>      </span><span style='background: #AEF1AE'>tp.derivedLambdaType(tp.paramNames, inits :+ last1, tp.resultType)</span><span style=''>
+</span>157 <span style=''>  }
+</span>158 <span style=''>}
+</span></pre>
+          </div>
+          <div class="tab-pane" id="statementlist">
+            <table cellspacing="0" cellpadding="0" class="table statementlist">
+      <tr>
+        <th>Line</th>
+        <th>Stmt Id</th>
+        <th>Pos</th>
+        <th>Tree</th>
+        <th>Symbol</th>
+        <th>Code</th>
+      </tr><tr>
+        <td>
+          31
+        </td>
+        <td>
+          53509
+        </td>
+        <td>
+          782
+          -
+          796
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          &quot;elimRepeated&quot;
+        </td>
+      </tr><tr>
+        <td>
+          33
+        </td>
+        <td>
+          53510
+        </td>
+        <td>
+          830
+          -
+          834
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          true
+        </td>
+      </tr><tr>
+        <td>
+          36
+        </td>
+        <td>
+          53511
+        </td>
+        <td>
+          947
+          -
+          963
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.transform.ElimRepeated.elimRepeated
+        </td>
+        <td style="background: #AEF1AE">
+          ElimRepeated.this.elimRepeated(tp)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          39
+        </td>
+        <td>
+          53512
+        </td>
+        <td>
+          1060
+          -
+          1080
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.DenotTransformers.InfoTransformer.transform
+        </td>
+        <td style="background: #AEF1AE">
+          ElimRepeated.super.transform(ref)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          40
+        </td>
+        <td>
+          53513
+        </td>
+        <td>
+          1140
+          -
+          1166
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.transform.ElimRepeated.overridesJava
+        </td>
+        <td style="background: #AEF1AE">
+          ElimRepeated.this.overridesJava(ref1.symbol)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          40
+        </td>
+        <td>
+          53514
+        </td>
+        <td>
+          1123
+          -
+          1166
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Boolean.&amp;&amp;
+        </td>
+        <td style="background: #AEF1AE">
+          ref1.ne(ref).&amp;&amp;(ElimRepeated.this.overridesJava(ref1.symbol)(ctx))
+        </td>
+      </tr><tr>
+        <td>
+          43
+        </td>
+        <td>
+          53516
+        </td>
+        <td>
+          1368
+          -
+          1390
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.core.Flags.FlagSet.&amp;~
+        </td>
+        <td style="background: #AEF1AE">
+          ref1.flags(ctx).&amp;~(core.Flags.Override)
+        </td>
+      </tr><tr>
+        <td>
+          43
+        </td>
+        <td>
+          53519
+        </td>
+        <td>
+          1338
+          -
+          1338
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.SymDenotations.SymDenotation.copySymDenotation$default$3
+        </td>
+        <td style="background: #AEF1AE">
+          ref1.copySymDenotation$default$3
+        </td>
+      </tr><tr>
+        <td>
+          43
+        </td>
+        <td>
+          53522
+        </td>
+        <td>
+          1338
+          -
+          1338
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.SymDenotations.SymDenotation.copySymDenotation$default$7
+        </td>
+        <td style="background: #AEF1AE">
+          ref1.copySymDenotation$default$7
+        </td>
+      </tr><tr>
+        <td>
+          43
+        </td>
+        <td>
+          53521
+        </td>
+        <td>
+          1338
+          -
+          1338
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.SymDenotations.SymDenotation.copySymDenotation$default$6
+        </td>
+        <td style="background: #AEF1AE">
+          ref1.copySymDenotation$default$6
+        </td>
+      </tr><tr>
+        <td>
+          43
+        </td>
+        <td>
+          53515
+        </td>
+        <td>
+          1382
+          -
+          1390
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Flags.Override
+        </td>
+        <td style="background: #AEF1AE">
+          core.Flags.Override
+        </td>
+      </tr><tr>
+        <td>
+          43
+        </td>
+        <td>
+          53518
+        </td>
+        <td>
+          1338
+          -
+          1338
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.SymDenotations.SymDenotation.copySymDenotation$default$2
+        </td>
+        <td style="background: #AEF1AE">
+          ref1.copySymDenotation$default$2
+        </td>
+      </tr><tr>
+        <td>
+          43
+        </td>
+        <td>
+          53517
+        </td>
+        <td>
+          1338
+          -
+          1338
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.SymDenotations.SymDenotation.copySymDenotation$default$1
+        </td>
+        <td style="background: #AEF1AE">
+          ref1.copySymDenotation$default$1
+        </td>
+      </tr><tr>
+        <td>
+          43
+        </td>
+        <td>
+          53520
+        </td>
+        <td>
+          1338
+          -
+          1338
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.SymDenotations.SymDenotation.copySymDenotation$default$5
+        </td>
+        <td style="background: #AEF1AE">
+          ref1.copySymDenotation$default$5
+        </td>
+      </tr><tr>
+        <td>
+          43
+        </td>
+        <td>
+          53523
+        </td>
+        <td>
+          1333
+          -
+          1391
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.core.SymDenotations.SymDenotation.copySymDenotation
+        </td>
+        <td style="background: #AEF1AE">
+          ref1.copySymDenotation(x$5, x$6, x$7, x$4, x$8, x$9, x$10)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          48
+        </td>
+        <td>
+          53524
+        </td>
+        <td>
+          1503
+          -
+          1516
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.SymDenotations.SymDenotation.is
+        </td>
+        <td style="background: #AEF1AE">
+          core.Symbols.toDenot(sym)(ctx).is(core.Flags.Method)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          50
+        </td>
+        <td>
+          53525
+        </td>
+        <td>
+          1616
+          -
+          1632
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.SymDenotations.SymDenotation.is
+        </td>
+        <td style="background: #AEF1AE">
+          core.Symbols.toDenot(x$1)(ctx).is(core.Flags.JavaDefined)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          50
+        </td>
+        <td>
+          53526
+        </td>
+        <td>
+          1584
+          -
+          1633
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.Iterator.exists
+        </td>
+        <td style="background: #AEF1AE">
+          core.Symbols.toDenot(sym)(ctx).allOverriddenSymbols(ctx).exists(((x$1: dotty.tools.dotc.core.Symbols.Symbol) =&gt; core.Symbols.toDenot(x$1)(ctx).is(core.Flags.JavaDefined)(ctx)))
+        </td>
+      </tr><tr>
+        <td>
+          52
+        </td>
+        <td>
+          53527
+        </td>
+        <td>
+          1703
+          -
+          1718
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.Types.Type.stripTypeVar
+        </td>
+        <td style="background: #AEF1AE">
+          tp.stripTypeVar(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          54
+        </td>
+        <td>
+          53528
+        </td>
+        <td>
+          1814
+          -
+          1838
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.transform.ElimRepeated.elimRepeated
+        </td>
+        <td style="background: #AEF1AE">
+          ElimRepeated.this.elimRepeated(resultType)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          56
+        </td>
+        <td>
+          53534
+        </td>
+        <td>
+          1931
+          -
+          2051
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          {
+  val last: dotty.tools.dotc.core.Types.Type = core.Types.decorateTypeApplications(paramTypes.last).underlyingIfRepeated(tp.isJavaMethod)(ctx);
+  paramTypes.init.:+[dotty.tools.dotc.core.Types.Type, List[dotty.tools.dotc.core.Types.Type]](last)(immutable.this.List.canBuildFrom[dotty.tools.dotc.core.Types.Type])
+}
+        </td>
+      </tr><tr>
+        <td>
+          56
+        </td>
+        <td>
+          53530
+        </td>
+        <td>
+          1875
+          -
+          1929
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Boolean.&amp;&amp;
+        </td>
+        <td style="background: #AEF1AE">
+          paramTypes.nonEmpty.&amp;&amp;(paramTypes.last.isRepeatedParam(ctx))
+        </td>
+      </tr><tr>
+        <td>
+          56
+        </td>
+        <td>
+          53529
+        </td>
+        <td>
+          1898
+          -
+          1929
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.Types.Type.isRepeatedParam
+        </td>
+        <td style="background: #AEF1AE">
+          paramTypes.last.isRepeatedParam(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          57
+        </td>
+        <td>
+          53531
+        </td>
+        <td>
+          1954
+          -
+          2007
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.TypeApplications.underlyingIfRepeated
+        </td>
+        <td style="background: #AEF1AE">
+          core.Types.decorateTypeApplications(paramTypes.last).underlyingIfRepeated(tp.isJavaMethod)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          58
+        </td>
+        <td>
+          53533
+        </td>
+        <td>
+          2018
+          -
+          2041
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          scala.collection.SeqLike.:+
+        </td>
+        <td style="background: #AEF1AE">
+          paramTypes.init.:+[dotty.tools.dotc.core.Types.Type, List[dotty.tools.dotc.core.Types.Type]](last)(immutable.this.List.canBuildFrom[dotty.tools.dotc.core.Types.Type])
+        </td>
+      </tr><tr>
+        <td>
+          58
+        </td>
+        <td>
+          53532
+        </td>
+        <td>
+          2034
+          -
+          2034
+        </td>
+        <td>
+          TypeApply
+        </td>
+        <td>
+          scala.collection.immutable.List.canBuildFrom
+        </td>
+        <td style="background: #AEF1AE">
+          immutable.this.List.canBuildFrom[dotty.tools.dotc.core.Types.Type]
+        </td>
+      </tr><tr>
+        <td>
+          59
+        </td>
+        <td>
+          53535
+        </td>
+        <td>
+          2057
+          -
+          2067
+        </td>
+        <td>
+          Ident
+        </td>
+        <td>
+          dotty.tools.dotc.transform.ElimRepeated.paramTypes
+        </td>
+        <td style="background: #AEF1AE">
+          paramTypes
+        </td>
+      </tr><tr>
+        <td>
+          60
+        </td>
+        <td>
+          53536
+        </td>
+        <td>
+          2074
+          -
+          2132
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.Types.LambdaType.derivedLambdaType
+        </td>
+        <td style="background: #AEF1AE">
+          tp.derivedLambdaType(paramNames, paramTypes1, resultType1)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          62
+        </td>
+        <td>
+          53537
+        </td>
+        <td>
+          2164
+          -
+          2243
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.Types.LambdaType.derivedLambdaType
+        </td>
+        <td style="background: #AEF1AE">
+          tp.derivedLambdaType(tp.paramNames, tp.paramInfos, ElimRepeated.this.elimRepeated(tp.resultType(ctx))(ctx))(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          68
+        </td>
+        <td>
+          53538
+        </td>
+        <td>
+          2346
+          -
+          2383
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Trees.Tree.withType
+        </td>
+        <td style="background: #AEF1AE">
+          tree.withType(ElimRepeated.this.elimRepeated(tree.tpe)(ctx))(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          71
+        </td>
+        <td>
+          53539
+        </td>
+        <td>
+          2463
+          -
+          2488
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.transform.ElimRepeated.transformTypeOfTree
+        </td>
+        <td style="background: #AEF1AE">
+          ElimRepeated.this.transformTypeOfTree(tree)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          74
+        </td>
+        <td>
+          53540
+        </td>
+        <td>
+          2570
+          -
+          2595
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.transform.ElimRepeated.transformTypeOfTree
+        </td>
+        <td style="background: #AEF1AE">
+          ElimRepeated.this.transformTypeOfTree(tree)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          78
+        </td>
+        <td>
+          53542
+        </td>
+        <td>
+          2697
+          -
+          2808
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.core.Phases.atPhase
+        </td>
+        <td style="background: #AEF1AE">
+          ctx.atPhase[List[dotty.tools.dotc.core.Types.Type]](ElimRepeated.this)(((implicit ctx: dotty.tools.dotc.core.Contexts.Context) =&gt; tree.fun.tpe.widen(ctx).asInstanceOf[dotty.tools.dotc.core.Types.MethodType].paramInfos))
+        </td>
+      </tr><tr>
+        <td>
+          79
+        </td>
+        <td>
+          53541
+        </td>
+        <td>
+          2746
+          -
+          2800
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Types.MethodType.paramInfos
+        </td>
+        <td style="background: #AEF1AE">
+          tree.fun.tpe.widen(ctx).asInstanceOf[dotty.tools.dotc.core.Types.MethodType].paramInfos
+        </td>
+      </tr><tr>
+        <td>
+          81
+        </td>
+        <td>
+          53543
+        </td>
+        <td>
+          2825
+          -
+          2834
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Trees.Apply.args
+        </td>
+        <td style="background: #AEF1AE">
+          tree.args
+        </td>
+      </tr><tr>
+        <td>
+          81
+        </td>
+        <td>
+          53553
+        </td>
+        <td>
+          2825
+          -
+          3207
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.core.Decorators.ListDecorator.zipWithConserve
+        </td>
+        <td style="background: #AEF1AE">
+          core.Decorators.ListDecorator[dotty.tools.dotc.ast.Trees.Tree[dotty.tools.dotc.core.Types.Type]](tree.args).zipWithConserve[dotty.tools.dotc.core.Types.Type](formals)(((arg: dotty.tools.dotc.ast.Trees.Tree[dotty.tools.dotc.core.Types.Type], formal: dotty.tools.dotc.core.Types.Type) =&gt; arg match {
+  case (arg @ (_: dotty.tools.dotc.ast.tpd.Typed)) if ast.tpd.isWildcardStarArg(arg)(ctx) =&gt; if (core.Symbols.toDenot(tree.fun.symbol(ctx))(ctx).is(core.Flags.JavaDefined)(ctx).&amp;&amp;(arg.expr.tpe.derivesFrom(core.Symbols.defn(ctx).SeqClass(ctx))(ctx)))
+    ElimRepeated.this.seqToArray(arg.expr, core.Types.decorateTypeApplications(formal).translateParameterized(core.Symbols.defn(ctx).RepeatedParamClass, core.Symbols.defn(ctx).ArrayClass(ctx))(ctx))(ctx)
+  else
+    arg.expr
+  case (arg @ _) =&gt; arg
+}))
+        </td>
+      </tr><tr>
+        <td>
+          83
+        </td>
+        <td>
+          53544
+        </td>
+        <td>
+          2924
+          -
+          2946
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.TreeInfo.isWildcardStarArg
+        </td>
+        <td style="background: #AEF1AE">
+          ast.tpd.isWildcardStarArg(arg)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          84
+        </td>
+        <td>
+          53546
+        </td>
+        <td>
+          2983
+          -
+          2994
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Flags.JavaDefined
+        </td>
+        <td style="background: #AEF1AE">
+          core.Flags.JavaDefined
+        </td>
+      </tr><tr>
+        <td>
+          84
+        </td>
+        <td>
+          53548
+        </td>
+        <td>
+          2964
+          -
+          3038
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Boolean.&amp;&amp;
+        </td>
+        <td style="background: #AEF1AE">
+          core.Symbols.toDenot(tree.fun.symbol(ctx))(ctx).is(core.Flags.JavaDefined)(ctx).&amp;&amp;(arg.expr.tpe.derivesFrom(core.Symbols.defn(ctx).SeqClass(ctx))(ctx))
+        </td>
+      </tr><tr>
+        <td>
+          84
+        </td>
+        <td>
+          53545
+        </td>
+        <td>
+          2964
+          -
+          2979
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Trees.Tree.symbol
+        </td>
+        <td style="background: #AEF1AE">
+          tree.fun.symbol(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          84
+        </td>
+        <td>
+          53547
+        </td>
+        <td>
+          2999
+          -
+          3038
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.Types.Type.derivesFrom
+        </td>
+        <td style="background: #AEF1AE">
+          arg.expr.tpe.derivesFrom(core.Symbols.defn(ctx).SeqClass(ctx))(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          85
+        </td>
+        <td>
+          53549
+        </td>
+        <td>
+          3052
+          -
+          3145
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.transform.ElimRepeated.seqToArray
+        </td>
+        <td style="background: #AEF1AE">
+          ElimRepeated.this.seqToArray(arg.expr, core.Types.decorateTypeApplications(formal).translateParameterized(core.Symbols.defn(ctx).RepeatedParamClass, core.Symbols.defn(ctx).ArrayClass(ctx))(ctx))(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          85
+        </td>
+        <td>
+          53550
+        </td>
+        <td>
+          3052
+          -
+          3145
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          dotty.tools.dotc.transform.ElimRepeated.seqToArray
+        </td>
+        <td style="background: #AEF1AE">
+          ElimRepeated.this.seqToArray(arg.expr, core.Types.decorateTypeApplications(formal).translateParameterized(core.Symbols.defn(ctx).RepeatedParamClass, core.Symbols.defn(ctx).ArrayClass(ctx))(ctx))(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          86
+        </td>
+        <td>
+          53552
+        </td>
+        <td>
+          3161
+          -
+          3169
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Trees.Typed.expr
+        </td>
+        <td style="background: #AEF1AE">
+          arg.expr
+        </td>
+      </tr><tr>
+        <td>
+          86
+        </td>
+        <td>
+          53551
+        </td>
+        <td>
+          3161
+          -
+          3169
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Trees.Typed.expr
+        </td>
+        <td style="background: #AEF1AE">
+          arg.expr
+        </td>
+      </tr><tr>
+        <td>
+          90
+        </td>
+        <td>
+          53554
+        </td>
+        <td>
+          3212
+          -
+          3265
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.transform.ElimRepeated.transformTypeOfTree
+        </td>
+        <td style="background: #AEF1AE">
+          ElimRepeated.this.transformTypeOfTree(ElimRepeated.this.cpy.Apply(tree)(tree.fun, args1)(ctx))(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          96
+        </td>
+        <td>
+          53555
+        </td>
+        <td>
+          3469
+          -
+          3499
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.tpd.JavaSeqLiteral
+        </td>
+        <td style="background: #AEF1AE">
+          ast.tpd.JavaSeqLiteral(elems, elemtpt)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          97
+        </td>
+        <td>
+          53557
+        </td>
+        <td>
+          3533
+          -
+          3577
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.SetLike.contains
+        </td>
+        <td style="background: #AEF1AE">
+          core.Symbols.defn(ctx).Predef_wrapArray.apply()(ctx).contains(fun.symbol(ctx))
+        </td>
+      </tr><tr>
+        <td>
+          97
+        </td>
+        <td>
+          53556
+        </td>
+        <td>
+          3566
+          -
+          3576
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Trees.Tree.symbol
+        </td>
+        <td style="background: #AEF1AE">
+          fun.symbol(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          98
+        </td>
+        <td>
+          53558
+        </td>
+        <td>
+          3635
+          -
+          3644
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.collection.IterableLike.head
+        </td>
+        <td style="background: #AEF1AE">
+          args.head
+        </td>
+      </tr><tr>
+        <td>
+          100
+        </td>
+        <td>
+          53559
+        </td>
+        <td>
+          3680
+          -
+          3697
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.TypeApplications.elemType
+        </td>
+        <td style="background: #AEF1AE">
+          core.Types.decorateTypeApplications(tree.tpe).elemType(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          101
+        </td>
+        <td>
+          53560
+        </td>
+        <td>
+          3720
+          -
+          3740
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.Types.Type.classSymbol
+        </td>
+        <td style="background: #AEF1AE">
+          elemType.classSymbol(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          102
+        </td>
+        <td>
+          53561
+        </td>
+        <td>
+          3751
+          -
+          3792
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.SetLike.contains
+        </td>
+        <td style="background: #AEF1AE">
+          core.Symbols.defn(ctx).NotRuntimeClasses.contains(elemClass)
+        </td>
+      </tr><tr>
+        <td>
+          102
+        </td>
+        <td>
+          53564
+        </td>
+        <td>
+          3747
+          -
+          3747
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          ()
+        </td>
+      </tr><tr>
+        <td>
+          102
+        </td>
+        <td>
+          53563
+        </td>
+        <td>
+          3747
+          -
+          3747
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          ()
+        </td>
+      </tr><tr>
+        <td>
+          102
+        </td>
+        <td>
+          53562
+        </td>
+        <td>
+          3794
+          -
+          3822
+        </td>
+        <td>
+          Assign
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          elemClass = core.Symbols.defn(ctx).ObjectClass
+        </td>
+      </tr><tr>
+        <td>
+          107
+        </td>
+        <td>
+          53565
+        </td>
+        <td>
+          3829
+          -
+          4012
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.tpd.TreeOps.ensureConforms
+        </td>
+        <td style="background: #AEF1AE">
+          ast.tpd.TreeOps[dotty.tools.dotc.ast.tpd.Tree](ast.tpd.TreeOps[dotty.tools.dotc.ast.tpd.Tree](ast.tpd.TreeOps[dotty.tools.dotc.ast.tpd.Select](ast.tpd.TreeOps[dotty.tools.dotc.ast.tpd.Tree](ast.tpd.ref(core.Symbols.defn(ctx).DottyArraysModule(ctx))(ctx)).select(core.StdNames.nme.seqToArray)(ctx)).appliedToType(elemType)(ctx)).appliedTo(tree, ast.tpd.Literal(core.Constants.Constant.apply(core.Symbols.toDenot(elemClass)(ctx).typeRef(ctx)))(ctx))(ctx)).ensureConforms(pt)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          112
+        </td>
+        <td>
+          53566
+        </td>
+        <td>
+          4203
+          -
+          4228
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.transform.ElimRepeated.transformTypeOfTree
+        </td>
+        <td style="background: #AEF1AE">
+          ElimRepeated.this.transformTypeOfTree(tree)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          118
+        </td>
+        <td>
+          53573
+        </td>
+        <td>
+          4439
+          -
+          4614
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.core.Phases.atPhase
+        </td>
+        <td style="background: #AEF1AE">
+          ctx.atPhase[dotty.tools.dotc.ast.tpd.Tree](ElimRepeated.this)(((implicit ctx: dotty.tools.dotc.core.Contexts.Context) =&gt; if (core.Symbols.toDenot(tree.symbol(ctx))(ctx).info(ctx).isVarArgsMethod(ctx).&amp;&amp;(ElimRepeated.this.overridesJava(tree.symbol(ctx))(ctx)))
+  ElimRepeated.this.addVarArgsBridge(tree)(ctx)
+else
+  tree))
+        </td>
+      </tr><tr>
+        <td>
+          119
+        </td>
+        <td>
+          53567
+        </td>
+        <td>
+          4490
+          -
+          4501
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Trees.Tree.symbol
+        </td>
+        <td style="background: #AEF1AE">
+          tree.symbol(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          119
+        </td>
+        <td>
+          53569
+        </td>
+        <td>
+          4490
+          -
+          4552
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Boolean.&amp;&amp;
+        </td>
+        <td style="background: #AEF1AE">
+          core.Symbols.toDenot(tree.symbol(ctx))(ctx).info(ctx).isVarArgsMethod(ctx).&amp;&amp;(ElimRepeated.this.overridesJava(tree.symbol(ctx))(ctx))
+        </td>
+      </tr><tr>
+        <td>
+          119
+        </td>
+        <td>
+          53568
+        </td>
+        <td>
+          4526
+          -
+          4552
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.transform.ElimRepeated.overridesJava
+        </td>
+        <td style="background: #AEF1AE">
+          ElimRepeated.this.overridesJava(tree.symbol(ctx))(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          120
+        </td>
+        <td>
+          53570
+        </td>
+        <td>
+          4562
+          -
+          4584
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.transform.ElimRepeated.addVarArgsBridge
+        </td>
+        <td style="background: #AEF1AE">
+          ElimRepeated.this.addVarArgsBridge(tree)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          120
+        </td>
+        <td>
+          53571
+        </td>
+        <td>
+          4562
+          -
+          4584
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          dotty.tools.dotc.transform.ElimRepeated.addVarArgsBridge
+        </td>
+        <td style="background: #AEF1AE">
+          ElimRepeated.this.addVarArgsBridge(tree)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          122
+        </td>
+        <td>
+          53572
+        </td>
+        <td>
+          4604
+          -
+          4608
+        </td>
+        <td>
+          Ident
+        </td>
+        <td>
+          dotty.tools.dotc.transform.ElimRepeated.tree
+        </td>
+        <td style="background: #AEF1AE">
+          tree
+        </td>
+      </tr><tr>
+        <td>
+          133
+        </td>
+        <td>
+          53574
+        </td>
+        <td>
+          5084
+          -
+          5102
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.Symbols.Symbol.asTerm
+        </td>
+        <td style="background: #AEF1AE">
+          ddef.symbol(ctx).asTerm(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          136
+        </td>
+        <td>
+          53575
+        </td>
+        <td>
+          5120
+          -
+          5266
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.Symbols.Symbol.asTerm
+        </td>
+        <td style="background: #AEF1AE">
+          {
+  &lt;artifact&gt; val qual$1: dotty.tools.dotc.core.Symbols.Copier[original.ThisName] = core.Symbols.Copier[original.ThisName](original)(ctx);
+  &lt;artifact&gt; val x$11: dotty.tools.dotc.core.Flags.FlagSet = core.Symbols.toDenot(ddef.symbol(ctx))(ctx).flags(ctx).&amp;~(core.Flags.Private).|(core.Flags.Artifact);
+  &lt;artifact&gt; val x$12: dotty.tools.dotc.core.Types.Type = ElimRepeated.this.toJavaVarArgs(core.Symbols.toDenot(ddef.symbol(ctx))(ctx).info(ctx))(ctx);
+  &lt;artifact&gt; val x$13: dotty.tools.dotc.core.Symbols.Symbol = qual$1.copy$default$1;
+  &lt;artifact&gt; val x$14: original.ThisName = qual$1.copy$default$2;
+  &lt;artifact&gt; val x$15: dotty.tools.dotc.core.Symbols.Symbol = qual$1.copy$default$5;
+  &lt;artifact&gt; val x$16: dotty.tools.dotc.util.Positions.Coord = qual$1.copy$default$6;
+  &lt;artifact&gt; val x$17: dotty.tools.io.AbstractFile = qual$1.copy$default$7;
+  qual$1.copy(x$13, x$14, x$11, x$12, x$15, x$16, x$17)
+}.enteredAfter(ElimRepeated.this)(ctx).asTerm(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          137
+        </td>
+        <td>
+          53576
+        </td>
+        <td>
+          5287
+          -
+          5599
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.tpd.polyDefDef
+        </td>
+        <td style="background: #AEF1AE">
+          ast.tpd.polyDefDef(bridge, ((trefs: List[dotty.tools.dotc.core.Types.Type]) =&gt; ((vrefss: List[List[dotty.tools.dotc.ast.tpd.Tree]]) =&gt; {
+  &lt;synthetic&gt; &lt;artifact&gt; private[this] val x$2: (List[dotty.tools.dotc.ast.tpd.Tree], dotty.tools.dotc.ast.tpd.Tree, List[List[dotty.tools.dotc.ast.tpd.Tree]]) = (vrefss: List[List[dotty.tools.dotc.ast.tpd.Tree]] @unchecked) match {
+    case (head: List[dotty.tools.dotc.ast.tpd.Tree], tl: List[List[dotty.tools.dotc.ast.tpd.Tree]])scala.collection.immutable.::[List[dotty.tools.dotc.ast.tpd.Tree]](scala.`package`.:+.unapply[dotty.tools.dotc.ast.tpd.Tree, List[dotty.tools.dotc.ast.tpd.Tree]](&lt;unapply-selector&gt;) &lt;unapply&gt; ((vrefs @ _), (varArgRef @ _)), (vrefss1 @ _)) =&gt; scala.Tuple3.apply[List[dotty.tools.dotc.ast.tpd.Tree], dotty.tools.dotc.ast.tpd.Tree, List[List[dotty.tools.dotc.ast.tpd.Tree]]](vrefs, varArgRef, vrefss1)
+  };
+  val vrefs: List[dotty.tools.dotc.ast.tpd.Tree] = x$2._1;
+  val varArgRef: dotty.tools.dotc.ast.tpd.Tree = x$2._2;
+  val vrefss1: List[List[dotty.tools.dotc.ast.tpd.Tree]] = x$2._3;
+  val elemtp: dotty.tools.dotc.core.Types.Type = core.Types.decorateTypeApplications(varArgRef.tpe.widen(ctx)).argTypes(ctx).head;
+  ast.tpd.TreeOps[dotty.tools.dotc.ast.tpd.Apply](ast.tpd.TreeOps[dotty.tools.dotc.ast.tpd.Tree](ast.tpd.TreeOps[dotty.tools.dotc.ast.tpd.Tree](ast.tpd.ref(core.Symbols.toDenot(original)(ctx).termRef(ctx))(ctx)).appliedToTypes(trefs)(ctx)).appliedToArgs(vrefs.:+[dotty.tools.dotc.ast.tpd.Tree, List[dotty.tools.dotc.ast.tpd.Tree]](TreeGen.wrapArray(varArgRef, elemtp)(ctx))(immutable.this.List.canBuildFrom[dotty.tools.dotc.ast.tpd.Tree]))(ctx)).appliedToArgss(vrefss1)(ctx)
+})))(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          146
+        </td>
+        <td>
+          53577
+        </td>
+        <td>
+          5605
+          -
+          5629
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Trees.Instance.Thicket
+        </td>
+        <td style="background: #AEF1AE">
+          ast.tpd.Thicket(ddef, bridgeDef)
+        </td>
+      </tr><tr>
+        <td>
+          152
+        </td>
+        <td>
+          53578
+        </td>
+        <td>
+          5802
+          -
+          5882
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.Types.LambdaType.derivedLambdaType
+        </td>
+        <td style="background: #F0ADAD">
+          tp.derivedLambdaType(tp.paramNames, tp.paramInfos, ElimRepeated.this.toJavaVarArgs(tp.resultType(ctx))(ctx))(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          154
+        </td>
+        <td>
+          53579
+        </td>
+        <td>
+          5920
+          -
+          5920
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.Tuple2._1
+        </td>
+        <td style="background: #AEF1AE">
+          x$3._1
+        </td>
+      </tr><tr>
+        <td>
+          154
+        </td>
+        <td>
+          53580
+        </td>
+        <td>
+          5929
+          -
+          5929
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.Tuple2._2
+        </td>
+        <td style="background: #AEF1AE">
+          x$3._2
+        </td>
+      </tr><tr>
+        <td>
+          155
+        </td>
+        <td>
+          53581
+        </td>
+        <td>
+          5968
+          -
+          6008
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.TypeApplications.underlyingIfRepeated
+        </td>
+        <td style="background: #AEF1AE">
+          core.Types.decorateTypeApplications(last).underlyingIfRepeated(true)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          156
+        </td>
+        <td>
+          53582
+        </td>
+        <td>
+          6015
+          -
+          6081
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.Types.LambdaType.derivedLambdaType
+        </td>
+        <td style="background: #AEF1AE">
+          tp.derivedLambdaType(tp.paramNames, inits.:+[dotty.tools.dotc.core.Types.Type, List[tp.PInfo]](last1)(immutable.this.List.canBuildFrom[dotty.tools.dotc.core.Types.Type]), tp.resultType(ctx))(ctx)
+        </td>
+      </tr>
+    </table>
+          </div>
+        </div>
+      </body>
+    </html>

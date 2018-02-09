@@ -1,0 +1,1292 @@
+<html>
+      <head>
+        <meta http-equiv="Content-Type" content="text/html; charset=utf-8"/>
+        <title id="title">
+          dotty/tools/repl/Rendering.scala.html
+        </title>
+        <script src="https://ajax.googleapis.com/ajax/libs/jquery/1.10.2/jquery.min.js"></script><link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/jquery.tablesorter/2.20.1/css/theme.default.min.css" type="text/css"/><script src="https://cdnjs.cloudflare.com/ajax/libs/jquery.tablesorter/2.20.1/js/jquery.tablesorter.min.js"></script><link rel="stylesheet" href="https://netdna.bootstrapcdn.com/bootstrap/3.0.3/css/bootstrap.min.css" type="text/css"/><script src="https://netdna.bootstrapcdn.com/bootstrap/3.0.3/js/bootstrap.min.js"></script><script type="text/javascript">
+        $(document).ready(function() {$(".tablesorter").tablesorter();});
+      </script>
+        <style>
+          table.codegrid { font-family: monospace; font-size: 12px; width: auto!important; }table.statementlist { width: auto!important; font-size: 13px; } table.codegrid td { padding: 0!important; border: 0!important } table td.linenumber { width: 40px!important; } 
+        </style>
+      </head>
+      <body style="font-family: monospace;">
+        <ul class="nav nav-tabs">
+          <li>
+            <a href="#codegrid" data-toggle="tab">Codegrid</a>
+          </li>
+          <li>
+            <a href="#statementlist" data-toggle="tab">Statement List</a>
+          </li>
+        </ul>
+        <div class="tab-content">
+          <div class="tab-pane active" id="codegrid">
+            <pre style='font-size: 12pt; font-family: courier;'>1 <span style=''>package dotty.tools
+</span>2 <span style=''>package repl
+</span>3 <span style=''>
+</span>4 <span style=''>import java.io.{ StringWriter, PrintWriter }
+</span>5 <span style=''>import java.lang.{ ClassLoader, ExceptionInInitializerError }
+</span>6 <span style=''>import java.lang.reflect.InvocationTargetException
+</span>7 <span style=''>
+</span>8 <span style=''>import scala.util.control.NonFatal
+</span>9 <span style=''>
+</span>10 <span style=''>import dotc.core.Types._
+</span>11 <span style=''>import dotc.core.Contexts.Context
+</span>12 <span style=''>import dotc.core.Denotations.Denotation
+</span>13 <span style=''>import dotc.core.Flags
+</span>14 <span style=''>import dotc.core.Symbols.Symbol
+</span>15 <span style=''>import dotc.core.StdNames.str
+</span>16 <span style=''>
+</span>17 <span style=''>/** This rendering object uses `ClassLoader`s to accomplish crossing the 4th
+</span>18 <span style=''> *  wall (i.e. fetching back values from the compiled class files put into a
+</span>19 <span style=''> *  specific class loader capable of loading from memory) and rendering them.
+</span>20 <span style=''> *
+</span>21 <span style=''> *  @pre this object should be paired with a compiler session, i.e. when
+</span>22 <span style=''> *       `ReplDriver#resetToInitial` is called, the accompanying instance of
+</span>23 <span style=''> *       `Rendering` is no longer valid.
+</span>24 <span style=''> */
+</span>25 <span style=''>private[repl] class Rendering(compiler: ReplCompiler,
+</span>26 <span style=''>                              parentClassLoader: Option[ClassLoader] = None) {
+</span>27 <span style=''>
+</span>28 <span style=''>  private[this] var myClassLoader: ClassLoader = _
+</span>29 <span style=''>
+</span>30 <span style=''>  /** Class loader used to load compiled code */
+</span>31 <span style=''>  private[this] def classLoader()(implicit ctx: Context) =
+</span>32 <span style=''>    if (</span><span style='background: #AEF1AE'>myClassLoader != null</span><span style=''>) </span><span style='background: #AEF1AE'>myClassLoader</span><span style=''>
+</span>33 <span style=''>    else </span><span style='background: #AEF1AE'>{
+</span>34 <span style=''></span><span style='background: #AEF1AE'>      val parent = parentClassLoader.getOrElse {
+</span>35 <span style=''></span><span style='background: #AEF1AE'>        // the compiler's classpath, as URL's
+</span>36 <span style=''></span><span style='background: #AEF1AE'>        val compilerClasspath = ctx.platform.classPath(ctx).asURLs
+</span>37 <span style=''></span><span style='background: #AEF1AE'>        new java.net.URLClassLoader(compilerClasspath.toArray, classOf[ReplDriver].getClassLoader)
+</span>38 <span style=''></span><span style='background: #AEF1AE'>      }
+</span>39 <span style=''></span><span style='background: #AEF1AE'>
+</span>40 <span style=''></span><span style='background: #AEF1AE'>      myClassLoader = new AbstractFileClassLoader(compiler.directory, parent)
+</span>41 <span style=''></span><span style='background: #AEF1AE'>      // Set the current Java &quot;context&quot; class loader to this rendering class loader
+</span>42 <span style=''></span><span style='background: #AEF1AE'>      Thread.currentThread.setContextClassLoader(myClassLoader)
+</span>43 <span style=''></span><span style='background: #AEF1AE'>      myClassLoader
+</span>44 <span style=''></span><span style='background: #AEF1AE'>    }</span><span style=''>
+</span>45 <span style=''>
+</span>46 <span style=''>  /** Load the value of the symbol using reflection
+</span>47 <span style=''>   *
+</span>48 <span style=''>   *  Calling this method evaluates the expression using reflection
+</span>49 <span style=''>   */
+</span>50 <span style=''>  private[this] def valueOf(sym: Symbol)(implicit ctx: Context): Option[String] = {
+</span>51 <span style=''>    val defn = </span><span style='background: #AEF1AE'>ctx.definitions</span><span style=''>
+</span>52 <span style=''>    val objectName = </span><span style='background: #AEF1AE'>sym.owner.fullName.encode.toString.dropRight(1)</span><span style=''> // gotta drop the '$'
+</span>53 <span style=''>    val resObj: Class[_] = </span><span style='background: #AEF1AE'>Class.forName(objectName, true, classLoader())</span><span style=''>
+</span>54 <span style=''>
+</span>55 <span style=''>    val res =
+</span>56 <span style=''>      </span><span style='background: #AEF1AE'>resObj
+</span>57 <span style=''></span><span style='background: #AEF1AE'>        .getDeclaredMethods.find(_.getName == sym.name.toString + &quot;Show&quot;).get
+</span>58 <span style=''></span><span style='background: #AEF1AE'>        .invoke(null).toString</span><span style=''>
+</span>59 <span style=''>
+</span>60 <span style=''>    if (</span><span style='background: #AEF1AE'>!sym.is(Flags.Method) &amp;&amp; sym.info == defn.UnitType</span><span style=''>)
+</span>61 <span style=''>      </span><span style='background: #AEF1AE'>None</span><span style=''>
+</span>62 <span style=''>    else </span><span style='background: #AEF1AE'>if (res.startsWith(str.REPL_SESSION_LINE))
+</span>63 <span style=''></span><span style='background: #AEF1AE'>      Some(res.drop(str.REPL_SESSION_LINE.length).dropWhile(c =&gt; c.isDigit || c == '$'))
+</span>64 <span style=''></span><span style='background: #AEF1AE'>    else
+</span>65 <span style=''></span><span style='background: #AEF1AE'>      Some(res)</span><span style=''>
+</span>66 <span style=''>  }
+</span>67 <span style=''>
+</span>68 <span style=''>  /** Render method definition result */
+</span>69 <span style=''>  def renderMethod(d: Denotation)(implicit ctx: Context): String =
+</span>70 <span style=''>    </span><span style='background: #AEF1AE'>d.symbol.showUser</span><span style=''>
+</span>71 <span style=''>
+</span>72 <span style=''>  /** Render value definition result */
+</span>73 <span style=''>  def renderVal(d: Denotation)(implicit ctx: Context): Option[String] = {
+</span>74 <span style=''>    val dcl = </span><span style='background: #AEF1AE'>d.symbol.showUser</span><span style=''>
+</span>75 <span style=''>
+</span>76 <span style=''>    try {
+</span>77 <span style=''>      </span><span style='background: #AEF1AE'>val resultValue =
+</span>78 <span style=''></span><span style='background: #AEF1AE'>        if (d.symbol.is(Flags.Lazy)) </span><span style='background: #F0ADAD'>Some(&quot;&lt;lazy&gt;&quot;)</span><span style='background: #AEF1AE'>
+</span>79 <span style=''></span><span style='background: #AEF1AE'>        else valueOf(d.symbol)
+</span>80 <span style=''></span><span style='background: #AEF1AE'>
+</span>81 <span style=''></span><span style='background: #AEF1AE'>      resultValue.map(value =&gt; s&quot;$dcl = $value&quot;)</span><span style=''>
+</span>82 <span style=''>    }
+</span>83 <span style=''>    catch { case ex: InvocationTargetException =&gt; </span><span style='background: #F0ADAD'>Some(renderError(ex))</span><span style=''> }
+</span>84 <span style=''>  }
+</span>85 <span style=''>
+</span>86 <span style=''>  /** Render the stack trace of the underlying exception */
+</span>87 <span style=''>  private def renderError(ex: InvocationTargetException): String = {
+</span>88 <span style=''>    val cause = </span><span style='background: #F0ADAD'>ex.getCause</span><span style=''> match {
+</span>89 <span style=''>      case ex: ExceptionInInitializerError =&gt; </span><span style='background: #F0ADAD'>ex.getCause</span><span style=''>
+</span>90 <span style=''>      case ex =&gt; ex
+</span>91 <span style=''>    }
+</span>92 <span style=''>    val sw = </span><span style='background: #F0ADAD'>new StringWriter()</span><span style=''>
+</span>93 <span style=''>    val pw = </span><span style='background: #F0ADAD'>new PrintWriter(sw)</span><span style=''>
+</span>94 <span style=''>    </span><span style='background: #F0ADAD'>cause.printStackTrace(pw)</span><span style=''>
+</span>95 <span style=''>    </span><span style='background: #F0ADAD'>sw.toString</span><span style=''>
+</span>96 <span style=''>  }
+</span>97 <span style=''>}
+</span></pre>
+          </div>
+          <div class="tab-pane" id="statementlist">
+            <table cellspacing="0" cellpadding="0" class="table statementlist">
+      <tr>
+        <th>Line</th>
+        <th>Stmt Id</th>
+        <th>Pos</th>
+        <th>Tree</th>
+        <th>Symbol</th>
+        <th>Code</th>
+      </tr><tr>
+        <td>
+          32
+        </td>
+        <td>
+          80533
+        </td>
+        <td>
+          1169
+          -
+          1182
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          dotty.tools.repl.Rendering.myClassLoader
+        </td>
+        <td style="background: #AEF1AE">
+          Rendering.this.myClassLoader
+        </td>
+      </tr><tr>
+        <td>
+          32
+        </td>
+        <td>
+          80532
+        </td>
+        <td>
+          1169
+          -
+          1182
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.repl.Rendering.myClassLoader
+        </td>
+        <td style="background: #AEF1AE">
+          Rendering.this.myClassLoader
+        </td>
+      </tr><tr>
+        <td>
+          32
+        </td>
+        <td>
+          80531
+        </td>
+        <td>
+          1146
+          -
+          1167
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.Object.!=
+        </td>
+        <td style="background: #AEF1AE">
+          Rendering.this.myClassLoader.!=(null)
+        </td>
+      </tr><tr>
+        <td>
+          33
+        </td>
+        <td>
+          80544
+        </td>
+        <td>
+          1192
+          -
+          1715
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          {
+  val parent: ClassLoader = Rendering.this.parentClassLoader.getOrElse[ClassLoader]({
+    val compilerClasspath: Seq[java.net.URL] = Contexts.this.Context.toBase(ctx).platform.classPath(ctx).asURLs;
+    new java.net.URLClassLoader(compilerClasspath.toArray[java.net.URL]((ClassTag.apply[java.net.URL](classOf[java.net.URL]): scala.reflect.ClassTag[java.net.URL])), classOf[dotty.tools.repl.ReplDriver].getClassLoader())
+  });
+  Rendering.this.myClassLoader = new AbstractFileClassLoader(Rendering.this.compiler.directory, parent);
+  java.lang.Thread.currentThread().setContextClassLoader(Rendering.this.myClassLoader);
+  Rendering.this.myClassLoader
+}
+        </td>
+      </tr><tr>
+        <td>
+          34
+        </td>
+        <td>
+          80538
+        </td>
+        <td>
+          1213
+          -
+          1462
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Option.getOrElse
+        </td>
+        <td style="background: #AEF1AE">
+          Rendering.this.parentClassLoader.getOrElse[ClassLoader]({
+  val compilerClasspath: Seq[java.net.URL] = Contexts.this.Context.toBase(ctx).platform.classPath(ctx).asURLs;
+  new java.net.URLClassLoader(compilerClasspath.toArray[java.net.URL]((ClassTag.apply[java.net.URL](classOf[java.net.URL]): scala.reflect.ClassTag[java.net.URL])), classOf[dotty.tools.repl.ReplDriver].getClassLoader())
+})
+        </td>
+      </tr><tr>
+        <td>
+          36
+        </td>
+        <td>
+          80534
+        </td>
+        <td>
+          1321
+          -
+          1355
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.io.ClassPath.asURLs
+        </td>
+        <td style="background: #AEF1AE">
+          Contexts.this.Context.toBase(ctx).platform.classPath(ctx).asURLs
+        </td>
+      </tr><tr>
+        <td>
+          37
+        </td>
+        <td>
+          80536
+        </td>
+        <td>
+          1419
+          -
+          1453
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.Class.getClassLoader
+        </td>
+        <td style="background: #AEF1AE">
+          classOf[dotty.tools.repl.ReplDriver].getClassLoader()
+        </td>
+      </tr><tr>
+        <td>
+          37
+        </td>
+        <td>
+          80535
+        </td>
+        <td>
+          1392
+          -
+          1417
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          scala.collection.TraversableOnce.toArray
+        </td>
+        <td style="background: #AEF1AE">
+          compilerClasspath.toArray[java.net.URL]((ClassTag.apply[java.net.URL](classOf[java.net.URL]): scala.reflect.ClassTag[java.net.URL]))
+        </td>
+      </tr><tr>
+        <td>
+          37
+        </td>
+        <td>
+          80537
+        </td>
+        <td>
+          1364
+          -
+          1454
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.net.URLClassLoader.&lt;init&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          new java.net.URLClassLoader(compilerClasspath.toArray[java.net.URL]((ClassTag.apply[java.net.URL](classOf[java.net.URL]): scala.reflect.ClassTag[java.net.URL])), classOf[dotty.tools.repl.ReplDriver].getClassLoader())
+        </td>
+      </tr><tr>
+        <td>
+          40
+        </td>
+        <td>
+          80539
+        </td>
+        <td>
+          1514
+          -
+          1532
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.repl.ReplCompiler.directory
+        </td>
+        <td style="background: #AEF1AE">
+          Rendering.this.compiler.directory
+        </td>
+      </tr><tr>
+        <td>
+          40
+        </td>
+        <td>
+          80540
+        </td>
+        <td>
+          1486
+          -
+          1541
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.repl.AbstractFileClassLoader.&lt;init&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          new AbstractFileClassLoader(Rendering.this.compiler.directory, parent)
+        </td>
+      </tr><tr>
+        <td>
+          42
+        </td>
+        <td>
+          80542
+        </td>
+        <td>
+          1632
+          -
+          1689
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.Thread.setContextClassLoader
+        </td>
+        <td style="background: #AEF1AE">
+          java.lang.Thread.currentThread().setContextClassLoader(Rendering.this.myClassLoader)
+        </td>
+      </tr><tr>
+        <td>
+          42
+        </td>
+        <td>
+          80541
+        </td>
+        <td>
+          1675
+          -
+          1688
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.repl.Rendering.myClassLoader
+        </td>
+        <td style="background: #AEF1AE">
+          Rendering.this.myClassLoader
+        </td>
+      </tr><tr>
+        <td>
+          43
+        </td>
+        <td>
+          80543
+        </td>
+        <td>
+          1696
+          -
+          1709
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.repl.Rendering.myClassLoader
+        </td>
+        <td style="background: #AEF1AE">
+          Rendering.this.myClassLoader
+        </td>
+      </tr><tr>
+        <td>
+          51
+        </td>
+        <td>
+          80545
+        </td>
+        <td>
+          1947
+          -
+          1962
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Contexts.ContextBase.definitions
+        </td>
+        <td style="background: #AEF1AE">
+          Contexts.this.Context.toBase(ctx).definitions
+        </td>
+      </tr><tr>
+        <td>
+          52
+        </td>
+        <td>
+          80546
+        </td>
+        <td>
+          1984
+          -
+          2031
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.IndexedSeqOptimized.dropRight
+        </td>
+        <td style="background: #AEF1AE">
+          scala.Predef.augmentString(core.this.Symbols.toDenot(core.this.Symbols.toDenot(sym)(ctx).owner)(ctx).fullName(ctx).encode.toString()).dropRight(1)
+        </td>
+      </tr><tr>
+        <td>
+          53
+        </td>
+        <td>
+          80548
+        </td>
+        <td>
+          2113
+          -
+          2126
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.repl.Rendering.classLoader
+        </td>
+        <td style="background: #AEF1AE">
+          Rendering.this.classLoader()(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          53
+        </td>
+        <td>
+          80547
+        </td>
+        <td>
+          2107
+          -
+          2111
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          true
+        </td>
+      </tr><tr>
+        <td>
+          53
+        </td>
+        <td>
+          80549
+        </td>
+        <td>
+          2081
+          -
+          2127
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.Class.forName
+        </td>
+        <td style="background: #AEF1AE">
+          java.lang.Class.forName(objectName, true, Rendering.this.classLoader()(ctx))
+        </td>
+      </tr><tr>
+        <td>
+          58
+        </td>
+        <td>
+          80550
+        </td>
+        <td>
+          2149
+          -
+          2264
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.Object.toString
+        </td>
+        <td style="background: #AEF1AE">
+          scala.Predef.refArrayOps[java.lang.reflect.Method](resObj.getDeclaredMethods()).find(((x$1: java.lang.reflect.Method) =&gt; x$1.getName().==(sym.name(ctx).toString().+(&quot;Show&quot;)))).get.invoke(null).toString()
+        </td>
+      </tr><tr>
+        <td>
+          60
+        </td>
+        <td>
+          80551
+        </td>
+        <td>
+          2282
+          -
+          2294
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Flags.Method
+        </td>
+        <td style="background: #AEF1AE">
+          dotc.core.Flags.Method
+        </td>
+      </tr><tr>
+        <td>
+          60
+        </td>
+        <td>
+          80553
+        </td>
+        <td>
+          2274
+          -
+          2324
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Boolean.&amp;&amp;
+        </td>
+        <td style="background: #AEF1AE">
+          core.this.Symbols.toDenot(sym)(ctx).is(dotc.core.Flags.Method)(ctx).unary_!.&amp;&amp;(core.this.Symbols.toDenot(sym)(ctx).info(ctx).==(defn.UnitType))
+        </td>
+      </tr><tr>
+        <td>
+          60
+        </td>
+        <td>
+          80552
+        </td>
+        <td>
+          2299
+          -
+          2324
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.Object.==
+        </td>
+        <td style="background: #AEF1AE">
+          core.this.Symbols.toDenot(sym)(ctx).info(ctx).==(defn.UnitType)
+        </td>
+      </tr><tr>
+        <td>
+          61
+        </td>
+        <td>
+          80554
+        </td>
+        <td>
+          2332
+          -
+          2336
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.None
+        </td>
+        <td style="background: #AEF1AE">
+          scala.None
+        </td>
+      </tr><tr>
+        <td>
+          61
+        </td>
+        <td>
+          80555
+        </td>
+        <td>
+          2332
+          -
+          2336
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          scala.None
+        </td>
+        <td style="background: #AEF1AE">
+          scala.None
+        </td>
+      </tr><tr>
+        <td>
+          62
+        </td>
+        <td>
+          80566
+        </td>
+        <td>
+          2346
+          -
+          2502
+        </td>
+        <td>
+          If
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          if (res.startsWith(&quot;rs$line$&quot;))
+  scala.Some.apply[String](scala.Predef.augmentString(scala.Predef.augmentString(res).drop(&quot;rs$line$&quot;.length())).dropWhile(((c: Char) =&gt; scala.Predef.charWrapper(c).isDigit.||(c.==('$')))))
+else
+  scala.Some.apply[String](res)
+        </td>
+      </tr><tr>
+        <td>
+          62
+        </td>
+        <td>
+          80556
+        </td>
+        <td>
+          2350
+          -
+          2387
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.String.startsWith
+        </td>
+        <td style="background: #AEF1AE">
+          res.startsWith(&quot;rs$line$&quot;)
+        </td>
+      </tr><tr>
+        <td>
+          63
+        </td>
+        <td>
+          80557
+        </td>
+        <td>
+          2409
+          -
+          2437
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.String.length
+        </td>
+        <td style="background: #AEF1AE">
+          &quot;rs$line$&quot;.length()
+        </td>
+      </tr><tr>
+        <td>
+          63
+        </td>
+        <td>
+          80560
+        </td>
+        <td>
+          2454
+          -
+          2475
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Boolean.||
+        </td>
+        <td style="background: #AEF1AE">
+          scala.Predef.charWrapper(c).isDigit.||(c.==('$'))
+        </td>
+      </tr><tr>
+        <td>
+          63
+        </td>
+        <td>
+          80563
+        </td>
+        <td>
+          2395
+          -
+          2477
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          scala.Some.apply
+        </td>
+        <td style="background: #AEF1AE">
+          scala.Some.apply[String](scala.Predef.augmentString(scala.Predef.augmentString(res).drop(&quot;rs$line$&quot;.length())).dropWhile(((c: Char) =&gt; scala.Predef.charWrapper(c).isDigit.||(c.==('$')))))
+        </td>
+      </tr><tr>
+        <td>
+          63
+        </td>
+        <td>
+          80559
+        </td>
+        <td>
+          2467
+          -
+          2475
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Char.==
+        </td>
+        <td style="background: #AEF1AE">
+          c.==('$')
+        </td>
+      </tr><tr>
+        <td>
+          63
+        </td>
+        <td>
+          80562
+        </td>
+        <td>
+          2395
+          -
+          2477
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Some.apply
+        </td>
+        <td style="background: #AEF1AE">
+          scala.Some.apply[String](scala.Predef.augmentString(scala.Predef.augmentString(res).drop(&quot;rs$line$&quot;.length())).dropWhile(((c: Char) =&gt; scala.Predef.charWrapper(c).isDigit.||(c.==('$')))))
+        </td>
+      </tr><tr>
+        <td>
+          63
+        </td>
+        <td>
+          80561
+        </td>
+        <td>
+          2400
+          -
+          2476
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.IndexedSeqOptimized.dropWhile
+        </td>
+        <td style="background: #AEF1AE">
+          scala.Predef.augmentString(scala.Predef.augmentString(res).drop(&quot;rs$line$&quot;.length())).dropWhile(((c: Char) =&gt; scala.Predef.charWrapper(c).isDigit.||(c.==('$'))))
+        </td>
+      </tr><tr>
+        <td>
+          63
+        </td>
+        <td>
+          80558
+        </td>
+        <td>
+          2400
+          -
+          2438
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.IndexedSeqOptimized.drop
+        </td>
+        <td style="background: #AEF1AE">
+          scala.Predef.augmentString(res).drop(&quot;rs$line$&quot;.length())
+        </td>
+      </tr><tr>
+        <td>
+          65
+        </td>
+        <td>
+          80565
+        </td>
+        <td>
+          2493
+          -
+          2502
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          scala.Some.apply
+        </td>
+        <td style="background: #AEF1AE">
+          scala.Some.apply[String](res)
+        </td>
+      </tr><tr>
+        <td>
+          65
+        </td>
+        <td>
+          80564
+        </td>
+        <td>
+          2493
+          -
+          2502
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Some.apply
+        </td>
+        <td style="background: #AEF1AE">
+          scala.Some.apply[String](res)
+        </td>
+      </tr><tr>
+        <td>
+          70
+        </td>
+        <td>
+          80567
+        </td>
+        <td>
+          2620
+          -
+          2637
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.repl.ShowUser.showUser
+        </td>
+        <td style="background: #AEF1AE">
+          repl.this.`package`.ShowUser(d.symbol).showUser(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          74
+        </td>
+        <td>
+          80568
+        </td>
+        <td>
+          2767
+          -
+          2784
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.repl.ShowUser.showUser
+        </td>
+        <td style="background: #AEF1AE">
+          repl.this.`package`.ShowUser(d.symbol).showUser(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          76
+        </td>
+        <td>
+          80576
+        </td>
+        <td>
+          2802
+          -
+          2952
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          {
+  val resultValue: Option[String] = if (core.this.Symbols.toDenot(d.symbol)(ctx).is(dotc.core.Flags.Lazy)(ctx))
+    scala.Some.apply[String](&quot;&lt;lazy&gt;&quot;)
+  else
+    Rendering.this.valueOf(d.symbol)(ctx);
+  resultValue.map[String](((value: String) =&gt; scala.StringContext.apply(&quot;&quot;, &quot; = &quot;, &quot;&quot;).s(dcl, value)))
+}
+        </td>
+      </tr><tr>
+        <td>
+          78
+        </td>
+        <td>
+          80569
+        </td>
+        <td>
+          2832
+          -
+          2855
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.SymDenotations.SymDenotation.is
+        </td>
+        <td style="background: #AEF1AE">
+          core.this.Symbols.toDenot(d.symbol)(ctx).is(dotc.core.Flags.Lazy)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          78
+        </td>
+        <td>
+          80571
+        </td>
+        <td>
+          2857
+          -
+          2871
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          scala.Some.apply
+        </td>
+        <td style="background: #F0ADAD">
+          scala.Some.apply[String](&quot;&lt;lazy&gt;&quot;)
+        </td>
+      </tr><tr>
+        <td>
+          78
+        </td>
+        <td>
+          80570
+        </td>
+        <td>
+          2857
+          -
+          2871
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Some.apply
+        </td>
+        <td style="background: #F0ADAD">
+          scala.Some.apply[String](&quot;&lt;lazy&gt;&quot;)
+        </td>
+      </tr><tr>
+        <td>
+          79
+        </td>
+        <td>
+          80572
+        </td>
+        <td>
+          2885
+          -
+          2902
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.repl.Rendering.valueOf
+        </td>
+        <td style="background: #AEF1AE">
+          Rendering.this.valueOf(d.symbol)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          79
+        </td>
+        <td>
+          80573
+        </td>
+        <td>
+          2885
+          -
+          2902
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          dotty.tools.repl.Rendering.valueOf
+        </td>
+        <td style="background: #AEF1AE">
+          Rendering.this.valueOf(d.symbol)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          81
+        </td>
+        <td>
+          80575
+        </td>
+        <td>
+          2910
+          -
+          2952
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Option.map
+        </td>
+        <td style="background: #AEF1AE">
+          resultValue.map[String](((value: String) =&gt; scala.StringContext.apply(&quot;&quot;, &quot; = &quot;, &quot;&quot;).s(dcl, value)))
+        </td>
+      </tr><tr>
+        <td>
+          81
+        </td>
+        <td>
+          80574
+        </td>
+        <td>
+          2935
+          -
+          2951
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.StringContext.s
+        </td>
+        <td style="background: #AEF1AE">
+          scala.StringContext.apply(&quot;&quot;, &quot; = &quot;, &quot;&quot;).s(dcl, value)
+        </td>
+      </tr><tr>
+        <td>
+          83
+        </td>
+        <td>
+          80578
+        </td>
+        <td>
+          3009
+          -
+          3030
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Some.apply
+        </td>
+        <td style="background: #F0ADAD">
+          scala.Some.apply[String](Rendering.this.renderError(ex))
+        </td>
+      </tr><tr>
+        <td>
+          83
+        </td>
+        <td>
+          80577
+        </td>
+        <td>
+          3014
+          -
+          3029
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.repl.Rendering.renderError
+        </td>
+        <td style="background: #F0ADAD">
+          Rendering.this.renderError(ex)
+        </td>
+      </tr><tr>
+        <td>
+          88
+        </td>
+        <td>
+          80579
+        </td>
+        <td>
+          3183
+          -
+          3194
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.reflect.InvocationTargetException.getCause
+        </td>
+        <td style="background: #F0ADAD">
+          ex.getCause()
+        </td>
+      </tr><tr>
+        <td>
+          89
+        </td>
+        <td>
+          80580
+        </td>
+        <td>
+          3249
+          -
+          3260
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.ExceptionInInitializerError.getCause
+        </td>
+        <td style="background: #F0ADAD">
+          ex.getCause()
+        </td>
+      </tr><tr>
+        <td>
+          92
+        </td>
+        <td>
+          80581
+        </td>
+        <td>
+          3300
+          -
+          3318
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.io.StringWriter.&lt;init&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          new java.io.StringWriter()
+        </td>
+      </tr><tr>
+        <td>
+          93
+        </td>
+        <td>
+          80582
+        </td>
+        <td>
+          3332
+          -
+          3351
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.io.PrintWriter.&lt;init&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          new java.io.PrintWriter(sw)
+        </td>
+      </tr><tr>
+        <td>
+          94
+        </td>
+        <td>
+          80583
+        </td>
+        <td>
+          3356
+          -
+          3381
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.Throwable.printStackTrace
+        </td>
+        <td style="background: #F0ADAD">
+          cause.printStackTrace(pw)
+        </td>
+      </tr><tr>
+        <td>
+          95
+        </td>
+        <td>
+          80584
+        </td>
+        <td>
+          3386
+          -
+          3397
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.io.StringWriter.toString
+        </td>
+        <td style="background: #F0ADAD">
+          sw.toString()
+        </td>
+      </tr>
+    </table>
+          </div>
+        </div>
+      </body>
+    </html>

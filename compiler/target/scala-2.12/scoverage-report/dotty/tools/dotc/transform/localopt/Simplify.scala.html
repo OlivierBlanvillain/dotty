@@ -1,0 +1,3279 @@
+<html>
+      <head>
+        <meta http-equiv="Content-Type" content="text/html; charset=utf-8"/>
+        <title id="title">
+          dotty/tools/dotc/transform/localopt/Simplify.scala.html
+        </title>
+        <script src="https://ajax.googleapis.com/ajax/libs/jquery/1.10.2/jquery.min.js"></script><link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/jquery.tablesorter/2.20.1/css/theme.default.min.css" type="text/css"/><script src="https://cdnjs.cloudflare.com/ajax/libs/jquery.tablesorter/2.20.1/js/jquery.tablesorter.min.js"></script><link rel="stylesheet" href="https://netdna.bootstrapcdn.com/bootstrap/3.0.3/css/bootstrap.min.css" type="text/css"/><script src="https://netdna.bootstrapcdn.com/bootstrap/3.0.3/js/bootstrap.min.js"></script><script type="text/javascript">
+        $(document).ready(function() {$(".tablesorter").tablesorter();});
+      </script>
+        <style>
+          table.codegrid { font-family: monospace; font-size: 12px; width: auto!important; }table.statementlist { width: auto!important; font-size: 13px; } table.codegrid td { padding: 0!important; border: 0!important } table td.linenumber { width: 40px!important; } 
+        </style>
+      </head>
+      <body style="font-family: monospace;">
+        <ul class="nav nav-tabs">
+          <li>
+            <a href="#codegrid" data-toggle="tab">Codegrid</a>
+          </li>
+          <li>
+            <a href="#statementlist" data-toggle="tab">Statement List</a>
+          </li>
+        </ul>
+        <div class="tab-content">
+          <div class="tab-pane active" id="codegrid">
+            <pre style='font-size: 12pt; font-family: courier;'>1 <span style=''>package dotty.tools.dotc
+</span>2 <span style=''>package transform.localopt
+</span>3 <span style=''>
+</span>4 <span style=''>import core.Contexts.Context
+</span>5 <span style=''>import core.DenotTransformers.IdentityDenotTransformer
+</span>6 <span style=''>import core.Symbols._
+</span>7 <span style=''>import core.Types._
+</span>8 <span style=''>import core.Flags._
+</span>9 <span style=''>import core.Decorators._
+</span>10 <span style=''>import core.NameOps._
+</span>11 <span style=''>import transform.MegaPhase.MiniPhase
+</span>12 <span style=''>import config.Printers.simplify
+</span>13 <span style=''>import ast.tpd
+</span>14 <span style=''>import dotty.tools.dotc.core.PhantomErasure
+</span>15 <span style=''>
+</span>16 <span style=''>import scala.annotation.tailrec
+</span>17 <span style=''>
+</span>18 <span style=''>/** This phase consists of a series of small, simple, local optimisations
+</span>19 <span style=''> *  applied as a fix point transformation over Dotty Trees.
+</span>20 <span style=''> *
+</span>21 <span style=''> *  The termination condition uses referential equality on Trees. Furthermore,
+</span>22 <span style=''> *  termination relies of every optimisation to be shrinking transformations.
+</span>23 <span style=''> *
+</span>24 <span style=''> *  This phase is intended to be run multiple times in the compilation pipeline.
+</span>25 <span style=''> *  This is due to several reasons:
+</span>26 <span style=''> *   - running this phase early allows to reduce size of compilation unit, speeding up subsequent transformations.
+</span>27 <span style=''> *   - running this phase late allows to eliminate inefficiencies created by previous phase
+</span>28 <span style=''> *   - different patters are easier to optimize at different moments of pipeline
+</span>29 <span style=''> */
+</span>30 <span style=''>class Simplify extends MiniPhase with IdentityDenotTransformer {
+</span>31 <span style=''>  import tpd._
+</span>32 <span style=''>  override def phaseName: String = </span><span style='background: #AEF1AE'>&quot;simplify&quot;</span><span style=''>
+</span>33 <span style=''>  override val cpy = </span><span style='background: #AEF1AE'>tpd.cpy</span><span style=''>
+</span>34 <span style=''>
+</span>35 <span style=''>  private[localopt] var SeqFactoryClass: Symbol = </span><span style='background: #AEF1AE'>null</span><span style=''>
+</span>36 <span style=''>  private[localopt] var CommutativePrimitiveOperations: Set[Symbol] = </span><span style='background: #AEF1AE'>null</span><span style=''>
+</span>37 <span style=''>
+</span>38 <span style=''>  /** The original intention is to run most optimizations both before and after erasure.
+</span>39 <span style=''>   *  Erasure creates new inefficiencies as well as new optimization opportunities.
+</span>40 <span style=''>   *
+</span>41 <span style=''>   *  The order of optimizations is tuned to converge faster.
+</span>42 <span style=''>   *  Reordering them may require quadratically more rounds to finish.
+</span>43 <span style=''>   */
+</span>44 <span style=''>  private def beforeErasure: List[Optimisation] =
+</span>45 <span style=''>    new InlineCaseIntrinsics(this)  </span><span style='background: #AEF1AE'>::
+</span>46 <span style=''></span><span style='background: #AEF1AE'>    new RemoveUnnecessaryNullChecks ::
+</span>47 <span style=''></span><span style='background: #AEF1AE'>    new InlineOptions               ::
+</span>48 <span style=''></span><span style='background: #AEF1AE'>    //new InlineLabelsCalledOnce    :: // not needed: new pattern matcher does this already
+</span>49 <span style=''></span><span style='background: #AEF1AE'>    new Valify(this)                ::
+</span>50 <span style=''></span><span style='background: #AEF1AE'>    new Devalify                    ::
+</span>51 <span style=''></span><span style='background: #AEF1AE'>    new Jumpjump                    ::
+</span>52 <span style=''></span><span style='background: #AEF1AE'>    new DropGoodCasts               ::
+</span>53 <span style=''></span><span style='background: #AEF1AE'>    new DropNoEffects(this)         ::
+</span>54 <span style=''></span><span style='background: #AEF1AE'>    new InlineLocalObjects(this)    ::
+</span>55 <span style=''></span><span style='background: #AEF1AE'>    // new Varify                      :: // varify could stop other transformations from being applied. postponed.
+</span>56 <span style=''></span><span style='background: #AEF1AE'>    // new BubbleUpNothing             ::
+</span>57 <span style=''></span><span style='background: #AEF1AE'>    new ConstantFold(this)          ::
+</span>58 <span style=''></span><span style='background: #AEF1AE'>    Nil</span><span style=''>
+</span>59 <span style=''>
+</span>60 <span style=''>  /** See comment on beforeErasure */
+</span>61 <span style=''>  private def afterErasure: List[Optimisation] =
+</span>62 <span style=''>    new Valify(this)                </span><span style='background: #AEF1AE'>::
+</span>63 <span style=''></span><span style='background: #AEF1AE'>    new Devalify                    ::
+</span>64 <span style=''></span><span style='background: #AEF1AE'>    new Jumpjump                    ::
+</span>65 <span style=''></span><span style='background: #AEF1AE'>    new DropGoodCasts               ::
+</span>66 <span style=''></span><span style='background: #AEF1AE'>    new DropNoEffects(this)         ::
+</span>67 <span style=''></span><span style='background: #AEF1AE'>    new ConstantFold(this)          ::
+</span>68 <span style=''></span><span style='background: #AEF1AE'>    Nil</span><span style=''>
+</span>69 <span style=''>
+</span>70 <span style=''>  var optimisations: List[Optimisation] = </span><span style='background: #AEF1AE'>Nil</span><span style=''>
+</span>71 <span style=''>
+</span>72 <span style=''>  /** Optimisation fuel, for debugging. Decremented every time Simplify
+</span>73 <span style=''>   *  applies an optimisation until fuel == 0. Original idea from Automatic
+</span>74 <span style=''>   *  Isolation of Compiler Errors by David Whalley. Unable with -Yopt-fuel.
+</span>75 <span style=''>   *
+</span>76 <span style=''>   *  The fuel can be used to do a bisection on large test cases that fail
+</span>77 <span style=''>   *  -optimise. See compiler/test/bisect.sh for a shell script to automates
+</span>78 <span style=''>   *  the bisection search.
+</span>79 <span style=''>   */
+</span>80 <span style=''>  var fuel: Int = </span><span style='background: #AEF1AE'>-1</span><span style=''>
+</span>81 <span style=''>
+</span>82 <span style=''>  override def prepareForUnit(tree: Tree)(implicit ctx: Context) = {
+</span>83 <span style=''>    </span><span style='background: #AEF1AE'>SeqFactoryClass = ctx.requiredClass(&quot;scala.collection.generic.SeqFactory&quot;)</span><span style=''>
+</span>84 <span style=''>    </span><span style='background: #AEF1AE'>CommutativePrimitiveOperations = Set(defn.Boolean_&amp;&amp;, defn.Boolean_||, defn.Int_+, defn.Int_*, defn.Long_+, defn.Long_*)</span><span style=''>
+</span>85 <span style=''>
+</span>86 <span style=''>    val maxFuel = </span><span style='background: #AEF1AE'>ctx.settings.YoptFuel.value</span><span style=''>
+</span>87 <span style=''>    if (</span><span style='background: #AEF1AE'>fuel &lt; 0 &amp;&amp; maxFuel &gt; 0</span><span style=''>) // Both defaults are at -1
+</span>88 <span style=''>      </span><span style='background: #F0ADAD'>fuel = maxFuel</span><span style=''>
+</span>89 <span style=''>
+</span>90 <span style=''>    </span><span style='background: #AEF1AE'>optimisations = {
+</span>91 <span style=''></span><span style='background: #AEF1AE'>      val o = if (ctx.erasedTypes) afterErasure else beforeErasure
+</span>92 <span style=''></span><span style='background: #AEF1AE'>      val p = ctx.settings.YoptPhases.value
+</span>93 <span style=''></span><span style='background: #AEF1AE'>      if (p.isEmpty) o else </span><span style='background: #F0ADAD'>o.filter(x =&gt; p.contains(x.name))</span><span style='background: #AEF1AE'>
+</span>94 <span style=''></span><span style='background: #AEF1AE'>    }</span><span style=''>
+</span>95 <span style=''>
+</span>96 <span style=''>    ctx
+</span>97 <span style=''>  }
+</span>98 <span style=''>
+</span>99 <span style=''>  // The entry point of local optimisation: DefDefs
+</span>100 <span style=''>  override def transformDefDef(tree: DefDef)(implicit ctx: Context): Tree = {
+</span>101 <span style=''>    val ctx0 = ctx
+</span>102 <span style=''>    if (</span><span style='background: #AEF1AE'>ctx.settings.optimise.value &amp;&amp; !tree.symbol.is(Label)</span><span style=''>) </span><span style='background: #AEF1AE'>{
+</span>103 <span style=''></span><span style='background: #AEF1AE'>      implicit val ctx: Context = ctx0.withOwner(tree.symbol(ctx0))
+</span>104 <span style=''></span><span style='background: #AEF1AE'>      var rhs0 = tree.rhs
+</span>105 <span style=''></span><span style='background: #AEF1AE'>      var rhs1: Tree = null
+</span>106 <span style=''></span><span style='background: #AEF1AE'>      while (rhs1 ne rhs0) {
+</span>107 <span style=''></span><span style='background: #AEF1AE'>        rhs1 = rhs0
+</span>108 <span style=''></span><span style='background: #AEF1AE'>        optimisations.foreach { optimisation =&gt;
+</span>109 <span style=''></span><span style='background: #AEF1AE'>          // Visit
+</span>110 <span style=''></span><span style='background: #AEF1AE'>          rhs0.foreachSubTree(optimisation.visitor)
+</span>111 <span style=''></span><span style='background: #AEF1AE'>
+</span>112 <span style=''></span><span style='background: #AEF1AE'>          // Transform
+</span>113 <span style=''></span><span style='background: #AEF1AE'>          rhs0 = new TreeMap() {
+</span>114 <span style=''></span><span style='background: #AEF1AE'>            override def transform(tree: Tree)(implicit ctx: Context): Tree = {
+</span>115 <span style=''></span><span style='background: #AEF1AE'>              val innerCtx = if (tree.isDef &amp;&amp; tree.symbol.exists) ctx.withOwner(tree.symbol) else ctx
+</span>116 <span style=''></span><span style='background: #AEF1AE'>              val childOptimizedTree = super.transform(tree)(innerCtx)
+</span>117 <span style=''></span><span style='background: #AEF1AE'>              printIfDifferent(childOptimizedTree, optimisation.transformer(ctx)(childOptimizedTree), optimisation)
+</span>118 <span style=''></span><span style='background: #AEF1AE'>            }
+</span>119 <span style=''></span><span style='background: #AEF1AE'>          }.transform(rhs0)
+</span>120 <span style=''></span><span style='background: #AEF1AE'>
+</span>121 <span style=''></span><span style='background: #AEF1AE'>          // Clean
+</span>122 <span style=''></span><span style='background: #AEF1AE'>          optimisation.clear()
+</span>123 <span style=''></span><span style='background: #AEF1AE'>        }
+</span>124 <span style=''></span><span style='background: #AEF1AE'>      }
+</span>125 <span style=''></span><span style='background: #AEF1AE'>      if (rhs0 ne tree.rhs) tpd.cpy.DefDef(tree)(rhs = rhs0)
+</span>126 <span style=''></span><span style='background: #AEF1AE'>      else tree
+</span>127 <span style=''></span><span style='background: #AEF1AE'>    }</span><span style=''> else </span><span style='background: #AEF1AE'>tree</span><span style=''>
+</span>128 <span style=''>  }
+</span>129 <span style=''>
+</span>130 <span style=''>  private def printIfDifferent(tree1: Tree, tree2: =&gt; Tree, opt: Optimisation)(implicit ctx: Context): Tree = {
+</span>131 <span style=''>    if (</span><span style='background: #AEF1AE'>fuel == -1</span><span style=''>)
+</span>132 <span style=''>      </span><span style='background: #AEF1AE'>tree2</span><span style=''> // Does nothing when fuel is disabled.
+</span>133 <span style=''>    else </span><span style='background: #F0ADAD'>if (fuel == 0)
+</span>134 <span style=''></span><span style='background: #F0ADAD'>      tree1 // No more fuel? No more transformations for you!
+</span>135 <span style=''></span><span style='background: #F0ADAD'>    else {  // Print the trees if different and consume fuel accordingly.
+</span>136 <span style=''></span><span style='background: #F0ADAD'>      val t2 = tree2
+</span>137 <span style=''></span><span style='background: #F0ADAD'>      if (tree1 ne t2) {
+</span>138 <span style=''></span><span style='background: #F0ADAD'>        if (fuel &gt; 0)
+</span>139 <span style=''></span><span style='background: #F0ADAD'>          fuel -= 1
+</span>140 <span style=''></span><span style='background: #F0ADAD'>        if (fuel != -1 &amp;&amp; fuel &lt; 5) {
+</span>141 <span style=''></span><span style='background: #F0ADAD'>          println(s&quot;${tree1.symbol} was simplified by ${opt.name} (fuel=$fuel): ${tree1.show}&quot;)
+</span>142 <span style=''></span><span style='background: #F0ADAD'>          println(s&quot;became after ${opt.name}: (fuel=$fuel) ${t2.show}&quot;)
+</span>143 <span style=''></span><span style='background: #F0ADAD'>        }
+</span>144 <span style=''></span><span style='background: #F0ADAD'>      }
+</span>145 <span style=''></span><span style='background: #F0ADAD'>      t2
+</span>146 <span style=''></span><span style='background: #F0ADAD'>    }</span><span style=''>
+</span>147 <span style=''>  }
+</span>148 <span style=''>}
+</span>149 <span style=''>
+</span>150 <span style=''>object Simplify {
+</span>151 <span style=''>  import tpd._
+</span>152 <span style=''>
+</span>153 <span style=''>  /** Is this tree mutable, or java.lang.System.{in, out, err}? These three
+</span>154 <span style=''>   *  System members are the only static final fields that are mutable.
+</span>155 <span style=''>   *  See https://docs.oracle.com/javase/specs/jls/se8/html/jls-17.html#jls-17.5.4
+</span>156 <span style=''>   */
+</span>157 <span style=''>  def isEffectivelyMutable(t: Tree)(implicit ctx: Context): Boolean = t match {
+</span>158 <span style=''>    case _ if </span><span style='background: #AEF1AE'>t.symbol.is(Mutable)</span><span style=''> =&gt; </span><span style='background: #AEF1AE'>true</span><span style=''>
+</span>159 <span style=''>    case _: Select | _: Ident =&gt;
+</span>160 <span style=''>      </span><span style='background: #AEF1AE'>t.symbol.owner == defn.SystemModule</span><span style=''>
+</span>161 <span style=''>    case _ =&gt; </span><span style='background: #AEF1AE'>false</span><span style=''>
+</span>162 <span style=''>  }
+</span>163 <span style=''>
+</span>164 <span style=''>  def isImmutableAccessor(t: Tree)(implicit ctx: Context): Boolean = {
+</span>165 <span style=''>    val sym = </span><span style='background: #AEF1AE'>t.symbol</span><span style=''>
+</span>166 <span style=''>    val isImmutableGetter = </span><span style='background: #AEF1AE'>sym.isGetter &amp;&amp; !sym.is(Mutable | Lazy)</span><span style=''>
+</span>167 <span style=''>    val isCaseAccessor    = </span><span style='background: #AEF1AE'>sym.is(CaseAccessor) &amp;&amp; !sym.is(Mutable | Lazy)</span><span style=''>
+</span>168 <span style=''>    val isProductAccessor = </span><span style='background: #AEF1AE'>sym.exists                               &amp;&amp;
+</span>169 <span style=''></span><span style='background: #AEF1AE'>                            sym.owner.derivesFrom(defn.ProductClass) &amp;&amp;
+</span>170 <span style=''></span><span style='background: #AEF1AE'>                            sym.owner.is(CaseClass)                  &amp;&amp;
+</span>171 <span style=''></span><span style='background: #AEF1AE'>                            sym.name.isSelectorName                  &amp;&amp;
+</span>172 <span style=''></span><span style='background: #AEF1AE'>                            !sym.info.decls.exists(_.is(Mutable | Lazy))</span><span style=''> // Conservatively covers case class A(var x: Int)
+</span>173 <span style=''>    val isErasedPhantom   = </span><span style='background: #AEF1AE'>PhantomErasure.isErasedPhantom(sym)</span><span style=''>
+</span>174 <span style=''>
+</span>175 <span style=''>    </span><span style='background: #AEF1AE'>isImmutableGetter || isCaseAccessor || isProductAccessor || isErasedPhantom</span><span style=''>
+</span>176 <span style=''>  }
+</span>177 <span style=''>}
+</span></pre>
+          </div>
+          <div class="tab-pane" id="statementlist">
+            <table cellspacing="0" cellpadding="0" class="table statementlist">
+      <tr>
+        <th>Line</th>
+        <th>Stmt Id</th>
+        <th>Pos</th>
+        <th>Tree</th>
+        <th>Symbol</th>
+        <th>Code</th>
+      </tr><tr>
+        <td>
+          32
+        </td>
+        <td>
+          64987
+        </td>
+        <td>
+          1229
+          -
+          1239
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          &quot;simplify&quot;
+        </td>
+      </tr><tr>
+        <td>
+          33
+        </td>
+        <td>
+          64988
+        </td>
+        <td>
+          1261
+          -
+          1268
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.ast.tpd.cpy
+        </td>
+        <td style="background: #AEF1AE">
+          ast.tpd.cpy
+        </td>
+      </tr><tr>
+        <td>
+          35
+        </td>
+        <td>
+          64989
+        </td>
+        <td>
+          1320
+          -
+          1324
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          null
+        </td>
+      </tr><tr>
+        <td>
+          36
+        </td>
+        <td>
+          64990
+        </td>
+        <td>
+          1395
+          -
+          1399
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          null
+        </td>
+      </tr><tr>
+        <td>
+          45
+        </td>
+        <td>
+          64991
+        </td>
+        <td>
+          1804
+          -
+          2415
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.immutable.List.::
+        </td>
+        <td style="background: #AEF1AE">
+          {
+  &lt;synthetic&gt; &lt;artifact&gt; val x$9: dotty.tools.dotc.transform.localopt.RemoveUnnecessaryNullChecks = new RemoveUnnecessaryNullChecks();
+  {
+  &lt;synthetic&gt; &lt;artifact&gt; val x$8: dotty.tools.dotc.transform.localopt.InlineOptions = new InlineOptions();
+  {
+  &lt;synthetic&gt; &lt;artifact&gt; val x$7: dotty.tools.dotc.transform.localopt.Valify = new Valify(this);
+  {
+  &lt;synthetic&gt; &lt;artifact&gt; val x$6: dotty.tools.dotc.transform.localopt.Devalify = new Devalify();
+  {
+  &lt;synthetic&gt; &lt;artifact&gt; val x$5: dotty.tools.dotc.transform.localopt.Jumpjump = new Jumpjump();
+  {
+  &lt;synthetic&gt; &lt;artifact&gt; val x$4: dotty.tools.dotc.transform.localopt.DropGoodCasts = new DropGoodCasts();
+  {
+  &lt;synthetic&gt; &lt;artifact&gt; val x$3: dotty.tools.dotc.transform.localopt.DropNoEffects = new DropNoEffects(this);
+  {
+  &lt;synthetic&gt; &lt;artifact&gt; val x$2: dotty.tools.dotc.transform.localopt.InlineLocalObjects = new InlineLocalObjects(this);
+  {
+  &lt;synthetic&gt; &lt;artifact&gt; val x$1: dotty.tools.dotc.transform.localopt.ConstantFold = new ConstantFold(this);
+  scala.collection.immutable.Nil.::[dotty.tools.dotc.transform.localopt.ConstantFold](x$1)
+}.::[dotty.tools.dotc.transform.localopt.Optimisation](x$2)
+}.::[dotty.tools.dotc.transform.localopt.Optimisation](x$3)
+}.::[dotty.tools.dotc.transform.localopt.Optimisation](x$4)
+}.::[dotty.tools.dotc.transform.localopt.Optimisation](x$5)
+}.::[dotty.tools.dotc.transform.localopt.Optimisation](x$6)
+}.::[dotty.tools.dotc.transform.localopt.Optimisation](x$7)
+}.::[dotty.tools.dotc.transform.localopt.Optimisation](x$8)
+}.::[dotty.tools.dotc.transform.localopt.Optimisation](x$9)
+}.::[dotty.tools.dotc.transform.localopt.Optimisation](x$10)
+        </td>
+      </tr><tr>
+        <td>
+          62
+        </td>
+        <td>
+          64992
+        </td>
+        <td>
+          2540
+          -
+          2745
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.immutable.List.::
+        </td>
+        <td style="background: #AEF1AE">
+          {
+  &lt;synthetic&gt; &lt;artifact&gt; val x$15: dotty.tools.dotc.transform.localopt.Devalify = new Devalify();
+  {
+  &lt;synthetic&gt; &lt;artifact&gt; val x$14: dotty.tools.dotc.transform.localopt.Jumpjump = new Jumpjump();
+  {
+  &lt;synthetic&gt; &lt;artifact&gt; val x$13: dotty.tools.dotc.transform.localopt.DropGoodCasts = new DropGoodCasts();
+  {
+  &lt;synthetic&gt; &lt;artifact&gt; val x$12: dotty.tools.dotc.transform.localopt.DropNoEffects = new DropNoEffects(this);
+  {
+  &lt;synthetic&gt; &lt;artifact&gt; val x$11: dotty.tools.dotc.transform.localopt.ConstantFold = new ConstantFold(this);
+  scala.collection.immutable.Nil.::[dotty.tools.dotc.transform.localopt.ConstantFold](x$11)
+}.::[dotty.tools.dotc.transform.localopt.Optimisation](x$12)
+}.::[dotty.tools.dotc.transform.localopt.Optimisation](x$13)
+}.::[dotty.tools.dotc.transform.localopt.Optimisation](x$14)
+}.::[dotty.tools.dotc.transform.localopt.Optimisation](x$15)
+}.::[dotty.tools.dotc.transform.localopt.Optimisation](x$16)
+        </td>
+      </tr><tr>
+        <td>
+          70
+        </td>
+        <td>
+          64993
+        </td>
+        <td>
+          2789
+          -
+          2792
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.collection.immutable.Nil
+        </td>
+        <td style="background: #AEF1AE">
+          scala.collection.immutable.Nil
+        </td>
+      </tr><tr>
+        <td>
+          80
+        </td>
+        <td>
+          64994
+        </td>
+        <td>
+          3228
+          -
+          3230
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          -1
+        </td>
+      </tr><tr>
+        <td>
+          83
+        </td>
+        <td>
+          64997
+        </td>
+        <td>
+          3305
+          -
+          3379
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.transform.localopt.Simplify.SeqFactoryClass_=
+        </td>
+        <td style="background: #AEF1AE">
+          Simplify.this.SeqFactoryClass_=(ctx.requiredClass(core.Decorators.PreNamedString(&quot;scala.collection.generic.SeqFactory&quot;)))
+        </td>
+      </tr><tr>
+        <td>
+          83
+        </td>
+        <td>
+          64996
+        </td>
+        <td>
+          3323
+          -
+          3379
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.core.Symbols.requiredClass
+        </td>
+        <td style="background: #AEF1AE">
+          ctx.requiredClass(core.Decorators.PreNamedString(&quot;scala.collection.generic.SeqFactory&quot;))
+        </td>
+      </tr><tr>
+        <td>
+          83
+        </td>
+        <td>
+          64995
+        </td>
+        <td>
+          3341
+          -
+          3378
+        </td>
+        <td>
+          ApplyImplicitView
+        </td>
+        <td>
+          dotty.tools.dotc.core.Decorators.PreNamedString
+        </td>
+        <td style="background: #AEF1AE">
+          core.Decorators.PreNamedString(&quot;scala.collection.generic.SeqFactory&quot;)
+        </td>
+      </tr><tr>
+        <td>
+          84
+        </td>
+        <td>
+          65000
+        </td>
+        <td>
+          3455
+          -
+          3465
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Definitions.Int_+
+        </td>
+        <td style="background: #AEF1AE">
+          core.Symbols.defn(ctx).Int_+
+        </td>
+      </tr><tr>
+        <td>
+          84
+        </td>
+        <td>
+          65003
+        </td>
+        <td>
+          3492
+          -
+          3503
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Definitions.Long_*
+        </td>
+        <td style="background: #AEF1AE">
+          core.Symbols.defn(ctx).Long_*
+        </td>
+      </tr><tr>
+        <td>
+          84
+        </td>
+        <td>
+          65005
+        </td>
+        <td>
+          3384
+          -
+          3504
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.transform.localopt.Simplify.CommutativePrimitiveOperations_=
+        </td>
+        <td style="background: #AEF1AE">
+          Simplify.this.CommutativePrimitiveOperations_=(scala.Predef.Set.apply[dotty.tools.dotc.core.Symbols.Symbol](core.Symbols.defn(ctx).Boolean_&amp;&amp;, core.Symbols.defn(ctx).Boolean_||, core.Symbols.defn(ctx).Int_+, core.Symbols.defn(ctx).Int_*, core.Symbols.defn(ctx).Long_+, core.Symbols.defn(ctx).Long_*))
+        </td>
+      </tr><tr>
+        <td>
+          84
+        </td>
+        <td>
+          64999
+        </td>
+        <td>
+          3438
+          -
+          3453
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Definitions.Boolean_||
+        </td>
+        <td style="background: #AEF1AE">
+          core.Symbols.defn(ctx).Boolean_||
+        </td>
+      </tr><tr>
+        <td>
+          84
+        </td>
+        <td>
+          65002
+        </td>
+        <td>
+          3479
+          -
+          3490
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Definitions.Long_+
+        </td>
+        <td style="background: #AEF1AE">
+          core.Symbols.defn(ctx).Long_+
+        </td>
+      </tr><tr>
+        <td>
+          84
+        </td>
+        <td>
+          65001
+        </td>
+        <td>
+          3467
+          -
+          3477
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Definitions.Int_*
+        </td>
+        <td style="background: #AEF1AE">
+          core.Symbols.defn(ctx).Int_*
+        </td>
+      </tr><tr>
+        <td>
+          84
+        </td>
+        <td>
+          65004
+        </td>
+        <td>
+          3417
+          -
+          3504
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.generic.GenericCompanion.apply
+        </td>
+        <td style="background: #AEF1AE">
+          scala.Predef.Set.apply[dotty.tools.dotc.core.Symbols.Symbol](core.Symbols.defn(ctx).Boolean_&amp;&amp;, core.Symbols.defn(ctx).Boolean_||, core.Symbols.defn(ctx).Int_+, core.Symbols.defn(ctx).Int_*, core.Symbols.defn(ctx).Long_+, core.Symbols.defn(ctx).Long_*)
+        </td>
+      </tr><tr>
+        <td>
+          84
+        </td>
+        <td>
+          64998
+        </td>
+        <td>
+          3421
+          -
+          3436
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Definitions.Boolean_&amp;&amp;
+        </td>
+        <td style="background: #AEF1AE">
+          core.Symbols.defn(ctx).Boolean_&amp;&amp;
+        </td>
+      </tr><tr>
+        <td>
+          86
+        </td>
+        <td>
+          65006
+        </td>
+        <td>
+          3524
+          -
+          3551
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.config.Settings.Setting.SettingDecorator.value
+        </td>
+        <td style="background: #AEF1AE">
+          Settings.this.Setting.SettingDecorator[Int](Contexts.this.Context.toBase(ctx).settings.YoptFuel).value(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          87
+        </td>
+        <td>
+          65009
+        </td>
+        <td>
+          3560
+          -
+          3583
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Boolean.&amp;&amp;
+        </td>
+        <td style="background: #AEF1AE">
+          Simplify.this.fuel.&lt;(0).&amp;&amp;(maxFuel.&gt;(0))
+        </td>
+      </tr><tr>
+        <td>
+          87
+        </td>
+        <td>
+          65012
+        </td>
+        <td>
+          3556
+          -
+          3556
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          ()
+        </td>
+      </tr><tr>
+        <td>
+          87
+        </td>
+        <td>
+          65008
+        </td>
+        <td>
+          3572
+          -
+          3583
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Int.&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          maxFuel.&gt;(0)
+        </td>
+      </tr><tr>
+        <td>
+          87
+        </td>
+        <td>
+          65013
+        </td>
+        <td>
+          3556
+          -
+          3556
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          ()
+        </td>
+      </tr><tr>
+        <td>
+          87
+        </td>
+        <td>
+          65007
+        </td>
+        <td>
+          3567
+          -
+          3568
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          0
+        </td>
+      </tr><tr>
+        <td>
+          88
+        </td>
+        <td>
+          65011
+        </td>
+        <td>
+          3618
+          -
+          3632
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          dotty.tools.dotc.transform.localopt.Simplify.fuel_=
+        </td>
+        <td style="background: #F0ADAD">
+          Simplify.this.fuel_=(maxFuel)
+        </td>
+      </tr><tr>
+        <td>
+          88
+        </td>
+        <td>
+          65010
+        </td>
+        <td>
+          3618
+          -
+          3632
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.transform.localopt.Simplify.fuel_=
+        </td>
+        <td style="background: #F0ADAD">
+          Simplify.this.fuel_=(maxFuel)
+        </td>
+      </tr><tr>
+        <td>
+          90
+        </td>
+        <td>
+          65026
+        </td>
+        <td>
+          3638
+          -
+          3834
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.transform.localopt.Simplify.optimisations_=
+        </td>
+        <td style="background: #AEF1AE">
+          Simplify.this.optimisations_=({
+  val o: List[dotty.tools.dotc.transform.localopt.Optimisation] = if (ctx.erasedTypes)
+    Simplify.this.afterErasure
+  else
+    Simplify.this.beforeErasure;
+  val p: List[String] = Settings.this.Setting.SettingDecorator[List[String]](Contexts.this.Context.toBase(ctx).settings.YoptPhases).value(ctx);
+  if (p.isEmpty)
+    o
+  else
+    o.filter(((x: dotty.tools.dotc.transform.localopt.Optimisation) =&gt; p.contains[String](x.name)))
+})
+        </td>
+      </tr><tr>
+        <td>
+          91
+        </td>
+        <td>
+          65015
+        </td>
+        <td>
+          3691
+          -
+          3703
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.transform.localopt.Simplify.afterErasure
+        </td>
+        <td style="background: #AEF1AE">
+          Simplify.this.afterErasure
+        </td>
+      </tr><tr>
+        <td>
+          91
+        </td>
+        <td>
+          65018
+        </td>
+        <td>
+          3709
+          -
+          3722
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          dotty.tools.dotc.transform.localopt.Simplify.beforeErasure
+        </td>
+        <td style="background: #AEF1AE">
+          Simplify.this.beforeErasure
+        </td>
+      </tr><tr>
+        <td>
+          91
+        </td>
+        <td>
+          65014
+        </td>
+        <td>
+          3674
+          -
+          3689
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Contexts.Context.erasedTypes
+        </td>
+        <td style="background: #AEF1AE">
+          ctx.erasedTypes
+        </td>
+      </tr><tr>
+        <td>
+          91
+        </td>
+        <td>
+          65017
+        </td>
+        <td>
+          3709
+          -
+          3722
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.transform.localopt.Simplify.beforeErasure
+        </td>
+        <td style="background: #AEF1AE">
+          Simplify.this.beforeErasure
+        </td>
+      </tr><tr>
+        <td>
+          91
+        </td>
+        <td>
+          65016
+        </td>
+        <td>
+          3691
+          -
+          3703
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          dotty.tools.dotc.transform.localopt.Simplify.afterErasure
+        </td>
+        <td style="background: #AEF1AE">
+          Simplify.this.afterErasure
+        </td>
+      </tr><tr>
+        <td>
+          92
+        </td>
+        <td>
+          65019
+        </td>
+        <td>
+          3737
+          -
+          3766
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.config.Settings.Setting.SettingDecorator.value
+        </td>
+        <td style="background: #AEF1AE">
+          Settings.this.Setting.SettingDecorator[List[String]](Contexts.this.Context.toBase(ctx).settings.YoptPhases).value(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          93
+        </td>
+        <td>
+          65024
+        </td>
+        <td>
+          3795
+          -
+          3828
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.TraversableLike.filter
+        </td>
+        <td style="background: #F0ADAD">
+          o.filter(((x: dotty.tools.dotc.transform.localopt.Optimisation) =&gt; p.contains[String](x.name)))
+        </td>
+      </tr><tr>
+        <td>
+          93
+        </td>
+        <td>
+          65021
+        </td>
+        <td>
+          3788
+          -
+          3789
+        </td>
+        <td>
+          Ident
+        </td>
+        <td>
+          dotty.tools.dotc.transform.localopt.Simplify.o
+        </td>
+        <td style="background: #AEF1AE">
+          o
+        </td>
+      </tr><tr>
+        <td>
+          93
+        </td>
+        <td>
+          65023
+        </td>
+        <td>
+          3809
+          -
+          3827
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.LinearSeqOptimized.contains
+        </td>
+        <td style="background: #F0ADAD">
+          p.contains[String](x.name)
+        </td>
+      </tr><tr>
+        <td>
+          93
+        </td>
+        <td>
+          65020
+        </td>
+        <td>
+          3777
+          -
+          3786
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.collection.SeqLike.isEmpty
+        </td>
+        <td style="background: #AEF1AE">
+          p.isEmpty
+        </td>
+      </tr><tr>
+        <td>
+          93
+        </td>
+        <td>
+          65022
+        </td>
+        <td>
+          3820
+          -
+          3826
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.transform.localopt.Optimisation.name
+        </td>
+        <td style="background: #F0ADAD">
+          x.name
+        </td>
+      </tr><tr>
+        <td>
+          93
+        </td>
+        <td>
+          65025
+        </td>
+        <td>
+          3795
+          -
+          3828
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          scala.collection.TraversableLike.filter
+        </td>
+        <td style="background: #F0ADAD">
+          o.filter(((x: dotty.tools.dotc.transform.localopt.Optimisation) =&gt; p.contains[String](x.name)))
+        </td>
+      </tr><tr>
+        <td>
+          102
+        </td>
+        <td>
+          65054
+        </td>
+        <td>
+          4061
+          -
+          4973
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          {
+  implicit val ctx: dotty.tools.dotc.core.Contexts.Context = ctx0.withOwner(tree.symbol(ctx0));
+  var rhs0: dotty.tools.dotc.ast.Trees.Tree[dotty.tools.dotc.core.Types.Type] = tree.rhs(ctx);
+  var rhs1: dotty.tools.dotc.ast.tpd.Tree = null;
+  while$1(){
+    if (rhs1.ne(rhs0))
+      {
+        {
+          rhs1 = rhs0;
+          Simplify.this.optimisations.foreach[Unit](((optimisation: dotty.tools.dotc.transform.localopt.Optimisation) =&gt; {
+            ast.tpd.TreeOps[dotty.tools.dotc.ast.Trees.Tree[dotty.tools.dotc.core.Types.Type]](rhs0).foreachSubTree(optimisation.visitor(ctx))(ctx);
+            rhs0 = {
+  final class $anon extends ast.tpd.TreeMap {
+    def &lt;init&gt;(): &lt;$anon: dotty.tools.dotc.ast.tpd.TreeMap&gt; = {
+      $anon.super.&lt;init&gt;(ast.this.tpd.TreeMap.&lt;init&gt;$default$1);
+      ()
+    };
+    override def transform(tree: dotty.tools.dotc.ast.tpd.Tree)(implicit ctx: dotty.tools.dotc.core.Contexts.Context): dotty.tools.dotc.ast.tpd.Tree = {
+      val innerCtx: dotty.tools.dotc.core.Contexts.Context = if (tree.isDef.&amp;&amp;(core.Symbols.toDenot(tree.symbol(ctx))(ctx).exists))
+        ctx.withOwner(tree.symbol(ctx))
+      else
+        ctx;
+      val childOptimizedTree: dotty.tools.dotc.ast.tpd.Tree = $anon.super.transform(tree)(innerCtx);
+      Simplify.this.printIfDifferent(childOptimizedTree, optimisation.transformer(ctx).apply(childOptimizedTree), optimisation)(ctx)
+    }
+  };
+  new $anon()
+}.transform(rhs0)(ctx);
+            optimisation.clear()
+          }))
+        };
+        while$1()
+      }
+    else
+      ()
+  };
+  if (rhs0.ne(tree.rhs(ctx)))
+    {
+      &lt;artifact&gt; val x$18: dotty.tools.dotc.ast.tpd.DefDef = tree;
+      &lt;artifact&gt; val x$19: dotty.tools.dotc.ast.Trees.Tree[dotty.tools.dotc.core.Types.Type] = rhs0;
+      &lt;artifact&gt; val x$20: dotty.tools.dotc.core.Names.TermName = ast.tpd.cpy.DefDef$default$2(x$18);
+      &lt;artifact&gt; val x$21: List[dotty.tools.dotc.ast.tpd.TypeDef] = ast.tpd.cpy.DefDef$default$3(x$18);
+      &lt;artifact&gt; val x$22: List[List[dotty.tools.dotc.ast.tpd.ValDef]] = ast.tpd.cpy.DefDef$default$4(x$18);
+      &lt;artifact&gt; val x$23: dotty.tools.dotc.ast.tpd.Tree = ast.tpd.cpy.DefDef$default$5(x$18);
+      ast.tpd.cpy.DefDef(x$18)(x$20, x$21, x$22, x$23, x$19)
+    }
+  else
+    tree
+}
+        </td>
+      </tr><tr>
+        <td>
+          102
+        </td>
+        <td>
+          65027
+        </td>
+        <td>
+          4006
+          -
+          4027
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.config.ScalaSettings.optimise
+        </td>
+        <td style="background: #AEF1AE">
+          Contexts.this.Context.toBase(ctx).settings.optimise
+        </td>
+      </tr><tr>
+        <td>
+          102
+        </td>
+        <td>
+          65030
+        </td>
+        <td>
+          4037
+          -
+          4059
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.Boolean.unary_!
+        </td>
+        <td style="background: #AEF1AE">
+          core.Symbols.toDenot(tree.symbol(ctx))(ctx).is(core.Flags.Label)(ctx).unary_!
+        </td>
+      </tr><tr>
+        <td>
+          102
+        </td>
+        <td>
+          65029
+        </td>
+        <td>
+          4053
+          -
+          4058
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Flags.Label
+        </td>
+        <td style="background: #AEF1AE">
+          core.Flags.Label
+        </td>
+      </tr><tr>
+        <td>
+          102
+        </td>
+        <td>
+          65028
+        </td>
+        <td>
+          4038
+          -
+          4049
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Trees.Tree.symbol
+        </td>
+        <td style="background: #AEF1AE">
+          tree.symbol(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          102
+        </td>
+        <td>
+          65031
+        </td>
+        <td>
+          4006
+          -
+          4059
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Boolean.&amp;&amp;
+        </td>
+        <td style="background: #AEF1AE">
+          Settings.this.Setting.SettingDecorator[Boolean](Contexts.this.Context.toBase(ctx).settings.optimise).value(ctx).&amp;&amp;(core.Symbols.toDenot(tree.symbol(ctx))(ctx).is(core.Flags.Label)(ctx).unary_!)
+        </td>
+      </tr><tr>
+        <td>
+          103
+        </td>
+        <td>
+          65033
+        </td>
+        <td>
+          4097
+          -
+          4130
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.core.Contexts.Context.withOwner
+        </td>
+        <td style="background: #AEF1AE">
+          ctx0.withOwner(tree.symbol(ctx0))
+        </td>
+      </tr><tr>
+        <td>
+          103
+        </td>
+        <td>
+          65032
+        </td>
+        <td>
+          4112
+          -
+          4129
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Trees.Tree.symbol
+        </td>
+        <td style="background: #AEF1AE">
+          tree.symbol(ctx0)
+        </td>
+      </tr><tr>
+        <td>
+          104
+        </td>
+        <td>
+          65034
+        </td>
+        <td>
+          4148
+          -
+          4156
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Trees.ValOrDefDef.rhs
+        </td>
+        <td style="background: #AEF1AE">
+          tree.rhs(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          105
+        </td>
+        <td>
+          65035
+        </td>
+        <td>
+          4180
+          -
+          4184
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          null
+        </td>
+      </tr><tr>
+        <td>
+          106
+        </td>
+        <td>
+          65042
+        </td>
+        <td>
+          4212
+          -
+          4890
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          {
+  {
+    rhs1 = rhs0;
+    Simplify.this.optimisations.foreach[Unit](((optimisation: dotty.tools.dotc.transform.localopt.Optimisation) =&gt; {
+      ast.tpd.TreeOps[dotty.tools.dotc.ast.Trees.Tree[dotty.tools.dotc.core.Types.Type]](rhs0).foreachSubTree(optimisation.visitor(ctx))(ctx);
+      rhs0 = {
+  final class $anon extends ast.tpd.TreeMap {
+    def &lt;init&gt;(): &lt;$anon: dotty.tools.dotc.ast.tpd.TreeMap&gt; = {
+      $anon.super.&lt;init&gt;(ast.this.tpd.TreeMap.&lt;init&gt;$default$1);
+      ()
+    };
+    override def transform(tree: dotty.tools.dotc.ast.tpd.Tree)(implicit ctx: dotty.tools.dotc.core.Contexts.Context): dotty.tools.dotc.ast.tpd.Tree = {
+      val innerCtx: dotty.tools.dotc.core.Contexts.Context = if (tree.isDef.&amp;&amp;(core.Symbols.toDenot(tree.symbol(ctx))(ctx).exists))
+        ctx.withOwner(tree.symbol(ctx))
+      else
+        ctx;
+      val childOptimizedTree: dotty.tools.dotc.ast.tpd.Tree = $anon.super.transform(tree)(innerCtx);
+      Simplify.this.printIfDifferent(childOptimizedTree, optimisation.transformer(ctx).apply(childOptimizedTree), optimisation)(ctx)
+    }
+  };
+  new $anon()
+}.transform(rhs0)(ctx);
+      optimisation.clear()
+    }))
+  };
+  while$1()
+}
+        </td>
+      </tr><tr>
+        <td>
+          106
+        </td>
+        <td>
+          65036
+        </td>
+        <td>
+          4198
+          -
+          4210
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.Object.ne
+        </td>
+        <td style="background: #AEF1AE">
+          rhs1.ne(rhs0)
+        </td>
+      </tr><tr>
+        <td>
+          106
+        </td>
+        <td>
+          65041
+        </td>
+        <td>
+          4212
+          -
+          4212
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.transform.localopt.Simplify.while$1
+        </td>
+        <td style="background: #AEF1AE">
+          while$1()
+        </td>
+      </tr><tr>
+        <td>
+          106
+        </td>
+        <td>
+          65044
+        </td>
+        <td>
+          4191
+          -
+          4191
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          ()
+        </td>
+      </tr><tr>
+        <td>
+          106
+        </td>
+        <td>
+          65043
+        </td>
+        <td>
+          4191
+          -
+          4191
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          ()
+        </td>
+      </tr><tr>
+        <td>
+          108
+        </td>
+        <td>
+          65040
+        </td>
+        <td>
+          4242
+          -
+          4882
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.immutable.List.foreach
+        </td>
+        <td style="background: #AEF1AE">
+          Simplify.this.optimisations.foreach[Unit](((optimisation: dotty.tools.dotc.transform.localopt.Optimisation) =&gt; {
+  ast.tpd.TreeOps[dotty.tools.dotc.ast.Trees.Tree[dotty.tools.dotc.core.Types.Type]](rhs0).foreachSubTree(optimisation.visitor(ctx))(ctx);
+  rhs0 = {
+  final class $anon extends ast.tpd.TreeMap {
+    def &lt;init&gt;(): &lt;$anon: dotty.tools.dotc.ast.tpd.TreeMap&gt; = {
+      $anon.super.&lt;init&gt;(ast.this.tpd.TreeMap.&lt;init&gt;$default$1);
+      ()
+    };
+    override def transform(tree: dotty.tools.dotc.ast.tpd.Tree)(implicit ctx: dotty.tools.dotc.core.Contexts.Context): dotty.tools.dotc.ast.tpd.Tree = {
+      val innerCtx: dotty.tools.dotc.core.Contexts.Context = if (tree.isDef.&amp;&amp;(core.Symbols.toDenot(tree.symbol(ctx))(ctx).exists))
+        ctx.withOwner(tree.symbol(ctx))
+      else
+        ctx;
+      val childOptimizedTree: dotty.tools.dotc.ast.tpd.Tree = $anon.super.transform(tree)(innerCtx);
+      Simplify.this.printIfDifferent(childOptimizedTree, optimisation.transformer(ctx).apply(childOptimizedTree), optimisation)(ctx)
+    }
+  };
+  new $anon()
+}.transform(rhs0)(ctx);
+  optimisation.clear()
+}))
+        </td>
+      </tr><tr>
+        <td>
+          110
+        </td>
+        <td>
+          65037
+        </td>
+        <td>
+          4311
+          -
+          4352
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.tpd.TreeOps.foreachSubTree
+        </td>
+        <td style="background: #AEF1AE">
+          ast.tpd.TreeOps[dotty.tools.dotc.ast.Trees.Tree[dotty.tools.dotc.core.Types.Type]](rhs0).foreachSubTree(optimisation.visitor(ctx))(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          119
+        </td>
+        <td>
+          65038
+        </td>
+        <td>
+          4394
+          -
+          4821
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.transform.localopt.Simplify.$anon.transform
+        </td>
+        <td style="background: #AEF1AE">
+          {
+  final class $anon extends ast.tpd.TreeMap {
+    def &lt;init&gt;(): &lt;$anon: dotty.tools.dotc.ast.tpd.TreeMap&gt; = {
+      $anon.super.&lt;init&gt;(ast.this.tpd.TreeMap.&lt;init&gt;$default$1);
+      ()
+    };
+    override def transform(tree: dotty.tools.dotc.ast.tpd.Tree)(implicit ctx: dotty.tools.dotc.core.Contexts.Context): dotty.tools.dotc.ast.tpd.Tree = {
+      val innerCtx: dotty.tools.dotc.core.Contexts.Context = if (tree.isDef.&amp;&amp;(core.Symbols.toDenot(tree.symbol(ctx))(ctx).exists))
+        ctx.withOwner(tree.symbol(ctx))
+      else
+        ctx;
+      val childOptimizedTree: dotty.tools.dotc.ast.tpd.Tree = $anon.super.transform(tree)(innerCtx);
+      Simplify.this.printIfDifferent(childOptimizedTree, optimisation.transformer(ctx).apply(childOptimizedTree), optimisation)(ctx)
+    }
+  };
+  new $anon()
+}.transform(rhs0)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          122
+        </td>
+        <td>
+          65039
+        </td>
+        <td>
+          4852
+          -
+          4872
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.transform.localopt.Optimisation.clear
+        </td>
+        <td style="background: #AEF1AE">
+          optimisation.clear()
+        </td>
+      </tr><tr>
+        <td>
+          125
+        </td>
+        <td>
+          65051
+        </td>
+        <td>
+          4919
+          -
+          4951
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Trees.Instance.TreeCopier.DefDef
+        </td>
+        <td style="background: #AEF1AE">
+          ast.tpd.cpy.DefDef(x$18)(x$20, x$21, x$22, x$23, x$19)
+        </td>
+      </tr><tr>
+        <td>
+          125
+        </td>
+        <td>
+          65045
+        </td>
+        <td>
+          4909
+          -
+          4917
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Trees.ValOrDefDef.rhs
+        </td>
+        <td style="background: #AEF1AE">
+          tree.rhs(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          125
+        </td>
+        <td>
+          65048
+        </td>
+        <td>
+          4933
+          -
+          4933
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Trees.Instance.TreeCopier.DefDef$default$3
+        </td>
+        <td style="background: #AEF1AE">
+          ast.tpd.cpy.DefDef$default$3(x$18)
+        </td>
+      </tr><tr>
+        <td>
+          125
+        </td>
+        <td>
+          65047
+        </td>
+        <td>
+          4933
+          -
+          4933
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Trees.Instance.TreeCopier.DefDef$default$2
+        </td>
+        <td style="background: #AEF1AE">
+          ast.tpd.cpy.DefDef$default$2(x$18)
+        </td>
+      </tr><tr>
+        <td>
+          125
+        </td>
+        <td>
+          65050
+        </td>
+        <td>
+          4933
+          -
+          4933
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Trees.Instance.TreeCopier.DefDef$default$5
+        </td>
+        <td style="background: #AEF1AE">
+          ast.tpd.cpy.DefDef$default$5(x$18)
+        </td>
+      </tr><tr>
+        <td>
+          125
+        </td>
+        <td>
+          65052
+        </td>
+        <td>
+          4919
+          -
+          4951
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          {
+  &lt;artifact&gt; val x$18: dotty.tools.dotc.ast.tpd.DefDef = tree;
+  &lt;artifact&gt; val x$19: dotty.tools.dotc.ast.Trees.Tree[dotty.tools.dotc.core.Types.Type] = rhs0;
+  &lt;artifact&gt; val x$20: dotty.tools.dotc.core.Names.TermName = ast.tpd.cpy.DefDef$default$2(x$18);
+  &lt;artifact&gt; val x$21: List[dotty.tools.dotc.ast.tpd.TypeDef] = ast.tpd.cpy.DefDef$default$3(x$18);
+  &lt;artifact&gt; val x$22: List[List[dotty.tools.dotc.ast.tpd.ValDef]] = ast.tpd.cpy.DefDef$default$4(x$18);
+  &lt;artifact&gt; val x$23: dotty.tools.dotc.ast.tpd.Tree = ast.tpd.cpy.DefDef$default$5(x$18);
+  ast.tpd.cpy.DefDef(x$18)(x$20, x$21, x$22, x$23, x$19)
+}
+        </td>
+      </tr><tr>
+        <td>
+          125
+        </td>
+        <td>
+          65046
+        </td>
+        <td>
+          4901
+          -
+          4917
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.Object.ne
+        </td>
+        <td style="background: #AEF1AE">
+          rhs0.ne(tree.rhs(ctx))
+        </td>
+      </tr><tr>
+        <td>
+          125
+        </td>
+        <td>
+          65049
+        </td>
+        <td>
+          4933
+          -
+          4933
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Trees.Instance.TreeCopier.DefDef$default$4
+        </td>
+        <td style="background: #AEF1AE">
+          ast.tpd.cpy.DefDef$default$4(x$18)
+        </td>
+      </tr><tr>
+        <td>
+          126
+        </td>
+        <td>
+          65053
+        </td>
+        <td>
+          4963
+          -
+          4967
+        </td>
+        <td>
+          Ident
+        </td>
+        <td>
+          dotty.tools.dotc.transform.localopt.Simplify.tree
+        </td>
+        <td style="background: #AEF1AE">
+          tree
+        </td>
+      </tr><tr>
+        <td>
+          127
+        </td>
+        <td>
+          65055
+        </td>
+        <td>
+          4979
+          -
+          4983
+        </td>
+        <td>
+          Ident
+        </td>
+        <td>
+          dotty.tools.dotc.transform.localopt.Simplify.tree
+        </td>
+        <td style="background: #AEF1AE">
+          tree
+        </td>
+      </tr><tr>
+        <td>
+          131
+        </td>
+        <td>
+          65056
+        </td>
+        <td>
+          5109
+          -
+          5119
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Int.==
+        </td>
+        <td style="background: #AEF1AE">
+          Simplify.this.fuel.==(-1)
+        </td>
+      </tr><tr>
+        <td>
+          132
+        </td>
+        <td>
+          65057
+        </td>
+        <td>
+          5127
+          -
+          5132
+        </td>
+        <td>
+          Ident
+        </td>
+        <td>
+          dotty.tools.dotc.transform.localopt.Simplify.tree2
+        </td>
+        <td style="background: #AEF1AE">
+          tree2
+        </td>
+      </tr><tr>
+        <td>
+          133
+        </td>
+        <td>
+          65097
+        </td>
+        <td>
+          5181
+          -
+          5658
+        </td>
+        <td>
+          If
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          if (Simplify.this.fuel.==(0))
+  tree1
+else
+  {
+    val t2: dotty.tools.dotc.ast.tpd.Tree = tree2;
+    if (tree1.ne(t2))
+      {
+        if (Simplify.this.fuel.&gt;(0))
+          Simplify.this.fuel_=(Simplify.this.fuel.-(1))
+        else
+          ();
+        if (Simplify.this.fuel.!=(-1).&amp;&amp;(Simplify.this.fuel.&lt;(5)))
+          {
+            scala.Predef.println(scala.StringContext.apply(&quot;&quot;, &quot; was simplified by &quot;, &quot; (fuel=&quot;, &quot;): &quot;, &quot;&quot;).s(tree1.symbol(ctx), opt.name, Simplify.this.fuel, tree1.show(ctx)));
+            scala.Predef.println(scala.StringContext.apply(&quot;became after &quot;, &quot;: (fuel=&quot;, &quot;) &quot;, &quot;&quot;).s(opt.name, Simplify.this.fuel, t2.show(ctx)))
+          }
+        else
+          ()
+      }
+    else
+      ();
+    t2
+  }
+        </td>
+      </tr><tr>
+        <td>
+          133
+        </td>
+        <td>
+          65058
+        </td>
+        <td>
+          5185
+          -
+          5194
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Int.==
+        </td>
+        <td style="background: #F0ADAD">
+          Simplify.this.fuel.==(0)
+        </td>
+      </tr><tr>
+        <td>
+          134
+        </td>
+        <td>
+          65059
+        </td>
+        <td>
+          5202
+          -
+          5207
+        </td>
+        <td>
+          Ident
+        </td>
+        <td>
+          dotty.tools.dotc.transform.localopt.Simplify.tree1
+        </td>
+        <td style="background: #F0ADAD">
+          tree1
+        </td>
+      </tr><tr>
+        <td>
+          135
+        </td>
+        <td>
+          65096
+        </td>
+        <td>
+          5267
+          -
+          5658
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          {
+  val t2: dotty.tools.dotc.ast.tpd.Tree = tree2;
+  if (tree1.ne(t2))
+    {
+      if (Simplify.this.fuel.&gt;(0))
+        Simplify.this.fuel_=(Simplify.this.fuel.-(1))
+      else
+        ();
+      if (Simplify.this.fuel.!=(-1).&amp;&amp;(Simplify.this.fuel.&lt;(5)))
+        {
+          scala.Predef.println(scala.StringContext.apply(&quot;&quot;, &quot; was simplified by &quot;, &quot; (fuel=&quot;, &quot;): &quot;, &quot;&quot;).s(tree1.symbol(ctx), opt.name, Simplify.this.fuel, tree1.show(ctx)));
+          scala.Predef.println(scala.StringContext.apply(&quot;became after &quot;, &quot;: (fuel=&quot;, &quot;) &quot;, &quot;&quot;).s(opt.name, Simplify.this.fuel, t2.show(ctx)))
+        }
+      else
+        ()
+    }
+  else
+    ();
+  t2
+}
+        </td>
+      </tr><tr>
+        <td>
+          137
+        </td>
+        <td>
+          65093
+        </td>
+        <td>
+          5376
+          -
+          5643
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          {
+  if (Simplify.this.fuel.&gt;(0))
+    Simplify.this.fuel_=(Simplify.this.fuel.-(1))
+  else
+    ();
+  if (Simplify.this.fuel.!=(-1).&amp;&amp;(Simplify.this.fuel.&lt;(5)))
+    {
+      scala.Predef.println(scala.StringContext.apply(&quot;&quot;, &quot; was simplified by &quot;, &quot; (fuel=&quot;, &quot;): &quot;, &quot;&quot;).s(tree1.symbol(ctx), opt.name, Simplify.this.fuel, tree1.show(ctx)));
+      scala.Predef.println(scala.StringContext.apply(&quot;became after &quot;, &quot;: (fuel=&quot;, &quot;) &quot;, &quot;&quot;).s(opt.name, Simplify.this.fuel, t2.show(ctx)))
+    }
+  else
+    ()
+}
+        </td>
+      </tr><tr>
+        <td>
+          137
+        </td>
+        <td>
+          65060
+        </td>
+        <td>
+          5363
+          -
+          5374
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.Object.ne
+        </td>
+        <td style="background: #F0ADAD">
+          tree1.ne(t2)
+        </td>
+      </tr><tr>
+        <td>
+          137
+        </td>
+        <td>
+          65095
+        </td>
+        <td>
+          5359
+          -
+          5359
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          ()
+        </td>
+      </tr><tr>
+        <td>
+          137
+        </td>
+        <td>
+          65094
+        </td>
+        <td>
+          5359
+          -
+          5359
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          ()
+        </td>
+      </tr><tr>
+        <td>
+          138
+        </td>
+        <td>
+          65066
+        </td>
+        <td>
+          5386
+          -
+          5386
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          ()
+        </td>
+      </tr><tr>
+        <td>
+          138
+        </td>
+        <td>
+          65065
+        </td>
+        <td>
+          5386
+          -
+          5386
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          ()
+        </td>
+      </tr><tr>
+        <td>
+          138
+        </td>
+        <td>
+          65061
+        </td>
+        <td>
+          5390
+          -
+          5398
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Int.&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          Simplify.this.fuel.&gt;(0)
+        </td>
+      </tr><tr>
+        <td>
+          139
+        </td>
+        <td>
+          65063
+        </td>
+        <td>
+          5410
+          -
+          5419
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.transform.localopt.Simplify.fuel_=
+        </td>
+        <td style="background: #F0ADAD">
+          Simplify.this.fuel_=(Simplify.this.fuel.-(1))
+        </td>
+      </tr><tr>
+        <td>
+          139
+        </td>
+        <td>
+          65062
+        </td>
+        <td>
+          5410
+          -
+          5419
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Int.-
+        </td>
+        <td style="background: #F0ADAD">
+          Simplify.this.fuel.-(1)
+        </td>
+      </tr><tr>
+        <td>
+          139
+        </td>
+        <td>
+          65064
+        </td>
+        <td>
+          5410
+          -
+          5419
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          dotty.tools.dotc.transform.localopt.Simplify.fuel_=
+        </td>
+        <td style="background: #F0ADAD">
+          Simplify.this.fuel_=(Simplify.this.fuel.-(1))
+        </td>
+      </tr><tr>
+        <td>
+          140
+        </td>
+        <td>
+          65069
+        </td>
+        <td>
+          5432
+          -
+          5454
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Boolean.&amp;&amp;
+        </td>
+        <td style="background: #F0ADAD">
+          Simplify.this.fuel.!=(-1).&amp;&amp;(Simplify.this.fuel.&lt;(5))
+        </td>
+      </tr><tr>
+        <td>
+          140
+        </td>
+        <td>
+          65090
+        </td>
+        <td>
+          5456
+          -
+          5635
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          {
+  scala.Predef.println(scala.StringContext.apply(&quot;&quot;, &quot; was simplified by &quot;, &quot; (fuel=&quot;, &quot;): &quot;, &quot;&quot;).s(tree1.symbol(ctx), opt.name, Simplify.this.fuel, tree1.show(ctx)));
+  scala.Predef.println(scala.StringContext.apply(&quot;became after &quot;, &quot;: (fuel=&quot;, &quot;) &quot;, &quot;&quot;).s(opt.name, Simplify.this.fuel, t2.show(ctx)))
+}
+        </td>
+      </tr><tr>
+        <td>
+          140
+        </td>
+        <td>
+          65092
+        </td>
+        <td>
+          5428
+          -
+          5428
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          ()
+        </td>
+      </tr><tr>
+        <td>
+          140
+        </td>
+        <td>
+          65068
+        </td>
+        <td>
+          5446
+          -
+          5454
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Int.&lt;
+        </td>
+        <td style="background: #F0ADAD">
+          Simplify.this.fuel.&lt;(5)
+        </td>
+      </tr><tr>
+        <td>
+          140
+        </td>
+        <td>
+          65091
+        </td>
+        <td>
+          5428
+          -
+          5428
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          ()
+        </td>
+      </tr><tr>
+        <td>
+          140
+        </td>
+        <td>
+          65067
+        </td>
+        <td>
+          5440
+          -
+          5442
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          -1
+        </td>
+      </tr><tr>
+        <td>
+          141
+        </td>
+        <td>
+          65075
+        </td>
+        <td>
+          5480
+          -
+          5492
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Trees.Tree.symbol
+        </td>
+        <td style="background: #F0ADAD">
+          tree1.symbol(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          141
+        </td>
+        <td>
+          65078
+        </td>
+        <td>
+          5540
+          -
+          5550
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.printing.Showable.show
+        </td>
+        <td style="background: #F0ADAD">
+          tree1.show(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          141
+        </td>
+        <td>
+          65072
+        </td>
+        <td>
+          5523
+          -
+          5531
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          &quot; (fuel=&quot;
+        </td>
+      </tr><tr>
+        <td>
+          141
+        </td>
+        <td>
+          65074
+        </td>
+        <td>
+          5551
+          -
+          5552
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          &quot;&quot;
+        </td>
+      </tr><tr>
+        <td>
+          141
+        </td>
+        <td>
+          65077
+        </td>
+        <td>
+          5531
+          -
+          5535
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.transform.localopt.Simplify.fuel
+        </td>
+        <td style="background: #F0ADAD">
+          Simplify.this.fuel
+        </td>
+      </tr><tr>
+        <td>
+          141
+        </td>
+        <td>
+          65080
+        </td>
+        <td>
+          5468
+          -
+          5553
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Predef.println
+        </td>
+        <td style="background: #F0ADAD">
+          scala.Predef.println(scala.StringContext.apply(&quot;&quot;, &quot; was simplified by &quot;, &quot; (fuel=&quot;, &quot;): &quot;, &quot;&quot;).s(tree1.symbol(ctx), opt.name, Simplify.this.fuel, tree1.show(ctx)))
+        </td>
+      </tr><tr>
+        <td>
+          141
+        </td>
+        <td>
+          65071
+        </td>
+        <td>
+          5493
+          -
+          5513
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          &quot; was simplified by &quot;
+        </td>
+      </tr><tr>
+        <td>
+          141
+        </td>
+        <td>
+          65079
+        </td>
+        <td>
+          5476
+          -
+          5552
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.StringContext.s
+        </td>
+        <td style="background: #F0ADAD">
+          scala.StringContext.apply(&quot;&quot;, &quot; was simplified by &quot;, &quot; (fuel=&quot;, &quot;): &quot;, &quot;&quot;).s(tree1.symbol(ctx), opt.name, Simplify.this.fuel, tree1.show(ctx))
+        </td>
+      </tr><tr>
+        <td>
+          141
+        </td>
+        <td>
+          65070
+        </td>
+        <td>
+          5478
+          -
+          5479
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          &quot;&quot;
+        </td>
+      </tr><tr>
+        <td>
+          141
+        </td>
+        <td>
+          65073
+        </td>
+        <td>
+          5535
+          -
+          5539
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          &quot;): &quot;
+        </td>
+      </tr><tr>
+        <td>
+          141
+        </td>
+        <td>
+          65076
+        </td>
+        <td>
+          5514
+          -
+          5522
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.transform.localopt.Optimisation.name
+        </td>
+        <td style="background: #F0ADAD">
+          opt.name
+        </td>
+      </tr><tr>
+        <td>
+          142
+        </td>
+        <td>
+          65084
+        </td>
+        <td>
+          5623
+          -
+          5624
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          &quot;&quot;
+        </td>
+      </tr><tr>
+        <td>
+          142
+        </td>
+        <td>
+          65087
+        </td>
+        <td>
+          5615
+          -
+          5622
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.printing.Showable.show
+        </td>
+        <td style="background: #F0ADAD">
+          t2.show(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          142
+        </td>
+        <td>
+          65081
+        </td>
+        <td>
+          5574
+          -
+          5588
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          &quot;became after &quot;
+        </td>
+      </tr><tr>
+        <td>
+          142
+        </td>
+        <td>
+          65089
+        </td>
+        <td>
+          5564
+          -
+          5625
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Predef.println
+        </td>
+        <td style="background: #F0ADAD">
+          scala.Predef.println(scala.StringContext.apply(&quot;became after &quot;, &quot;: (fuel=&quot;, &quot;) &quot;, &quot;&quot;).s(opt.name, Simplify.this.fuel, t2.show(ctx)))
+        </td>
+      </tr><tr>
+        <td>
+          142
+        </td>
+        <td>
+          65083
+        </td>
+        <td>
+          5611
+          -
+          5614
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          &quot;) &quot;
+        </td>
+      </tr><tr>
+        <td>
+          142
+        </td>
+        <td>
+          65086
+        </td>
+        <td>
+          5607
+          -
+          5611
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.transform.localopt.Simplify.fuel
+        </td>
+        <td style="background: #F0ADAD">
+          Simplify.this.fuel
+        </td>
+      </tr><tr>
+        <td>
+          142
+        </td>
+        <td>
+          65088
+        </td>
+        <td>
+          5572
+          -
+          5624
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.StringContext.s
+        </td>
+        <td style="background: #F0ADAD">
+          scala.StringContext.apply(&quot;became after &quot;, &quot;: (fuel=&quot;, &quot;) &quot;, &quot;&quot;).s(opt.name, Simplify.this.fuel, t2.show(ctx))
+        </td>
+      </tr><tr>
+        <td>
+          142
+        </td>
+        <td>
+          65082
+        </td>
+        <td>
+          5598
+          -
+          5607
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          &quot;: (fuel=&quot;
+        </td>
+      </tr><tr>
+        <td>
+          142
+        </td>
+        <td>
+          65085
+        </td>
+        <td>
+          5589
+          -
+          5597
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.transform.localopt.Optimisation.name
+        </td>
+        <td style="background: #F0ADAD">
+          opt.name
+        </td>
+      </tr><tr>
+        <td>
+          158
+        </td>
+        <td>
+          65099
+        </td>
+        <td>
+          6055
+          -
+          6059
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          true
+        </td>
+      </tr><tr>
+        <td>
+          158
+        </td>
+        <td>
+          65098
+        </td>
+        <td>
+          6031
+          -
+          6051
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.SymDenotations.SymDenotation.is
+        </td>
+        <td style="background: #AEF1AE">
+          core.Symbols.toDenot(t.symbol(ctx))(ctx).is(core.Flags.Mutable)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          160
+        </td>
+        <td>
+          65101
+        </td>
+        <td>
+          6099
+          -
+          6134
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.Object.==
+        </td>
+        <td style="background: #AEF1AE">
+          core.Symbols.toDenot(t.symbol(ctx))(ctx).owner.==(core.Symbols.defn(ctx).SystemModule)
+        </td>
+      </tr><tr>
+        <td>
+          160
+        </td>
+        <td>
+          65100
+        </td>
+        <td>
+          6099
+          -
+          6107
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Trees.Tree.symbol
+        </td>
+        <td style="background: #AEF1AE">
+          t.symbol(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          161
+        </td>
+        <td>
+          65102
+        </td>
+        <td>
+          6149
+          -
+          6154
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          false
+        </td>
+      </tr><tr>
+        <td>
+          165
+        </td>
+        <td>
+          65103
+        </td>
+        <td>
+          6245
+          -
+          6253
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Trees.Tree.symbol
+        </td>
+        <td style="background: #AEF1AE">
+          t.symbol(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          166
+        </td>
+        <td>
+          65105
+        </td>
+        <td>
+          6306
+          -
+          6320
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.core.Flags.FlagSet.|
+        </td>
+        <td style="background: #AEF1AE">
+          core.Flags.Mutable.|(core.Flags.Lazy)
+        </td>
+      </tr><tr>
+        <td>
+          166
+        </td>
+        <td>
+          65107
+        </td>
+        <td>
+          6282
+          -
+          6321
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Boolean.&amp;&amp;
+        </td>
+        <td style="background: #AEF1AE">
+          core.Symbols.toDenot(sym)(ctx).isGetter(ctx).&amp;&amp;(core.Symbols.toDenot(sym)(ctx).is(core.Flags.Mutable.|(core.Flags.Lazy))(ctx).unary_!)
+        </td>
+      </tr><tr>
+        <td>
+          166
+        </td>
+        <td>
+          65104
+        </td>
+        <td>
+          6316
+          -
+          6320
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Flags.Lazy
+        </td>
+        <td style="background: #AEF1AE">
+          core.Flags.Lazy
+        </td>
+      </tr><tr>
+        <td>
+          166
+        </td>
+        <td>
+          65106
+        </td>
+        <td>
+          6298
+          -
+          6321
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.Boolean.unary_!
+        </td>
+        <td style="background: #AEF1AE">
+          core.Symbols.toDenot(sym)(ctx).is(core.Flags.Mutable.|(core.Flags.Lazy))(ctx).unary_!
+        </td>
+      </tr><tr>
+        <td>
+          167
+        </td>
+        <td>
+          65111
+        </td>
+        <td>
+          6374
+          -
+          6397
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.Boolean.unary_!
+        </td>
+        <td style="background: #AEF1AE">
+          core.Symbols.toDenot(sym)(ctx).is(core.Flags.Mutable.|(core.Flags.Lazy))(ctx).unary_!
+        </td>
+      </tr><tr>
+        <td>
+          167
+        </td>
+        <td>
+          65108
+        </td>
+        <td>
+          6357
+          -
+          6369
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Flags.CaseAccessor
+        </td>
+        <td style="background: #AEF1AE">
+          core.Flags.CaseAccessor
+        </td>
+      </tr><tr>
+        <td>
+          167
+        </td>
+        <td>
+          65110
+        </td>
+        <td>
+          6382
+          -
+          6396
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.core.Flags.FlagSet.|
+        </td>
+        <td style="background: #AEF1AE">
+          core.Flags.Mutable.|(core.Flags.Lazy)
+        </td>
+      </tr><tr>
+        <td>
+          167
+        </td>
+        <td>
+          65112
+        </td>
+        <td>
+          6350
+          -
+          6397
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Boolean.&amp;&amp;
+        </td>
+        <td style="background: #AEF1AE">
+          core.Symbols.toDenot(sym)(ctx).is(core.Flags.CaseAccessor)(ctx).&amp;&amp;(core.Symbols.toDenot(sym)(ctx).is(core.Flags.Mutable.|(core.Flags.Lazy))(ctx).unary_!)
+        </td>
+      </tr><tr>
+        <td>
+          167
+        </td>
+        <td>
+          65109
+        </td>
+        <td>
+          6392
+          -
+          6396
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Flags.Lazy
+        </td>
+        <td style="background: #AEF1AE">
+          core.Flags.Lazy
+        </td>
+      </tr><tr>
+        <td>
+          169
+        </td>
+        <td>
+          65113
+        </td>
+        <td>
+          6498
+          -
+          6538
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.SymDenotations.SymDenotation.derivesFrom
+        </td>
+        <td style="background: #AEF1AE">
+          core.Symbols.toDenot(core.Symbols.toDenot(sym)(ctx).owner)(ctx).derivesFrom(core.Symbols.defn(ctx).ProductClass(ctx))(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          170
+        </td>
+        <td>
+          65114
+        </td>
+        <td>
+          6570
+          -
+          6593
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.SymDenotations.SymDenotation.is
+        </td>
+        <td style="background: #AEF1AE">
+          core.Symbols.toDenot(core.Symbols.toDenot(sym)(ctx).owner)(ctx).is(core.Flags.CaseClass)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          171
+        </td>
+        <td>
+          65116
+        </td>
+        <td>
+          6642
+          -
+          6665
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.NameOps.NameDecorator.isSelectorName
+        </td>
+        <td style="background: #AEF1AE">
+          core.NameOps.NameDecorator[sym.ThisName](sym.name(ctx)).isSelectorName
+        </td>
+      </tr><tr>
+        <td>
+          171
+        </td>
+        <td>
+          65119
+        </td>
+        <td>
+          6426
+          -
+          6758
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Boolean.&amp;&amp;
+        </td>
+        <td style="background: #AEF1AE">
+          core.Symbols.toDenot(sym)(ctx).exists.&amp;&amp;(core.Symbols.toDenot(core.Symbols.toDenot(sym)(ctx).owner)(ctx).derivesFrom(core.Symbols.defn(ctx).ProductClass(ctx))(ctx)).&amp;&amp;(core.Symbols.toDenot(core.Symbols.toDenot(sym)(ctx).owner)(ctx).is(core.Flags.CaseClass)(ctx)).&amp;&amp;(core.NameOps.NameDecorator[sym.ThisName](sym.name(ctx)).isSelectorName).&amp;&amp;(core.Symbols.toDenot(sym)(ctx).info(ctx).decls(ctx).exists(((x$17: dotty.tools.dotc.core.Symbols.Symbol) =&gt; core.Symbols.toDenot(x$17)(ctx).is(core.Flags.Mutable.|(core.Flags.Lazy))(ctx)))(ctx).unary_!)
+        </td>
+      </tr><tr>
+        <td>
+          171
+        </td>
+        <td>
+          65115
+        </td>
+        <td>
+          6642
+          -
+          6650
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.Symbols.Symbol.name
+        </td>
+        <td style="background: #AEF1AE">
+          sym.name(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          172
+        </td>
+        <td>
+          65117
+        </td>
+        <td>
+          6737
+          -
+          6757
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.SymDenotations.SymDenotation.is
+        </td>
+        <td style="background: #AEF1AE">
+          core.Symbols.toDenot(x$17)(ctx).is(core.Flags.Mutable.|(core.Flags.Lazy))(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          172
+        </td>
+        <td>
+          65118
+        </td>
+        <td>
+          6714
+          -
+          6758
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.Boolean.unary_!
+        </td>
+        <td style="background: #AEF1AE">
+          core.Symbols.toDenot(sym)(ctx).info(ctx).decls(ctx).exists(((x$17: dotty.tools.dotc.core.Symbols.Symbol) =&gt; core.Symbols.toDenot(x$17)(ctx).is(core.Flags.Mutable.|(core.Flags.Lazy))(ctx)))(ctx).unary_!
+        </td>
+      </tr><tr>
+        <td>
+          173
+        </td>
+        <td>
+          65120
+        </td>
+        <td>
+          6837
+          -
+          6872
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.PhantomErasure.isErasedPhantom
+        </td>
+        <td style="background: #AEF1AE">
+          dotty.tools.dotc.core.PhantomErasure.isErasedPhantom(sym)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          175
+        </td>
+        <td>
+          65121
+        </td>
+        <td>
+          6878
+          -
+          6953
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Boolean.||
+        </td>
+        <td style="background: #AEF1AE">
+          isImmutableGetter.||(isCaseAccessor).||(isProductAccessor).||(isErasedPhantom)
+        </td>
+      </tr>
+    </table>
+          </div>
+        </div>
+      </body>
+    </html>

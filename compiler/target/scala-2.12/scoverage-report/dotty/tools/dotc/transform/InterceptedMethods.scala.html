@@ -1,0 +1,1596 @@
+<html>
+      <head>
+        <meta http-equiv="Content-Type" content="text/html; charset=utf-8"/>
+        <title id="title">
+          dotty/tools/dotc/transform/InterceptedMethods.scala.html
+        </title>
+        <script src="https://ajax.googleapis.com/ajax/libs/jquery/1.10.2/jquery.min.js"></script><link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/jquery.tablesorter/2.20.1/css/theme.default.min.css" type="text/css"/><script src="https://cdnjs.cloudflare.com/ajax/libs/jquery.tablesorter/2.20.1/js/jquery.tablesorter.min.js"></script><link rel="stylesheet" href="https://netdna.bootstrapcdn.com/bootstrap/3.0.3/css/bootstrap.min.css" type="text/css"/><script src="https://netdna.bootstrapcdn.com/bootstrap/3.0.3/js/bootstrap.min.js"></script><script type="text/javascript">
+        $(document).ready(function() {$(".tablesorter").tablesorter();});
+      </script>
+        <style>
+          table.codegrid { font-family: monospace; font-size: 12px; width: auto!important; }table.statementlist { width: auto!important; font-size: 13px; } table.codegrid td { padding: 0!important; border: 0!important } table td.linenumber { width: 40px!important; } 
+        </style>
+      </head>
+      <body style="font-family: monospace;">
+        <ul class="nav nav-tabs">
+          <li>
+            <a href="#codegrid" data-toggle="tab">Codegrid</a>
+          </li>
+          <li>
+            <a href="#statementlist" data-toggle="tab">Statement List</a>
+          </li>
+        </ul>
+        <div class="tab-content">
+          <div class="tab-pane active" id="codegrid">
+            <pre style='font-size: 12pt; font-family: courier;'>1 <span style=''>package dotty.tools.dotc
+</span>2 <span style=''>package transform
+</span>3 <span style=''>
+</span>4 <span style=''>import MegaPhase._
+</span>5 <span style=''>import core.Denotations._
+</span>6 <span style=''>import core.SymDenotations._
+</span>7 <span style=''>import core.Contexts._
+</span>8 <span style=''>import core.Types._
+</span>9 <span style=''>import ast.Trees._
+</span>10 <span style=''>import ast.tpd.{Apply, Tree, cpy}
+</span>11 <span style=''>import dotty.tools.dotc.ast.tpd
+</span>12 <span style=''>import scala.collection.mutable
+</span>13 <span style=''>import dotty.tools.dotc._
+</span>14 <span style=''>import core._
+</span>15 <span style=''>import Contexts._
+</span>16 <span style=''>import Symbols._
+</span>17 <span style=''>import Decorators._
+</span>18 <span style=''>import NameOps._
+</span>19 <span style=''>import dotty.tools.dotc.ast.Trees._
+</span>20 <span style=''>import dotty.tools.dotc.ast.{untpd, tpd}
+</span>21 <span style=''>import dotty.tools.dotc.core.Constants.Constant
+</span>22 <span style=''>import dotty.tools.dotc.core.Types.MethodType
+</span>23 <span style=''>import dotty.tools.dotc.core.Names.{ Name, TermName }
+</span>24 <span style=''>import scala.collection.mutable.ListBuffer
+</span>25 <span style=''>import dotty.tools.dotc.core.Denotations.SingleDenotation
+</span>26 <span style=''>import dotty.tools.dotc.core.SymDenotations.SymDenotation
+</span>27 <span style=''>import StdNames._
+</span>28 <span style=''>import Phases.Phase
+</span>29 <span style=''>
+</span>30 <span style=''>/** Replace member references as follows:
+</span>31 <span style=''>  *
+</span>32 <span style=''>  * - `x != y` for != in class Any becomes `!(x == y)` with == in class Any.
+</span>33 <span style=''>  * - `x.##` for ## in NullClass becomes `0`
+</span>34 <span style=''>  * - `x.##` for ## in Any becomes calls to ScalaRunTime.hash,
+</span>35 <span style=''>  *     using the most precise overload available
+</span>36 <span style=''>  * - `x.getClass` for getClass in primitives becomes `x.getClass` with getClass in class Object.
+</span>37 <span style=''>  */
+</span>38 <span style=''>class InterceptedMethods extends MiniPhase {
+</span>39 <span style=''>  import tpd._
+</span>40 <span style=''>
+</span>41 <span style=''>  override def phaseName: String = </span><span style='background: #AEF1AE'>&quot;intercepted&quot;</span><span style=''>
+</span>42 <span style=''>
+</span>43 <span style=''>  private[this] var primitiveGetClassMethods: Set[Symbol] = _
+</span>44 <span style=''>
+</span>45 <span style=''>  var Any_## : Symbol = _ // cached for performance reason
+</span>46 <span style=''>
+</span>47 <span style=''>  /** perform context-dependant initialization */
+</span>48 <span style=''>  override def prepareForUnit(tree: Tree)(implicit ctx: Context) = {
+</span>49 <span style=''>    </span><span style='background: #AEF1AE'>this.Any_## = defn.Any_##</span><span style=''>
+</span>50 <span style=''>    primitiveGetClassMethods = </span><span style='background: #AEF1AE'>Set[Symbol]() ++ defn.ScalaValueClasses().map(x =&gt; x.requiredMethod(nme.getClass_))</span><span style=''>
+</span>51 <span style=''>    ctx
+</span>52 <span style=''>  }
+</span>53 <span style=''>
+</span>54 <span style=''>  // this should be removed if we have guarantee that ## will get Apply node
+</span>55 <span style=''>  override def transformSelect(tree: tpd.Select)(implicit ctx: Context): Tree = {
+</span>56 <span style=''>    if (</span><span style='background: #AEF1AE'>tree.symbol.isTerm &amp;&amp; (Any_## eq tree.symbol.asTerm)</span><span style=''>) </span><span style='background: #AEF1AE'>{
+</span>57 <span style=''></span><span style='background: #AEF1AE'>      val rewrite = poundPoundValue(tree.qualifier)
+</span>58 <span style=''></span><span style='background: #AEF1AE'>      ctx.log(</span><span style='background: #F0ADAD'>s&quot;$phaseName rewrote $tree to $rewrite&quot;</span><span style='background: #AEF1AE'>)
+</span>59 <span style=''></span><span style='background: #AEF1AE'>      rewrite
+</span>60 <span style=''></span><span style='background: #AEF1AE'>    }</span><span style=''>
+</span>61 <span style=''>    else </span><span style='background: #AEF1AE'>tree</span><span style=''>
+</span>62 <span style=''>  }
+</span>63 <span style=''>
+</span>64 <span style=''>  // TODO: add missing cases from scalac
+</span>65 <span style=''>  private def poundPoundValue(tree: Tree)(implicit ctx: Context) = {
+</span>66 <span style=''>    val s = </span><span style='background: #AEF1AE'>tree.tpe.widen.typeSymbol</span><span style=''>
+</span>67 <span style=''>
+</span>68 <span style=''>    def staticsCall(methodName: TermName): Tree =
+</span>69 <span style=''>      </span><span style='background: #AEF1AE'>ref(defn.staticsMethodRef(methodName)).appliedTo(tree)</span><span style=''>
+</span>70 <span style=''>
+</span>71 <span style=''>    if (</span><span style='background: #AEF1AE'>s == defn.NullClass</span><span style=''>) </span><span style='background: #AEF1AE'>Literal(Constant(0))</span><span style=''>
+</span>72 <span style=''>    else </span><span style='background: #AEF1AE'>if (s == defn.DoubleClass) staticsCall(nme.doubleHash)
+</span>73 <span style=''></span><span style='background: #AEF1AE'>    else if (s == defn.LongClass) staticsCall(nme.longHash)
+</span>74 <span style=''></span><span style='background: #AEF1AE'>    else if (s == defn.FloatClass) staticsCall(nme.floatHash)
+</span>75 <span style=''></span><span style='background: #AEF1AE'>    else staticsCall(nme.anyHash)</span><span style=''>
+</span>76 <span style=''>  }
+</span>77 <span style=''>
+</span>78 <span style=''>  override def transformApply(tree: Apply)(implicit ctx: Context): Tree = {
+</span>79 <span style=''>    def unknown = {
+</span>80 <span style=''>      </span><span style='background: #F0ADAD'>assert(false, s&quot;The symbol '${tree.fun.symbol.showLocated}' was intercepted but didn't match any cases, &quot; +
+</span>81 <span style=''></span><span style='background: #F0ADAD'>        s&quot;that means the intercepted methods set doesn't match the code&quot;)</span><span style=''>
+</span>82 <span style=''>      tree
+</span>83 <span style=''>    }
+</span>84 <span style=''>    lazy val qual = tree.fun match {
+</span>85 <span style=''>      case Select(qual, _) =&gt; qual
+</span>86 <span style=''>      case ident @ Ident(_) =&gt;
+</span>87 <span style=''>        ident.tpe match {
+</span>88 <span style=''>          case TermRef(prefix: TermRef, _) =&gt;
+</span>89 <span style=''>            tpd.ref(prefix)
+</span>90 <span style=''>          case TermRef(prefix: ThisType, _) =&gt;
+</span>91 <span style=''>            tpd.This(prefix.cls)
+</span>92 <span style=''>        }
+</span>93 <span style=''>
+</span>94 <span style=''>    }
+</span>95 <span style=''>    val Any_## = </span><span style='background: #AEF1AE'>this.Any_##</span><span style=''>
+</span>96 <span style=''>    val Any_!= = defn.Any_!=
+</span>97 <span style=''>    val rewrite: Tree = </span><span style='background: #AEF1AE'>tree.fun.symbol</span><span style=''> match {
+</span>98 <span style=''>      case Any_## =&gt;
+</span>99 <span style=''>        </span><span style='background: #F0ADAD'>poundPoundValue(qual)</span><span style=''>
+</span>100 <span style=''>      case Any_!= =&gt;
+</span>101 <span style=''>        </span><span style='background: #AEF1AE'>qual.select(defn.Any_==).appliedToArgs(tree.args).select(defn.Boolean_!)</span><span style=''>
+</span>102 <span style=''>        /*
+</span>103 <span style=''>        /* else if (isPrimitiveValueClass(qual.tpe.typeSymbol)) {
+</span>104 <span style=''>            // todo: this is needed to support value classes
+</span>105 <span style=''>            // Rewrite 5.getClass to ScalaRunTime.anyValClass(5)
+</span>106 <span style=''>            global.typer.typed(gen.mkRuntimeCall(nme.anyValClass,
+</span>107 <span style=''>              List(qual, typer.resolveClassTag(tree.pos, qual.tpe.widen))))
+</span>108 <span style=''>          }*/
+</span>109 <span style=''>         */
+</span>110 <span style=''>      case t if </span><span style='background: #AEF1AE'>primitiveGetClassMethods.contains(t)</span><span style=''> =&gt;
+</span>111 <span style=''>          // if we got here then we're trying to send a primitive getClass method to either
+</span>112 <span style=''>          // a) an Any, in which cage Object_getClass works because Any erases to object. Or
+</span>113 <span style=''>          //
+</span>114 <span style=''>          // b) a non-primitive, e.g. because the qualifier's type is a refinement type where one parent
+</span>115 <span style=''>          //    of the refinement is a primitive and another is AnyRef. In that case
+</span>116 <span style=''>          //    we get a primitive form of _getClass trying to target a boxed value
+</span>117 <span style=''>          //    so we need replace that method name with Object_getClass to get correct behavior.
+</span>118 <span style=''>          //    See SI-5568.
+</span>119 <span style=''>        </span><span style='background: #AEF1AE'>qual.selectWithSig(defn.Any_getClass).appliedToNone</span><span style=''>
+</span>120 <span style=''>      case _ =&gt;
+</span>121 <span style=''>        tree
+</span>122 <span style=''>    }
+</span>123 <span style=''>    </span><span style='background: #AEF1AE'>ctx.log(</span><span style='background: #F0ADAD'>s&quot;$phaseName rewrote $tree to $rewrite&quot;</span><span style='background: #AEF1AE'>)</span><span style=''>
+</span>124 <span style=''>    rewrite
+</span>125 <span style=''>  }
+</span>126 <span style=''>}
+</span></pre>
+          </div>
+          <div class="tab-pane" id="statementlist">
+            <table cellspacing="0" cellpadding="0" class="table statementlist">
+      <tr>
+        <th>Line</th>
+        <th>Stmt Id</th>
+        <th>Pos</th>
+        <th>Tree</th>
+        <th>Symbol</th>
+        <th>Code</th>
+      </tr><tr>
+        <td>
+          41
+        </td>
+        <td>
+          55870
+        </td>
+        <td>
+          1293
+          -
+          1306
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          &quot;intercepted&quot;
+        </td>
+      </tr><tr>
+        <td>
+          49
+        </td>
+        <td>
+          55871
+        </td>
+        <td>
+          1554
+          -
+          1579
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.transform.InterceptedMethods.Any_##_=
+        </td>
+        <td style="background: #AEF1AE">
+          this.Any_##_=(dotty.tools.dotc.core.Symbols.defn(ctx).Any_##)
+        </td>
+      </tr><tr>
+        <td>
+          50
+        </td>
+        <td>
+          55873
+        </td>
+        <td>
+          1656
+          -
+          1656
+        </td>
+        <td>
+          TypeApply
+        </td>
+        <td>
+          scala.collection.Set.canBuildFrom
+        </td>
+        <td style="background: #AEF1AE">
+          collection.this.Set.canBuildFrom[dotty.tools.dotc.core.Symbols.TermSymbol]
+        </td>
+      </tr><tr>
+        <td>
+          50
+        </td>
+        <td>
+          55875
+        </td>
+        <td>
+          1611
+          -
+          1694
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.SetLike.++
+        </td>
+        <td style="background: #AEF1AE">
+          scala.Predef.Set.apply[dotty.tools.dotc.core.Symbols.Symbol]().++(dotty.tools.dotc.core.Symbols.defn(ctx).ScalaValueClasses.apply()(ctx).map[dotty.tools.dotc.core.Symbols.TermSymbol, scala.collection.Set[dotty.tools.dotc.core.Symbols.TermSymbol]](((x: dotty.tools.dotc.core.Symbols.Symbol) =&gt; dotty.tools.dotc.core.Symbols.toDenot(x)(ctx).requiredMethod(dotty.tools.dotc.core.StdNames.nme.getClass_)(ctx)))(collection.this.Set.canBuildFrom[dotty.tools.dotc.core.Symbols.TermSymbol]))
+        </td>
+      </tr><tr>
+        <td>
+          50
+        </td>
+        <td>
+          55872
+        </td>
+        <td>
+          1662
+          -
+          1693
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.Denotations.Denotation.requiredMethod
+        </td>
+        <td style="background: #AEF1AE">
+          dotty.tools.dotc.core.Symbols.toDenot(x)(ctx).requiredMethod(dotty.tools.dotc.core.StdNames.nme.getClass_)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          50
+        </td>
+        <td>
+          55874
+        </td>
+        <td>
+          1628
+          -
+          1694
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          scala.collection.SetLike.map
+        </td>
+        <td style="background: #AEF1AE">
+          dotty.tools.dotc.core.Symbols.defn(ctx).ScalaValueClasses.apply()(ctx).map[dotty.tools.dotc.core.Symbols.TermSymbol, scala.collection.Set[dotty.tools.dotc.core.Symbols.TermSymbol]](((x: dotty.tools.dotc.core.Symbols.Symbol) =&gt; dotty.tools.dotc.core.Symbols.toDenot(x)(ctx).requiredMethod(dotty.tools.dotc.core.StdNames.nme.getClass_)(ctx)))(collection.this.Set.canBuildFrom[dotty.tools.dotc.core.Symbols.TermSymbol])
+        </td>
+      </tr><tr>
+        <td>
+          56
+        </td>
+        <td>
+          55888
+        </td>
+        <td>
+          1929
+          -
+          2057
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          {
+  val rewrite: dotty.tools.dotc.ast.tpd.Tree = InterceptedMethods.this.poundPoundValue(tree.qualifier)(ctx);
+  ctx.log(scala.StringContext.apply(&quot;&quot;, &quot; rewrote &quot;, &quot; to &quot;, &quot;&quot;).s(InterceptedMethods.this.phaseName, tree, rewrite), ctx.log$default$2);
+  rewrite
+}
+        </td>
+      </tr><tr>
+        <td>
+          56
+        </td>
+        <td>
+          55876
+        </td>
+        <td>
+          1908
+          -
+          1926
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.Symbols.Symbol.asTerm
+        </td>
+        <td style="background: #AEF1AE">
+          tree.symbol(ctx).asTerm(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          56
+        </td>
+        <td>
+          55878
+        </td>
+        <td>
+          1875
+          -
+          1927
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Boolean.&amp;&amp;
+        </td>
+        <td style="background: #AEF1AE">
+          tree.symbol(ctx).isTerm(ctx).&amp;&amp;(InterceptedMethods.this.Any_##.eq(tree.symbol(ctx).asTerm(ctx)))
+        </td>
+      </tr><tr>
+        <td>
+          56
+        </td>
+        <td>
+          55877
+        </td>
+        <td>
+          1898
+          -
+          1926
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.Object.eq
+        </td>
+        <td style="background: #AEF1AE">
+          InterceptedMethods.this.Any_##.eq(tree.symbol(ctx).asTerm(ctx))
+        </td>
+      </tr><tr>
+        <td>
+          57
+        </td>
+        <td>
+          55879
+        </td>
+        <td>
+          1951
+          -
+          1982
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.transform.InterceptedMethods.poundPoundValue
+        </td>
+        <td style="background: #AEF1AE">
+          InterceptedMethods.this.poundPoundValue(tree.qualifier)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          58
+        </td>
+        <td>
+          55882
+        </td>
+        <td>
+          2023
+          -
+          2028
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          &quot; to &quot;
+        </td>
+      </tr><tr>
+        <td>
+          58
+        </td>
+        <td>
+          55884
+        </td>
+        <td>
+          2000
+          -
+          2009
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.transform.InterceptedMethods.phaseName
+        </td>
+        <td style="background: #F0ADAD">
+          InterceptedMethods.this.phaseName
+        </td>
+      </tr><tr>
+        <td>
+          58
+        </td>
+        <td>
+          55887
+        </td>
+        <td>
+          1989
+          -
+          2037
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.reporting.Reporting.log
+        </td>
+        <td style="background: #AEF1AE">
+          ctx.log(scala.StringContext.apply(&quot;&quot;, &quot; rewrote &quot;, &quot; to &quot;, &quot;&quot;).s(InterceptedMethods.this.phaseName, tree, rewrite), ctx.log$default$2)
+        </td>
+      </tr><tr>
+        <td>
+          58
+        </td>
+        <td>
+          55881
+        </td>
+        <td>
+          2009
+          -
+          2019
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          &quot; rewrote &quot;
+        </td>
+      </tr><tr>
+        <td>
+          58
+        </td>
+        <td>
+          55880
+        </td>
+        <td>
+          1999
+          -
+          2000
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          &quot;&quot;
+        </td>
+      </tr><tr>
+        <td>
+          58
+        </td>
+        <td>
+          55883
+        </td>
+        <td>
+          2035
+          -
+          2036
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          &quot;&quot;
+        </td>
+      </tr><tr>
+        <td>
+          58
+        </td>
+        <td>
+          55886
+        </td>
+        <td>
+          1993
+          -
+          1993
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.reporting.Reporting.log$default$2
+        </td>
+        <td style="background: #AEF1AE">
+          ctx.log$default$2
+        </td>
+      </tr><tr>
+        <td>
+          58
+        </td>
+        <td>
+          55885
+        </td>
+        <td>
+          1997
+          -
+          2036
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.StringContext.s
+        </td>
+        <td style="background: #F0ADAD">
+          scala.StringContext.apply(&quot;&quot;, &quot; rewrote &quot;, &quot; to &quot;, &quot;&quot;).s(InterceptedMethods.this.phaseName, tree, rewrite)
+        </td>
+      </tr><tr>
+        <td>
+          61
+        </td>
+        <td>
+          55889
+        </td>
+        <td>
+          2067
+          -
+          2071
+        </td>
+        <td>
+          Ident
+        </td>
+        <td>
+          dotty.tools.dotc.transform.InterceptedMethods.tree
+        </td>
+        <td style="background: #AEF1AE">
+          tree
+        </td>
+      </tr><tr>
+        <td>
+          66
+        </td>
+        <td>
+          55890
+        </td>
+        <td>
+          2199
+          -
+          2224
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.Types.Type.typeSymbol
+        </td>
+        <td style="background: #AEF1AE">
+          tree.tpe.widen(ctx).typeSymbol(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          69
+        </td>
+        <td>
+          55891
+        </td>
+        <td>
+          2282
+          -
+          2336
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.tpd.TreeOps.appliedTo
+        </td>
+        <td style="background: #AEF1AE">
+          dotty.tools.dotc.ast.tpd.TreeOps[dotty.tools.dotc.ast.tpd.Tree](dotty.tools.dotc.ast.tpd.ref(dotty.tools.dotc.core.Symbols.defn(ctx).staticsMethodRef(methodName))(ctx)).appliedTo(tree)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          71
+        </td>
+        <td>
+          55893
+        </td>
+        <td>
+          2367
+          -
+          2387
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.tpd.Literal
+        </td>
+        <td style="background: #AEF1AE">
+          dotty.tools.dotc.ast.tpd.Literal(dotty.tools.dotc.core.Constants.Constant.apply(0))(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          71
+        </td>
+        <td>
+          55892
+        </td>
+        <td>
+          2346
+          -
+          2365
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.Object.==
+        </td>
+        <td style="background: #AEF1AE">
+          s.==(dotty.tools.dotc.core.Symbols.defn(ctx).NullClass)
+        </td>
+      </tr><tr>
+        <td>
+          71
+        </td>
+        <td>
+          55894
+        </td>
+        <td>
+          2367
+          -
+          2387
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          dotty.tools.dotc.ast.tpd.Literal
+        </td>
+        <td style="background: #AEF1AE">
+          dotty.tools.dotc.ast.tpd.Literal(dotty.tools.dotc.core.Constants.Constant.apply(0))(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          72
+        </td>
+        <td>
+          55915
+        </td>
+        <td>
+          2397
+          -
+          2607
+        </td>
+        <td>
+          If
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          if (s.==(dotty.tools.dotc.core.Symbols.defn(ctx).DoubleClass(ctx)))
+  staticsCall(dotty.tools.dotc.core.StdNames.nme.doubleHash)
+else
+  if (s.==(dotty.tools.dotc.core.Symbols.defn(ctx).LongClass(ctx)))
+    staticsCall(dotty.tools.dotc.core.StdNames.nme.longHash)
+  else
+    if (s.==(dotty.tools.dotc.core.Symbols.defn(ctx).FloatClass(ctx)))
+      staticsCall(dotty.tools.dotc.core.StdNames.nme.floatHash)
+    else
+      staticsCall(dotty.tools.dotc.core.StdNames.nme.anyHash)
+        </td>
+      </tr><tr>
+        <td>
+          72
+        </td>
+        <td>
+          55897
+        </td>
+        <td>
+          2436
+          -
+          2450
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.StdNames.ScalaNames.doubleHash
+        </td>
+        <td style="background: #AEF1AE">
+          dotty.tools.dotc.core.StdNames.nme.doubleHash
+        </td>
+      </tr><tr>
+        <td>
+          72
+        </td>
+        <td>
+          55896
+        </td>
+        <td>
+          2401
+          -
+          2422
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.Object.==
+        </td>
+        <td style="background: #AEF1AE">
+          s.==(dotty.tools.dotc.core.Symbols.defn(ctx).DoubleClass(ctx))
+        </td>
+      </tr><tr>
+        <td>
+          72
+        </td>
+        <td>
+          55899
+        </td>
+        <td>
+          2424
+          -
+          2451
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          dotty.tools.dotc.transform.InterceptedMethods.staticsCall
+        </td>
+        <td style="background: #AEF1AE">
+          staticsCall(dotty.tools.dotc.core.StdNames.nme.doubleHash)
+        </td>
+      </tr><tr>
+        <td>
+          72
+        </td>
+        <td>
+          55898
+        </td>
+        <td>
+          2424
+          -
+          2451
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.transform.InterceptedMethods.staticsCall
+        </td>
+        <td style="background: #AEF1AE">
+          staticsCall(dotty.tools.dotc.core.StdNames.nme.doubleHash)
+        </td>
+      </tr><tr>
+        <td>
+          72
+        </td>
+        <td>
+          55895
+        </td>
+        <td>
+          2406
+          -
+          2422
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.Definitions.DoubleClass
+        </td>
+        <td style="background: #AEF1AE">
+          dotty.tools.dotc.core.Symbols.defn(ctx).DoubleClass(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          73
+        </td>
+        <td>
+          55900
+        </td>
+        <td>
+          2470
+          -
+          2484
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.Definitions.LongClass
+        </td>
+        <td style="background: #AEF1AE">
+          dotty.tools.dotc.core.Symbols.defn(ctx).LongClass(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          73
+        </td>
+        <td>
+          55902
+        </td>
+        <td>
+          2498
+          -
+          2510
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.StdNames.ScalaNames.longHash
+        </td>
+        <td style="background: #AEF1AE">
+          dotty.tools.dotc.core.StdNames.nme.longHash
+        </td>
+      </tr><tr>
+        <td>
+          73
+        </td>
+        <td>
+          55914
+        </td>
+        <td>
+          2461
+          -
+          2607
+        </td>
+        <td>
+          If
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          if (s.==(dotty.tools.dotc.core.Symbols.defn(ctx).LongClass(ctx)))
+  staticsCall(dotty.tools.dotc.core.StdNames.nme.longHash)
+else
+  if (s.==(dotty.tools.dotc.core.Symbols.defn(ctx).FloatClass(ctx)))
+    staticsCall(dotty.tools.dotc.core.StdNames.nme.floatHash)
+  else
+    staticsCall(dotty.tools.dotc.core.StdNames.nme.anyHash)
+        </td>
+      </tr><tr>
+        <td>
+          73
+        </td>
+        <td>
+          55901
+        </td>
+        <td>
+          2465
+          -
+          2484
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.Object.==
+        </td>
+        <td style="background: #AEF1AE">
+          s.==(dotty.tools.dotc.core.Symbols.defn(ctx).LongClass(ctx))
+        </td>
+      </tr><tr>
+        <td>
+          73
+        </td>
+        <td>
+          55904
+        </td>
+        <td>
+          2486
+          -
+          2511
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          dotty.tools.dotc.transform.InterceptedMethods.staticsCall
+        </td>
+        <td style="background: #AEF1AE">
+          staticsCall(dotty.tools.dotc.core.StdNames.nme.longHash)
+        </td>
+      </tr><tr>
+        <td>
+          73
+        </td>
+        <td>
+          55903
+        </td>
+        <td>
+          2486
+          -
+          2511
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.transform.InterceptedMethods.staticsCall
+        </td>
+        <td style="background: #AEF1AE">
+          staticsCall(dotty.tools.dotc.core.StdNames.nme.longHash)
+        </td>
+      </tr><tr>
+        <td>
+          74
+        </td>
+        <td>
+          55906
+        </td>
+        <td>
+          2525
+          -
+          2545
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.Object.==
+        </td>
+        <td style="background: #AEF1AE">
+          s.==(dotty.tools.dotc.core.Symbols.defn(ctx).FloatClass(ctx))
+        </td>
+      </tr><tr>
+        <td>
+          74
+        </td>
+        <td>
+          55909
+        </td>
+        <td>
+          2547
+          -
+          2573
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          dotty.tools.dotc.transform.InterceptedMethods.staticsCall
+        </td>
+        <td style="background: #AEF1AE">
+          staticsCall(dotty.tools.dotc.core.StdNames.nme.floatHash)
+        </td>
+      </tr><tr>
+        <td>
+          74
+        </td>
+        <td>
+          55908
+        </td>
+        <td>
+          2547
+          -
+          2573
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.transform.InterceptedMethods.staticsCall
+        </td>
+        <td style="background: #AEF1AE">
+          staticsCall(dotty.tools.dotc.core.StdNames.nme.floatHash)
+        </td>
+      </tr><tr>
+        <td>
+          74
+        </td>
+        <td>
+          55905
+        </td>
+        <td>
+          2530
+          -
+          2545
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.Definitions.FloatClass
+        </td>
+        <td style="background: #AEF1AE">
+          dotty.tools.dotc.core.Symbols.defn(ctx).FloatClass(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          74
+        </td>
+        <td>
+          55907
+        </td>
+        <td>
+          2559
+          -
+          2572
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.StdNames.ScalaNames.floatHash
+        </td>
+        <td style="background: #AEF1AE">
+          dotty.tools.dotc.core.StdNames.nme.floatHash
+        </td>
+      </tr><tr>
+        <td>
+          74
+        </td>
+        <td>
+          55913
+        </td>
+        <td>
+          2521
+          -
+          2607
+        </td>
+        <td>
+          If
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          if (s.==(dotty.tools.dotc.core.Symbols.defn(ctx).FloatClass(ctx)))
+  staticsCall(dotty.tools.dotc.core.StdNames.nme.floatHash)
+else
+  staticsCall(dotty.tools.dotc.core.StdNames.nme.anyHash)
+        </td>
+      </tr><tr>
+        <td>
+          75
+        </td>
+        <td>
+          55911
+        </td>
+        <td>
+          2583
+          -
+          2607
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.transform.InterceptedMethods.staticsCall
+        </td>
+        <td style="background: #AEF1AE">
+          staticsCall(dotty.tools.dotc.core.StdNames.nme.anyHash)
+        </td>
+      </tr><tr>
+        <td>
+          75
+        </td>
+        <td>
+          55910
+        </td>
+        <td>
+          2595
+          -
+          2606
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.StdNames.ScalaNames.anyHash
+        </td>
+        <td style="background: #AEF1AE">
+          dotty.tools.dotc.core.StdNames.nme.anyHash
+        </td>
+      </tr><tr>
+        <td>
+          75
+        </td>
+        <td>
+          55912
+        </td>
+        <td>
+          2583
+          -
+          2607
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          dotty.tools.dotc.transform.InterceptedMethods.staticsCall
+        </td>
+        <td style="background: #AEF1AE">
+          staticsCall(dotty.tools.dotc.core.StdNames.nme.anyHash)
+        </td>
+      </tr><tr>
+        <td>
+          80
+        </td>
+        <td>
+          55918
+        </td>
+        <td>
+          2773
+          -
+          2820
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          &quot;\' was intercepted but didn\'t match any cases, &quot;
+        </td>
+      </tr><tr>
+        <td>
+          80
+        </td>
+        <td>
+          55917
+        </td>
+        <td>
+          2731
+          -
+          2744
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          &quot;The symbol \'&quot;
+        </td>
+      </tr><tr>
+        <td>
+          80
+        </td>
+        <td>
+          55916
+        </td>
+        <td>
+          2722
+          -
+          2727
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          false
+        </td>
+      </tr><tr>
+        <td>
+          80
+        </td>
+        <td>
+          55919
+        </td>
+        <td>
+          2745
+          -
+          2772
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.Symbols.Symbol.showLocated
+        </td>
+        <td style="background: #F0ADAD">
+          tree.fun.symbol(ctx).showLocated(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          80
+        </td>
+        <td>
+          55922
+        </td>
+        <td>
+          2715
+          -
+          2896
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Predef.assert
+        </td>
+        <td style="background: #F0ADAD">
+          scala.Predef.assert(false, scala.StringContext.apply(&quot;The symbol \'&quot;, &quot;\' was intercepted but didn\'t match any cases, &quot;).s(tree.fun.symbol(ctx).showLocated(ctx)).+(scala.StringContext.apply(&quot;that means the intercepted methods set doesn\'t match the code&quot;).s()))
+        </td>
+      </tr><tr>
+        <td>
+          80
+        </td>
+        <td>
+          55921
+        </td>
+        <td>
+          2729
+          -
+          2895
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.String.+
+        </td>
+        <td style="background: #F0ADAD">
+          scala.StringContext.apply(&quot;The symbol \'&quot;, &quot;\' was intercepted but didn\'t match any cases, &quot;).s(tree.fun.symbol(ctx).showLocated(ctx)).+(scala.StringContext.apply(&quot;that means the intercepted methods set doesn\'t match the code&quot;).s())
+        </td>
+      </tr><tr>
+        <td>
+          81
+        </td>
+        <td>
+          55920
+        </td>
+        <td>
+          2831
+          -
+          2895
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.StringContext.s
+        </td>
+        <td style="background: #F0ADAD">
+          scala.StringContext.apply(&quot;that means the intercepted methods set doesn\'t match the code&quot;).s()
+        </td>
+      </tr><tr>
+        <td>
+          95
+        </td>
+        <td>
+          55923
+        </td>
+        <td>
+          3231
+          -
+          3242
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.transform.InterceptedMethods.Any_##
+        </td>
+        <td style="background: #AEF1AE">
+          this.Any_##
+        </td>
+      </tr><tr>
+        <td>
+          97
+        </td>
+        <td>
+          55924
+        </td>
+        <td>
+          3296
+          -
+          3311
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Trees.Tree.symbol
+        </td>
+        <td style="background: #AEF1AE">
+          tree.fun.symbol(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          99
+        </td>
+        <td>
+          55925
+        </td>
+        <td>
+          3349
+          -
+          3370
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.transform.InterceptedMethods.poundPoundValue
+        </td>
+        <td style="background: #F0ADAD">
+          InterceptedMethods.this.poundPoundValue(qual)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          101
+        </td>
+        <td>
+          55926
+        </td>
+        <td>
+          3400
+          -
+          3472
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.tpd.TreeOps.select
+        </td>
+        <td style="background: #AEF1AE">
+          dotty.tools.dotc.ast.tpd.TreeOps[dotty.tools.dotc.ast.tpd.Apply](dotty.tools.dotc.ast.tpd.TreeOps[dotty.tools.dotc.ast.tpd.Select](dotty.tools.dotc.ast.tpd.TreeOps[dotty.tools.dotc.ast.Trees.Tree[dotty.tools.dotc.core.Types.Type]](qual).select(dotty.tools.dotc.core.Symbols.defn(ctx).Any_==)(ctx)).appliedToArgs(tree.args)(ctx)).select(dotty.tools.dotc.core.Symbols.defn(ctx).Boolean_!)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          110
+        </td>
+        <td>
+          55927
+        </td>
+        <td>
+          3860
+          -
+          3896
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.SetLike.contains
+        </td>
+        <td style="background: #AEF1AE">
+          InterceptedMethods.this.primitiveGetClassMethods.contains(t)
+        </td>
+      </tr><tr>
+        <td>
+          119
+        </td>
+        <td>
+          55928
+        </td>
+        <td>
+          4507
+          -
+          4558
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.tpd.TreeOps.appliedToNone
+        </td>
+        <td style="background: #AEF1AE">
+          dotty.tools.dotc.ast.tpd.TreeOps[dotty.tools.dotc.ast.tpd.Tree](dotty.tools.dotc.ast.tpd.TreeOps[dotty.tools.dotc.ast.Trees.Tree[dotty.tools.dotc.core.Types.Type]](qual).selectWithSig(dotty.tools.dotc.core.Symbols.defn(ctx).Any_getClass)(ctx)).appliedToNone(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          123
+        </td>
+        <td>
+          55933
+        </td>
+        <td>
+          4609
+          -
+          4618
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.transform.InterceptedMethods.phaseName
+        </td>
+        <td style="background: #F0ADAD">
+          InterceptedMethods.this.phaseName
+        </td>
+      </tr><tr>
+        <td>
+          123
+        </td>
+        <td>
+          55936
+        </td>
+        <td>
+          4598
+          -
+          4646
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.reporting.Reporting.log
+        </td>
+        <td style="background: #AEF1AE">
+          ctx.log(scala.StringContext.apply(&quot;&quot;, &quot; rewrote &quot;, &quot; to &quot;, &quot;&quot;).s(InterceptedMethods.this.phaseName, tree, rewrite), ctx.log$default$2)
+        </td>
+      </tr><tr>
+        <td>
+          123
+        </td>
+        <td>
+          55935
+        </td>
+        <td>
+          4602
+          -
+          4602
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.reporting.Reporting.log$default$2
+        </td>
+        <td style="background: #AEF1AE">
+          ctx.log$default$2
+        </td>
+      </tr><tr>
+        <td>
+          123
+        </td>
+        <td>
+          55929
+        </td>
+        <td>
+          4608
+          -
+          4609
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          &quot;&quot;
+        </td>
+      </tr><tr>
+        <td>
+          123
+        </td>
+        <td>
+          55932
+        </td>
+        <td>
+          4644
+          -
+          4645
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          &quot;&quot;
+        </td>
+      </tr><tr>
+        <td>
+          123
+        </td>
+        <td>
+          55931
+        </td>
+        <td>
+          4632
+          -
+          4637
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          &quot; to &quot;
+        </td>
+      </tr><tr>
+        <td>
+          123
+        </td>
+        <td>
+          55934
+        </td>
+        <td>
+          4606
+          -
+          4645
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.StringContext.s
+        </td>
+        <td style="background: #F0ADAD">
+          scala.StringContext.apply(&quot;&quot;, &quot; rewrote &quot;, &quot; to &quot;, &quot;&quot;).s(InterceptedMethods.this.phaseName, tree, rewrite)
+        </td>
+      </tr><tr>
+        <td>
+          123
+        </td>
+        <td>
+          55930
+        </td>
+        <td>
+          4618
+          -
+          4628
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          &quot; rewrote &quot;
+        </td>
+      </tr>
+    </table>
+          </div>
+        </div>
+      </body>
+    </html>

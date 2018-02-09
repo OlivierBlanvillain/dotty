@@ -1,0 +1,4895 @@
+<html>
+      <head>
+        <meta http-equiv="Content-Type" content="text/html; charset=utf-8"/>
+        <title id="title">
+          dotty/tools/dotc/config/PathResolver.scala.html
+        </title>
+        <script src="https://ajax.googleapis.com/ajax/libs/jquery/1.10.2/jquery.min.js"></script><link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/jquery.tablesorter/2.20.1/css/theme.default.min.css" type="text/css"/><script src="https://cdnjs.cloudflare.com/ajax/libs/jquery.tablesorter/2.20.1/js/jquery.tablesorter.min.js"></script><link rel="stylesheet" href="https://netdna.bootstrapcdn.com/bootstrap/3.0.3/css/bootstrap.min.css" type="text/css"/><script src="https://netdna.bootstrapcdn.com/bootstrap/3.0.3/js/bootstrap.min.js"></script><script type="text/javascript">
+        $(document).ready(function() {$(".tablesorter").tablesorter();});
+      </script>
+        <style>
+          table.codegrid { font-family: monospace; font-size: 12px; width: auto!important; }table.statementlist { width: auto!important; font-size: 13px; } table.codegrid td { padding: 0!important; border: 0!important } table td.linenumber { width: 40px!important; } 
+        </style>
+      </head>
+      <body style="font-family: monospace;">
+        <ul class="nav nav-tabs">
+          <li>
+            <a href="#codegrid" data-toggle="tab">Codegrid</a>
+          </li>
+          <li>
+            <a href="#statementlist" data-toggle="tab">Statement List</a>
+          </li>
+        </ul>
+        <div class="tab-content">
+          <div class="tab-pane active" id="codegrid">
+            <pre style='font-size: 12pt; font-family: courier;'>1 <span style=''>package dotty.tools
+</span>2 <span style=''>package dotc
+</span>3 <span style=''>package config
+</span>4 <span style=''>
+</span>5 <span style=''>import java.net.{ URL, MalformedURLException }
+</span>6 <span style=''>import WrappedProperties.AccessControl
+</span>7 <span style=''>import io.{ ClassPath, File, Directory, Path, AbstractFile }
+</span>8 <span style=''>import classpath.{AggregateClassPath, ClassPathFactory }
+</span>9 <span style=''>import ClassPath.{ JavaContext, join, split }
+</span>10 <span style=''>import PartialFunction.condOpt
+</span>11 <span style=''>import scala.language.postfixOps
+</span>12 <span style=''>import core.Contexts._
+</span>13 <span style=''>import Settings._
+</span>14 <span style=''>
+</span>15 <span style=''>// Loosely based on the draft specification at:
+</span>16 <span style=''>// https://wiki.scala-lang.org/display/SW/Classpath
+</span>17 <span style=''>
+</span>18 <span style=''>object PathResolver {
+</span>19 <span style=''>
+</span>20 <span style=''>  // Imports property/environment functions which suppress
+</span>21 <span style=''>  // security exceptions.
+</span>22 <span style=''>  import AccessControl._
+</span>23 <span style=''>
+</span>24 <span style=''>  def firstNonEmpty(xs: String*) = </span><span style='background: #F0ADAD'>xs find (_ != &quot;&quot;) getOrElse &quot;&quot;</span><span style=''>
+</span>25 <span style=''>
+</span>26 <span style=''>  /** Map all classpath elements to absolute paths and reconstruct the classpath.
+</span>27 <span style=''>    */
+</span>28 <span style=''>  def makeAbsolute(cp: String) = </span><span style='background: #F0ADAD'>ClassPath.map(cp, x =&gt; Path(x).toAbsolute.path)</span><span style=''>
+</span>29 <span style=''>
+</span>30 <span style=''>  /** pretty print class path */
+</span>31 <span style=''>  def ppcp(s: String) = </span><span style='background: #F0ADAD'>split(s)</span><span style=''> match {
+</span>32 <span style=''>    case Nil      =&gt; </span><span style='background: #F0ADAD'>&quot;&quot;</span><span style=''>
+</span>33 <span style=''>    case Seq(x)   =&gt; x
+</span>34 <span style=''>    case xs       =&gt; </span><span style='background: #F0ADAD'>xs map (&quot;\n&quot; + _) mkString</span><span style=''>
+</span>35 <span style=''>  }
+</span>36 <span style=''>
+</span>37 <span style=''>  /** Values found solely by inspecting environment or property variables.
+</span>38 <span style=''>   */
+</span>39 <span style=''>  object Environment {
+</span>40 <span style=''>    private def searchForBootClasspath = (
+</span>41 <span style=''>      </span><span style='background: #AEF1AE'>systemProperties find (_._1 endsWith &quot;.boot.class.path&quot;) map (_._2) getOrElse &quot;&quot;</span><span style=''>
+</span>42 <span style=''>    )
+</span>43 <span style=''>
+</span>44 <span style=''>    /** Environment variables which java pays attention to so it
+</span>45 <span style=''>     *  seems we do as well.
+</span>46 <span style=''>     */
+</span>47 <span style=''>    def classPathEnv        =  </span><span style='background: #F0ADAD'>envOrElse(&quot;CLASSPATH&quot;, &quot;&quot;)</span><span style=''>
+</span>48 <span style=''>    def sourcePathEnv       =  </span><span style='background: #AEF1AE'>envOrElse(&quot;SOURCEPATH&quot;, &quot;&quot;)</span><span style=''>
+</span>49 <span style=''>
+</span>50 <span style=''>    def javaBootClassPath   = </span><span style='background: #AEF1AE'>propOrElse(&quot;sun.boot.class.path&quot;, searchForBootClasspath)</span><span style=''>
+</span>51 <span style=''>
+</span>52 <span style=''>    def javaExtDirs         = </span><span style='background: #AEF1AE'>propOrEmpty(&quot;java.ext.dirs&quot;)</span><span style=''>
+</span>53 <span style=''>    def scalaHome           = </span><span style='background: #F0ADAD'>propOrEmpty(&quot;scala.home&quot;)</span><span style=''>
+</span>54 <span style=''>    def scalaExtDirs        = </span><span style='background: #AEF1AE'>propOrEmpty(&quot;scala.ext.dirs&quot;)</span><span style=''>
+</span>55 <span style=''>
+</span>56 <span style=''>    /** The java classpath and whether to use it. */
+</span>57 <span style=''>    def javaUserClassPath   = </span><span style='background: #AEF1AE'>propOrElse(&quot;java.class.path&quot;, &quot;&quot;)</span><span style=''>
+</span>58 <span style=''>    def useJavaClassPath    = </span><span style='background: #AEF1AE'>propOrFalse(&quot;scala.usejavacp&quot;)</span><span style=''>
+</span>59 <span style=''>
+</span>60 <span style=''>    override def toString = </span><span style='background: #F0ADAD'>s&quot;&quot;&quot;
+</span>61 <span style=''></span><span style='background: #F0ADAD'>      |object Environment {
+</span>62 <span style=''></span><span style='background: #F0ADAD'>      |  scalaHome          = $scalaHome (useJavaClassPath = $useJavaClassPath)
+</span>63 <span style=''></span><span style='background: #F0ADAD'>      |  javaBootClassPath  = &lt;${javaBootClassPath.length} chars&gt;
+</span>64 <span style=''></span><span style='background: #F0ADAD'>      |  javaExtDirs        = ${ppcp(javaExtDirs)}
+</span>65 <span style=''></span><span style='background: #F0ADAD'>      |  javaUserClassPath  = ${ppcp(javaUserClassPath)}
+</span>66 <span style=''></span><span style='background: #F0ADAD'>      |  scalaExtDirs       = ${ppcp(scalaExtDirs)}
+</span>67 <span style=''></span><span style='background: #F0ADAD'>      |}&quot;&quot;&quot;.trim.stripMargin</span><span style=''>
+</span>68 <span style=''>  }
+</span>69 <span style=''>
+</span>70 <span style=''>  /** Default values based on those in Environment as interpreted according
+</span>71 <span style=''>   *  to the path resolution specification.
+</span>72 <span style=''>   */
+</span>73 <span style=''>  object Defaults {
+</span>74 <span style=''>    def scalaSourcePath   = </span><span style='background: #AEF1AE'>Environment.sourcePathEnv</span><span style=''>
+</span>75 <span style=''>    def javaBootClassPath = </span><span style='background: #AEF1AE'>Environment.javaBootClassPath</span><span style=''>
+</span>76 <span style=''>    def javaUserClassPath = </span><span style='background: #AEF1AE'>Environment.javaUserClassPath</span><span style=''>
+</span>77 <span style=''>    def javaExtDirs       = </span><span style='background: #AEF1AE'>Environment.javaExtDirs</span><span style=''>
+</span>78 <span style=''>    def useJavaClassPath  = </span><span style='background: #AEF1AE'>Environment.useJavaClassPath</span><span style=''>
+</span>79 <span style=''>
+</span>80 <span style=''>    def scalaHome         = </span><span style='background: #F0ADAD'>Environment.scalaHome</span><span style=''>
+</span>81 <span style=''>    def scalaHomeDir      = </span><span style='background: #F0ADAD'>Directory(scalaHome)</span><span style=''>
+</span>82 <span style=''>    def scalaHomeExists   = </span><span style='background: #F0ADAD'>scalaHomeDir.isDirectory</span><span style=''>
+</span>83 <span style=''>    def scalaLibDir       = (</span><span style='background: #F0ADAD'>scalaHomeDir / &quot;lib&quot;).toDirectory</span><span style=''>
+</span>84 <span style=''>    def scalaClassesDir   = (</span><span style='background: #F0ADAD'>scalaHomeDir / &quot;classes&quot;).toDirectory</span><span style=''>
+</span>85 <span style=''>
+</span>86 <span style=''>    def scalaLibAsJar     = (</span><span style='background: #F0ADAD'>scalaLibDir / &quot;scala-library.jar&quot;).toFile</span><span style=''>
+</span>87 <span style=''>    def scalaLibAsDir     = (</span><span style='background: #F0ADAD'>scalaClassesDir / &quot;library&quot;).toDirectory</span><span style=''>
+</span>88 <span style=''>
+</span>89 <span style=''>    def scalaLibDirFound: Option[Directory] =
+</span>90 <span style=''>      if (</span><span style='background: #F0ADAD'>scalaLibAsJar.isFile</span><span style=''>) </span><span style='background: #F0ADAD'>Some(scalaLibDir)</span><span style=''>
+</span>91 <span style=''>      else </span><span style='background: #F0ADAD'>if (scalaLibAsDir.isDirectory) Some(scalaClassesDir)
+</span>92 <span style=''></span><span style='background: #F0ADAD'>      else None</span><span style=''>
+</span>93 <span style=''>
+</span>94 <span style=''>    def scalaLibFound =
+</span>95 <span style=''>      if (</span><span style='background: #F0ADAD'>scalaLibAsJar.isFile</span><span style=''>) </span><span style='background: #F0ADAD'>scalaLibAsJar.path</span><span style=''>
+</span>96 <span style=''>      else </span><span style='background: #F0ADAD'>if (scalaLibAsDir.isDirectory) scalaLibAsDir.path
+</span>97 <span style=''></span><span style='background: #F0ADAD'>      else &quot;&quot;</span><span style=''>
+</span>98 <span style=''>
+</span>99 <span style=''>    // XXX It must be time for someone to figure out what all these things
+</span>100 <span style=''>    // are intended to do.  This is disabled here because it was causing all
+</span>101 <span style=''>    // the scala jars to end up on the classpath twice: one on the boot
+</span>102 <span style=''>    // classpath as set up by the runner (or regular classpath under -nobootcp)
+</span>103 <span style=''>    // and then again here.
+</span>104 <span style=''>    def scalaBootClassPath  = </span><span style='background: #AEF1AE'>&quot;&quot;</span><span style=''>
+</span>105 <span style=''>    // scalaLibDirFound match {
+</span>106 <span style=''>    //   case Some(dir) if scalaHomeExists =&gt;
+</span>107 <span style=''>    //     val paths = ClassPath expandDir dir.path
+</span>108 <span style=''>    //     join(paths: _*)
+</span>109 <span style=''>    //   case _                            =&gt; &quot;&quot;
+</span>110 <span style=''>    // }
+</span>111 <span style=''>
+</span>112 <span style=''>    def scalaExtDirs = </span><span style='background: #AEF1AE'>Environment.scalaExtDirs</span><span style=''>
+</span>113 <span style=''>
+</span>114 <span style=''>    def scalaPluginPath = (</span><span style='background: #F0ADAD'>scalaHomeDir / &quot;misc&quot; / &quot;scala-devel&quot; / &quot;plugins&quot;).path</span><span style=''>
+</span>115 <span style=''>
+</span>116 <span style=''>    override def toString = </span><span style='background: #F0ADAD'>&quot;&quot;&quot;
+</span>117 <span style=''></span><span style='background: #F0ADAD'>      |object Defaults {
+</span>118 <span style=''></span><span style='background: #F0ADAD'>      |  scalaHome            = %s
+</span>119 <span style=''></span><span style='background: #F0ADAD'>      |  javaBootClassPath    = %s
+</span>120 <span style=''></span><span style='background: #F0ADAD'>      |  scalaLibDirFound     = %s
+</span>121 <span style=''></span><span style='background: #F0ADAD'>      |  scalaLibFound        = %s
+</span>122 <span style=''></span><span style='background: #F0ADAD'>      |  scalaBootClassPath   = %s
+</span>123 <span style=''></span><span style='background: #F0ADAD'>      |  scalaPluginPath      = %s
+</span>124 <span style=''></span><span style='background: #F0ADAD'>      |}&quot;&quot;&quot;.trim.stripMargin.format(
+</span>125 <span style=''></span><span style='background: #F0ADAD'>        scalaHome,
+</span>126 <span style=''></span><span style='background: #F0ADAD'>        ppcp(javaBootClassPath),
+</span>127 <span style=''></span><span style='background: #F0ADAD'>        scalaLibDirFound, scalaLibFound,
+</span>128 <span style=''></span><span style='background: #F0ADAD'>        ppcp(scalaBootClassPath), ppcp(scalaPluginPath)
+</span>129 <span style=''></span><span style='background: #F0ADAD'>      )</span><span style=''>
+</span>130 <span style=''>  }
+</span>131 <span style=''>
+</span>132 <span style=''>  def fromPathString(path: String)(implicit ctx: Context): ClassPath = {
+</span>133 <span style=''>    val settings = </span><span style='background: #F0ADAD'>ctx.settings.classpath.update(path)</span><span style=''>
+</span>134 <span style=''>    new PathResolver()(ctx.fresh.setSettings(settings)).result
+</span>135 <span style=''>  }
+</span>136 <span style=''>
+</span>137 <span style=''>  /** With no arguments, show the interesting values in Environment and Defaults.
+</span>138 <span style=''>   *  If there are arguments, show those in Calculated as if those options had been
+</span>139 <span style=''>   *  given to a scala runner.
+</span>140 <span style=''>   */
+</span>141 <span style=''>  def main(args: Array[String]): Unit = {
+</span>142 <span style=''>    if (</span><span style='background: #F0ADAD'>args.isEmpty</span><span style=''>) </span><span style='background: #F0ADAD'>{
+</span>143 <span style=''></span><span style='background: #F0ADAD'>      println(Environment)
+</span>144 <span style=''></span><span style='background: #F0ADAD'>      println(Defaults)
+</span>145 <span style=''></span><span style='background: #F0ADAD'>    }</span><span style=''>
+</span>146 <span style=''>    else </span><span style='background: #F0ADAD'>{
+</span>147 <span style=''></span><span style='background: #F0ADAD'>      implicit val ctx = (new ContextBase).initialCtx
+</span>148 <span style=''></span><span style='background: #F0ADAD'>      val ArgsSummary(sstate, rest, errors, warnings) =
+</span>149 <span style=''></span><span style='background: #F0ADAD'>        ctx.settings.processArguments(args.toList, true)
+</span>150 <span style=''></span><span style='background: #F0ADAD'>      errors.foreach(println)
+</span>151 <span style=''></span><span style='background: #F0ADAD'>      val pr = new PathResolver()(ctx.fresh.setSettings(sstate))
+</span>152 <span style=''></span><span style='background: #F0ADAD'>      println(&quot; COMMAND: 'scala %s'&quot;.format(args.mkString(&quot; &quot;)))
+</span>153 <span style=''></span><span style='background: #F0ADAD'>      println(&quot;RESIDUAL: 'scala %s'\n&quot;.format(rest.mkString(&quot; &quot;)))
+</span>154 <span style=''></span><span style='background: #F0ADAD'>
+</span>155 <span style=''></span><span style='background: #F0ADAD'>      pr.result match {
+</span>156 <span style=''></span><span style='background: #F0ADAD'>        case cp: AggregateClassPath =&gt;
+</span>157 <span style=''></span><span style='background: #F0ADAD'>          println(s&quot;ClassPath has ${cp.aggregates.size} entries and results in:\n${cp.asClassPathStrings}&quot;)
+</span>158 <span style=''></span><span style='background: #F0ADAD'>      }
+</span>159 <span style=''></span><span style='background: #F0ADAD'>    }</span><span style=''>
+</span>160 <span style=''>  }
+</span>161 <span style=''>}
+</span>162 <span style=''>import PathResolver.{ Defaults, Environment, firstNonEmpty, ppcp }
+</span>163 <span style=''>
+</span>164 <span style=''>class PathResolver(implicit ctx: Context) {
+</span>165 <span style=''>  import ctx.base.settings
+</span>166 <span style=''>
+</span>167 <span style=''>  private val classPathFactory = </span><span style='background: #AEF1AE'>new ClassPathFactory</span><span style=''>
+</span>168 <span style=''>
+</span>169 <span style=''>  private def cmdLineOrElse(name: String, alt: String) = {
+</span>170 <span style=''>    </span><span style='background: #AEF1AE'>(commandLineFor(name) match {
+</span>171 <span style=''></span><span style='background: #AEF1AE'>      case Some(&quot;&quot;) =&gt; None
+</span>172 <span style=''></span><span style='background: #AEF1AE'>      case x        =&gt; x
+</span>173 <span style=''></span><span style='background: #AEF1AE'>    }) getOrElse alt</span><span style=''>
+</span>174 <span style=''>  }
+</span>175 <span style=''>
+</span>176 <span style=''>  private def commandLineFor(s: String): Option[String] = </span><span style='background: #AEF1AE'>condOpt(s) {
+</span>177 <span style=''></span><span style='background: #AEF1AE'>    case &quot;javabootclasspath&quot;  =&gt; settings.javabootclasspath.value
+</span>178 <span style=''></span><span style='background: #AEF1AE'>    case &quot;javaextdirs&quot;        =&gt; settings.javaextdirs.value
+</span>179 <span style=''></span><span style='background: #AEF1AE'>    case &quot;bootclasspath&quot;      =&gt; settings.bootclasspath.value
+</span>180 <span style=''></span><span style='background: #AEF1AE'>    case &quot;extdirs&quot;            =&gt; settings.extdirs.value
+</span>181 <span style=''></span><span style='background: #AEF1AE'>    case &quot;classpath&quot; | &quot;cp&quot;   =&gt; </span><span style='background: #F0ADAD'>settings.classpath.value</span><span style='background: #AEF1AE'>
+</span>182 <span style=''></span><span style='background: #AEF1AE'>    case &quot;sourcepath&quot;         =&gt; settings.sourcepath.value
+</span>183 <span style=''></span><span style='background: #AEF1AE'>    case &quot;priorityclasspath&quot;  =&gt; settings.priorityclasspath.value
+</span>184 <span style=''></span><span style='background: #AEF1AE'>  }</span><span style=''>
+</span>185 <span style=''>
+</span>186 <span style=''>  /** Calculated values based on any given command line options, falling back on
+</span>187 <span style=''>   *  those in Defaults.
+</span>188 <span style=''>   */
+</span>189 <span style=''>  object Calculated {
+</span>190 <span style=''>    def scalaHome           = </span><span style='background: #F0ADAD'>Defaults.scalaHome</span><span style=''>
+</span>191 <span style=''>    def useJavaClassPath    = </span><span style='background: #AEF1AE'>settings.usejavacp.value || Defaults.useJavaClassPath</span><span style=''>
+</span>192 <span style=''>    def javaBootClassPath   = </span><span style='background: #AEF1AE'>cmdLineOrElse(&quot;javabootclasspath&quot;, Defaults.javaBootClassPath)</span><span style=''>
+</span>193 <span style=''>    def javaExtDirs         = </span><span style='background: #AEF1AE'>cmdLineOrElse(&quot;javaextdirs&quot;, Defaults.javaExtDirs)</span><span style=''>
+</span>194 <span style=''>    def javaUserClassPath   = if (</span><span style='background: #AEF1AE'>useJavaClassPath</span><span style=''>) </span><span style='background: #AEF1AE'>Defaults.javaUserClassPath</span><span style=''> else </span><span style='background: #AEF1AE'>&quot;&quot;</span><span style=''>
+</span>195 <span style=''>    def scalaBootClassPath  = </span><span style='background: #AEF1AE'>cmdLineOrElse(&quot;bootclasspath&quot;, Defaults.scalaBootClassPath)</span><span style=''>
+</span>196 <span style=''>    def scalaExtDirs        = </span><span style='background: #AEF1AE'>cmdLineOrElse(&quot;extdirs&quot;, Defaults.scalaExtDirs)</span><span style=''>
+</span>197 <span style=''>    def priorityClassPath   = </span><span style='background: #AEF1AE'>cmdLineOrElse(&quot;priorityclasspath&quot;, &quot;&quot;)</span><span style=''>
+</span>198 <span style=''>    /** Scaladoc doesn't need any bootstrapping, otherwise will create errors such as:
+</span>199 <span style=''>     * [scaladoc] ../scala-trunk/src/reflect/scala/reflect/macros/Reifiers.scala:89: error: object api is not a member of package reflect
+</span>200 <span style=''>     * [scaladoc] case class ReificationException(val pos: reflect.api.PositionApi, val msg: String) extends Throwable(msg)
+</span>201 <span style=''>     * [scaladoc]                                              ^
+</span>202 <span style=''>     * because the bootstrapping will look at the sourcepath and create package &quot;reflect&quot; in &quot;&lt;root&gt;&quot;
+</span>203 <span style=''>     * and then when typing relative names, instead of picking &lt;root&gt;.scala.relect, typedIdentifier will pick up the
+</span>204 <span style=''>     * &lt;root&gt;.reflect package created by the bootstrapping. Thus, no bootstrapping for scaladoc!
+</span>205 <span style=''>     * TODO: we should refactor this as a separate -bootstrap option to have a clean implementation, no? */
+</span>206 <span style=''>    def sourcePath          = </span><span style='background: #AEF1AE'>cmdLineOrElse(&quot;sourcepath&quot;, Defaults.scalaSourcePath)</span><span style=''>
+</span>207 <span style=''>
+</span>208 <span style=''>    /** Against my better judgment, giving in to martin here and allowing
+</span>209 <span style=''>     *  CLASSPATH to be used automatically.  So for the user-specified part
+</span>210 <span style=''>     *  of the classpath:
+</span>211 <span style=''>     *
+</span>212 <span style=''>     *  - If -classpath or -cp is given, it is that
+</span>213 <span style=''>     *  - Otherwise, if CLASSPATH is set, it is that
+</span>214 <span style=''>     *  - If neither of those, then &quot;.&quot; is used.
+</span>215 <span style=''>     */
+</span>216 <span style=''>    def userClassPath = {
+</span>217 <span style=''>      if (</span><span style='background: #AEF1AE'>!settings.classpath.isDefault</span><span style=''>)
+</span>218 <span style=''>        </span><span style='background: #AEF1AE'>settings.classpath.value</span><span style=''>
+</span>219 <span style=''>      else </span><span style='background: #AEF1AE'>sys.env.getOrElse(&quot;CLASSPATH&quot;, &quot;.&quot;)</span><span style=''>
+</span>220 <span style=''>    }
+</span>221 <span style=''>
+</span>222 <span style=''>    import classPathFactory._
+</span>223 <span style=''>
+</span>224 <span style=''>    // Assemble the elements!
+</span>225 <span style=''>    // priority class path takes precedence
+</span>226 <span style=''>    def basis = </span><span style='background: #AEF1AE'>List[Traversable[ClassPath]](
+</span>227 <span style=''></span><span style='background: #AEF1AE'>      classesInExpandedPath(priorityClassPath),     // 0. The priority class path (for testing).
+</span>228 <span style=''></span><span style='background: #AEF1AE'>      classesInPath(javaBootClassPath),             // 1. The Java bootstrap class path.
+</span>229 <span style=''></span><span style='background: #AEF1AE'>      contentsOfDirsInPath(javaExtDirs),            // 2. The Java extension class path.
+</span>230 <span style=''></span><span style='background: #AEF1AE'>      classesInExpandedPath(javaUserClassPath),     // 3. The Java application class path.
+</span>231 <span style=''></span><span style='background: #AEF1AE'>      classesInPath(scalaBootClassPath),            // 4. The Scala boot class path.
+</span>232 <span style=''></span><span style='background: #AEF1AE'>      contentsOfDirsInPath(scalaExtDirs),           // 5. The Scala extension class path.
+</span>233 <span style=''></span><span style='background: #AEF1AE'>      classesInExpandedPath(userClassPath),         // 6. The Scala application class path.
+</span>234 <span style=''></span><span style='background: #AEF1AE'>      sourcesInPath(sourcePath)                     // 7. The Scala source path.
+</span>235 <span style=''></span><span style='background: #AEF1AE'>    )</span><span style=''>
+</span>236 <span style=''>
+</span>237 <span style=''>    lazy val containers = basis.flatten.distinct
+</span>238 <span style=''>
+</span>239 <span style=''>    override def toString = </span><span style='background: #F0ADAD'>&quot;&quot;&quot;
+</span>240 <span style=''></span><span style='background: #F0ADAD'>      |object Calculated {
+</span>241 <span style=''></span><span style='background: #F0ADAD'>      |  scalaHome            = %s
+</span>242 <span style=''></span><span style='background: #F0ADAD'>      |  priorityClassPath    = %s
+</span>243 <span style=''></span><span style='background: #F0ADAD'>      |  javaBootClassPath    = %s
+</span>244 <span style=''></span><span style='background: #F0ADAD'>      |  javaExtDirs          = %s
+</span>245 <span style=''></span><span style='background: #F0ADAD'>      |  javaUserClassPath    = %s
+</span>246 <span style=''></span><span style='background: #F0ADAD'>      |  useJavaClassPath     = %s
+</span>247 <span style=''></span><span style='background: #F0ADAD'>      |  scalaBootClassPath   = %s
+</span>248 <span style=''></span><span style='background: #F0ADAD'>      |  scalaExtDirs         = %s
+</span>249 <span style=''></span><span style='background: #F0ADAD'>      |  userClassPath        = %s
+</span>250 <span style=''></span><span style='background: #F0ADAD'>      |  sourcePath           = %s
+</span>251 <span style=''></span><span style='background: #F0ADAD'>      |}&quot;&quot;&quot;.trim.stripMargin.format(
+</span>252 <span style=''></span><span style='background: #F0ADAD'>        scalaHome, ppcp(priorityClassPath),
+</span>253 <span style=''></span><span style='background: #F0ADAD'>        ppcp(javaBootClassPath), ppcp(javaExtDirs), ppcp(javaUserClassPath),
+</span>254 <span style=''></span><span style='background: #F0ADAD'>        useJavaClassPath,
+</span>255 <span style=''></span><span style='background: #F0ADAD'>        ppcp(scalaBootClassPath), ppcp(scalaExtDirs), ppcp(userClassPath),
+</span>256 <span style=''></span><span style='background: #F0ADAD'>        ppcp(sourcePath)
+</span>257 <span style=''></span><span style='background: #F0ADAD'>      )</span><span style=''>
+</span>258 <span style=''>  }
+</span>259 <span style=''>
+</span>260 <span style=''>  def containers = Calculated.containers
+</span>261 <span style=''>
+</span>262 <span style=''>  lazy val result: ClassPath = {
+</span>263 <span style=''>    val cp = AggregateClassPath(containers.toIndexedSeq)
+</span>264 <span style=''>
+</span>265 <span style=''>    if (settings.YlogClasspath.value) {
+</span>266 <span style=''>      Console.println(&quot;Classpath built from &quot; + settings.toConciseString(ctx.settingsState))
+</span>267 <span style=''>      Console.println(&quot;Defaults: &quot; + PathResolver.Defaults)
+</span>268 <span style=''>      Console.println(&quot;Calculated: &quot; + Calculated)
+</span>269 <span style=''>
+</span>270 <span style=''>      val xs = (Calculated.basis drop 2).flatten.distinct
+</span>271 <span style=''>      println(&quot;After java boot/extdirs classpath has %d entries:&quot; format xs.size)
+</span>272 <span style=''>      xs foreach (x =&gt; println(&quot;  &quot; + x))
+</span>273 <span style=''>    }
+</span>274 <span style=''>    cp
+</span>275 <span style=''>  }
+</span>276 <span style=''>
+</span>277 <span style=''>  def asURLs = </span><span style='background: #F0ADAD'>result.asURLs</span><span style=''>
+</span>278 <span style=''>
+</span>279 <span style=''>}
+</span></pre>
+          </div>
+          <div class="tab-pane" id="statementlist">
+            <table cellspacing="0" cellpadding="0" class="table statementlist">
+      <tr>
+        <th>Line</th>
+        <th>Stmt Id</th>
+        <th>Pos</th>
+        <th>Tree</th>
+        <th>Symbol</th>
+        <th>Code</th>
+      </tr><tr>
+        <td>
+          24
+        </td>
+        <td>
+          11525
+        </td>
+        <td>
+          675
+          -
+          705
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Option.getOrElse
+        </td>
+        <td style="background: #F0ADAD">
+          xs.find(((x$1: String) =&gt; x$1.!=(&quot;&quot;))).getOrElse[String](&quot;&quot;)
+        </td>
+      </tr><tr>
+        <td>
+          28
+        </td>
+        <td>
+          11527
+        </td>
+        <td>
+          829
+          -
+          876
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.io.ClassPath.map
+        </td>
+        <td style="background: #F0ADAD">
+          io.ClassPath.map(cp, ((x: String) =&gt; io.Path.apply(x).toAbsolute.path))
+        </td>
+      </tr><tr>
+        <td>
+          28
+        </td>
+        <td>
+          11526
+        </td>
+        <td>
+          852
+          -
+          875
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.io.Path.path
+        </td>
+        <td style="background: #F0ADAD">
+          io.Path.apply(x).toAbsolute.path
+        </td>
+      </tr><tr>
+        <td>
+          31
+        </td>
+        <td>
+          11528
+        </td>
+        <td>
+          935
+          -
+          943
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.io.ClassPath.split
+        </td>
+        <td style="background: #F0ADAD">
+          io.ClassPath.split(s)
+        </td>
+      </tr><tr>
+        <td>
+          32
+        </td>
+        <td>
+          11529
+        </td>
+        <td>
+          973
+          -
+          975
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          &quot;&quot;
+        </td>
+      </tr><tr>
+        <td>
+          34
+        </td>
+        <td>
+          11531
+        </td>
+        <td>
+          1023
+          -
+          1023
+        </td>
+        <td>
+          TypeApply
+        </td>
+        <td>
+          scala.collection.immutable.List.canBuildFrom
+        </td>
+        <td style="background: #F0ADAD">
+          immutable.this.List.canBuildFrom[String]
+        </td>
+      </tr><tr>
+        <td>
+          34
+        </td>
+        <td>
+          11530
+        </td>
+        <td>
+          1028
+          -
+          1036
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.String.+
+        </td>
+        <td style="background: #F0ADAD">
+          &quot;\n&quot;.+(x$2)
+        </td>
+      </tr><tr>
+        <td>
+          34
+        </td>
+        <td>
+          11532
+        </td>
+        <td>
+          1020
+          -
+          1046
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.collection.TraversableOnce.mkString
+        </td>
+        <td style="background: #F0ADAD">
+          xs.map[String, List[String]](((x$2: String) =&gt; &quot;\n&quot;.+(x$2)))(immutable.this.List.canBuildFrom[String]).mkString
+        </td>
+      </tr><tr>
+        <td>
+          41
+        </td>
+        <td>
+          11533
+        </td>
+        <td>
+          1205
+          -
+          1285
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Option.getOrElse
+        </td>
+        <td style="background: #AEF1AE">
+          WrappedProperties.AccessControl.systemProperties.find(((x$3: (String, String)) =&gt; x$3._1.endsWith(&quot;.boot.class.path&quot;))).map[String](((x$4: (String, String)) =&gt; x$4._2)).getOrElse[String](&quot;&quot;)
+        </td>
+      </tr><tr>
+        <td>
+          47
+        </td>
+        <td>
+          11534
+        </td>
+        <td>
+          1426
+          -
+          1452
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.config.WrappedProperties.envOrElse
+        </td>
+        <td style="background: #F0ADAD">
+          WrappedProperties.AccessControl.envOrElse(&quot;CLASSPATH&quot;, &quot;&quot;)
+        </td>
+      </tr><tr>
+        <td>
+          48
+        </td>
+        <td>
+          11535
+        </td>
+        <td>
+          1484
+          -
+          1511
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.config.WrappedProperties.envOrElse
+        </td>
+        <td style="background: #AEF1AE">
+          WrappedProperties.AccessControl.envOrElse(&quot;SOURCEPATH&quot;, &quot;&quot;)
+        </td>
+      </tr><tr>
+        <td>
+          50
+        </td>
+        <td>
+          11537
+        </td>
+        <td>
+          1577
+          -
+          1599
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.config.PathResolver.Environment.searchForBootClasspath
+        </td>
+        <td style="background: #AEF1AE">
+          Environment.this.searchForBootClasspath
+        </td>
+      </tr><tr>
+        <td>
+          50
+        </td>
+        <td>
+          11536
+        </td>
+        <td>
+          1554
+          -
+          1575
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          &quot;sun.boot.class.path&quot;
+        </td>
+      </tr><tr>
+        <td>
+          50
+        </td>
+        <td>
+          11538
+        </td>
+        <td>
+          1543
+          -
+          1600
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.config.WrappedProperties.propOrElse
+        </td>
+        <td style="background: #AEF1AE">
+          WrappedProperties.AccessControl.propOrElse(&quot;sun.boot.class.path&quot;, Environment.this.searchForBootClasspath)
+        </td>
+      </tr><tr>
+        <td>
+          52
+        </td>
+        <td>
+          11539
+        </td>
+        <td>
+          1632
+          -
+          1660
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.config.PropertiesTrait.propOrEmpty
+        </td>
+        <td style="background: #AEF1AE">
+          WrappedProperties.AccessControl.propOrEmpty(&quot;java.ext.dirs&quot;)
+        </td>
+      </tr><tr>
+        <td>
+          53
+        </td>
+        <td>
+          11540
+        </td>
+        <td>
+          1691
+          -
+          1716
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.config.PropertiesTrait.propOrEmpty
+        </td>
+        <td style="background: #F0ADAD">
+          WrappedProperties.AccessControl.propOrEmpty(&quot;scala.home&quot;)
+        </td>
+      </tr><tr>
+        <td>
+          54
+        </td>
+        <td>
+          11541
+        </td>
+        <td>
+          1747
+          -
+          1776
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.config.PropertiesTrait.propOrEmpty
+        </td>
+        <td style="background: #AEF1AE">
+          WrappedProperties.AccessControl.propOrEmpty(&quot;scala.ext.dirs&quot;)
+        </td>
+      </tr><tr>
+        <td>
+          57
+        </td>
+        <td>
+          11542
+        </td>
+        <td>
+          1861
+          -
+          1894
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.config.WrappedProperties.propOrElse
+        </td>
+        <td style="background: #AEF1AE">
+          WrappedProperties.AccessControl.propOrElse(&quot;java.class.path&quot;, &quot;&quot;)
+        </td>
+      </tr><tr>
+        <td>
+          58
+        </td>
+        <td>
+          11543
+        </td>
+        <td>
+          1925
+          -
+          1955
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.config.PropertiesTrait.propOrFalse
+        </td>
+        <td style="background: #AEF1AE">
+          WrappedProperties.AccessControl.propOrFalse(&quot;scala.usejavacp&quot;)
+        </td>
+      </tr><tr>
+        <td>
+          67
+        </td>
+        <td>
+          11545
+        </td>
+        <td>
+          1985
+          -
+          2352
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.collection.immutable.StringLike.stripMargin
+        </td>
+        <td style="background: #F0ADAD">
+          scala.Predef.augmentString(scala.StringContext.apply(&quot;\n      |object Environment {\n      |  scalaHome          = &quot;, &quot; (useJavaClassPath = &quot;, &quot;)\n      |  javaBootClassPath  = &lt;&quot;, &quot; chars&gt;\n      |  javaExtDirs        = &quot;, &quot;\n      |  javaUserClassPath  = &quot;, &quot;\n      |  scalaExtDirs       = &quot;, &quot;\n      |}&quot;).s(Environment.this.scalaHome, Environment.this.useJavaClassPath, Environment.this.javaBootClassPath.length(), PathResolver.this.ppcp(Environment.this.javaExtDirs), PathResolver.this.ppcp(Environment.this.javaUserClassPath), PathResolver.this.ppcp(Environment.this.scalaExtDirs)).trim()).stripMargin
+        </td>
+      </tr><tr>
+        <td>
+          67
+        </td>
+        <td>
+          11544
+        </td>
+        <td>
+          1985
+          -
+          2340
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.String.trim
+        </td>
+        <td style="background: #F0ADAD">
+          scala.StringContext.apply(&quot;\n      |object Environment {\n      |  scalaHome          = &quot;, &quot; (useJavaClassPath = &quot;, &quot;)\n      |  javaBootClassPath  = &lt;&quot;, &quot; chars&gt;\n      |  javaExtDirs        = &quot;, &quot;\n      |  javaUserClassPath  = &quot;, &quot;\n      |  scalaExtDirs       = &quot;, &quot;\n      |}&quot;).s(Environment.this.scalaHome, Environment.this.useJavaClassPath, Environment.this.javaBootClassPath.length(), PathResolver.this.ppcp(Environment.this.javaExtDirs), PathResolver.this.ppcp(Environment.this.javaUserClassPath), PathResolver.this.ppcp(Environment.this.scalaExtDirs)).trim()
+        </td>
+      </tr><tr>
+        <td>
+          74
+        </td>
+        <td>
+          11546
+        </td>
+        <td>
+          2532
+          -
+          2557
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.config.PathResolver.Environment.sourcePathEnv
+        </td>
+        <td style="background: #AEF1AE">
+          PathResolver.this.Environment.sourcePathEnv
+        </td>
+      </tr><tr>
+        <td>
+          75
+        </td>
+        <td>
+          11547
+        </td>
+        <td>
+          2586
+          -
+          2615
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.config.PathResolver.Environment.javaBootClassPath
+        </td>
+        <td style="background: #AEF1AE">
+          PathResolver.this.Environment.javaBootClassPath
+        </td>
+      </tr><tr>
+        <td>
+          76
+        </td>
+        <td>
+          11548
+        </td>
+        <td>
+          2644
+          -
+          2673
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.config.PathResolver.Environment.javaUserClassPath
+        </td>
+        <td style="background: #AEF1AE">
+          PathResolver.this.Environment.javaUserClassPath
+        </td>
+      </tr><tr>
+        <td>
+          77
+        </td>
+        <td>
+          11549
+        </td>
+        <td>
+          2702
+          -
+          2725
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.config.PathResolver.Environment.javaExtDirs
+        </td>
+        <td style="background: #AEF1AE">
+          PathResolver.this.Environment.javaExtDirs
+        </td>
+      </tr><tr>
+        <td>
+          78
+        </td>
+        <td>
+          11550
+        </td>
+        <td>
+          2754
+          -
+          2782
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.config.PathResolver.Environment.useJavaClassPath
+        </td>
+        <td style="background: #AEF1AE">
+          PathResolver.this.Environment.useJavaClassPath
+        </td>
+      </tr><tr>
+        <td>
+          80
+        </td>
+        <td>
+          11551
+        </td>
+        <td>
+          2812
+          -
+          2833
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.config.PathResolver.Environment.scalaHome
+        </td>
+        <td style="background: #F0ADAD">
+          PathResolver.this.Environment.scalaHome
+        </td>
+      </tr><tr>
+        <td>
+          81
+        </td>
+        <td>
+          11552
+        </td>
+        <td>
+          2872
+          -
+          2881
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.config.PathResolver.Defaults.scalaHome
+        </td>
+        <td style="background: #F0ADAD">
+          Defaults.this.scalaHome
+        </td>
+      </tr><tr>
+        <td>
+          81
+        </td>
+        <td>
+          11553
+        </td>
+        <td>
+          2862
+          -
+          2882
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.io.Directory.apply
+        </td>
+        <td style="background: #F0ADAD">
+          io.Directory.apply(Defaults.this.scalaHome)
+        </td>
+      </tr><tr>
+        <td>
+          82
+        </td>
+        <td>
+          11554
+        </td>
+        <td>
+          2911
+          -
+          2935
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.io.Path.isDirectory
+        </td>
+        <td style="background: #F0ADAD">
+          Defaults.this.scalaHomeDir.isDirectory
+        </td>
+      </tr><tr>
+        <td>
+          83
+        </td>
+        <td>
+          11555
+        </td>
+        <td>
+          2980
+          -
+          2985
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          &quot;lib&quot;
+        </td>
+      </tr><tr>
+        <td>
+          83
+        </td>
+        <td>
+          11556
+        </td>
+        <td>
+          2965
+          -
+          2998
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.io.Path.toDirectory
+        </td>
+        <td style="background: #F0ADAD">
+          Defaults.this.scalaHomeDir./(&quot;lib&quot;).toDirectory
+        </td>
+      </tr><tr>
+        <td>
+          84
+        </td>
+        <td>
+          11558
+        </td>
+        <td>
+          3028
+          -
+          3065
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.io.Path.toDirectory
+        </td>
+        <td style="background: #F0ADAD">
+          Defaults.this.scalaHomeDir./(&quot;classes&quot;).toDirectory
+        </td>
+      </tr><tr>
+        <td>
+          84
+        </td>
+        <td>
+          11557
+        </td>
+        <td>
+          3043
+          -
+          3052
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          &quot;classes&quot;
+        </td>
+      </tr><tr>
+        <td>
+          86
+        </td>
+        <td>
+          11560
+        </td>
+        <td>
+          3096
+          -
+          3137
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.io.Path.toFile
+        </td>
+        <td style="background: #F0ADAD">
+          Defaults.this.scalaLibDir./(&quot;scala-library.jar&quot;).toFile
+        </td>
+      </tr><tr>
+        <td>
+          86
+        </td>
+        <td>
+          11559
+        </td>
+        <td>
+          3110
+          -
+          3129
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          &quot;scala-library.jar&quot;
+        </td>
+      </tr><tr>
+        <td>
+          87
+        </td>
+        <td>
+          11561
+        </td>
+        <td>
+          3185
+          -
+          3194
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          &quot;library&quot;
+        </td>
+      </tr><tr>
+        <td>
+          87
+        </td>
+        <td>
+          11562
+        </td>
+        <td>
+          3167
+          -
+          3207
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.io.Path.toDirectory
+        </td>
+        <td style="background: #F0ADAD">
+          Defaults.this.scalaClassesDir./(&quot;library&quot;).toDirectory
+        </td>
+      </tr><tr>
+        <td>
+          90
+        </td>
+        <td>
+          11564
+        </td>
+        <td>
+          3292
+          -
+          3303
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.config.PathResolver.Defaults.scalaLibDir
+        </td>
+        <td style="background: #F0ADAD">
+          Defaults.this.scalaLibDir
+        </td>
+      </tr><tr>
+        <td>
+          90
+        </td>
+        <td>
+          11566
+        </td>
+        <td>
+          3287
+          -
+          3304
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          scala.Some.apply
+        </td>
+        <td style="background: #F0ADAD">
+          scala.Some.apply[dotty.tools.io.Directory](Defaults.this.scalaLibDir)
+        </td>
+      </tr><tr>
+        <td>
+          90
+        </td>
+        <td>
+          11563
+        </td>
+        <td>
+          3265
+          -
+          3285
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.io.Path.isFile
+        </td>
+        <td style="background: #F0ADAD">
+          Defaults.this.scalaLibAsJar.isFile
+        </td>
+      </tr><tr>
+        <td>
+          90
+        </td>
+        <td>
+          11565
+        </td>
+        <td>
+          3287
+          -
+          3304
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Some.apply
+        </td>
+        <td style="background: #F0ADAD">
+          scala.Some.apply[dotty.tools.io.Directory](Defaults.this.scalaLibDir)
+        </td>
+      </tr><tr>
+        <td>
+          91
+        </td>
+        <td>
+          11567
+        </td>
+        <td>
+          3320
+          -
+          3345
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.io.Path.isDirectory
+        </td>
+        <td style="background: #F0ADAD">
+          Defaults.this.scalaLibAsDir.isDirectory
+        </td>
+      </tr><tr>
+        <td>
+          91
+        </td>
+        <td>
+          11570
+        </td>
+        <td>
+          3347
+          -
+          3368
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          scala.Some.apply
+        </td>
+        <td style="background: #F0ADAD">
+          scala.Some.apply[dotty.tools.io.Directory](Defaults.this.scalaClassesDir)
+        </td>
+      </tr><tr>
+        <td>
+          91
+        </td>
+        <td>
+          11573
+        </td>
+        <td>
+          3316
+          -
+          3384
+        </td>
+        <td>
+          If
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          if (Defaults.this.scalaLibAsDir.isDirectory)
+  scala.Some.apply[dotty.tools.io.Directory](Defaults.this.scalaClassesDir)
+else
+  scala.None
+        </td>
+      </tr><tr>
+        <td>
+          91
+        </td>
+        <td>
+          11569
+        </td>
+        <td>
+          3347
+          -
+          3368
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Some.apply
+        </td>
+        <td style="background: #F0ADAD">
+          scala.Some.apply[dotty.tools.io.Directory](Defaults.this.scalaClassesDir)
+        </td>
+      </tr><tr>
+        <td>
+          91
+        </td>
+        <td>
+          11568
+        </td>
+        <td>
+          3352
+          -
+          3367
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.config.PathResolver.Defaults.scalaClassesDir
+        </td>
+        <td style="background: #F0ADAD">
+          Defaults.this.scalaClassesDir
+        </td>
+      </tr><tr>
+        <td>
+          92
+        </td>
+        <td>
+          11572
+        </td>
+        <td>
+          3380
+          -
+          3384
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          scala.None
+        </td>
+        <td style="background: #F0ADAD">
+          scala.None
+        </td>
+      </tr><tr>
+        <td>
+          92
+        </td>
+        <td>
+          11571
+        </td>
+        <td>
+          3380
+          -
+          3384
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.None
+        </td>
+        <td style="background: #F0ADAD">
+          scala.None
+        </td>
+      </tr><tr>
+        <td>
+          95
+        </td>
+        <td>
+          11576
+        </td>
+        <td>
+          3442
+          -
+          3460
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          dotty.tools.io.Path.path
+        </td>
+        <td style="background: #F0ADAD">
+          Defaults.this.scalaLibAsJar.path
+        </td>
+      </tr><tr>
+        <td>
+          95
+        </td>
+        <td>
+          11575
+        </td>
+        <td>
+          3442
+          -
+          3460
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.io.Path.path
+        </td>
+        <td style="background: #F0ADAD">
+          Defaults.this.scalaLibAsJar.path
+        </td>
+      </tr><tr>
+        <td>
+          95
+        </td>
+        <td>
+          11574
+        </td>
+        <td>
+          3420
+          -
+          3440
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.io.Path.isFile
+        </td>
+        <td style="background: #F0ADAD">
+          Defaults.this.scalaLibAsJar.isFile
+        </td>
+      </tr><tr>
+        <td>
+          96
+        </td>
+        <td>
+          11579
+        </td>
+        <td>
+          3503
+          -
+          3521
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          dotty.tools.io.Path.path
+        </td>
+        <td style="background: #F0ADAD">
+          Defaults.this.scalaLibAsDir.path
+        </td>
+      </tr><tr>
+        <td>
+          96
+        </td>
+        <td>
+          11582
+        </td>
+        <td>
+          3472
+          -
+          3535
+        </td>
+        <td>
+          If
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          if (Defaults.this.scalaLibAsDir.isDirectory)
+  Defaults.this.scalaLibAsDir.path
+else
+  &quot;&quot;
+        </td>
+      </tr><tr>
+        <td>
+          96
+        </td>
+        <td>
+          11578
+        </td>
+        <td>
+          3503
+          -
+          3521
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.io.Path.path
+        </td>
+        <td style="background: #F0ADAD">
+          Defaults.this.scalaLibAsDir.path
+        </td>
+      </tr><tr>
+        <td>
+          96
+        </td>
+        <td>
+          11577
+        </td>
+        <td>
+          3476
+          -
+          3501
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.io.Path.isDirectory
+        </td>
+        <td style="background: #F0ADAD">
+          Defaults.this.scalaLibAsDir.isDirectory
+        </td>
+      </tr><tr>
+        <td>
+          97
+        </td>
+        <td>
+          11581
+        </td>
+        <td>
+          3533
+          -
+          3535
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          &quot;&quot;
+        </td>
+      </tr><tr>
+        <td>
+          97
+        </td>
+        <td>
+          11580
+        </td>
+        <td>
+          3533
+          -
+          3535
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          &quot;&quot;
+        </td>
+      </tr><tr>
+        <td>
+          104
+        </td>
+        <td>
+          11583
+        </td>
+        <td>
+          3899
+          -
+          3901
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          &quot;&quot;
+        </td>
+      </tr><tr>
+        <td>
+          112
+        </td>
+        <td>
+          11584
+        </td>
+        <td>
+          4141
+          -
+          4165
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.config.PathResolver.Environment.scalaExtDirs
+        </td>
+        <td style="background: #AEF1AE">
+          PathResolver.this.Environment.scalaExtDirs
+        </td>
+      </tr><tr>
+        <td>
+          114
+        </td>
+        <td>
+          11585
+        </td>
+        <td>
+          4209
+          -
+          4215
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          &quot;misc&quot;
+        </td>
+      </tr><tr>
+        <td>
+          114
+        </td>
+        <td>
+          11588
+        </td>
+        <td>
+          4194
+          -
+          4249
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.io.Path.path
+        </td>
+        <td style="background: #F0ADAD">
+          Defaults.this.scalaHomeDir./(&quot;misc&quot;)./(&quot;scala-devel&quot;)./(&quot;plugins&quot;).path
+        </td>
+      </tr><tr>
+        <td>
+          114
+        </td>
+        <td>
+          11587
+        </td>
+        <td>
+          4234
+          -
+          4243
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          &quot;plugins&quot;
+        </td>
+      </tr><tr>
+        <td>
+          114
+        </td>
+        <td>
+          11586
+        </td>
+        <td>
+          4218
+          -
+          4231
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          &quot;scala-devel&quot;
+        </td>
+      </tr><tr>
+        <td>
+          124
+        </td>
+        <td>
+          11600
+        </td>
+        <td>
+          4279
+          -
+          4711
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.immutable.StringLike.format
+        </td>
+        <td style="background: #F0ADAD">
+          scala.Predef.augmentString(scala.Predef.augmentString(&quot;\n      |object Defaults {\n      |  scalaHome            = %s\n      |  javaBootClassPath    = %s\n      |  scalaLibDirFound     = %s\n      |  scalaLibFound        = %s\n      |  scalaBootClassPath   = %s\n      |  scalaPluginPath      = %s\n      |}&quot;.trim()).stripMargin).format(Defaults.this.scalaHome, PathResolver.this.ppcp(Defaults.this.javaBootClassPath), Defaults.this.scalaLibDirFound, Defaults.this.scalaLibFound, PathResolver.this.ppcp(Defaults.this.scalaBootClassPath), PathResolver.this.ppcp(Defaults.this.scalaPluginPath))
+        </td>
+      </tr><tr>
+        <td>
+          124
+        </td>
+        <td>
+          11590
+        </td>
+        <td>
+          4279
+          -
+          4546
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.collection.immutable.StringLike.stripMargin
+        </td>
+        <td style="background: #F0ADAD">
+          scala.Predef.augmentString(&quot;\n      |object Defaults {\n      |  scalaHome            = %s\n      |  javaBootClassPath    = %s\n      |  scalaLibDirFound     = %s\n      |  scalaLibFound        = %s\n      |  scalaBootClassPath   = %s\n      |  scalaPluginPath      = %s\n      |}&quot;.trim()).stripMargin
+        </td>
+      </tr><tr>
+        <td>
+          124
+        </td>
+        <td>
+          11589
+        </td>
+        <td>
+          4279
+          -
+          4534
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.String.trim
+        </td>
+        <td style="background: #F0ADAD">
+          &quot;\n      |object Defaults {\n      |  scalaHome            = %s\n      |  javaBootClassPath    = %s\n      |  scalaLibDirFound     = %s\n      |  scalaLibFound        = %s\n      |  scalaBootClassPath   = %s\n      |  scalaPluginPath      = %s\n      |}&quot;.trim()
+        </td>
+      </tr><tr>
+        <td>
+          125
+        </td>
+        <td>
+          11591
+        </td>
+        <td>
+          4563
+          -
+          4572
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.config.PathResolver.Defaults.scalaHome
+        </td>
+        <td style="background: #F0ADAD">
+          Defaults.this.scalaHome
+        </td>
+      </tr><tr>
+        <td>
+          126
+        </td>
+        <td>
+          11593
+        </td>
+        <td>
+          4582
+          -
+          4605
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.config.PathResolver.ppcp
+        </td>
+        <td style="background: #F0ADAD">
+          PathResolver.this.ppcp(Defaults.this.javaBootClassPath)
+        </td>
+      </tr><tr>
+        <td>
+          126
+        </td>
+        <td>
+          11592
+        </td>
+        <td>
+          4587
+          -
+          4604
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.config.PathResolver.Defaults.javaBootClassPath
+        </td>
+        <td style="background: #F0ADAD">
+          Defaults.this.javaBootClassPath
+        </td>
+      </tr><tr>
+        <td>
+          127
+        </td>
+        <td>
+          11594
+        </td>
+        <td>
+          4615
+          -
+          4631
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.config.PathResolver.Defaults.scalaLibDirFound
+        </td>
+        <td style="background: #F0ADAD">
+          Defaults.this.scalaLibDirFound
+        </td>
+      </tr><tr>
+        <td>
+          127
+        </td>
+        <td>
+          11595
+        </td>
+        <td>
+          4633
+          -
+          4646
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.config.PathResolver.Defaults.scalaLibFound
+        </td>
+        <td style="background: #F0ADAD">
+          Defaults.this.scalaLibFound
+        </td>
+      </tr><tr>
+        <td>
+          128
+        </td>
+        <td>
+          11597
+        </td>
+        <td>
+          4656
+          -
+          4680
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.config.PathResolver.ppcp
+        </td>
+        <td style="background: #F0ADAD">
+          PathResolver.this.ppcp(Defaults.this.scalaBootClassPath)
+        </td>
+      </tr><tr>
+        <td>
+          128
+        </td>
+        <td>
+          11599
+        </td>
+        <td>
+          4682
+          -
+          4703
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.config.PathResolver.ppcp
+        </td>
+        <td style="background: #F0ADAD">
+          PathResolver.this.ppcp(Defaults.this.scalaPluginPath)
+        </td>
+      </tr><tr>
+        <td>
+          128
+        </td>
+        <td>
+          11596
+        </td>
+        <td>
+          4661
+          -
+          4679
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.config.PathResolver.Defaults.scalaBootClassPath
+        </td>
+        <td style="background: #F0ADAD">
+          Defaults.this.scalaBootClassPath
+        </td>
+      </tr><tr>
+        <td>
+          128
+        </td>
+        <td>
+          11598
+        </td>
+        <td>
+          4687
+          -
+          4702
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.config.PathResolver.Defaults.scalaPluginPath
+        </td>
+        <td style="background: #F0ADAD">
+          Defaults.this.scalaPluginPath
+        </td>
+      </tr><tr>
+        <td>
+          133
+        </td>
+        <td>
+          11601
+        </td>
+        <td>
+          4809
+          -
+          4844
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.config.Settings.Setting.SettingDecorator.update
+        </td>
+        <td style="background: #F0ADAD">
+          Settings.this.Setting.SettingDecorator[String](Contexts.this.Context.toBase(ctx).settings.classpath).update(path)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          142
+        </td>
+        <td>
+          11602
+        </td>
+        <td>
+          5166
+          -
+          5178
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.collection.IndexedSeqOptimized.isEmpty
+        </td>
+        <td style="background: #F0ADAD">
+          scala.Predef.refArrayOps[String](args).isEmpty
+        </td>
+      </tr><tr>
+        <td>
+          142
+        </td>
+        <td>
+          11607
+        </td>
+        <td>
+          5180
+          -
+          5238
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          {
+  scala.Predef.println(PathResolver.this.Environment);
+  scala.Predef.println(PathResolver.this.Defaults)
+}
+        </td>
+      </tr><tr>
+        <td>
+          143
+        </td>
+        <td>
+          11603
+        </td>
+        <td>
+          5196
+          -
+          5207
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.config.PathResolver.Environment
+        </td>
+        <td style="background: #F0ADAD">
+          PathResolver.this.Environment
+        </td>
+      </tr><tr>
+        <td>
+          143
+        </td>
+        <td>
+          11604
+        </td>
+        <td>
+          5188
+          -
+          5208
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Predef.println
+        </td>
+        <td style="background: #F0ADAD">
+          scala.Predef.println(PathResolver.this.Environment)
+        </td>
+      </tr><tr>
+        <td>
+          144
+        </td>
+        <td>
+          11606
+        </td>
+        <td>
+          5215
+          -
+          5232
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Predef.println
+        </td>
+        <td style="background: #F0ADAD">
+          scala.Predef.println(PathResolver.this.Defaults)
+        </td>
+      </tr><tr>
+        <td>
+          144
+        </td>
+        <td>
+          11605
+        </td>
+        <td>
+          5223
+          -
+          5231
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.config.PathResolver.Defaults
+        </td>
+        <td style="background: #F0ADAD">
+          PathResolver.this.Defaults
+        </td>
+      </tr><tr>
+        <td>
+          146
+        </td>
+        <td>
+          11632
+        </td>
+        <td>
+          5248
+          -
+          5829
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          {
+  implicit val ctx: dotty.tools.dotc.core.Contexts.Context = new core.Contexts.ContextBase().initialCtx;
+  &lt;synthetic&gt; &lt;artifact&gt; private[this] val x$5: (dotty.tools.dotc.config.Settings.SettingsState, List[String], List[String], List[String]) = (Contexts.this.Context.toBase(ctx).settings.processArguments(scala.Predef.refArrayOps[String](args).toList, true)(ctx): dotty.tools.dotc.config.Settings.ArgsSummary @unchecked) match {
+    case (sstate: dotty.tools.dotc.config.Settings.SettingsState, arguments: List[String], errors: List[String], warnings: List[String])dotty.tools.dotc.config.Settings.ArgsSummary((sstate @ _), (rest @ _), (errors @ _), (warnings @ _)) =&gt; scala.Tuple4.apply[dotty.tools.dotc.config.Settings.SettingsState, List[String], List[String], List[String]](sstate, rest, errors, warnings)
+  };
+  val sstate: dotty.tools.dotc.config.Settings.SettingsState = x$5._1;
+  val rest: List[String] = x$5._2;
+  val errors: List[String] = x$5._3;
+  val warnings: List[String] = x$5._4;
+  errors.foreach[Unit]({
+    ((x: Any) =&gt; scala.Predef.println(x))
+  });
+  val pr: dotty.tools.dotc.config.PathResolver = new PathResolver()(ctx.fresh.setSettings(sstate));
+  scala.Predef.println(scala.Predef.augmentString(&quot; COMMAND: \'scala %s\'&quot;).format(scala.Predef.refArrayOps[String](args).mkString(&quot; &quot;)));
+  scala.Predef.println(scala.Predef.augmentString(&quot;RESIDUAL: \'scala %s\'\n&quot;).format(rest.mkString(&quot; &quot;)));
+  pr.result match {
+    case (cp @ (_: dotty.tools.dotc.classpath.AggregateClassPath)) =&gt; scala.Predef.println(scala.StringContext.apply(&quot;ClassPath has &quot;, &quot; entries and results in:\\n&quot;, &quot;&quot;).s(cp.aggregates.size, cp.asClassPathStrings))
+  }
+}
+        </td>
+      </tr><tr>
+        <td>
+          147
+        </td>
+        <td>
+          11608
+        </td>
+        <td>
+          5276
+          -
+          5303
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Contexts.ContextBase.initialCtx
+        </td>
+        <td style="background: #F0ADAD">
+          new core.Contexts.ContextBase().initialCtx
+        </td>
+      </tr><tr>
+        <td>
+          148
+        </td>
+        <td>
+          11612
+        </td>
+        <td>
+          5348
+          -
+          5348
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.Tuple4._4
+        </td>
+        <td style="background: #F0ADAD">
+          x$5._4
+        </td>
+      </tr><tr>
+        <td>
+          148
+        </td>
+        <td>
+          11611
+        </td>
+        <td>
+          5340
+          -
+          5340
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.Tuple4._3
+        </td>
+        <td style="background: #F0ADAD">
+          x$5._3
+        </td>
+      </tr><tr>
+        <td>
+          148
+        </td>
+        <td>
+          11610
+        </td>
+        <td>
+          5334
+          -
+          5334
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.Tuple4._2
+        </td>
+        <td style="background: #F0ADAD">
+          x$5._2
+        </td>
+      </tr><tr>
+        <td>
+          148
+        </td>
+        <td>
+          11609
+        </td>
+        <td>
+          5326
+          -
+          5326
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.Tuple4._1
+        </td>
+        <td style="background: #F0ADAD">
+          x$5._1
+        </td>
+      </tr><tr>
+        <td>
+          150
+        </td>
+        <td>
+          11614
+        </td>
+        <td>
+          5423
+          -
+          5446
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.immutable.List.foreach
+        </td>
+        <td style="background: #F0ADAD">
+          errors.foreach[Unit]({
+  ((x: Any) =&gt; scala.Predef.println(x))
+})
+        </td>
+      </tr><tr>
+        <td>
+          150
+        </td>
+        <td>
+          11613
+        </td>
+        <td>
+          5438
+          -
+          5445
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Predef.println
+        </td>
+        <td style="background: #F0ADAD">
+          scala.Predef.println(x)
+        </td>
+      </tr><tr>
+        <td>
+          151
+        </td>
+        <td>
+          11615
+        </td>
+        <td>
+          5481
+          -
+          5510
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.core.Contexts.FreshContext.setSettings
+        </td>
+        <td style="background: #F0ADAD">
+          ctx.fresh.setSettings(sstate)
+        </td>
+      </tr><tr>
+        <td>
+          151
+        </td>
+        <td>
+          11616
+        </td>
+        <td>
+          5462
+          -
+          5511
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.config.PathResolver.&lt;init&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          new PathResolver()(ctx.fresh.setSettings(sstate))
+        </td>
+      </tr><tr>
+        <td>
+          152
+        </td>
+        <td>
+          11617
+        </td>
+        <td>
+          5526
+          -
+          5548
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          &quot; COMMAND: \'scala %s\'&quot;
+        </td>
+      </tr><tr>
+        <td>
+          152
+        </td>
+        <td>
+          11620
+        </td>
+        <td>
+          5518
+          -
+          5576
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Predef.println
+        </td>
+        <td style="background: #F0ADAD">
+          scala.Predef.println(scala.Predef.augmentString(&quot; COMMAND: \'scala %s\'&quot;).format(scala.Predef.refArrayOps[String](args).mkString(&quot; &quot;)))
+        </td>
+      </tr><tr>
+        <td>
+          152
+        </td>
+        <td>
+          11619
+        </td>
+        <td>
+          5526
+          -
+          5575
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.immutable.StringLike.format
+        </td>
+        <td style="background: #F0ADAD">
+          scala.Predef.augmentString(&quot; COMMAND: \'scala %s\'&quot;).format(scala.Predef.refArrayOps[String](args).mkString(&quot; &quot;))
+        </td>
+      </tr><tr>
+        <td>
+          152
+        </td>
+        <td>
+          11618
+        </td>
+        <td>
+          5556
+          -
+          5574
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.TraversableOnce.mkString
+        </td>
+        <td style="background: #F0ADAD">
+          scala.Predef.refArrayOps[String](args).mkString(&quot; &quot;)
+        </td>
+      </tr><tr>
+        <td>
+          153
+        </td>
+        <td>
+          11621
+        </td>
+        <td>
+          5591
+          -
+          5615
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          &quot;RESIDUAL: \'scala %s\'\n&quot;
+        </td>
+      </tr><tr>
+        <td>
+          153
+        </td>
+        <td>
+          11624
+        </td>
+        <td>
+          5583
+          -
+          5643
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Predef.println
+        </td>
+        <td style="background: #F0ADAD">
+          scala.Predef.println(scala.Predef.augmentString(&quot;RESIDUAL: \'scala %s\'\n&quot;).format(rest.mkString(&quot; &quot;)))
+        </td>
+      </tr><tr>
+        <td>
+          153
+        </td>
+        <td>
+          11623
+        </td>
+        <td>
+          5591
+          -
+          5642
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.immutable.StringLike.format
+        </td>
+        <td style="background: #F0ADAD">
+          scala.Predef.augmentString(&quot;RESIDUAL: \'scala %s\'\n&quot;).format(rest.mkString(&quot; &quot;))
+        </td>
+      </tr><tr>
+        <td>
+          153
+        </td>
+        <td>
+          11622
+        </td>
+        <td>
+          5623
+          -
+          5641
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.TraversableOnce.mkString
+        </td>
+        <td style="background: #F0ADAD">
+          rest.mkString(&quot; &quot;)
+        </td>
+      </tr><tr>
+        <td>
+          157
+        </td>
+        <td>
+          11630
+        </td>
+        <td>
+          5726
+          -
+          5814
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.StringContext.s
+        </td>
+        <td style="background: #F0ADAD">
+          scala.StringContext.apply(&quot;ClassPath has &quot;, &quot; entries and results in:\\n&quot;, &quot;&quot;).s(cp.aggregates.size, cp.asClassPathStrings)
+        </td>
+      </tr><tr>
+        <td>
+          157
+        </td>
+        <td>
+          11626
+        </td>
+        <td>
+          5763
+          -
+          5790
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          &quot; entries and results in:\\n&quot;
+        </td>
+      </tr><tr>
+        <td>
+          157
+        </td>
+        <td>
+          11629
+        </td>
+        <td>
+          5791
+          -
+          5812
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.classpath.AggregateClassPath.asClassPathStrings
+        </td>
+        <td style="background: #F0ADAD">
+          cp.asClassPathStrings
+        </td>
+      </tr><tr>
+        <td>
+          157
+        </td>
+        <td>
+          11631
+        </td>
+        <td>
+          5718
+          -
+          5815
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Predef.println
+        </td>
+        <td style="background: #F0ADAD">
+          scala.Predef.println(scala.StringContext.apply(&quot;ClassPath has &quot;, &quot; entries and results in:\\n&quot;, &quot;&quot;).s(cp.aggregates.size, cp.asClassPathStrings))
+        </td>
+      </tr><tr>
+        <td>
+          157
+        </td>
+        <td>
+          11625
+        </td>
+        <td>
+          5728
+          -
+          5743
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          &quot;ClassPath has &quot;
+        </td>
+      </tr><tr>
+        <td>
+          157
+        </td>
+        <td>
+          11628
+        </td>
+        <td>
+          5744
+          -
+          5762
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.collection.SeqLike.size
+        </td>
+        <td style="background: #F0ADAD">
+          cp.aggregates.size
+        </td>
+      </tr><tr>
+        <td>
+          157
+        </td>
+        <td>
+          11627
+        </td>
+        <td>
+          5813
+          -
+          5814
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          &quot;&quot;
+        </td>
+      </tr><tr>
+        <td>
+          167
+        </td>
+        <td>
+          11633
+        </td>
+        <td>
+          6009
+          -
+          6029
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.classpath.ClassPathFactory.&lt;init&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          new classpath.ClassPathFactory()
+        </td>
+      </tr><tr>
+        <td>
+          173
+        </td>
+        <td>
+          11634
+        </td>
+        <td>
+          6094
+          -
+          6197
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Option.getOrElse
+        </td>
+        <td style="background: #AEF1AE">
+          PathResolver.this.commandLineFor(name) match {
+  case (value: String)Some[String](&quot;&quot;) =&gt; scala.None
+  case (x @ _) =&gt; x
+}.getOrElse[String](alt)
+        </td>
+      </tr><tr>
+        <td>
+          176
+        </td>
+        <td>
+          11657
+        </td>
+        <td>
+          6261
+          -
+          6704
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.PartialFunction.condOpt
+        </td>
+        <td style="background: #AEF1AE">
+          scala.PartialFunction.condOpt[String, String](s)(({
+  @SerialVersionUID(value = 0) final &lt;synthetic&gt; class $anonfun extends scala.runtime.AbstractPartialFunction[String,String] with Serializable {
+    def &lt;init&gt;(): &lt;$anon: String =&gt; String&gt; = {
+      $anonfun.super.&lt;init&gt;();
+      ()
+    };
+    final override def applyOrElse[A1 &lt;: String, B1 &gt;: String](x1: A1, default: A1 =&gt; B1): B1 = ((x1.asInstanceOf[String]: String): String @unchecked) match {
+      case &quot;javabootclasspath&quot; =&gt; Settings.this.Setting.SettingDecorator[String](PathResolver.this.ctx.base.settings.javabootclasspath).value(PathResolver.this.ctx)
+      case &quot;javaextdirs&quot; =&gt; Settings.this.Setting.SettingDecorator[String](PathResolver.this.ctx.base.settings.javaextdirs).value(PathResolver.this.ctx)
+      case &quot;bootclasspath&quot; =&gt; Settings.this.Setting.SettingDecorator[String](PathResolver.this.ctx.base.settings.bootclasspath).value(PathResolver.this.ctx)
+      case &quot;extdirs&quot; =&gt; Settings.this.Setting.SettingDecorator[String](PathResolver.this.ctx.base.settings.extdirs).value(PathResolver.this.ctx)
+      case (&quot;classpath&quot;| &quot;cp&quot;) =&gt; Settings.this.Setting.SettingDecorator[String](PathResolver.this.ctx.base.settings.classpath).value(PathResolver.this.ctx)
+      case &quot;sourcepath&quot; =&gt; Settings.this.Setting.SettingDecorator[String](PathResolver.this.ctx.base.settings.sourcepath).value(PathResolver.this.ctx)
+      case &quot;priorityclasspath&quot; =&gt; Settings.this.Setting.SettingDecorator[String](PathResolver.this.ctx.base.settings.priorityclasspath).value(PathResolver.this.ctx)
+      case (defaultCase$ @ _) =&gt; default.apply(x1)
+    };
+    final def isDefinedAt(x1: String): Boolean = ((x1.asInstanceOf[String]: String): String @unchecked) match {
+      case &quot;javabootclasspath&quot; =&gt; true
+      case &quot;javaextdirs&quot; =&gt; true
+      case &quot;bootclasspath&quot; =&gt; true
+      case &quot;extdirs&quot; =&gt; true
+      case (&quot;classpath&quot;| &quot;cp&quot;) =&gt; true
+      case &quot;sourcepath&quot; =&gt; true
+      case &quot;priorityclasspath&quot; =&gt; true
+      case (defaultCase$ @ _) =&gt; false
+    }
+  };
+  new $anonfun()
+}: PartialFunction[String,String]))
+        </td>
+      </tr><tr>
+        <td>
+          176
+        </td>
+        <td>
+          11656
+        </td>
+        <td>
+          6272
+          -
+          6272
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.config.PathResolver.$anonfun.&lt;init&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          new $anonfun()
+        </td>
+      </tr><tr>
+        <td>
+          177
+        </td>
+        <td>
+          11635
+        </td>
+        <td>
+          6307
+          -
+          6333
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.config.ScalaSettings.javabootclasspath
+        </td>
+        <td style="background: #AEF1AE">
+          PathResolver.this.ctx.base.settings.javabootclasspath
+        </td>
+      </tr><tr>
+        <td>
+          177
+        </td>
+        <td>
+          11637
+        </td>
+        <td>
+          6307
+          -
+          6339
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.config.Settings.Setting.SettingDecorator.value
+        </td>
+        <td style="background: #AEF1AE">
+          Settings.this.Setting.SettingDecorator[String](PathResolver.this.ctx.base.settings.javabootclasspath).value(PathResolver.this.ctx)
+        </td>
+      </tr><tr>
+        <td>
+          177
+        </td>
+        <td>
+          11636
+        </td>
+        <td>
+          6334
+          -
+          6334
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.config.PathResolver.ctx
+        </td>
+        <td style="background: #AEF1AE">
+          PathResolver.this.ctx
+        </td>
+      </tr><tr>
+        <td>
+          178
+        </td>
+        <td>
+          11639
+        </td>
+        <td>
+          6394
+          -
+          6394
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.config.PathResolver.ctx
+        </td>
+        <td style="background: #AEF1AE">
+          PathResolver.this.ctx
+        </td>
+      </tr><tr>
+        <td>
+          178
+        </td>
+        <td>
+          11638
+        </td>
+        <td>
+          6373
+          -
+          6393
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.config.ScalaSettings.javaextdirs
+        </td>
+        <td style="background: #AEF1AE">
+          PathResolver.this.ctx.base.settings.javaextdirs
+        </td>
+      </tr><tr>
+        <td>
+          178
+        </td>
+        <td>
+          11640
+        </td>
+        <td>
+          6373
+          -
+          6399
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.config.Settings.Setting.SettingDecorator.value
+        </td>
+        <td style="background: #AEF1AE">
+          Settings.this.Setting.SettingDecorator[String](PathResolver.this.ctx.base.settings.javaextdirs).value(PathResolver.this.ctx)
+        </td>
+      </tr><tr>
+        <td>
+          179
+        </td>
+        <td>
+          11642
+        </td>
+        <td>
+          6456
+          -
+          6456
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.config.PathResolver.ctx
+        </td>
+        <td style="background: #AEF1AE">
+          PathResolver.this.ctx
+        </td>
+      </tr><tr>
+        <td>
+          179
+        </td>
+        <td>
+          11641
+        </td>
+        <td>
+          6433
+          -
+          6455
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.config.ScalaSettings.bootclasspath
+        </td>
+        <td style="background: #AEF1AE">
+          PathResolver.this.ctx.base.settings.bootclasspath
+        </td>
+      </tr><tr>
+        <td>
+          179
+        </td>
+        <td>
+          11643
+        </td>
+        <td>
+          6433
+          -
+          6461
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.config.Settings.Setting.SettingDecorator.value
+        </td>
+        <td style="background: #AEF1AE">
+          Settings.this.Setting.SettingDecorator[String](PathResolver.this.ctx.base.settings.bootclasspath).value(PathResolver.this.ctx)
+        </td>
+      </tr><tr>
+        <td>
+          180
+        </td>
+        <td>
+          11644
+        </td>
+        <td>
+          6495
+          -
+          6511
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.config.ScalaSettings.extdirs
+        </td>
+        <td style="background: #AEF1AE">
+          PathResolver.this.ctx.base.settings.extdirs
+        </td>
+      </tr><tr>
+        <td>
+          180
+        </td>
+        <td>
+          11646
+        </td>
+        <td>
+          6495
+          -
+          6517
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.config.Settings.Setting.SettingDecorator.value
+        </td>
+        <td style="background: #AEF1AE">
+          Settings.this.Setting.SettingDecorator[String](PathResolver.this.ctx.base.settings.extdirs).value(PathResolver.this.ctx)
+        </td>
+      </tr><tr>
+        <td>
+          180
+        </td>
+        <td>
+          11645
+        </td>
+        <td>
+          6512
+          -
+          6512
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.config.PathResolver.ctx
+        </td>
+        <td style="background: #AEF1AE">
+          PathResolver.this.ctx
+        </td>
+      </tr><tr>
+        <td>
+          181
+        </td>
+        <td>
+          11648
+        </td>
+        <td>
+          6570
+          -
+          6570
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.config.PathResolver.ctx
+        </td>
+        <td style="background: #F0ADAD">
+          PathResolver.this.ctx
+        </td>
+      </tr><tr>
+        <td>
+          181
+        </td>
+        <td>
+          11647
+        </td>
+        <td>
+          6551
+          -
+          6569
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.config.ScalaSettings.classpath
+        </td>
+        <td style="background: #F0ADAD">
+          PathResolver.this.ctx.base.settings.classpath
+        </td>
+      </tr><tr>
+        <td>
+          181
+        </td>
+        <td>
+          11649
+        </td>
+        <td>
+          6551
+          -
+          6575
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.config.Settings.Setting.SettingDecorator.value
+        </td>
+        <td style="background: #F0ADAD">
+          Settings.this.Setting.SettingDecorator[String](PathResolver.this.ctx.base.settings.classpath).value(PathResolver.this.ctx)
+        </td>
+      </tr><tr>
+        <td>
+          182
+        </td>
+        <td>
+          11651
+        </td>
+        <td>
+          6629
+          -
+          6629
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.config.PathResolver.ctx
+        </td>
+        <td style="background: #AEF1AE">
+          PathResolver.this.ctx
+        </td>
+      </tr><tr>
+        <td>
+          182
+        </td>
+        <td>
+          11650
+        </td>
+        <td>
+          6609
+          -
+          6628
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.config.ScalaSettings.sourcepath
+        </td>
+        <td style="background: #AEF1AE">
+          PathResolver.this.ctx.base.settings.sourcepath
+        </td>
+      </tr><tr>
+        <td>
+          182
+        </td>
+        <td>
+          11652
+        </td>
+        <td>
+          6609
+          -
+          6634
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.config.Settings.Setting.SettingDecorator.value
+        </td>
+        <td style="background: #AEF1AE">
+          Settings.this.Setting.SettingDecorator[String](PathResolver.this.ctx.base.settings.sourcepath).value(PathResolver.this.ctx)
+        </td>
+      </tr><tr>
+        <td>
+          183
+        </td>
+        <td>
+          11653
+        </td>
+        <td>
+          6668
+          -
+          6694
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.config.ScalaSettings.priorityclasspath
+        </td>
+        <td style="background: #AEF1AE">
+          PathResolver.this.ctx.base.settings.priorityclasspath
+        </td>
+      </tr><tr>
+        <td>
+          183
+        </td>
+        <td>
+          11655
+        </td>
+        <td>
+          6668
+          -
+          6700
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.config.Settings.Setting.SettingDecorator.value
+        </td>
+        <td style="background: #AEF1AE">
+          Settings.this.Setting.SettingDecorator[String](PathResolver.this.ctx.base.settings.priorityclasspath).value(PathResolver.this.ctx)
+        </td>
+      </tr><tr>
+        <td>
+          183
+        </td>
+        <td>
+          11654
+        </td>
+        <td>
+          6695
+          -
+          6695
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.config.PathResolver.ctx
+        </td>
+        <td style="background: #AEF1AE">
+          PathResolver.this.ctx
+        </td>
+      </tr><tr>
+        <td>
+          190
+        </td>
+        <td>
+          11658
+        </td>
+        <td>
+          6870
+          -
+          6888
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.config.PathResolver.Defaults.scalaHome
+        </td>
+        <td style="background: #F0ADAD">
+          PathResolver.Defaults.scalaHome
+        </td>
+      </tr><tr>
+        <td>
+          191
+        </td>
+        <td>
+          11660
+        </td>
+        <td>
+          6938
+          -
+          6938
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.config.PathResolver.ctx
+        </td>
+        <td style="background: #AEF1AE">
+          PathResolver.this.ctx
+        </td>
+      </tr><tr>
+        <td>
+          191
+        </td>
+        <td>
+          11659
+        </td>
+        <td>
+          6919
+          -
+          6937
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.config.ScalaSettings.usejavacp
+        </td>
+        <td style="background: #AEF1AE">
+          PathResolver.this.ctx.base.settings.usejavacp
+        </td>
+      </tr><tr>
+        <td>
+          191
+        </td>
+        <td>
+          11662
+        </td>
+        <td>
+          6919
+          -
+          6972
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Boolean.||
+        </td>
+        <td style="background: #AEF1AE">
+          Settings.this.Setting.SettingDecorator[Boolean](PathResolver.this.ctx.base.settings.usejavacp).value(PathResolver.this.ctx).||(PathResolver.Defaults.useJavaClassPath)
+        </td>
+      </tr><tr>
+        <td>
+          191
+        </td>
+        <td>
+          11661
+        </td>
+        <td>
+          6947
+          -
+          6972
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.config.PathResolver.Defaults.useJavaClassPath
+        </td>
+        <td style="background: #AEF1AE">
+          PathResolver.Defaults.useJavaClassPath
+        </td>
+      </tr><tr>
+        <td>
+          192
+        </td>
+        <td>
+          11665
+        </td>
+        <td>
+          7003
+          -
+          7065
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.config.PathResolver.cmdLineOrElse
+        </td>
+        <td style="background: #AEF1AE">
+          PathResolver.this.cmdLineOrElse(&quot;javabootclasspath&quot;, PathResolver.Defaults.javaBootClassPath)
+        </td>
+      </tr><tr>
+        <td>
+          192
+        </td>
+        <td>
+          11664
+        </td>
+        <td>
+          7038
+          -
+          7064
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.config.PathResolver.Defaults.javaBootClassPath
+        </td>
+        <td style="background: #AEF1AE">
+          PathResolver.Defaults.javaBootClassPath
+        </td>
+      </tr><tr>
+        <td>
+          192
+        </td>
+        <td>
+          11663
+        </td>
+        <td>
+          7017
+          -
+          7036
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          &quot;javabootclasspath&quot;
+        </td>
+      </tr><tr>
+        <td>
+          193
+        </td>
+        <td>
+          11666
+        </td>
+        <td>
+          7110
+          -
+          7123
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          &quot;javaextdirs&quot;
+        </td>
+      </tr><tr>
+        <td>
+          193
+        </td>
+        <td>
+          11668
+        </td>
+        <td>
+          7096
+          -
+          7146
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.config.PathResolver.cmdLineOrElse
+        </td>
+        <td style="background: #AEF1AE">
+          PathResolver.this.cmdLineOrElse(&quot;javaextdirs&quot;, PathResolver.Defaults.javaExtDirs)
+        </td>
+      </tr><tr>
+        <td>
+          193
+        </td>
+        <td>
+          11667
+        </td>
+        <td>
+          7125
+          -
+          7145
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.config.PathResolver.Defaults.javaExtDirs
+        </td>
+        <td style="background: #AEF1AE">
+          PathResolver.Defaults.javaExtDirs
+        </td>
+      </tr><tr>
+        <td>
+          194
+        </td>
+        <td>
+          11671
+        </td>
+        <td>
+          7199
+          -
+          7225
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          dotty.tools.dotc.config.PathResolver.Defaults.javaUserClassPath
+        </td>
+        <td style="background: #AEF1AE">
+          PathResolver.Defaults.javaUserClassPath
+        </td>
+      </tr><tr>
+        <td>
+          194
+        </td>
+        <td>
+          11673
+        </td>
+        <td>
+          7231
+          -
+          7233
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          &quot;&quot;
+        </td>
+      </tr><tr>
+        <td>
+          194
+        </td>
+        <td>
+          11670
+        </td>
+        <td>
+          7199
+          -
+          7225
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.config.PathResolver.Defaults.javaUserClassPath
+        </td>
+        <td style="background: #AEF1AE">
+          PathResolver.Defaults.javaUserClassPath
+        </td>
+      </tr><tr>
+        <td>
+          194
+        </td>
+        <td>
+          11669
+        </td>
+        <td>
+          7181
+          -
+          7197
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.config.PathResolver.Calculated.useJavaClassPath
+        </td>
+        <td style="background: #AEF1AE">
+          Calculated.this.useJavaClassPath
+        </td>
+      </tr><tr>
+        <td>
+          194
+        </td>
+        <td>
+          11672
+        </td>
+        <td>
+          7231
+          -
+          7233
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          &quot;&quot;
+        </td>
+      </tr><tr>
+        <td>
+          195
+        </td>
+        <td>
+          11675
+        </td>
+        <td>
+          7295
+          -
+          7322
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.config.PathResolver.Defaults.scalaBootClassPath
+        </td>
+        <td style="background: #AEF1AE">
+          PathResolver.Defaults.scalaBootClassPath
+        </td>
+      </tr><tr>
+        <td>
+          195
+        </td>
+        <td>
+          11674
+        </td>
+        <td>
+          7278
+          -
+          7293
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          &quot;bootclasspath&quot;
+        </td>
+      </tr><tr>
+        <td>
+          195
+        </td>
+        <td>
+          11676
+        </td>
+        <td>
+          7264
+          -
+          7323
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.config.PathResolver.cmdLineOrElse
+        </td>
+        <td style="background: #AEF1AE">
+          PathResolver.this.cmdLineOrElse(&quot;bootclasspath&quot;, PathResolver.Defaults.scalaBootClassPath)
+        </td>
+      </tr><tr>
+        <td>
+          196
+        </td>
+        <td>
+          11677
+        </td>
+        <td>
+          7368
+          -
+          7377
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          &quot;extdirs&quot;
+        </td>
+      </tr><tr>
+        <td>
+          196
+        </td>
+        <td>
+          11679
+        </td>
+        <td>
+          7354
+          -
+          7401
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.config.PathResolver.cmdLineOrElse
+        </td>
+        <td style="background: #AEF1AE">
+          PathResolver.this.cmdLineOrElse(&quot;extdirs&quot;, PathResolver.Defaults.scalaExtDirs)
+        </td>
+      </tr><tr>
+        <td>
+          196
+        </td>
+        <td>
+          11678
+        </td>
+        <td>
+          7379
+          -
+          7400
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.config.PathResolver.Defaults.scalaExtDirs
+        </td>
+        <td style="background: #AEF1AE">
+          PathResolver.Defaults.scalaExtDirs
+        </td>
+      </tr><tr>
+        <td>
+          197
+        </td>
+        <td>
+          11680
+        </td>
+        <td>
+          7432
+          -
+          7470
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.config.PathResolver.cmdLineOrElse
+        </td>
+        <td style="background: #AEF1AE">
+          PathResolver.this.cmdLineOrElse(&quot;priorityclasspath&quot;, &quot;&quot;)
+        </td>
+      </tr><tr>
+        <td>
+          206
+        </td>
+        <td>
+          11683
+        </td>
+        <td>
+          8339
+          -
+          8392
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.config.PathResolver.cmdLineOrElse
+        </td>
+        <td style="background: #AEF1AE">
+          PathResolver.this.cmdLineOrElse(&quot;sourcepath&quot;, PathResolver.Defaults.scalaSourcePath)
+        </td>
+      </tr><tr>
+        <td>
+          206
+        </td>
+        <td>
+          11682
+        </td>
+        <td>
+          8367
+          -
+          8391
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.config.PathResolver.Defaults.scalaSourcePath
+        </td>
+        <td style="background: #AEF1AE">
+          PathResolver.Defaults.scalaSourcePath
+        </td>
+      </tr><tr>
+        <td>
+          206
+        </td>
+        <td>
+          11681
+        </td>
+        <td>
+          8353
+          -
+          8365
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          &quot;sourcepath&quot;
+        </td>
+      </tr><tr>
+        <td>
+          217
+        </td>
+        <td>
+          11684
+        </td>
+        <td>
+          8776
+          -
+          8794
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.config.ScalaSettings.classpath
+        </td>
+        <td style="background: #AEF1AE">
+          PathResolver.this.ctx.base.settings.classpath
+        </td>
+      </tr><tr>
+        <td>
+          217
+        </td>
+        <td>
+          11686
+        </td>
+        <td>
+          8775
+          -
+          8804
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.Boolean.unary_!
+        </td>
+        <td style="background: #AEF1AE">
+          Settings.this.Setting.SettingDecorator[String](PathResolver.this.ctx.base.settings.classpath).isDefault(PathResolver.this.ctx).unary_!
+        </td>
+      </tr><tr>
+        <td>
+          217
+        </td>
+        <td>
+          11685
+        </td>
+        <td>
+          8795
+          -
+          8795
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.config.PathResolver.ctx
+        </td>
+        <td style="background: #AEF1AE">
+          PathResolver.this.ctx
+        </td>
+      </tr><tr>
+        <td>
+          218
+        </td>
+        <td>
+          11689
+        </td>
+        <td>
+          8814
+          -
+          8838
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.config.Settings.Setting.SettingDecorator.value
+        </td>
+        <td style="background: #AEF1AE">
+          Settings.this.Setting.SettingDecorator[String](PathResolver.this.ctx.base.settings.classpath).value(PathResolver.this.ctx)
+        </td>
+      </tr><tr>
+        <td>
+          218
+        </td>
+        <td>
+          11688
+        </td>
+        <td>
+          8833
+          -
+          8833
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.config.PathResolver.ctx
+        </td>
+        <td style="background: #AEF1AE">
+          PathResolver.this.ctx
+        </td>
+      </tr><tr>
+        <td>
+          218
+        </td>
+        <td>
+          11687
+        </td>
+        <td>
+          8814
+          -
+          8832
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.config.ScalaSettings.classpath
+        </td>
+        <td style="background: #AEF1AE">
+          PathResolver.this.ctx.base.settings.classpath
+        </td>
+      </tr><tr>
+        <td>
+          218
+        </td>
+        <td>
+          11690
+        </td>
+        <td>
+          8814
+          -
+          8838
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          dotty.tools.dotc.config.Settings.Setting.SettingDecorator.value
+        </td>
+        <td style="background: #AEF1AE">
+          Settings.this.Setting.SettingDecorator[String](PathResolver.this.ctx.base.settings.classpath).value(PathResolver.this.ctx)
+        </td>
+      </tr><tr>
+        <td>
+          219
+        </td>
+        <td>
+          11692
+        </td>
+        <td>
+          8850
+          -
+          8885
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          scala.collection.MapLike.getOrElse
+        </td>
+        <td style="background: #AEF1AE">
+          scala.sys.`package`.env.getOrElse[String](&quot;CLASSPATH&quot;, &quot;.&quot;)
+        </td>
+      </tr><tr>
+        <td>
+          219
+        </td>
+        <td>
+          11691
+        </td>
+        <td>
+          8850
+          -
+          8885
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.MapLike.getOrElse
+        </td>
+        <td style="background: #AEF1AE">
+          scala.sys.`package`.env.getOrElse[String](&quot;CLASSPATH&quot;, &quot;.&quot;)
+        </td>
+      </tr><tr>
+        <td>
+          226
+        </td>
+        <td>
+          11717
+        </td>
+        <td>
+          9014
+          -
+          9763
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.immutable.List.apply
+        </td>
+        <td style="background: #AEF1AE">
+          scala.collection.immutable.List.apply[Traversable[dotty.tools.io.ClassPath]](PathResolver.this.classPathFactory.classesInExpandedPath(Calculated.this.priorityClassPath)(PathResolver.this.ctx), PathResolver.this.classPathFactory.classesInPath(Calculated.this.javaBootClassPath)(PathResolver.this.ctx), PathResolver.this.classPathFactory.contentsOfDirsInPath(Calculated.this.javaExtDirs)(PathResolver.this.ctx), PathResolver.this.classPathFactory.classesInExpandedPath(Calculated.this.javaUserClassPath)(PathResolver.this.ctx), PathResolver.this.classPathFactory.classesInPath(Calculated.this.scalaBootClassPath)(PathResolver.this.ctx), PathResolver.this.classPathFactory.contentsOfDirsInPath(Calculated.this.scalaExtDirs)(PathResolver.this.ctx), PathResolver.this.classPathFactory.classesInExpandedPath(Calculated.this.userClassPath)(PathResolver.this.ctx), PathResolver.this.classPathFactory.sourcesInPath(Calculated.this.sourcePath)(PathResolver.this.ctx))
+        </td>
+      </tr><tr>
+        <td>
+          227
+        </td>
+        <td>
+          11693
+        </td>
+        <td>
+          9072
+          -
+          9089
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.config.PathResolver.Calculated.priorityClassPath
+        </td>
+        <td style="background: #AEF1AE">
+          Calculated.this.priorityClassPath
+        </td>
+      </tr><tr>
+        <td>
+          227
+        </td>
+        <td>
+          11695
+        </td>
+        <td>
+          9050
+          -
+          9090
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.classpath.ClassPathFactory.classesInExpandedPath
+        </td>
+        <td style="background: #AEF1AE">
+          PathResolver.this.classPathFactory.classesInExpandedPath(Calculated.this.priorityClassPath)(PathResolver.this.ctx)
+        </td>
+      </tr><tr>
+        <td>
+          227
+        </td>
+        <td>
+          11694
+        </td>
+        <td>
+          9071
+          -
+          9071
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.config.PathResolver.ctx
+        </td>
+        <td style="background: #AEF1AE">
+          PathResolver.this.ctx
+        </td>
+      </tr><tr>
+        <td>
+          228
+        </td>
+        <td>
+          11698
+        </td>
+        <td>
+          9147
+          -
+          9179
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.classpath.ClassPathFactory.classesInPath
+        </td>
+        <td style="background: #AEF1AE">
+          PathResolver.this.classPathFactory.classesInPath(Calculated.this.javaBootClassPath)(PathResolver.this.ctx)
+        </td>
+      </tr><tr>
+        <td>
+          228
+        </td>
+        <td>
+          11697
+        </td>
+        <td>
+          9160
+          -
+          9160
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.config.PathResolver.ctx
+        </td>
+        <td style="background: #AEF1AE">
+          PathResolver.this.ctx
+        </td>
+      </tr><tr>
+        <td>
+          228
+        </td>
+        <td>
+          11696
+        </td>
+        <td>
+          9161
+          -
+          9178
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.config.PathResolver.Calculated.javaBootClassPath
+        </td>
+        <td style="background: #AEF1AE">
+          Calculated.this.javaBootClassPath
+        </td>
+      </tr><tr>
+        <td>
+          229
+        </td>
+        <td>
+          11701
+        </td>
+        <td>
+          9236
+          -
+          9269
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.classpath.ClassPathFactory.contentsOfDirsInPath
+        </td>
+        <td style="background: #AEF1AE">
+          PathResolver.this.classPathFactory.contentsOfDirsInPath(Calculated.this.javaExtDirs)(PathResolver.this.ctx)
+        </td>
+      </tr><tr>
+        <td>
+          229
+        </td>
+        <td>
+          11700
+        </td>
+        <td>
+          9256
+          -
+          9256
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.config.PathResolver.ctx
+        </td>
+        <td style="background: #AEF1AE">
+          PathResolver.this.ctx
+        </td>
+      </tr><tr>
+        <td>
+          229
+        </td>
+        <td>
+          11699
+        </td>
+        <td>
+          9257
+          -
+          9268
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.config.PathResolver.Calculated.javaExtDirs
+        </td>
+        <td style="background: #AEF1AE">
+          Calculated.this.javaExtDirs
+        </td>
+      </tr><tr>
+        <td>
+          230
+        </td>
+        <td>
+          11702
+        </td>
+        <td>
+          9347
+          -
+          9364
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.config.PathResolver.Calculated.javaUserClassPath
+        </td>
+        <td style="background: #AEF1AE">
+          Calculated.this.javaUserClassPath
+        </td>
+      </tr><tr>
+        <td>
+          230
+        </td>
+        <td>
+          11704
+        </td>
+        <td>
+          9325
+          -
+          9365
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.classpath.ClassPathFactory.classesInExpandedPath
+        </td>
+        <td style="background: #AEF1AE">
+          PathResolver.this.classPathFactory.classesInExpandedPath(Calculated.this.javaUserClassPath)(PathResolver.this.ctx)
+        </td>
+      </tr><tr>
+        <td>
+          230
+        </td>
+        <td>
+          11703
+        </td>
+        <td>
+          9346
+          -
+          9346
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.config.PathResolver.ctx
+        </td>
+        <td style="background: #AEF1AE">
+          PathResolver.this.ctx
+        </td>
+      </tr><tr>
+        <td>
+          231
+        </td>
+        <td>
+          11707
+        </td>
+        <td>
+          9416
+          -
+          9449
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.classpath.ClassPathFactory.classesInPath
+        </td>
+        <td style="background: #AEF1AE">
+          PathResolver.this.classPathFactory.classesInPath(Calculated.this.scalaBootClassPath)(PathResolver.this.ctx)
+        </td>
+      </tr><tr>
+        <td>
+          231
+        </td>
+        <td>
+          11706
+        </td>
+        <td>
+          9429
+          -
+          9429
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.config.PathResolver.ctx
+        </td>
+        <td style="background: #AEF1AE">
+          PathResolver.this.ctx
+        </td>
+      </tr><tr>
+        <td>
+          231
+        </td>
+        <td>
+          11705
+        </td>
+        <td>
+          9430
+          -
+          9448
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.config.PathResolver.Calculated.scalaBootClassPath
+        </td>
+        <td style="background: #AEF1AE">
+          Calculated.this.scalaBootClassPath
+        </td>
+      </tr><tr>
+        <td>
+          232
+        </td>
+        <td>
+          11710
+        </td>
+        <td>
+          9501
+          -
+          9535
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.classpath.ClassPathFactory.contentsOfDirsInPath
+        </td>
+        <td style="background: #AEF1AE">
+          PathResolver.this.classPathFactory.contentsOfDirsInPath(Calculated.this.scalaExtDirs)(PathResolver.this.ctx)
+        </td>
+      </tr><tr>
+        <td>
+          232
+        </td>
+        <td>
+          11709
+        </td>
+        <td>
+          9521
+          -
+          9521
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.config.PathResolver.ctx
+        </td>
+        <td style="background: #AEF1AE">
+          PathResolver.this.ctx
+        </td>
+      </tr><tr>
+        <td>
+          232
+        </td>
+        <td>
+          11708
+        </td>
+        <td>
+          9522
+          -
+          9534
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.config.PathResolver.Calculated.scalaExtDirs
+        </td>
+        <td style="background: #AEF1AE">
+          Calculated.this.scalaExtDirs
+        </td>
+      </tr><tr>
+        <td>
+          233
+        </td>
+        <td>
+          11711
+        </td>
+        <td>
+          9613
+          -
+          9626
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.config.PathResolver.Calculated.userClassPath
+        </td>
+        <td style="background: #AEF1AE">
+          Calculated.this.userClassPath
+        </td>
+      </tr><tr>
+        <td>
+          233
+        </td>
+        <td>
+          11713
+        </td>
+        <td>
+          9591
+          -
+          9627
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.classpath.ClassPathFactory.classesInExpandedPath
+        </td>
+        <td style="background: #AEF1AE">
+          PathResolver.this.classPathFactory.classesInExpandedPath(Calculated.this.userClassPath)(PathResolver.this.ctx)
+        </td>
+      </tr><tr>
+        <td>
+          233
+        </td>
+        <td>
+          11712
+        </td>
+        <td>
+          9612
+          -
+          9612
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.config.PathResolver.ctx
+        </td>
+        <td style="background: #AEF1AE">
+          PathResolver.this.ctx
+        </td>
+      </tr><tr>
+        <td>
+          234
+        </td>
+        <td>
+          11716
+        </td>
+        <td>
+          9683
+          -
+          9708
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.classpath.ClassPathFactory.sourcesInPath
+        </td>
+        <td style="background: #AEF1AE">
+          PathResolver.this.classPathFactory.sourcesInPath(Calculated.this.sourcePath)(PathResolver.this.ctx)
+        </td>
+      </tr><tr>
+        <td>
+          234
+        </td>
+        <td>
+          11715
+        </td>
+        <td>
+          9696
+          -
+          9696
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.config.PathResolver.ctx
+        </td>
+        <td style="background: #AEF1AE">
+          PathResolver.this.ctx
+        </td>
+      </tr><tr>
+        <td>
+          234
+        </td>
+        <td>
+          11714
+        </td>
+        <td>
+          9697
+          -
+          9707
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.config.PathResolver.Calculated.sourcePath
+        </td>
+        <td style="background: #AEF1AE">
+          Calculated.this.sourcePath
+        </td>
+      </tr><tr>
+        <td>
+          251
+        </td>
+        <td>
+          11719
+        </td>
+        <td>
+          9843
+          -
+          10252
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.collection.immutable.StringLike.stripMargin
+        </td>
+        <td style="background: #F0ADAD">
+          scala.Predef.augmentString(&quot;\n      |object Calculated {\n      |  scalaHome            = %s\n      |  priorityClassPath    = %s\n      |  javaBootClassPath    = %s\n      |  javaExtDirs          = %s\n      |  javaUserClassPath    = %s\n      |  useJavaClassPath     = %s\n      |  scalaBootClassPath   = %s\n      |  scalaExtDirs         = %s\n      |  userClassPath        = %s\n      |  sourcePath           = %s\n      |}&quot;.trim()).stripMargin
+        </td>
+      </tr><tr>
+        <td>
+          251
+        </td>
+        <td>
+          11718
+        </td>
+        <td>
+          9843
+          -
+          10240
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.String.trim
+        </td>
+        <td style="background: #F0ADAD">
+          &quot;\n      |object Calculated {\n      |  scalaHome            = %s\n      |  priorityClassPath    = %s\n      |  javaBootClassPath    = %s\n      |  javaExtDirs          = %s\n      |  javaUserClassPath    = %s\n      |  useJavaClassPath     = %s\n      |  scalaBootClassPath   = %s\n      |  scalaExtDirs         = %s\n      |  userClassPath        = %s\n      |  sourcePath           = %s\n      |}&quot;.trim()
+        </td>
+      </tr><tr>
+        <td>
+          251
+        </td>
+        <td>
+          11738
+        </td>
+        <td>
+          9843
+          -
+          10515
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.immutable.StringLike.format
+        </td>
+        <td style="background: #F0ADAD">
+          scala.Predef.augmentString(scala.Predef.augmentString(&quot;\n      |object Calculated {\n      |  scalaHome            = %s\n      |  priorityClassPath    = %s\n      |  javaBootClassPath    = %s\n      |  javaExtDirs          = %s\n      |  javaUserClassPath    = %s\n      |  useJavaClassPath     = %s\n      |  scalaBootClassPath   = %s\n      |  scalaExtDirs         = %s\n      |  userClassPath        = %s\n      |  sourcePath           = %s\n      |}&quot;.trim()).stripMargin).format(Calculated.this.scalaHome, PathResolver.ppcp(Calculated.this.priorityClassPath), PathResolver.ppcp(Calculated.this.javaBootClassPath), PathResolver.ppcp(Calculated.this.javaExtDirs), PathResolver.ppcp(Calculated.this.javaUserClassPath), Calculated.this.useJavaClassPath, PathResolver.ppcp(Calculated.this.scalaBootClassPath), PathResolver.ppcp(Calculated.this.scalaExtDirs), PathResolver.ppcp(Calculated.this.userClassPath), PathResolver.ppcp(Calculated.this.sourcePath))
+        </td>
+      </tr><tr>
+        <td>
+          252
+        </td>
+        <td>
+          11720
+        </td>
+        <td>
+          10269
+          -
+          10278
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.config.PathResolver.Calculated.scalaHome
+        </td>
+        <td style="background: #F0ADAD">
+          Calculated.this.scalaHome
+        </td>
+      </tr><tr>
+        <td>
+          252
+        </td>
+        <td>
+          11722
+        </td>
+        <td>
+          10280
+          -
+          10303
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.config.PathResolver.ppcp
+        </td>
+        <td style="background: #F0ADAD">
+          PathResolver.ppcp(Calculated.this.priorityClassPath)
+        </td>
+      </tr><tr>
+        <td>
+          252
+        </td>
+        <td>
+          11721
+        </td>
+        <td>
+          10285
+          -
+          10302
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.config.PathResolver.Calculated.priorityClassPath
+        </td>
+        <td style="background: #F0ADAD">
+          Calculated.this.priorityClassPath
+        </td>
+      </tr><tr>
+        <td>
+          253
+        </td>
+        <td>
+          11728
+        </td>
+        <td>
+          10357
+          -
+          10380
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.config.PathResolver.ppcp
+        </td>
+        <td style="background: #F0ADAD">
+          PathResolver.ppcp(Calculated.this.javaUserClassPath)
+        </td>
+      </tr><tr>
+        <td>
+          253
+        </td>
+        <td>
+          11725
+        </td>
+        <td>
+          10343
+          -
+          10354
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.config.PathResolver.Calculated.javaExtDirs
+        </td>
+        <td style="background: #F0ADAD">
+          Calculated.this.javaExtDirs
+        </td>
+      </tr><tr>
+        <td>
+          253
+        </td>
+        <td>
+          11724
+        </td>
+        <td>
+          10313
+          -
+          10336
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.config.PathResolver.ppcp
+        </td>
+        <td style="background: #F0ADAD">
+          PathResolver.ppcp(Calculated.this.javaBootClassPath)
+        </td>
+      </tr><tr>
+        <td>
+          253
+        </td>
+        <td>
+          11727
+        </td>
+        <td>
+          10362
+          -
+          10379
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.config.PathResolver.Calculated.javaUserClassPath
+        </td>
+        <td style="background: #F0ADAD">
+          Calculated.this.javaUserClassPath
+        </td>
+      </tr><tr>
+        <td>
+          253
+        </td>
+        <td>
+          11723
+        </td>
+        <td>
+          10318
+          -
+          10335
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.config.PathResolver.Calculated.javaBootClassPath
+        </td>
+        <td style="background: #F0ADAD">
+          Calculated.this.javaBootClassPath
+        </td>
+      </tr><tr>
+        <td>
+          253
+        </td>
+        <td>
+          11726
+        </td>
+        <td>
+          10338
+          -
+          10355
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.config.PathResolver.ppcp
+        </td>
+        <td style="background: #F0ADAD">
+          PathResolver.ppcp(Calculated.this.javaExtDirs)
+        </td>
+      </tr><tr>
+        <td>
+          254
+        </td>
+        <td>
+          11729
+        </td>
+        <td>
+          10390
+          -
+          10406
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.config.PathResolver.Calculated.useJavaClassPath
+        </td>
+        <td style="background: #F0ADAD">
+          Calculated.this.useJavaClassPath
+        </td>
+      </tr><tr>
+        <td>
+          255
+        </td>
+        <td>
+          11731
+        </td>
+        <td>
+          10416
+          -
+          10440
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.config.PathResolver.ppcp
+        </td>
+        <td style="background: #F0ADAD">
+          PathResolver.ppcp(Calculated.this.scalaBootClassPath)
+        </td>
+      </tr><tr>
+        <td>
+          255
+        </td>
+        <td>
+          11734
+        </td>
+        <td>
+          10467
+          -
+          10480
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.config.PathResolver.Calculated.userClassPath
+        </td>
+        <td style="background: #F0ADAD">
+          Calculated.this.userClassPath
+        </td>
+      </tr><tr>
+        <td>
+          255
+        </td>
+        <td>
+          11733
+        </td>
+        <td>
+          10442
+          -
+          10460
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.config.PathResolver.ppcp
+        </td>
+        <td style="background: #F0ADAD">
+          PathResolver.ppcp(Calculated.this.scalaExtDirs)
+        </td>
+      </tr><tr>
+        <td>
+          255
+        </td>
+        <td>
+          11730
+        </td>
+        <td>
+          10421
+          -
+          10439
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.config.PathResolver.Calculated.scalaBootClassPath
+        </td>
+        <td style="background: #F0ADAD">
+          Calculated.this.scalaBootClassPath
+        </td>
+      </tr><tr>
+        <td>
+          255
+        </td>
+        <td>
+          11732
+        </td>
+        <td>
+          10447
+          -
+          10459
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.config.PathResolver.Calculated.scalaExtDirs
+        </td>
+        <td style="background: #F0ADAD">
+          Calculated.this.scalaExtDirs
+        </td>
+      </tr><tr>
+        <td>
+          255
+        </td>
+        <td>
+          11735
+        </td>
+        <td>
+          10462
+          -
+          10481
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.config.PathResolver.ppcp
+        </td>
+        <td style="background: #F0ADAD">
+          PathResolver.ppcp(Calculated.this.userClassPath)
+        </td>
+      </tr><tr>
+        <td>
+          256
+        </td>
+        <td>
+          11737
+        </td>
+        <td>
+          10491
+          -
+          10507
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.config.PathResolver.ppcp
+        </td>
+        <td style="background: #F0ADAD">
+          PathResolver.ppcp(Calculated.this.sourcePath)
+        </td>
+      </tr><tr>
+        <td>
+          256
+        </td>
+        <td>
+          11736
+        </td>
+        <td>
+          10496
+          -
+          10506
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.config.PathResolver.Calculated.sourcePath
+        </td>
+        <td style="background: #F0ADAD">
+          Calculated.this.sourcePath
+        </td>
+      </tr><tr>
+        <td>
+          277
+        </td>
+        <td>
+          11739
+        </td>
+        <td>
+          11114
+          -
+          11127
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.io.ClassPath.asURLs
+        </td>
+        <td style="background: #F0ADAD">
+          PathResolver.this.result.asURLs
+        </td>
+      </tr>
+    </table>
+          </div>
+        </div>
+      </body>
+    </html>

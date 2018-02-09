@@ -1,0 +1,6352 @@
+<html>
+      <head>
+        <meta http-equiv="Content-Type" content="text/html; charset=utf-8"/>
+        <title id="title">
+          dotty/tools/backend/jvm/scalaPrimitives.scala.html
+        </title>
+        <script src="https://ajax.googleapis.com/ajax/libs/jquery/1.10.2/jquery.min.js"></script><link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/jquery.tablesorter/2.20.1/css/theme.default.min.css" type="text/css"/><script src="https://cdnjs.cloudflare.com/ajax/libs/jquery.tablesorter/2.20.1/js/jquery.tablesorter.min.js"></script><link rel="stylesheet" href="https://netdna.bootstrapcdn.com/bootstrap/3.0.3/css/bootstrap.min.css" type="text/css"/><script src="https://netdna.bootstrapcdn.com/bootstrap/3.0.3/js/bootstrap.min.js"></script><script type="text/javascript">
+        $(document).ready(function() {$(".tablesorter").tablesorter();});
+      </script>
+        <style>
+          table.codegrid { font-family: monospace; font-size: 12px; width: auto!important; }table.statementlist { width: auto!important; font-size: 13px; } table.codegrid td { padding: 0!important; border: 0!important } table td.linenumber { width: 40px!important; } 
+        </style>
+      </head>
+      <body style="font-family: monospace;">
+        <ul class="nav nav-tabs">
+          <li>
+            <a href="#codegrid" data-toggle="tab">Codegrid</a>
+          </li>
+          <li>
+            <a href="#statementlist" data-toggle="tab">Statement List</a>
+          </li>
+        </ul>
+        <div class="tab-content">
+          <div class="tab-pane active" id="codegrid">
+            <pre style='font-size: 12pt; font-family: courier;'>1 <span style=''>/* NSC -- new Scala compiler
+</span>2 <span style=''> * Copyright 2005-2012 LAMP/EPFL
+</span>3 <span style=''> * @author  Martin Odersky
+</span>4 <span style=''> */
+</span>5 <span style=''>
+</span>6 <span style=''>package dotty.tools.dotc
+</span>7 <span style=''>package backend.jvm
+</span>8 <span style=''>
+</span>9 <span style=''>import dotty.tools.backend.jvm.GenBCodePipeline
+</span>10 <span style=''>import dotty.tools.dotc.ast.Trees.Select
+</span>11 <span style=''>import dotty.tools.dotc.ast.tpd._
+</span>12 <span style=''>import dotty.tools.dotc.core.Names.TermName
+</span>13 <span style=''>import dotty.tools.dotc.core.StdNames
+</span>14 <span style=''>import dotty.tools.dotc.core.StdNames._
+</span>15 <span style=''>import dotty.tools.dotc.core.Types.{JavaArrayType, UnspecifiedErrorType, Type}
+</span>16 <span style=''>
+</span>17 <span style=''>import scala.collection.{ mutable, immutable }
+</span>18 <span style=''>
+</span>19 <span style=''>import core.Contexts.Context
+</span>20 <span style=''>import core.Symbols.{Symbol, NoSymbol}
+</span>21 <span style=''>
+</span>22 <span style=''>/** Scala primitive operations are represented as methods in `Any` and
+</span>23 <span style=''> *  `AnyVal` subclasses. Here we demultiplex them by providing a mapping
+</span>24 <span style=''> *  from their symbols to integers. Different methods exist for
+</span>25 <span style=''> *  different value types, but with the same meaning (like plus, minus,
+</span>26 <span style=''> *  etc.). They will all be mapped to the same int.
+</span>27 <span style=''> *
+</span>28 <span style=''> *  Note: The three equal methods have the following semantics:
+</span>29 <span style=''> *  - `&quot;==&quot;` checks for `null`, and if non-null, calls
+</span>30 <span style=''> *    `java.lang.Object.equals`
+</span>31 <span style=''> *    `(class: Any; modifier: final)`. Primitive: `EQ`
+</span>32 <span style=''> *  - `&quot;eq&quot;` usual reference comparison
+</span>33 <span style=''> *    `(class: AnyRef; modifier: final)`. Primitive: `ID`
+</span>34 <span style=''> *  - `&quot;equals&quot;` user-defined equality (Java semantics)
+</span>35 <span style=''> *    `(class: Object; modifier: none)`. Primitive: `EQUALS`
+</span>36 <span style=''> *
+</span>37 <span style=''> * Inspired from the `scalac` compiler.
+</span>38 <span style=''> */
+</span>39 <span style=''>class DottyPrimitives(ctx: Context) {
+</span>40 <span style=''>  import scala.tools.nsc.backend.ScalaPrimitivesOps._
+</span>41 <span style=''>
+</span>42 <span style=''>  private lazy val primitives: immutable.Map[Symbol, Int] = init
+</span>43 <span style=''>
+</span>44 <span style=''>  /** Return the code for the given symbol. */
+</span>45 <span style=''>  def getPrimitive(sym: Symbol): Int = {
+</span>46 <span style=''>    </span><span style='background: #AEF1AE'>primitives(sym)</span><span style=''>
+</span>47 <span style=''>  }
+</span>48 <span style=''>
+</span>49 <span style=''>  /**
+</span>50 <span style=''>   * Return the primitive code of the given operation. If the
+</span>51 <span style=''>   * operation is an array get/set, we inspect the type of the receiver
+</span>52 <span style=''>   * to demux the operation.
+</span>53 <span style=''>   *
+</span>54 <span style=''>   * @param fun The method symbol
+</span>55 <span style=''>   * @param tpe The type of the receiver object. It is used only for array
+</span>56 <span style=''>   *            operations
+</span>57 <span style=''>   */
+</span>58 <span style=''>  def getPrimitive(app: Apply, tpe: Type)(implicit ctx: Context): Int = {
+</span>59 <span style=''>    val fun = </span><span style='background: #AEF1AE'>app.fun.symbol</span><span style=''>
+</span>60 <span style=''>    val defn = </span><span style='background: #AEF1AE'>ctx.definitions</span><span style=''>
+</span>61 <span style=''>    val code = </span><span style='background: #AEF1AE'>app.fun</span><span style=''> match {
+</span>62 <span style=''>      case Select(_, nme.primitive.arrayLength) =&gt;
+</span>63 <span style=''>        </span><span style='background: #AEF1AE'>LENGTH</span><span style=''>
+</span>64 <span style=''>      case Select(_, nme.primitive.arrayUpdate) =&gt;
+</span>65 <span style=''>        </span><span style='background: #AEF1AE'>UPDATE</span><span style=''>
+</span>66 <span style=''>      case Select(_, nme.primitive.arrayApply) =&gt;
+</span>67 <span style=''>        </span><span style='background: #AEF1AE'>APPLY</span><span style=''>
+</span>68 <span style=''>      case _ =&gt; </span><span style='background: #AEF1AE'>getPrimitive(fun)</span><span style=''>
+</span>69 <span style=''>    }
+</span>70 <span style=''>
+</span>71 <span style=''>    def elementType: Type = </span><span style='background: #AEF1AE'>tpe.widenDealias</span><span style=''> match {
+</span>72 <span style=''>      case defn.ArrayOf(el) =&gt; el
+</span>73 <span style=''>      case JavaArrayType(el) =&gt; el
+</span>74 <span style=''>      case _ =&gt;
+</span>75 <span style=''>        </span><span style='background: #F0ADAD'>ctx.error(s&quot;expected Array $tpe&quot;)</span><span style=''>
+</span>76 <span style=''>        </span><span style='background: #F0ADAD'>UnspecifiedErrorType</span><span style=''>
+</span>77 <span style=''>    }
+</span>78 <span style=''>
+</span>79 <span style=''>    code match {
+</span>80 <span style=''>
+</span>81 <span style=''>      case APPLY =&gt;
+</span>82 <span style=''>        </span><span style='background: #AEF1AE'>defn.scalaClassName(elementType)</span><span style=''> match {
+</span>83 <span style=''>          case tpnme.Boolean    =&gt; </span><span style='background: #AEF1AE'>ZARRAY_GET</span><span style=''>
+</span>84 <span style=''>          case tpnme.Byte       =&gt; </span><span style='background: #AEF1AE'>BARRAY_GET</span><span style=''>
+</span>85 <span style=''>          case tpnme.Short      =&gt; </span><span style='background: #AEF1AE'>SARRAY_GET</span><span style=''>
+</span>86 <span style=''>          case tpnme.Char       =&gt; </span><span style='background: #AEF1AE'>CARRAY_GET</span><span style=''>
+</span>87 <span style=''>          case tpnme.Int        =&gt; </span><span style='background: #AEF1AE'>IARRAY_GET</span><span style=''>
+</span>88 <span style=''>          case tpnme.Long       =&gt; </span><span style='background: #AEF1AE'>LARRAY_GET</span><span style=''>
+</span>89 <span style=''>          case tpnme.Float      =&gt; </span><span style='background: #AEF1AE'>FARRAY_GET</span><span style=''>
+</span>90 <span style=''>          case tpnme.Double     =&gt; </span><span style='background: #AEF1AE'>DARRAY_GET</span><span style=''>
+</span>91 <span style=''>          case _                =&gt; </span><span style='background: #AEF1AE'>OARRAY_GET</span><span style=''>
+</span>92 <span style=''>        }
+</span>93 <span style=''>
+</span>94 <span style=''>      case UPDATE =&gt;
+</span>95 <span style=''>        </span><span style='background: #AEF1AE'>defn.scalaClassName(elementType)</span><span style=''> match {
+</span>96 <span style=''>          case tpnme.Boolean    =&gt; </span><span style='background: #AEF1AE'>ZARRAY_SET</span><span style=''>
+</span>97 <span style=''>          case tpnme.Byte       =&gt; </span><span style='background: #AEF1AE'>BARRAY_SET</span><span style=''>
+</span>98 <span style=''>          case tpnme.Short      =&gt; </span><span style='background: #AEF1AE'>SARRAY_SET</span><span style=''>
+</span>99 <span style=''>          case tpnme.Char       =&gt; </span><span style='background: #AEF1AE'>CARRAY_SET</span><span style=''>
+</span>100 <span style=''>          case tpnme.Int        =&gt; </span><span style='background: #AEF1AE'>IARRAY_SET</span><span style=''>
+</span>101 <span style=''>          case tpnme.Long       =&gt; </span><span style='background: #AEF1AE'>LARRAY_SET</span><span style=''>
+</span>102 <span style=''>          case tpnme.Float      =&gt; </span><span style='background: #AEF1AE'>FARRAY_SET</span><span style=''>
+</span>103 <span style=''>          case tpnme.Double     =&gt; </span><span style='background: #AEF1AE'>DARRAY_SET</span><span style=''>
+</span>104 <span style=''>          case _                =&gt; </span><span style='background: #AEF1AE'>OARRAY_SET</span><span style=''>
+</span>105 <span style=''>        }
+</span>106 <span style=''>
+</span>107 <span style=''>      case LENGTH =&gt;
+</span>108 <span style=''>        </span><span style='background: #AEF1AE'>defn.scalaClassName(elementType)</span><span style=''> match {
+</span>109 <span style=''>          case tpnme.Boolean    =&gt; </span><span style='background: #AEF1AE'>ZARRAY_LENGTH</span><span style=''>
+</span>110 <span style=''>          case tpnme.Byte       =&gt; </span><span style='background: #AEF1AE'>BARRAY_LENGTH</span><span style=''>
+</span>111 <span style=''>          case tpnme.Short      =&gt; </span><span style='background: #AEF1AE'>SARRAY_LENGTH</span><span style=''>
+</span>112 <span style=''>          case tpnme.Char       =&gt; </span><span style='background: #AEF1AE'>CARRAY_LENGTH</span><span style=''>
+</span>113 <span style=''>          case tpnme.Int        =&gt; </span><span style='background: #AEF1AE'>IARRAY_LENGTH</span><span style=''>
+</span>114 <span style=''>          case tpnme.Long       =&gt; </span><span style='background: #AEF1AE'>LARRAY_LENGTH</span><span style=''>
+</span>115 <span style=''>          case tpnme.Float      =&gt; </span><span style='background: #AEF1AE'>FARRAY_LENGTH</span><span style=''>
+</span>116 <span style=''>          case tpnme.Double     =&gt; </span><span style='background: #AEF1AE'>DARRAY_LENGTH</span><span style=''>
+</span>117 <span style=''>          case _                =&gt; </span><span style='background: #AEF1AE'>OARRAY_LENGTH</span><span style=''>
+</span>118 <span style=''>        }
+</span>119 <span style=''>
+</span>120 <span style=''>      case _ =&gt;
+</span>121 <span style=''>        code
+</span>122 <span style=''>    }
+</span>123 <span style=''>  }
+</span>124 <span style=''>
+</span>125 <span style=''>  /** Initialize the primitive map */
+</span>126 <span style=''>  private def init: immutable.Map[Symbol, Int]  = {
+</span>127 <span style=''>
+</span>128 <span style=''>    implicit val ctx = </span><span style='background: #AEF1AE'>this.ctx</span><span style=''>
+</span>129 <span style=''>
+</span>130 <span style=''>    import core.Symbols.defn
+</span>131 <span style=''>    val primitives = </span><span style='background: #AEF1AE'>core.Symbols.newMutableSymbolMap[Int]</span><span style=''>
+</span>132 <span style=''>
+</span>133 <span style=''>    /** Add a primitive operation to the map */
+</span>134 <span style=''>    def addPrimitive(s: Symbol, code: Int): Unit = {
+</span>135 <span style=''>      </span><span style='background: #AEF1AE'>assert(!(primitives contains s), </span><span style='background: #F0ADAD'>&quot;Duplicate primitive &quot; + s</span><span style='background: #AEF1AE'>)</span><span style=''>
+</span>136 <span style=''>      </span><span style='background: #AEF1AE'>primitives(s) = code</span><span style=''>
+</span>137 <span style=''>    }
+</span>138 <span style=''>
+</span>139 <span style=''>    def addPrimitives(cls: Symbol, method: TermName, code: Int)(implicit ctx: Context): Unit = {
+</span>140 <span style=''>      val alts = </span><span style='background: #AEF1AE'>cls.info.member(method).alternatives.map(_.symbol)</span><span style=''>
+</span>141 <span style=''>      if (</span><span style='background: #AEF1AE'>alts.isEmpty</span><span style=''>)
+</span>142 <span style=''>        </span><span style='background: #F0ADAD'>ctx.error(s&quot;Unknown primitive method $cls.$method&quot;)</span><span style=''>
+</span>143 <span style=''>      else </span><span style='background: #AEF1AE'>alts foreach (s =&gt;
+</span>144 <span style=''></span><span style='background: #AEF1AE'>        addPrimitive(s,
+</span>145 <span style=''></span><span style='background: #AEF1AE'>          s.info.paramInfoss match {
+</span>146 <span style=''></span><span style='background: #AEF1AE'>            case List(tp :: _) if code == ADD &amp;&amp; tp =:= ctx.definitions.StringType =&gt; CONCAT
+</span>147 <span style=''></span><span style='background: #AEF1AE'>            case _                                          =&gt; code
+</span>148 <span style=''></span><span style='background: #AEF1AE'>          }
+</span>149 <span style=''></span><span style='background: #AEF1AE'>        )
+</span>150 <span style=''></span><span style='background: #AEF1AE'>        )</span><span style=''>
+</span>151 <span style=''>    }
+</span>152 <span style=''>
+</span>153 <span style=''>    // scala.Any
+</span>154 <span style=''>    </span><span style='background: #AEF1AE'>addPrimitive(defn.Any_==, EQ)</span><span style=''>
+</span>155 <span style=''>    </span><span style='background: #AEF1AE'>addPrimitive(defn.Any_!=, NE)</span><span style=''>
+</span>156 <span style=''>    </span><span style='background: #AEF1AE'>addPrimitive(defn.Any_isInstanceOf, IS)</span><span style=''>
+</span>157 <span style=''>    </span><span style='background: #AEF1AE'>addPrimitive(defn.Any_asInstanceOf, AS)</span><span style=''>
+</span>158 <span style=''>    </span><span style='background: #AEF1AE'>addPrimitive(defn.Any_##, HASH)</span><span style=''>
+</span>159 <span style=''>
+</span>160 <span style=''>    // java.lang.Object
+</span>161 <span style=''>    </span><span style='background: #AEF1AE'>addPrimitive(defn.Object_eq, ID)</span><span style=''>
+</span>162 <span style=''>    </span><span style='background: #AEF1AE'>addPrimitive(defn.Object_ne, NI)</span><span style=''>
+</span>163 <span style=''> /*   addPrimitive(defn.Any_==, EQ)
+</span>164 <span style=''>    addPrimitive(defn.Any_!=, NE)*/
+</span>165 <span style=''>    </span><span style='background: #AEF1AE'>addPrimitive(defn.Object_synchronized, SYNCHRONIZED)</span><span style=''>
+</span>166 <span style=''>    /*addPrimitive(defn.Any_isInstanceOf, IS)
+</span>167 <span style=''>    addPrimitive(defn.Any_asInstanceOf, AS)*/
+</span>168 <span style=''>
+</span>169 <span style=''>    // java.lang.String
+</span>170 <span style=''>    </span><span style='background: #AEF1AE'>addPrimitive(defn.String_+, CONCAT)</span><span style=''>
+</span>171 <span style=''>
+</span>172 <span style=''>    import core.StdNames.nme
+</span>173 <span style=''>
+</span>174 <span style=''>    // scala.Array
+</span>175 <span style=''>    lazy val ArrayClass = defn.ArrayClass
+</span>176 <span style=''>    </span><span style='background: #AEF1AE'>addPrimitives(ArrayClass, nme.length, LENGTH)</span><span style=''>
+</span>177 <span style=''>    </span><span style='background: #AEF1AE'>addPrimitives(ArrayClass, nme.apply, APPLY)</span><span style=''>
+</span>178 <span style=''>    </span><span style='background: #AEF1AE'>addPrimitives(ArrayClass, nme.update, UPDATE)</span><span style=''>
+</span>179 <span style=''>
+</span>180 <span style=''>    // scala.Boolean
+</span>181 <span style=''>    lazy val BooleanClass = defn.BooleanClass
+</span>182 <span style=''>    </span><span style='background: #AEF1AE'>addPrimitives(BooleanClass, nme.EQ, EQ)</span><span style=''>
+</span>183 <span style=''>    </span><span style='background: #AEF1AE'>addPrimitives(BooleanClass, nme.NE, NE)</span><span style=''>
+</span>184 <span style=''>    </span><span style='background: #AEF1AE'>addPrimitives(BooleanClass, nme.UNARY_!, ZNOT)</span><span style=''>
+</span>185 <span style=''>    </span><span style='background: #AEF1AE'>addPrimitives(BooleanClass, nme.ZOR, ZOR)</span><span style=''>
+</span>186 <span style=''>    </span><span style='background: #AEF1AE'>addPrimitives(BooleanClass, nme.ZAND, ZAND)</span><span style=''>
+</span>187 <span style=''>    </span><span style='background: #AEF1AE'>addPrimitives(BooleanClass, nme.OR, OR)</span><span style=''>
+</span>188 <span style=''>    </span><span style='background: #AEF1AE'>addPrimitives(BooleanClass, nme.AND, AND)</span><span style=''>
+</span>189 <span style=''>    </span><span style='background: #AEF1AE'>addPrimitives(BooleanClass, nme.XOR, XOR)</span><span style=''>
+</span>190 <span style=''>
+</span>191 <span style=''>    // scala.Byte
+</span>192 <span style=''>    lazy val ByteClass = defn.ByteClass
+</span>193 <span style=''>    </span><span style='background: #AEF1AE'>addPrimitives(ByteClass, nme.EQ, EQ)</span><span style=''>
+</span>194 <span style=''>    </span><span style='background: #AEF1AE'>addPrimitives(ByteClass, nme.NE, NE)</span><span style=''>
+</span>195 <span style=''>    </span><span style='background: #AEF1AE'>addPrimitives(ByteClass, nme.ADD, ADD)</span><span style=''>
+</span>196 <span style=''>    </span><span style='background: #AEF1AE'>addPrimitives(ByteClass, nme.SUB, SUB)</span><span style=''>
+</span>197 <span style=''>    </span><span style='background: #AEF1AE'>addPrimitives(ByteClass, nme.MUL, MUL)</span><span style=''>
+</span>198 <span style=''>    </span><span style='background: #AEF1AE'>addPrimitives(ByteClass, nme.DIV, DIV)</span><span style=''>
+</span>199 <span style=''>    </span><span style='background: #AEF1AE'>addPrimitives(ByteClass, nme.MOD, MOD)</span><span style=''>
+</span>200 <span style=''>    </span><span style='background: #AEF1AE'>addPrimitives(ByteClass, nme.LT, LT)</span><span style=''>
+</span>201 <span style=''>    </span><span style='background: #AEF1AE'>addPrimitives(ByteClass, nme.LE, LE)</span><span style=''>
+</span>202 <span style=''>    </span><span style='background: #AEF1AE'>addPrimitives(ByteClass, nme.GT, GT)</span><span style=''>
+</span>203 <span style=''>    </span><span style='background: #AEF1AE'>addPrimitives(ByteClass, nme.GE, GE)</span><span style=''>
+</span>204 <span style=''>    </span><span style='background: #AEF1AE'>addPrimitives(ByteClass, nme.XOR, XOR)</span><span style=''>
+</span>205 <span style=''>    </span><span style='background: #AEF1AE'>addPrimitives(ByteClass, nme.OR, OR)</span><span style=''>
+</span>206 <span style=''>    </span><span style='background: #AEF1AE'>addPrimitives(ByteClass, nme.AND, AND)</span><span style=''>
+</span>207 <span style=''>    </span><span style='background: #AEF1AE'>addPrimitives(ByteClass, nme.LSL, LSL)</span><span style=''>
+</span>208 <span style=''>    </span><span style='background: #AEF1AE'>addPrimitives(ByteClass, nme.LSR, LSR)</span><span style=''>
+</span>209 <span style=''>    </span><span style='background: #AEF1AE'>addPrimitives(ByteClass, nme.ASR, ASR)</span><span style=''>
+</span>210 <span style=''>      // conversions
+</span>211 <span style=''>    </span><span style='background: #AEF1AE'>addPrimitives(ByteClass, nme.toByte,   B2B)</span><span style=''>
+</span>212 <span style=''>    </span><span style='background: #AEF1AE'>addPrimitives(ByteClass, nme.toShort,  B2S)</span><span style=''>
+</span>213 <span style=''>    </span><span style='background: #AEF1AE'>addPrimitives(ByteClass, nme.toChar,   B2C)</span><span style=''>
+</span>214 <span style=''>    </span><span style='background: #AEF1AE'>addPrimitives(ByteClass, nme.toInt,    B2I)</span><span style=''>
+</span>215 <span style=''>    </span><span style='background: #AEF1AE'>addPrimitives(ByteClass, nme.toLong,   B2L)</span><span style=''>
+</span>216 <span style=''>    // unary methods
+</span>217 <span style=''>    </span><span style='background: #AEF1AE'>addPrimitives(ByteClass, nme.UNARY_+, POS)</span><span style=''>
+</span>218 <span style=''>    </span><span style='background: #AEF1AE'>addPrimitives(ByteClass, nme.UNARY_-, NEG)</span><span style=''>
+</span>219 <span style=''>    </span><span style='background: #AEF1AE'>addPrimitives(ByteClass, nme.UNARY_~, NOT)</span><span style=''>
+</span>220 <span style=''>
+</span>221 <span style=''>    </span><span style='background: #AEF1AE'>addPrimitives(ByteClass, nme.toFloat,  B2F)</span><span style=''>
+</span>222 <span style=''>    </span><span style='background: #AEF1AE'>addPrimitives(ByteClass, nme.toDouble, B2D)</span><span style=''>
+</span>223 <span style=''>
+</span>224 <span style=''>    // scala.Short
+</span>225 <span style=''>    lazy val ShortClass = defn.ShortClass
+</span>226 <span style=''>    </span><span style='background: #AEF1AE'>addPrimitives(ShortClass, nme.EQ, EQ)</span><span style=''>
+</span>227 <span style=''>    </span><span style='background: #AEF1AE'>addPrimitives(ShortClass, nme.NE, NE)</span><span style=''>
+</span>228 <span style=''>    </span><span style='background: #AEF1AE'>addPrimitives(ShortClass, nme.ADD, ADD)</span><span style=''>
+</span>229 <span style=''>    </span><span style='background: #AEF1AE'>addPrimitives(ShortClass, nme.SUB, SUB)</span><span style=''>
+</span>230 <span style=''>    </span><span style='background: #AEF1AE'>addPrimitives(ShortClass, nme.MUL, MUL)</span><span style=''>
+</span>231 <span style=''>    </span><span style='background: #AEF1AE'>addPrimitives(ShortClass, nme.DIV, DIV)</span><span style=''>
+</span>232 <span style=''>    </span><span style='background: #AEF1AE'>addPrimitives(ShortClass, nme.MOD, MOD)</span><span style=''>
+</span>233 <span style=''>    </span><span style='background: #AEF1AE'>addPrimitives(ShortClass, nme.LT, LT)</span><span style=''>
+</span>234 <span style=''>    </span><span style='background: #AEF1AE'>addPrimitives(ShortClass, nme.LE, LE)</span><span style=''>
+</span>235 <span style=''>    </span><span style='background: #AEF1AE'>addPrimitives(ShortClass, nme.GT, GT)</span><span style=''>
+</span>236 <span style=''>    </span><span style='background: #AEF1AE'>addPrimitives(ShortClass, nme.GE, GE)</span><span style=''>
+</span>237 <span style=''>    </span><span style='background: #AEF1AE'>addPrimitives(ShortClass, nme.XOR, XOR)</span><span style=''>
+</span>238 <span style=''>    </span><span style='background: #AEF1AE'>addPrimitives(ShortClass, nme.OR, OR)</span><span style=''>
+</span>239 <span style=''>    </span><span style='background: #AEF1AE'>addPrimitives(ShortClass, nme.AND, AND)</span><span style=''>
+</span>240 <span style=''>    </span><span style='background: #AEF1AE'>addPrimitives(ShortClass, nme.LSL, LSL)</span><span style=''>
+</span>241 <span style=''>    </span><span style='background: #AEF1AE'>addPrimitives(ShortClass, nme.LSR, LSR)</span><span style=''>
+</span>242 <span style=''>    </span><span style='background: #AEF1AE'>addPrimitives(ShortClass, nme.ASR, ASR)</span><span style=''>
+</span>243 <span style=''>      // conversions
+</span>244 <span style=''>    </span><span style='background: #AEF1AE'>addPrimitives(ShortClass, nme.toByte,   S2B)</span><span style=''>
+</span>245 <span style=''>    </span><span style='background: #AEF1AE'>addPrimitives(ShortClass, nme.toShort,  S2S)</span><span style=''>
+</span>246 <span style=''>    </span><span style='background: #AEF1AE'>addPrimitives(ShortClass, nme.toChar,   S2C)</span><span style=''>
+</span>247 <span style=''>    </span><span style='background: #AEF1AE'>addPrimitives(ShortClass, nme.toInt,    S2I)</span><span style=''>
+</span>248 <span style=''>    </span><span style='background: #AEF1AE'>addPrimitives(ShortClass, nme.toLong,   S2L)</span><span style=''>
+</span>249 <span style=''>    // unary methods
+</span>250 <span style=''>    </span><span style='background: #AEF1AE'>addPrimitives(ShortClass, nme.UNARY_+, POS)</span><span style=''>
+</span>251 <span style=''>    </span><span style='background: #AEF1AE'>addPrimitives(ShortClass, nme.UNARY_-, NEG)</span><span style=''>
+</span>252 <span style=''>    </span><span style='background: #AEF1AE'>addPrimitives(ShortClass, nme.UNARY_~, NOT)</span><span style=''>
+</span>253 <span style=''>
+</span>254 <span style=''>    </span><span style='background: #AEF1AE'>addPrimitives(ShortClass, nme.toFloat,  S2F)</span><span style=''>
+</span>255 <span style=''>    </span><span style='background: #AEF1AE'>addPrimitives(ShortClass, nme.toDouble, S2D)</span><span style=''>
+</span>256 <span style=''>
+</span>257 <span style=''>    // scala.Char
+</span>258 <span style=''>    lazy val CharClass = defn.CharClass
+</span>259 <span style=''>    </span><span style='background: #AEF1AE'>addPrimitives(CharClass, nme.EQ, EQ)</span><span style=''>
+</span>260 <span style=''>    </span><span style='background: #AEF1AE'>addPrimitives(CharClass, nme.NE, NE)</span><span style=''>
+</span>261 <span style=''>    </span><span style='background: #AEF1AE'>addPrimitives(CharClass, nme.ADD, ADD)</span><span style=''>
+</span>262 <span style=''>    </span><span style='background: #AEF1AE'>addPrimitives(CharClass, nme.SUB, SUB)</span><span style=''>
+</span>263 <span style=''>    </span><span style='background: #AEF1AE'>addPrimitives(CharClass, nme.MUL, MUL)</span><span style=''>
+</span>264 <span style=''>    </span><span style='background: #AEF1AE'>addPrimitives(CharClass, nme.DIV, DIV)</span><span style=''>
+</span>265 <span style=''>    </span><span style='background: #AEF1AE'>addPrimitives(CharClass, nme.MOD, MOD)</span><span style=''>
+</span>266 <span style=''>    </span><span style='background: #AEF1AE'>addPrimitives(CharClass, nme.LT, LT)</span><span style=''>
+</span>267 <span style=''>    </span><span style='background: #AEF1AE'>addPrimitives(CharClass, nme.LE, LE)</span><span style=''>
+</span>268 <span style=''>    </span><span style='background: #AEF1AE'>addPrimitives(CharClass, nme.GT, GT)</span><span style=''>
+</span>269 <span style=''>    </span><span style='background: #AEF1AE'>addPrimitives(CharClass, nme.GE, GE)</span><span style=''>
+</span>270 <span style=''>    </span><span style='background: #AEF1AE'>addPrimitives(CharClass, nme.XOR, XOR)</span><span style=''>
+</span>271 <span style=''>    </span><span style='background: #AEF1AE'>addPrimitives(CharClass, nme.OR, OR)</span><span style=''>
+</span>272 <span style=''>    </span><span style='background: #AEF1AE'>addPrimitives(CharClass, nme.AND, AND)</span><span style=''>
+</span>273 <span style=''>    </span><span style='background: #AEF1AE'>addPrimitives(CharClass, nme.LSL, LSL)</span><span style=''>
+</span>274 <span style=''>    </span><span style='background: #AEF1AE'>addPrimitives(CharClass, nme.LSR, LSR)</span><span style=''>
+</span>275 <span style=''>    </span><span style='background: #AEF1AE'>addPrimitives(CharClass, nme.ASR, ASR)</span><span style=''>
+</span>276 <span style=''>      // conversions
+</span>277 <span style=''>    </span><span style='background: #AEF1AE'>addPrimitives(CharClass, nme.toByte,   C2B)</span><span style=''>
+</span>278 <span style=''>    </span><span style='background: #AEF1AE'>addPrimitives(CharClass, nme.toShort,  C2S)</span><span style=''>
+</span>279 <span style=''>    </span><span style='background: #AEF1AE'>addPrimitives(CharClass, nme.toChar,   C2C)</span><span style=''>
+</span>280 <span style=''>    </span><span style='background: #AEF1AE'>addPrimitives(CharClass, nme.toInt,    C2I)</span><span style=''>
+</span>281 <span style=''>    </span><span style='background: #AEF1AE'>addPrimitives(CharClass, nme.toLong,   C2L)</span><span style=''>
+</span>282 <span style=''>    // unary methods
+</span>283 <span style=''>    </span><span style='background: #AEF1AE'>addPrimitives(CharClass, nme.UNARY_+, POS)</span><span style=''>
+</span>284 <span style=''>    </span><span style='background: #AEF1AE'>addPrimitives(CharClass, nme.UNARY_-, NEG)</span><span style=''>
+</span>285 <span style=''>    </span><span style='background: #AEF1AE'>addPrimitives(CharClass, nme.UNARY_~, NOT)</span><span style=''>
+</span>286 <span style=''>    </span><span style='background: #AEF1AE'>addPrimitives(CharClass, nme.toFloat,  C2F)</span><span style=''>
+</span>287 <span style=''>    </span><span style='background: #AEF1AE'>addPrimitives(CharClass, nme.toDouble, C2D)</span><span style=''>
+</span>288 <span style=''>
+</span>289 <span style=''>    // scala.Int
+</span>290 <span style=''>    lazy val IntClass = defn.IntClass
+</span>291 <span style=''>    </span><span style='background: #AEF1AE'>addPrimitives(IntClass, nme.EQ, EQ)</span><span style=''>
+</span>292 <span style=''>    </span><span style='background: #AEF1AE'>addPrimitives(IntClass, nme.NE, NE)</span><span style=''>
+</span>293 <span style=''>    </span><span style='background: #AEF1AE'>addPrimitives(IntClass, nme.ADD, ADD)</span><span style=''>
+</span>294 <span style=''>    </span><span style='background: #AEF1AE'>addPrimitives(IntClass, nme.SUB, SUB)</span><span style=''>
+</span>295 <span style=''>    </span><span style='background: #AEF1AE'>addPrimitives(IntClass, nme.MUL, MUL)</span><span style=''>
+</span>296 <span style=''>    </span><span style='background: #AEF1AE'>addPrimitives(IntClass, nme.DIV, DIV)</span><span style=''>
+</span>297 <span style=''>    </span><span style='background: #AEF1AE'>addPrimitives(IntClass, nme.MOD, MOD)</span><span style=''>
+</span>298 <span style=''>    </span><span style='background: #AEF1AE'>addPrimitives(IntClass, nme.LT, LT)</span><span style=''>
+</span>299 <span style=''>    </span><span style='background: #AEF1AE'>addPrimitives(IntClass, nme.LE, LE)</span><span style=''>
+</span>300 <span style=''>    </span><span style='background: #AEF1AE'>addPrimitives(IntClass, nme.GT, GT)</span><span style=''>
+</span>301 <span style=''>    </span><span style='background: #AEF1AE'>addPrimitives(IntClass, nme.GE, GE)</span><span style=''>
+</span>302 <span style=''>    </span><span style='background: #AEF1AE'>addPrimitives(IntClass, nme.XOR, XOR)</span><span style=''>
+</span>303 <span style=''>    </span><span style='background: #AEF1AE'>addPrimitives(IntClass, nme.OR, OR)</span><span style=''>
+</span>304 <span style=''>    </span><span style='background: #AEF1AE'>addPrimitives(IntClass, nme.AND, AND)</span><span style=''>
+</span>305 <span style=''>    </span><span style='background: #AEF1AE'>addPrimitives(IntClass, nme.LSL, LSL)</span><span style=''>
+</span>306 <span style=''>    </span><span style='background: #AEF1AE'>addPrimitives(IntClass, nme.LSR, LSR)</span><span style=''>
+</span>307 <span style=''>    </span><span style='background: #AEF1AE'>addPrimitives(IntClass, nme.ASR, ASR)</span><span style=''>
+</span>308 <span style=''>      // conversions
+</span>309 <span style=''>    </span><span style='background: #AEF1AE'>addPrimitives(IntClass, nme.toByte,   I2B)</span><span style=''>
+</span>310 <span style=''>    </span><span style='background: #AEF1AE'>addPrimitives(IntClass, nme.toShort,  I2S)</span><span style=''>
+</span>311 <span style=''>    </span><span style='background: #AEF1AE'>addPrimitives(IntClass, nme.toChar,   I2C)</span><span style=''>
+</span>312 <span style=''>    </span><span style='background: #AEF1AE'>addPrimitives(IntClass, nme.toInt,    I2I)</span><span style=''>
+</span>313 <span style=''>    </span><span style='background: #AEF1AE'>addPrimitives(IntClass, nme.toLong,   I2L)</span><span style=''>
+</span>314 <span style=''>    // unary methods
+</span>315 <span style=''>    </span><span style='background: #AEF1AE'>addPrimitives(IntClass, nme.UNARY_+, POS)</span><span style=''>
+</span>316 <span style=''>    </span><span style='background: #AEF1AE'>addPrimitives(IntClass, nme.UNARY_-, NEG)</span><span style=''>
+</span>317 <span style=''>    </span><span style='background: #AEF1AE'>addPrimitives(IntClass, nme.UNARY_~, NOT)</span><span style=''>
+</span>318 <span style=''>    </span><span style='background: #AEF1AE'>addPrimitives(IntClass, nme.toFloat,  I2F)</span><span style=''>
+</span>319 <span style=''>    </span><span style='background: #AEF1AE'>addPrimitives(IntClass, nme.toDouble, I2D)</span><span style=''>
+</span>320 <span style=''>
+</span>321 <span style=''>    // scala.Long
+</span>322 <span style=''>    lazy val LongClass = defn.LongClass
+</span>323 <span style=''>    </span><span style='background: #AEF1AE'>addPrimitives(LongClass, nme.EQ, EQ)</span><span style=''>
+</span>324 <span style=''>    </span><span style='background: #AEF1AE'>addPrimitives(LongClass, nme.NE, NE)</span><span style=''>
+</span>325 <span style=''>    </span><span style='background: #AEF1AE'>addPrimitives(LongClass, nme.ADD, ADD)</span><span style=''>
+</span>326 <span style=''>    </span><span style='background: #AEF1AE'>addPrimitives(LongClass, nme.SUB, SUB)</span><span style=''>
+</span>327 <span style=''>    </span><span style='background: #AEF1AE'>addPrimitives(LongClass, nme.MUL, MUL)</span><span style=''>
+</span>328 <span style=''>    </span><span style='background: #AEF1AE'>addPrimitives(LongClass, nme.DIV, DIV)</span><span style=''>
+</span>329 <span style=''>    </span><span style='background: #AEF1AE'>addPrimitives(LongClass, nme.MOD, MOD)</span><span style=''>
+</span>330 <span style=''>    </span><span style='background: #AEF1AE'>addPrimitives(LongClass, nme.LT, LT)</span><span style=''>
+</span>331 <span style=''>    </span><span style='background: #AEF1AE'>addPrimitives(LongClass, nme.LE, LE)</span><span style=''>
+</span>332 <span style=''>    </span><span style='background: #AEF1AE'>addPrimitives(LongClass, nme.GT, GT)</span><span style=''>
+</span>333 <span style=''>    </span><span style='background: #AEF1AE'>addPrimitives(LongClass, nme.GE, GE)</span><span style=''>
+</span>334 <span style=''>    </span><span style='background: #AEF1AE'>addPrimitives(LongClass, nme.XOR, XOR)</span><span style=''>
+</span>335 <span style=''>    </span><span style='background: #AEF1AE'>addPrimitives(LongClass, nme.OR, OR)</span><span style=''>
+</span>336 <span style=''>    </span><span style='background: #AEF1AE'>addPrimitives(LongClass, nme.AND, AND)</span><span style=''>
+</span>337 <span style=''>    </span><span style='background: #AEF1AE'>addPrimitives(LongClass, nme.LSL, LSL)</span><span style=''>
+</span>338 <span style=''>    </span><span style='background: #AEF1AE'>addPrimitives(LongClass, nme.LSR, LSR)</span><span style=''>
+</span>339 <span style=''>    </span><span style='background: #AEF1AE'>addPrimitives(LongClass, nme.ASR, ASR)</span><span style=''>
+</span>340 <span style=''>      // conversions
+</span>341 <span style=''>    </span><span style='background: #AEF1AE'>addPrimitives(LongClass, nme.toByte,   L2B)</span><span style=''>
+</span>342 <span style=''>    </span><span style='background: #AEF1AE'>addPrimitives(LongClass, nme.toShort,  L2S)</span><span style=''>
+</span>343 <span style=''>    </span><span style='background: #AEF1AE'>addPrimitives(LongClass, nme.toChar,   L2C)</span><span style=''>
+</span>344 <span style=''>    </span><span style='background: #AEF1AE'>addPrimitives(LongClass, nme.toInt,    L2I)</span><span style=''>
+</span>345 <span style=''>    </span><span style='background: #AEF1AE'>addPrimitives(LongClass, nme.toLong,   L2L)</span><span style=''>
+</span>346 <span style=''>    // unary methods
+</span>347 <span style=''>    </span><span style='background: #AEF1AE'>addPrimitives(LongClass, nme.UNARY_+, POS)</span><span style=''>
+</span>348 <span style=''>    </span><span style='background: #AEF1AE'>addPrimitives(LongClass, nme.UNARY_-, NEG)</span><span style=''>
+</span>349 <span style=''>    </span><span style='background: #AEF1AE'>addPrimitives(LongClass, nme.UNARY_~, NOT)</span><span style=''>
+</span>350 <span style=''>    </span><span style='background: #AEF1AE'>addPrimitives(LongClass, nme.toFloat,  L2F)</span><span style=''>
+</span>351 <span style=''>    </span><span style='background: #AEF1AE'>addPrimitives(LongClass, nme.toDouble, L2D)</span><span style=''>
+</span>352 <span style=''>
+</span>353 <span style=''>    // scala.Float
+</span>354 <span style=''>    lazy val FloatClass = defn.FloatClass
+</span>355 <span style=''>    </span><span style='background: #AEF1AE'>addPrimitives(FloatClass, nme.EQ, EQ)</span><span style=''>
+</span>356 <span style=''>    </span><span style='background: #AEF1AE'>addPrimitives(FloatClass, nme.NE, NE)</span><span style=''>
+</span>357 <span style=''>    </span><span style='background: #AEF1AE'>addPrimitives(FloatClass, nme.ADD, ADD)</span><span style=''>
+</span>358 <span style=''>    </span><span style='background: #AEF1AE'>addPrimitives(FloatClass, nme.SUB, SUB)</span><span style=''>
+</span>359 <span style=''>    </span><span style='background: #AEF1AE'>addPrimitives(FloatClass, nme.MUL, MUL)</span><span style=''>
+</span>360 <span style=''>    </span><span style='background: #AEF1AE'>addPrimitives(FloatClass, nme.DIV, DIV)</span><span style=''>
+</span>361 <span style=''>    </span><span style='background: #AEF1AE'>addPrimitives(FloatClass, nme.MOD, MOD)</span><span style=''>
+</span>362 <span style=''>    </span><span style='background: #AEF1AE'>addPrimitives(FloatClass, nme.LT, LT)</span><span style=''>
+</span>363 <span style=''>    </span><span style='background: #AEF1AE'>addPrimitives(FloatClass, nme.LE, LE)</span><span style=''>
+</span>364 <span style=''>    </span><span style='background: #AEF1AE'>addPrimitives(FloatClass, nme.GT, GT)</span><span style=''>
+</span>365 <span style=''>    </span><span style='background: #AEF1AE'>addPrimitives(FloatClass, nme.GE, GE)</span><span style=''>
+</span>366 <span style=''>    // conversions
+</span>367 <span style=''>    </span><span style='background: #AEF1AE'>addPrimitives(FloatClass, nme.toByte,   F2B)</span><span style=''>
+</span>368 <span style=''>    </span><span style='background: #AEF1AE'>addPrimitives(FloatClass, nme.toShort,  F2S)</span><span style=''>
+</span>369 <span style=''>    </span><span style='background: #AEF1AE'>addPrimitives(FloatClass, nme.toChar,   F2C)</span><span style=''>
+</span>370 <span style=''>    </span><span style='background: #AEF1AE'>addPrimitives(FloatClass, nme.toInt,    F2I)</span><span style=''>
+</span>371 <span style=''>    </span><span style='background: #AEF1AE'>addPrimitives(FloatClass, nme.toLong,   F2L)</span><span style=''>
+</span>372 <span style=''>    </span><span style='background: #AEF1AE'>addPrimitives(FloatClass, nme.toFloat,  F2F)</span><span style=''>
+</span>373 <span style=''>    </span><span style='background: #AEF1AE'>addPrimitives(FloatClass, nme.toDouble, F2D)</span><span style=''>
+</span>374 <span style=''>    // unary methods
+</span>375 <span style=''>    </span><span style='background: #AEF1AE'>addPrimitives(FloatClass, nme.UNARY_+, POS)</span><span style=''>
+</span>376 <span style=''>    </span><span style='background: #AEF1AE'>addPrimitives(FloatClass, nme.UNARY_-, NEG)</span><span style=''>
+</span>377 <span style=''>
+</span>378 <span style=''>    // scala.Double
+</span>379 <span style=''>    lazy val DoubleClass = defn.DoubleClass
+</span>380 <span style=''>    </span><span style='background: #AEF1AE'>addPrimitives(DoubleClass, nme.EQ, EQ)</span><span style=''>
+</span>381 <span style=''>    </span><span style='background: #AEF1AE'>addPrimitives(DoubleClass, nme.NE, NE)</span><span style=''>
+</span>382 <span style=''>    </span><span style='background: #AEF1AE'>addPrimitives(DoubleClass, nme.ADD, ADD)</span><span style=''>
+</span>383 <span style=''>    </span><span style='background: #AEF1AE'>addPrimitives(DoubleClass, nme.SUB, SUB)</span><span style=''>
+</span>384 <span style=''>    </span><span style='background: #AEF1AE'>addPrimitives(DoubleClass, nme.MUL, MUL)</span><span style=''>
+</span>385 <span style=''>    </span><span style='background: #AEF1AE'>addPrimitives(DoubleClass, nme.DIV, DIV)</span><span style=''>
+</span>386 <span style=''>    </span><span style='background: #AEF1AE'>addPrimitives(DoubleClass, nme.MOD, MOD)</span><span style=''>
+</span>387 <span style=''>    </span><span style='background: #AEF1AE'>addPrimitives(DoubleClass, nme.LT, LT)</span><span style=''>
+</span>388 <span style=''>    </span><span style='background: #AEF1AE'>addPrimitives(DoubleClass, nme.LE, LE)</span><span style=''>
+</span>389 <span style=''>    </span><span style='background: #AEF1AE'>addPrimitives(DoubleClass, nme.GT, GT)</span><span style=''>
+</span>390 <span style=''>    </span><span style='background: #AEF1AE'>addPrimitives(DoubleClass, nme.GE, GE)</span><span style=''>
+</span>391 <span style=''>    // conversions
+</span>392 <span style=''>    </span><span style='background: #AEF1AE'>addPrimitives(DoubleClass, nme.toByte,   D2B)</span><span style=''>
+</span>393 <span style=''>    </span><span style='background: #AEF1AE'>addPrimitives(DoubleClass, nme.toShort,  D2S)</span><span style=''>
+</span>394 <span style=''>    </span><span style='background: #AEF1AE'>addPrimitives(DoubleClass, nme.toChar,   D2C)</span><span style=''>
+</span>395 <span style=''>    </span><span style='background: #AEF1AE'>addPrimitives(DoubleClass, nme.toInt,    D2I)</span><span style=''>
+</span>396 <span style=''>    </span><span style='background: #AEF1AE'>addPrimitives(DoubleClass, nme.toLong,   D2L)</span><span style=''>
+</span>397 <span style=''>    </span><span style='background: #AEF1AE'>addPrimitives(DoubleClass, nme.toFloat,  D2F)</span><span style=''>
+</span>398 <span style=''>    </span><span style='background: #AEF1AE'>addPrimitives(DoubleClass, nme.toDouble, D2D)</span><span style=''>
+</span>399 <span style=''>    // unary methods
+</span>400 <span style=''>    </span><span style='background: #AEF1AE'>addPrimitives(DoubleClass, nme.UNARY_+, POS)</span><span style=''>
+</span>401 <span style=''>    </span><span style='background: #AEF1AE'>addPrimitives(DoubleClass, nme.UNARY_-, NEG)</span><span style=''>
+</span>402 <span style=''>
+</span>403 <span style=''>
+</span>404 <span style=''>    </span><span style='background: #AEF1AE'>primitives.toMap</span><span style=''>
+</span>405 <span style=''>  }
+</span>406 <span style=''>
+</span>407 <span style=''>  def isPrimitive(fun: Tree): Boolean = {
+</span>408 <span style=''>    </span><span style='background: #AEF1AE'>(primitives contains fun.symbol(ctx)) ||
+</span>409 <span style=''></span><span style='background: #AEF1AE'>      (fun.symbol(ctx) == NoSymbol // the only trees that do not have a symbol assigned are array.{update,select,length,clone}}
+</span>410 <span style=''></span><span style='background: #AEF1AE'>       &amp;&amp; (fun match {
+</span>411 <span style=''></span><span style='background: #AEF1AE'>        case Select(_, StdNames.nme.clone_) =&gt; </span><span style='background: #F0ADAD'>false</span><span style='background: #AEF1AE'> // but array.clone is NOT a primitive op.
+</span>412 <span style=''></span><span style='background: #AEF1AE'>        case _ =&gt; true
+</span>413 <span style=''></span><span style='background: #AEF1AE'>      }))</span><span style=''>
+</span>414 <span style=''>  }
+</span>415 <span style=''>
+</span>416 <span style=''>}
+</span></pre>
+          </div>
+          <div class="tab-pane" id="statementlist">
+            <table cellspacing="0" cellpadding="0" class="table statementlist">
+      <tr>
+        <th>Line</th>
+        <th>Stmt Id</th>
+        <th>Pos</th>
+        <th>Tree</th>
+        <th>Symbol</th>
+        <th>Code</th>
+      </tr><tr>
+        <td>
+          46
+        </td>
+        <td>
+          5939
+        </td>
+        <td>
+          1636
+          -
+          1651
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.MapLike.apply
+        </td>
+        <td style="background: #AEF1AE">
+          DottyPrimitives.this.primitives.apply(sym)
+        </td>
+      </tr><tr>
+        <td>
+          59
+        </td>
+        <td>
+          5940
+        </td>
+        <td>
+          2061
+          -
+          2075
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Trees.Tree.symbol
+        </td>
+        <td style="background: #AEF1AE">
+          app.fun.symbol(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          60
+        </td>
+        <td>
+          5941
+        </td>
+        <td>
+          2091
+          -
+          2106
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Contexts.ContextBase.definitions
+        </td>
+        <td style="background: #AEF1AE">
+          Contexts.this.Context.toBase(ctx).definitions
+        </td>
+      </tr><tr>
+        <td>
+          61
+        </td>
+        <td>
+          5942
+        </td>
+        <td>
+          2122
+          -
+          2129
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Trees.Apply.fun
+        </td>
+        <td style="background: #AEF1AE">
+          app.fun
+        </td>
+      </tr><tr>
+        <td>
+          63
+        </td>
+        <td>
+          5943
+        </td>
+        <td>
+          2197
+          -
+          2203
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          70
+        </td>
+      </tr><tr>
+        <td>
+          65
+        </td>
+        <td>
+          5944
+        </td>
+        <td>
+          2263
+          -
+          2269
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          72
+        </td>
+      </tr><tr>
+        <td>
+          67
+        </td>
+        <td>
+          5945
+        </td>
+        <td>
+          2328
+          -
+          2333
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          71
+        </td>
+      </tr><tr>
+        <td>
+          68
+        </td>
+        <td>
+          5946
+        </td>
+        <td>
+          2350
+          -
+          2367
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.backend.jvm.DottyPrimitives.getPrimitive
+        </td>
+        <td style="background: #AEF1AE">
+          DottyPrimitives.this.getPrimitive(fun)
+        </td>
+      </tr><tr>
+        <td>
+          71
+        </td>
+        <td>
+          5947
+        </td>
+        <td>
+          2403
+          -
+          2419
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.Types.Type.widenDealias
+        </td>
+        <td style="background: #AEF1AE">
+          tpe.widenDealias(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          75
+        </td>
+        <td>
+          5951
+        </td>
+        <td>
+          2521
+          -
+          2554
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.reporting.Reporting.error
+        </td>
+        <td style="background: #F0ADAD">
+          ctx.error(diagnostic.this.Message.toNoExplanation(scala.StringContext.apply(&quot;expected Array &quot;, &quot;&quot;).s(tpe)), ctx.error$default$2)
+        </td>
+      </tr><tr>
+        <td>
+          75
+        </td>
+        <td>
+          5950
+        </td>
+        <td>
+          2525
+          -
+          2525
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.reporting.Reporting.error$default$2
+        </td>
+        <td style="background: #F0ADAD">
+          ctx.error$default$2
+        </td>
+      </tr><tr>
+        <td>
+          75
+        </td>
+        <td>
+          5949
+        </td>
+        <td>
+          2531
+          -
+          2553
+        </td>
+        <td>
+          ApplyImplicitView
+        </td>
+        <td>
+          dotty.tools.dotc.reporting.diagnostic.Message.toNoExplanation
+        </td>
+        <td style="background: #F0ADAD">
+          diagnostic.this.Message.toNoExplanation(scala.StringContext.apply(&quot;expected Array &quot;, &quot;&quot;).s(tpe))
+        </td>
+      </tr><tr>
+        <td>
+          75
+        </td>
+        <td>
+          5948
+        </td>
+        <td>
+          2531
+          -
+          2553
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.StringContext.s
+        </td>
+        <td style="background: #F0ADAD">
+          scala.StringContext.apply(&quot;expected Array &quot;, &quot;&quot;).s(tpe)
+        </td>
+      </tr><tr>
+        <td>
+          76
+        </td>
+        <td>
+          5952
+        </td>
+        <td>
+          2563
+          -
+          2583
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Types.UnspecifiedErrorType
+        </td>
+        <td style="background: #F0ADAD">
+          dotty.tools.dotc.core.Types.UnspecifiedErrorType
+        </td>
+      </tr><tr>
+        <td>
+          82
+        </td>
+        <td>
+          5953
+        </td>
+        <td>
+          2637
+          -
+          2669
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.Definitions.scalaClassName
+        </td>
+        <td style="background: #AEF1AE">
+          defn.scalaClassName(elementType)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          83
+        </td>
+        <td>
+          5954
+        </td>
+        <td>
+          2713
+          -
+          2723
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          140
+        </td>
+      </tr><tr>
+        <td>
+          84
+        </td>
+        <td>
+          5955
+        </td>
+        <td>
+          2759
+          -
+          2769
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          141
+        </td>
+      </tr><tr>
+        <td>
+          85
+        </td>
+        <td>
+          5956
+        </td>
+        <td>
+          2805
+          -
+          2815
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          142
+        </td>
+      </tr><tr>
+        <td>
+          86
+        </td>
+        <td>
+          5957
+        </td>
+        <td>
+          2851
+          -
+          2861
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          143
+        </td>
+      </tr><tr>
+        <td>
+          87
+        </td>
+        <td>
+          5958
+        </td>
+        <td>
+          2897
+          -
+          2907
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          144
+        </td>
+      </tr><tr>
+        <td>
+          88
+        </td>
+        <td>
+          5959
+        </td>
+        <td>
+          2943
+          -
+          2953
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          145
+        </td>
+      </tr><tr>
+        <td>
+          89
+        </td>
+        <td>
+          5960
+        </td>
+        <td>
+          2989
+          -
+          2999
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          146
+        </td>
+      </tr><tr>
+        <td>
+          90
+        </td>
+        <td>
+          5961
+        </td>
+        <td>
+          3035
+          -
+          3045
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          147
+        </td>
+      </tr><tr>
+        <td>
+          91
+        </td>
+        <td>
+          5962
+        </td>
+        <td>
+          3081
+          -
+          3091
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          148
+        </td>
+      </tr><tr>
+        <td>
+          95
+        </td>
+        <td>
+          5963
+        </td>
+        <td>
+          3132
+          -
+          3164
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.Definitions.scalaClassName
+        </td>
+        <td style="background: #AEF1AE">
+          defn.scalaClassName(elementType)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          96
+        </td>
+        <td>
+          5964
+        </td>
+        <td>
+          3208
+          -
+          3218
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          150
+        </td>
+      </tr><tr>
+        <td>
+          97
+        </td>
+        <td>
+          5965
+        </td>
+        <td>
+          3254
+          -
+          3264
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          151
+        </td>
+      </tr><tr>
+        <td>
+          98
+        </td>
+        <td>
+          5966
+        </td>
+        <td>
+          3300
+          -
+          3310
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          152
+        </td>
+      </tr><tr>
+        <td>
+          99
+        </td>
+        <td>
+          5967
+        </td>
+        <td>
+          3346
+          -
+          3356
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          153
+        </td>
+      </tr><tr>
+        <td>
+          100
+        </td>
+        <td>
+          5968
+        </td>
+        <td>
+          3392
+          -
+          3402
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          154
+        </td>
+      </tr><tr>
+        <td>
+          101
+        </td>
+        <td>
+          5969
+        </td>
+        <td>
+          3438
+          -
+          3448
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          155
+        </td>
+      </tr><tr>
+        <td>
+          102
+        </td>
+        <td>
+          5970
+        </td>
+        <td>
+          3484
+          -
+          3494
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          156
+        </td>
+      </tr><tr>
+        <td>
+          103
+        </td>
+        <td>
+          5971
+        </td>
+        <td>
+          3530
+          -
+          3540
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          157
+        </td>
+      </tr><tr>
+        <td>
+          104
+        </td>
+        <td>
+          5972
+        </td>
+        <td>
+          3576
+          -
+          3586
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          158
+        </td>
+      </tr><tr>
+        <td>
+          108
+        </td>
+        <td>
+          5973
+        </td>
+        <td>
+          3627
+          -
+          3659
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.Definitions.scalaClassName
+        </td>
+        <td style="background: #AEF1AE">
+          defn.scalaClassName(elementType)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          109
+        </td>
+        <td>
+          5974
+        </td>
+        <td>
+          3703
+          -
+          3716
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          131
+        </td>
+      </tr><tr>
+        <td>
+          110
+        </td>
+        <td>
+          5975
+        </td>
+        <td>
+          3752
+          -
+          3765
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          132
+        </td>
+      </tr><tr>
+        <td>
+          111
+        </td>
+        <td>
+          5976
+        </td>
+        <td>
+          3801
+          -
+          3814
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          133
+        </td>
+      </tr><tr>
+        <td>
+          112
+        </td>
+        <td>
+          5977
+        </td>
+        <td>
+          3850
+          -
+          3863
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          134
+        </td>
+      </tr><tr>
+        <td>
+          113
+        </td>
+        <td>
+          5978
+        </td>
+        <td>
+          3899
+          -
+          3912
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          135
+        </td>
+      </tr><tr>
+        <td>
+          114
+        </td>
+        <td>
+          5979
+        </td>
+        <td>
+          3948
+          -
+          3961
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          136
+        </td>
+      </tr><tr>
+        <td>
+          115
+        </td>
+        <td>
+          5980
+        </td>
+        <td>
+          3997
+          -
+          4010
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          137
+        </td>
+      </tr><tr>
+        <td>
+          116
+        </td>
+        <td>
+          5981
+        </td>
+        <td>
+          4046
+          -
+          4059
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          138
+        </td>
+      </tr><tr>
+        <td>
+          117
+        </td>
+        <td>
+          5982
+        </td>
+        <td>
+          4095
+          -
+          4108
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          139
+        </td>
+      </tr><tr>
+        <td>
+          128
+        </td>
+        <td>
+          5983
+        </td>
+        <td>
+          4274
+          -
+          4282
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.backend.jvm.DottyPrimitives.ctx
+        </td>
+        <td style="background: #AEF1AE">
+          this.ctx
+        </td>
+      </tr><tr>
+        <td>
+          131
+        </td>
+        <td>
+          5984
+        </td>
+        <td>
+          4334
+          -
+          4371
+        </td>
+        <td>
+          TypeApply
+        </td>
+        <td>
+          dotty.tools.dotc.core.Symbols.newMutableSymbolMap
+        </td>
+        <td style="background: #AEF1AE">
+          core.Symbols.newMutableSymbolMap[Int]
+        </td>
+      </tr><tr>
+        <td>
+          135
+        </td>
+        <td>
+          5987
+        </td>
+        <td>
+          4480
+          -
+          4540
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Predef.assert
+        </td>
+        <td style="background: #AEF1AE">
+          scala.Predef.assert(primitives.contains(s).unary_!, &quot;Duplicate primitive &quot;.+(s))
+        </td>
+      </tr><tr>
+        <td>
+          135
+        </td>
+        <td>
+          5986
+        </td>
+        <td>
+          4513
+          -
+          4539
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.String.+
+        </td>
+        <td style="background: #F0ADAD">
+          &quot;Duplicate primitive &quot;.+(s)
+        </td>
+      </tr><tr>
+        <td>
+          135
+        </td>
+        <td>
+          5985
+        </td>
+        <td>
+          4487
+          -
+          4511
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.Boolean.unary_!
+        </td>
+        <td style="background: #AEF1AE">
+          primitives.contains(s).unary_!
+        </td>
+      </tr><tr>
+        <td>
+          136
+        </td>
+        <td>
+          5988
+        </td>
+        <td>
+          4547
+          -
+          4567
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.core.Symbols.MutableSymbolMap.update
+        </td>
+        <td style="background: #AEF1AE">
+          primitives.update(s, code)
+        </td>
+      </tr><tr>
+        <td>
+          140
+        </td>
+        <td>
+          5989
+        </td>
+        <td>
+          4730
+          -
+          4738
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Denotations.Denotation.symbol
+        </td>
+        <td style="background: #AEF1AE">
+          x$1.symbol
+        </td>
+      </tr><tr>
+        <td>
+          140
+        </td>
+        <td>
+          5991
+        </td>
+        <td>
+          4689
+          -
+          4739
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          scala.collection.immutable.List.map
+        </td>
+        <td style="background: #AEF1AE">
+          core.this.Symbols.toDenot(cls)(ctx).info(ctx).member(method)(ctx).alternatives.map[dotty.tools.dotc.core.Symbols.Symbol, List[dotty.tools.dotc.core.Symbols.Symbol]](((x$1: dotty.tools.dotc.core.Denotations.SingleDenotation) =&gt; x$1.symbol))(immutable.this.List.canBuildFrom[dotty.tools.dotc.core.Symbols.Symbol])
+        </td>
+      </tr><tr>
+        <td>
+          140
+        </td>
+        <td>
+          5990
+        </td>
+        <td>
+          4729
+          -
+          4729
+        </td>
+        <td>
+          TypeApply
+        </td>
+        <td>
+          scala.collection.immutable.List.canBuildFrom
+        </td>
+        <td style="background: #AEF1AE">
+          immutable.this.List.canBuildFrom[dotty.tools.dotc.core.Symbols.Symbol]
+        </td>
+      </tr><tr>
+        <td>
+          141
+        </td>
+        <td>
+          5992
+        </td>
+        <td>
+          4750
+          -
+          4762
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.collection.SeqLike.isEmpty
+        </td>
+        <td style="background: #AEF1AE">
+          alts.isEmpty
+        </td>
+      </tr><tr>
+        <td>
+          142
+        </td>
+        <td>
+          5995
+        </td>
+        <td>
+          4776
+          -
+          4776
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.reporting.Reporting.error$default$2
+        </td>
+        <td style="background: #F0ADAD">
+          ctx.error$default$2
+        </td>
+      </tr><tr>
+        <td>
+          142
+        </td>
+        <td>
+          5994
+        </td>
+        <td>
+          4782
+          -
+          4822
+        </td>
+        <td>
+          ApplyImplicitView
+        </td>
+        <td>
+          dotty.tools.dotc.reporting.diagnostic.Message.toNoExplanation
+        </td>
+        <td style="background: #F0ADAD">
+          diagnostic.this.Message.toNoExplanation(scala.StringContext.apply(&quot;Unknown primitive method &quot;, &quot;.&quot;, &quot;&quot;).s(cls, method))
+        </td>
+      </tr><tr>
+        <td>
+          142
+        </td>
+        <td>
+          5997
+        </td>
+        <td>
+          4772
+          -
+          4823
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          dotty.tools.dotc.reporting.Reporting.error
+        </td>
+        <td style="background: #F0ADAD">
+          ctx.error(diagnostic.this.Message.toNoExplanation(scala.StringContext.apply(&quot;Unknown primitive method &quot;, &quot;.&quot;, &quot;&quot;).s(cls, method)), ctx.error$default$2)
+        </td>
+      </tr><tr>
+        <td>
+          142
+        </td>
+        <td>
+          5996
+        </td>
+        <td>
+          4772
+          -
+          4823
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.reporting.Reporting.error
+        </td>
+        <td style="background: #F0ADAD">
+          ctx.error(diagnostic.this.Message.toNoExplanation(scala.StringContext.apply(&quot;Unknown primitive method &quot;, &quot;.&quot;, &quot;&quot;).s(cls, method)), ctx.error$default$2)
+        </td>
+      </tr><tr>
+        <td>
+          142
+        </td>
+        <td>
+          5993
+        </td>
+        <td>
+          4782
+          -
+          4822
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.StringContext.s
+        </td>
+        <td style="background: #F0ADAD">
+          scala.StringContext.apply(&quot;Unknown primitive method &quot;, &quot;.&quot;, &quot;&quot;).s(cls, method)
+        </td>
+      </tr><tr>
+        <td>
+          143
+        </td>
+        <td>
+          6004
+        </td>
+        <td>
+          4835
+          -
+          5107
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.immutable.List.foreach
+        </td>
+        <td style="background: #AEF1AE">
+          alts.foreach[Unit](((s: dotty.tools.dotc.core.Symbols.Symbol) =&gt; addPrimitive(s, core.this.Symbols.toDenot(s)(ctx).info(ctx).paramInfoss(ctx) match {
+  case scala.collection.immutable.List.unapplySeq[List[dotty.tools.dotc.core.Types.Type]](&lt;unapply-selector&gt;) &lt;unapply&gt; ((head: dotty.tools.dotc.core.Types.Type, tl: List[dotty.tools.dotc.core.Types.Type])scala.collection.immutable.::[dotty.tools.dotc.core.Types.Type]((tp @ _), _)) if code.==(10).&amp;&amp;(tp.=:=(Contexts.this.Context.toBase(ctx).definitions.StringType)(ctx)) =&gt; 100
+  case _ =&gt; code
+})))
+        </td>
+      </tr><tr>
+        <td>
+          143
+        </td>
+        <td>
+          6005
+        </td>
+        <td>
+          4835
+          -
+          5107
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          scala.collection.immutable.List.foreach
+        </td>
+        <td style="background: #AEF1AE">
+          alts.foreach[Unit](((s: dotty.tools.dotc.core.Symbols.Symbol) =&gt; addPrimitive(s, core.this.Symbols.toDenot(s)(ctx).info(ctx).paramInfoss(ctx) match {
+  case scala.collection.immutable.List.unapplySeq[List[dotty.tools.dotc.core.Types.Type]](&lt;unapply-selector&gt;) &lt;unapply&gt; ((head: dotty.tools.dotc.core.Types.Type, tl: List[dotty.tools.dotc.core.Types.Type])scala.collection.immutable.::[dotty.tools.dotc.core.Types.Type]((tp @ _), _)) if code.==(10).&amp;&amp;(tp.=:=(Contexts.this.Context.toBase(ctx).definitions.StringType)(ctx)) =&gt; 100
+  case _ =&gt; code
+})))
+        </td>
+      </tr><tr>
+        <td>
+          144
+        </td>
+        <td>
+          6003
+        </td>
+        <td>
+          4862
+          -
+          5097
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.backend.jvm.DottyPrimitives.addPrimitive
+        </td>
+        <td style="background: #AEF1AE">
+          addPrimitive(s, core.this.Symbols.toDenot(s)(ctx).info(ctx).paramInfoss(ctx) match {
+  case scala.collection.immutable.List.unapplySeq[List[dotty.tools.dotc.core.Types.Type]](&lt;unapply-selector&gt;) &lt;unapply&gt; ((head: dotty.tools.dotc.core.Types.Type, tl: List[dotty.tools.dotc.core.Types.Type])scala.collection.immutable.::[dotty.tools.dotc.core.Types.Type]((tp @ _), _)) if code.==(10).&amp;&amp;(tp.=:=(Contexts.this.Context.toBase(ctx).definitions.StringType)(ctx)) =&gt; 100
+  case _ =&gt; code
+})
+        </td>
+      </tr><tr>
+        <td>
+          145
+        </td>
+        <td>
+          5998
+        </td>
+        <td>
+          4888
+          -
+          4906
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.Types.Type.paramInfoss
+        </td>
+        <td style="background: #AEF1AE">
+          core.this.Symbols.toDenot(s)(ctx).info(ctx).paramInfoss(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          146
+        </td>
+        <td>
+          6001
+        </td>
+        <td>
+          4949
+          -
+          4997
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Boolean.&amp;&amp;
+        </td>
+        <td style="background: #AEF1AE">
+          code.==(10).&amp;&amp;(tp.=:=(Contexts.this.Context.toBase(ctx).definitions.StringType)(ctx))
+        </td>
+      </tr><tr>
+        <td>
+          146
+        </td>
+        <td>
+          6000
+        </td>
+        <td>
+          4964
+          -
+          4997
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.Types.Type.=:=
+        </td>
+        <td style="background: #AEF1AE">
+          tp.=:=(Contexts.this.Context.toBase(ctx).definitions.StringType)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          146
+        </td>
+        <td>
+          5999
+        </td>
+        <td>
+          4957
+          -
+          4960
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          10
+        </td>
+      </tr><tr>
+        <td>
+          146
+        </td>
+        <td>
+          6002
+        </td>
+        <td>
+          5001
+          -
+          5007
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          100
+        </td>
+      </tr><tr>
+        <td>
+          154
+        </td>
+        <td>
+          6007
+        </td>
+        <td>
+          5136
+          -
+          5165
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.backend.jvm.DottyPrimitives.addPrimitive
+        </td>
+        <td style="background: #AEF1AE">
+          addPrimitive(core.Symbols.defn(ctx).Any_==, 42)
+        </td>
+      </tr><tr>
+        <td>
+          154
+        </td>
+        <td>
+          6006
+        </td>
+        <td>
+          5162
+          -
+          5164
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          42
+        </td>
+      </tr><tr>
+        <td>
+          155
+        </td>
+        <td>
+          6009
+        </td>
+        <td>
+          5170
+          -
+          5199
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.backend.jvm.DottyPrimitives.addPrimitive
+        </td>
+        <td style="background: #AEF1AE">
+          addPrimitive(core.Symbols.defn(ctx).Any_!=, 43)
+        </td>
+      </tr><tr>
+        <td>
+          155
+        </td>
+        <td>
+          6008
+        </td>
+        <td>
+          5196
+          -
+          5198
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          43
+        </td>
+      </tr><tr>
+        <td>
+          156
+        </td>
+        <td>
+          6010
+        </td>
+        <td>
+          5240
+          -
+          5242
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          80
+        </td>
+      </tr><tr>
+        <td>
+          156
+        </td>
+        <td>
+          6011
+        </td>
+        <td>
+          5204
+          -
+          5243
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.backend.jvm.DottyPrimitives.addPrimitive
+        </td>
+        <td style="background: #AEF1AE">
+          addPrimitive(core.Symbols.defn(ctx).Any_isInstanceOf, 80)
+        </td>
+      </tr><tr>
+        <td>
+          157
+        </td>
+        <td>
+          6013
+        </td>
+        <td>
+          5248
+          -
+          5287
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.backend.jvm.DottyPrimitives.addPrimitive
+        </td>
+        <td style="background: #AEF1AE">
+          addPrimitive(core.Symbols.defn(ctx).Any_asInstanceOf, 81)
+        </td>
+      </tr><tr>
+        <td>
+          157
+        </td>
+        <td>
+          6012
+        </td>
+        <td>
+          5284
+          -
+          5286
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          81
+        </td>
+      </tr><tr>
+        <td>
+          158
+        </td>
+        <td>
+          6015
+        </td>
+        <td>
+          5292
+          -
+          5323
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.backend.jvm.DottyPrimitives.addPrimitive
+        </td>
+        <td style="background: #AEF1AE">
+          addPrimitive(core.Symbols.defn(ctx).Any_##, 87)
+        </td>
+      </tr><tr>
+        <td>
+          158
+        </td>
+        <td>
+          6014
+        </td>
+        <td>
+          5318
+          -
+          5322
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          87
+        </td>
+      </tr><tr>
+        <td>
+          161
+        </td>
+        <td>
+          6016
+        </td>
+        <td>
+          5382
+          -
+          5384
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          40
+        </td>
+      </tr><tr>
+        <td>
+          161
+        </td>
+        <td>
+          6017
+        </td>
+        <td>
+          5353
+          -
+          5385
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.backend.jvm.DottyPrimitives.addPrimitive
+        </td>
+        <td style="background: #AEF1AE">
+          addPrimitive(core.Symbols.defn(ctx).Object_eq, 40)
+        </td>
+      </tr><tr>
+        <td>
+          162
+        </td>
+        <td>
+          6019
+        </td>
+        <td>
+          5390
+          -
+          5422
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.backend.jvm.DottyPrimitives.addPrimitive
+        </td>
+        <td style="background: #AEF1AE">
+          addPrimitive(core.Symbols.defn(ctx).Object_ne, 41)
+        </td>
+      </tr><tr>
+        <td>
+          162
+        </td>
+        <td>
+          6018
+        </td>
+        <td>
+          5419
+          -
+          5421
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          41
+        </td>
+      </tr><tr>
+        <td>
+          165
+        </td>
+        <td>
+          6021
+        </td>
+        <td>
+          5499
+          -
+          5551
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.backend.jvm.DottyPrimitives.addPrimitive
+        </td>
+        <td style="background: #AEF1AE">
+          addPrimitive(core.Symbols.defn(ctx).Object_synchronized, 90)
+        </td>
+      </tr><tr>
+        <td>
+          165
+        </td>
+        <td>
+          6020
+        </td>
+        <td>
+          5538
+          -
+          5550
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          90
+        </td>
+      </tr><tr>
+        <td>
+          170
+        </td>
+        <td>
+          6022
+        </td>
+        <td>
+          5701
+          -
+          5707
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          100
+        </td>
+      </tr><tr>
+        <td>
+          170
+        </td>
+        <td>
+          6023
+        </td>
+        <td>
+          5673
+          -
+          5708
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.backend.jvm.DottyPrimitives.addPrimitive
+        </td>
+        <td style="background: #AEF1AE">
+          addPrimitive(core.Symbols.defn(ctx).String_+, 100)
+        </td>
+      </tr><tr>
+        <td>
+          176
+        </td>
+        <td>
+          6024
+        </td>
+        <td>
+          5805
+          -
+          5850
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.backend.jvm.DottyPrimitives.addPrimitives
+        </td>
+        <td style="background: #AEF1AE">
+          addPrimitives(ArrayClass, core.StdNames.nme.length, 70)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          177
+        </td>
+        <td>
+          6025
+        </td>
+        <td>
+          5855
+          -
+          5898
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.backend.jvm.DottyPrimitives.addPrimitives
+        </td>
+        <td style="background: #AEF1AE">
+          addPrimitives(ArrayClass, core.StdNames.nme.apply, 71)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          178
+        </td>
+        <td>
+          6026
+        </td>
+        <td>
+          5903
+          -
+          5948
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.backend.jvm.DottyPrimitives.addPrimitives
+        </td>
+        <td style="background: #AEF1AE">
+          addPrimitives(ArrayClass, core.StdNames.nme.update, 72)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          182
+        </td>
+        <td>
+          6027
+        </td>
+        <td>
+          6021
+          -
+          6060
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.backend.jvm.DottyPrimitives.addPrimitives
+        </td>
+        <td style="background: #AEF1AE">
+          addPrimitives(BooleanClass, core.StdNames.nme.EQ, 42)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          183
+        </td>
+        <td>
+          6028
+        </td>
+        <td>
+          6065
+          -
+          6104
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.backend.jvm.DottyPrimitives.addPrimitives
+        </td>
+        <td style="background: #AEF1AE">
+          addPrimitives(BooleanClass, core.StdNames.nme.NE, 43)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          184
+        </td>
+        <td>
+          6029
+        </td>
+        <td>
+          6109
+          -
+          6155
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.backend.jvm.DottyPrimitives.addPrimitives
+        </td>
+        <td style="background: #AEF1AE">
+          addPrimitives(BooleanClass, core.StdNames.nme.UNARY_!, 50)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          185
+        </td>
+        <td>
+          6030
+        </td>
+        <td>
+          6160
+          -
+          6201
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.backend.jvm.DottyPrimitives.addPrimitives
+        </td>
+        <td style="background: #AEF1AE">
+          addPrimitives(BooleanClass, core.StdNames.nme.ZOR, 60)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          186
+        </td>
+        <td>
+          6031
+        </td>
+        <td>
+          6206
+          -
+          6249
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.backend.jvm.DottyPrimitives.addPrimitives
+        </td>
+        <td style="background: #AEF1AE">
+          addPrimitives(BooleanClass, core.StdNames.nme.ZAND, 61)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          187
+        </td>
+        <td>
+          6032
+        </td>
+        <td>
+          6254
+          -
+          6293
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.backend.jvm.DottyPrimitives.addPrimitives
+        </td>
+        <td style="background: #AEF1AE">
+          addPrimitives(BooleanClass, core.StdNames.nme.OR, 20)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          188
+        </td>
+        <td>
+          6033
+        </td>
+        <td>
+          6298
+          -
+          6339
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.backend.jvm.DottyPrimitives.addPrimitives
+        </td>
+        <td style="background: #AEF1AE">
+          addPrimitives(BooleanClass, core.StdNames.nme.AND, 22)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          189
+        </td>
+        <td>
+          6034
+        </td>
+        <td>
+          6344
+          -
+          6385
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.backend.jvm.DottyPrimitives.addPrimitives
+        </td>
+        <td style="background: #AEF1AE">
+          addPrimitives(BooleanClass, core.StdNames.nme.XOR, 21)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          193
+        </td>
+        <td>
+          6035
+        </td>
+        <td>
+          6449
+          -
+          6485
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.backend.jvm.DottyPrimitives.addPrimitives
+        </td>
+        <td style="background: #AEF1AE">
+          addPrimitives(ByteClass, core.StdNames.nme.EQ, 42)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          194
+        </td>
+        <td>
+          6036
+        </td>
+        <td>
+          6490
+          -
+          6526
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.backend.jvm.DottyPrimitives.addPrimitives
+        </td>
+        <td style="background: #AEF1AE">
+          addPrimitives(ByteClass, core.StdNames.nme.NE, 43)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          195
+        </td>
+        <td>
+          6037
+        </td>
+        <td>
+          6531
+          -
+          6569
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.backend.jvm.DottyPrimitives.addPrimitives
+        </td>
+        <td style="background: #AEF1AE">
+          addPrimitives(ByteClass, core.StdNames.nme.ADD, 10)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          196
+        </td>
+        <td>
+          6038
+        </td>
+        <td>
+          6574
+          -
+          6612
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.backend.jvm.DottyPrimitives.addPrimitives
+        </td>
+        <td style="background: #AEF1AE">
+          addPrimitives(ByteClass, core.StdNames.nme.SUB, 11)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          197
+        </td>
+        <td>
+          6039
+        </td>
+        <td>
+          6617
+          -
+          6655
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.backend.jvm.DottyPrimitives.addPrimitives
+        </td>
+        <td style="background: #AEF1AE">
+          addPrimitives(ByteClass, core.StdNames.nme.MUL, 12)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          198
+        </td>
+        <td>
+          6040
+        </td>
+        <td>
+          6660
+          -
+          6698
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.backend.jvm.DottyPrimitives.addPrimitives
+        </td>
+        <td style="background: #AEF1AE">
+          addPrimitives(ByteClass, core.StdNames.nme.DIV, 13)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          199
+        </td>
+        <td>
+          6041
+        </td>
+        <td>
+          6703
+          -
+          6741
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.backend.jvm.DottyPrimitives.addPrimitives
+        </td>
+        <td style="background: #AEF1AE">
+          addPrimitives(ByteClass, core.StdNames.nme.MOD, 14)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          200
+        </td>
+        <td>
+          6042
+        </td>
+        <td>
+          6746
+          -
+          6782
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.backend.jvm.DottyPrimitives.addPrimitives
+        </td>
+        <td style="background: #AEF1AE">
+          addPrimitives(ByteClass, core.StdNames.nme.LT, 44)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          201
+        </td>
+        <td>
+          6043
+        </td>
+        <td>
+          6787
+          -
+          6823
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.backend.jvm.DottyPrimitives.addPrimitives
+        </td>
+        <td style="background: #AEF1AE">
+          addPrimitives(ByteClass, core.StdNames.nme.LE, 45)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          202
+        </td>
+        <td>
+          6044
+        </td>
+        <td>
+          6828
+          -
+          6864
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.backend.jvm.DottyPrimitives.addPrimitives
+        </td>
+        <td style="background: #AEF1AE">
+          addPrimitives(ByteClass, core.StdNames.nme.GT, 47)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          203
+        </td>
+        <td>
+          6045
+        </td>
+        <td>
+          6869
+          -
+          6905
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.backend.jvm.DottyPrimitives.addPrimitives
+        </td>
+        <td style="background: #AEF1AE">
+          addPrimitives(ByteClass, core.StdNames.nme.GE, 46)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          204
+        </td>
+        <td>
+          6046
+        </td>
+        <td>
+          6910
+          -
+          6948
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.backend.jvm.DottyPrimitives.addPrimitives
+        </td>
+        <td style="background: #AEF1AE">
+          addPrimitives(ByteClass, core.StdNames.nme.XOR, 21)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          205
+        </td>
+        <td>
+          6047
+        </td>
+        <td>
+          6953
+          -
+          6989
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.backend.jvm.DottyPrimitives.addPrimitives
+        </td>
+        <td style="background: #AEF1AE">
+          addPrimitives(ByteClass, core.StdNames.nme.OR, 20)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          206
+        </td>
+        <td>
+          6048
+        </td>
+        <td>
+          6994
+          -
+          7032
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.backend.jvm.DottyPrimitives.addPrimitives
+        </td>
+        <td style="background: #AEF1AE">
+          addPrimitives(ByteClass, core.StdNames.nme.AND, 22)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          207
+        </td>
+        <td>
+          6049
+        </td>
+        <td>
+          7037
+          -
+          7075
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.backend.jvm.DottyPrimitives.addPrimitives
+        </td>
+        <td style="background: #AEF1AE">
+          addPrimitives(ByteClass, core.StdNames.nme.LSL, 30)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          208
+        </td>
+        <td>
+          6050
+        </td>
+        <td>
+          7080
+          -
+          7118
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.backend.jvm.DottyPrimitives.addPrimitives
+        </td>
+        <td style="background: #AEF1AE">
+          addPrimitives(ByteClass, core.StdNames.nme.LSR, 31)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          209
+        </td>
+        <td>
+          6051
+        </td>
+        <td>
+          7123
+          -
+          7161
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.backend.jvm.DottyPrimitives.addPrimitives
+        </td>
+        <td style="background: #AEF1AE">
+          addPrimitives(ByteClass, core.StdNames.nme.ASR, 32)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          211
+        </td>
+        <td>
+          6052
+        </td>
+        <td>
+          7187
+          -
+          7230
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.backend.jvm.DottyPrimitives.addPrimitives
+        </td>
+        <td style="background: #AEF1AE">
+          addPrimitives(ByteClass, core.StdNames.nme.toByte, 200)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          212
+        </td>
+        <td>
+          6053
+        </td>
+        <td>
+          7235
+          -
+          7278
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.backend.jvm.DottyPrimitives.addPrimitives
+        </td>
+        <td style="background: #AEF1AE">
+          addPrimitives(ByteClass, core.StdNames.nme.toShort, 201)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          213
+        </td>
+        <td>
+          6054
+        </td>
+        <td>
+          7283
+          -
+          7326
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.backend.jvm.DottyPrimitives.addPrimitives
+        </td>
+        <td style="background: #AEF1AE">
+          addPrimitives(ByteClass, core.StdNames.nme.toChar, 202)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          214
+        </td>
+        <td>
+          6055
+        </td>
+        <td>
+          7331
+          -
+          7374
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.backend.jvm.DottyPrimitives.addPrimitives
+        </td>
+        <td style="background: #AEF1AE">
+          addPrimitives(ByteClass, core.StdNames.nme.toInt, 203)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          215
+        </td>
+        <td>
+          6056
+        </td>
+        <td>
+          7379
+          -
+          7422
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.backend.jvm.DottyPrimitives.addPrimitives
+        </td>
+        <td style="background: #AEF1AE">
+          addPrimitives(ByteClass, core.StdNames.nme.toLong, 204)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          217
+        </td>
+        <td>
+          6057
+        </td>
+        <td>
+          7448
+          -
+          7490
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.backend.jvm.DottyPrimitives.addPrimitives
+        </td>
+        <td style="background: #AEF1AE">
+          addPrimitives(ByteClass, core.StdNames.nme.UNARY_+, 1)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          218
+        </td>
+        <td>
+          6058
+        </td>
+        <td>
+          7495
+          -
+          7537
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.backend.jvm.DottyPrimitives.addPrimitives
+        </td>
+        <td style="background: #AEF1AE">
+          addPrimitives(ByteClass, core.StdNames.nme.UNARY_-, 2)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          219
+        </td>
+        <td>
+          6059
+        </td>
+        <td>
+          7542
+          -
+          7584
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.backend.jvm.DottyPrimitives.addPrimitives
+        </td>
+        <td style="background: #AEF1AE">
+          addPrimitives(ByteClass, core.StdNames.nme.UNARY_~, 3)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          221
+        </td>
+        <td>
+          6060
+        </td>
+        <td>
+          7590
+          -
+          7633
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.backend.jvm.DottyPrimitives.addPrimitives
+        </td>
+        <td style="background: #AEF1AE">
+          addPrimitives(ByteClass, core.StdNames.nme.toFloat, 205)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          222
+        </td>
+        <td>
+          6061
+        </td>
+        <td>
+          7638
+          -
+          7681
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.backend.jvm.DottyPrimitives.addPrimitives
+        </td>
+        <td style="background: #AEF1AE">
+          addPrimitives(ByteClass, core.StdNames.nme.toDouble, 206)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          226
+        </td>
+        <td>
+          6062
+        </td>
+        <td>
+          7748
+          -
+          7785
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.backend.jvm.DottyPrimitives.addPrimitives
+        </td>
+        <td style="background: #AEF1AE">
+          addPrimitives(ShortClass, core.StdNames.nme.EQ, 42)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          227
+        </td>
+        <td>
+          6063
+        </td>
+        <td>
+          7790
+          -
+          7827
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.backend.jvm.DottyPrimitives.addPrimitives
+        </td>
+        <td style="background: #AEF1AE">
+          addPrimitives(ShortClass, core.StdNames.nme.NE, 43)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          228
+        </td>
+        <td>
+          6064
+        </td>
+        <td>
+          7832
+          -
+          7871
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.backend.jvm.DottyPrimitives.addPrimitives
+        </td>
+        <td style="background: #AEF1AE">
+          addPrimitives(ShortClass, core.StdNames.nme.ADD, 10)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          229
+        </td>
+        <td>
+          6065
+        </td>
+        <td>
+          7876
+          -
+          7915
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.backend.jvm.DottyPrimitives.addPrimitives
+        </td>
+        <td style="background: #AEF1AE">
+          addPrimitives(ShortClass, core.StdNames.nme.SUB, 11)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          230
+        </td>
+        <td>
+          6066
+        </td>
+        <td>
+          7920
+          -
+          7959
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.backend.jvm.DottyPrimitives.addPrimitives
+        </td>
+        <td style="background: #AEF1AE">
+          addPrimitives(ShortClass, core.StdNames.nme.MUL, 12)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          231
+        </td>
+        <td>
+          6067
+        </td>
+        <td>
+          7964
+          -
+          8003
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.backend.jvm.DottyPrimitives.addPrimitives
+        </td>
+        <td style="background: #AEF1AE">
+          addPrimitives(ShortClass, core.StdNames.nme.DIV, 13)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          232
+        </td>
+        <td>
+          6068
+        </td>
+        <td>
+          8008
+          -
+          8047
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.backend.jvm.DottyPrimitives.addPrimitives
+        </td>
+        <td style="background: #AEF1AE">
+          addPrimitives(ShortClass, core.StdNames.nme.MOD, 14)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          233
+        </td>
+        <td>
+          6069
+        </td>
+        <td>
+          8052
+          -
+          8089
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.backend.jvm.DottyPrimitives.addPrimitives
+        </td>
+        <td style="background: #AEF1AE">
+          addPrimitives(ShortClass, core.StdNames.nme.LT, 44)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          234
+        </td>
+        <td>
+          6070
+        </td>
+        <td>
+          8094
+          -
+          8131
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.backend.jvm.DottyPrimitives.addPrimitives
+        </td>
+        <td style="background: #AEF1AE">
+          addPrimitives(ShortClass, core.StdNames.nme.LE, 45)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          235
+        </td>
+        <td>
+          6071
+        </td>
+        <td>
+          8136
+          -
+          8173
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.backend.jvm.DottyPrimitives.addPrimitives
+        </td>
+        <td style="background: #AEF1AE">
+          addPrimitives(ShortClass, core.StdNames.nme.GT, 47)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          236
+        </td>
+        <td>
+          6072
+        </td>
+        <td>
+          8178
+          -
+          8215
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.backend.jvm.DottyPrimitives.addPrimitives
+        </td>
+        <td style="background: #AEF1AE">
+          addPrimitives(ShortClass, core.StdNames.nme.GE, 46)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          237
+        </td>
+        <td>
+          6073
+        </td>
+        <td>
+          8220
+          -
+          8259
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.backend.jvm.DottyPrimitives.addPrimitives
+        </td>
+        <td style="background: #AEF1AE">
+          addPrimitives(ShortClass, core.StdNames.nme.XOR, 21)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          238
+        </td>
+        <td>
+          6074
+        </td>
+        <td>
+          8264
+          -
+          8301
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.backend.jvm.DottyPrimitives.addPrimitives
+        </td>
+        <td style="background: #AEF1AE">
+          addPrimitives(ShortClass, core.StdNames.nme.OR, 20)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          239
+        </td>
+        <td>
+          6075
+        </td>
+        <td>
+          8306
+          -
+          8345
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.backend.jvm.DottyPrimitives.addPrimitives
+        </td>
+        <td style="background: #AEF1AE">
+          addPrimitives(ShortClass, core.StdNames.nme.AND, 22)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          240
+        </td>
+        <td>
+          6076
+        </td>
+        <td>
+          8350
+          -
+          8389
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.backend.jvm.DottyPrimitives.addPrimitives
+        </td>
+        <td style="background: #AEF1AE">
+          addPrimitives(ShortClass, core.StdNames.nme.LSL, 30)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          241
+        </td>
+        <td>
+          6077
+        </td>
+        <td>
+          8394
+          -
+          8433
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.backend.jvm.DottyPrimitives.addPrimitives
+        </td>
+        <td style="background: #AEF1AE">
+          addPrimitives(ShortClass, core.StdNames.nme.LSR, 31)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          242
+        </td>
+        <td>
+          6078
+        </td>
+        <td>
+          8438
+          -
+          8477
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.backend.jvm.DottyPrimitives.addPrimitives
+        </td>
+        <td style="background: #AEF1AE">
+          addPrimitives(ShortClass, core.StdNames.nme.ASR, 32)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          244
+        </td>
+        <td>
+          6079
+        </td>
+        <td>
+          8503
+          -
+          8547
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.backend.jvm.DottyPrimitives.addPrimitives
+        </td>
+        <td style="background: #AEF1AE">
+          addPrimitives(ShortClass, core.StdNames.nme.toByte, 210)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          245
+        </td>
+        <td>
+          6080
+        </td>
+        <td>
+          8552
+          -
+          8596
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.backend.jvm.DottyPrimitives.addPrimitives
+        </td>
+        <td style="background: #AEF1AE">
+          addPrimitives(ShortClass, core.StdNames.nme.toShort, 211)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          246
+        </td>
+        <td>
+          6081
+        </td>
+        <td>
+          8601
+          -
+          8645
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.backend.jvm.DottyPrimitives.addPrimitives
+        </td>
+        <td style="background: #AEF1AE">
+          addPrimitives(ShortClass, core.StdNames.nme.toChar, 212)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          247
+        </td>
+        <td>
+          6082
+        </td>
+        <td>
+          8650
+          -
+          8694
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.backend.jvm.DottyPrimitives.addPrimitives
+        </td>
+        <td style="background: #AEF1AE">
+          addPrimitives(ShortClass, core.StdNames.nme.toInt, 213)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          248
+        </td>
+        <td>
+          6083
+        </td>
+        <td>
+          8699
+          -
+          8743
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.backend.jvm.DottyPrimitives.addPrimitives
+        </td>
+        <td style="background: #AEF1AE">
+          addPrimitives(ShortClass, core.StdNames.nme.toLong, 214)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          250
+        </td>
+        <td>
+          6084
+        </td>
+        <td>
+          8769
+          -
+          8812
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.backend.jvm.DottyPrimitives.addPrimitives
+        </td>
+        <td style="background: #AEF1AE">
+          addPrimitives(ShortClass, core.StdNames.nme.UNARY_+, 1)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          251
+        </td>
+        <td>
+          6085
+        </td>
+        <td>
+          8817
+          -
+          8860
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.backend.jvm.DottyPrimitives.addPrimitives
+        </td>
+        <td style="background: #AEF1AE">
+          addPrimitives(ShortClass, core.StdNames.nme.UNARY_-, 2)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          252
+        </td>
+        <td>
+          6086
+        </td>
+        <td>
+          8865
+          -
+          8908
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.backend.jvm.DottyPrimitives.addPrimitives
+        </td>
+        <td style="background: #AEF1AE">
+          addPrimitives(ShortClass, core.StdNames.nme.UNARY_~, 3)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          254
+        </td>
+        <td>
+          6087
+        </td>
+        <td>
+          8914
+          -
+          8958
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.backend.jvm.DottyPrimitives.addPrimitives
+        </td>
+        <td style="background: #AEF1AE">
+          addPrimitives(ShortClass, core.StdNames.nme.toFloat, 215)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          255
+        </td>
+        <td>
+          6088
+        </td>
+        <td>
+          8963
+          -
+          9007
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.backend.jvm.DottyPrimitives.addPrimitives
+        </td>
+        <td style="background: #AEF1AE">
+          addPrimitives(ShortClass, core.StdNames.nme.toDouble, 216)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          259
+        </td>
+        <td>
+          6089
+        </td>
+        <td>
+          9071
+          -
+          9107
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.backend.jvm.DottyPrimitives.addPrimitives
+        </td>
+        <td style="background: #AEF1AE">
+          addPrimitives(CharClass, core.StdNames.nme.EQ, 42)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          260
+        </td>
+        <td>
+          6090
+        </td>
+        <td>
+          9112
+          -
+          9148
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.backend.jvm.DottyPrimitives.addPrimitives
+        </td>
+        <td style="background: #AEF1AE">
+          addPrimitives(CharClass, core.StdNames.nme.NE, 43)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          261
+        </td>
+        <td>
+          6091
+        </td>
+        <td>
+          9153
+          -
+          9191
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.backend.jvm.DottyPrimitives.addPrimitives
+        </td>
+        <td style="background: #AEF1AE">
+          addPrimitives(CharClass, core.StdNames.nme.ADD, 10)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          262
+        </td>
+        <td>
+          6092
+        </td>
+        <td>
+          9196
+          -
+          9234
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.backend.jvm.DottyPrimitives.addPrimitives
+        </td>
+        <td style="background: #AEF1AE">
+          addPrimitives(CharClass, core.StdNames.nme.SUB, 11)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          263
+        </td>
+        <td>
+          6093
+        </td>
+        <td>
+          9239
+          -
+          9277
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.backend.jvm.DottyPrimitives.addPrimitives
+        </td>
+        <td style="background: #AEF1AE">
+          addPrimitives(CharClass, core.StdNames.nme.MUL, 12)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          264
+        </td>
+        <td>
+          6094
+        </td>
+        <td>
+          9282
+          -
+          9320
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.backend.jvm.DottyPrimitives.addPrimitives
+        </td>
+        <td style="background: #AEF1AE">
+          addPrimitives(CharClass, core.StdNames.nme.DIV, 13)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          265
+        </td>
+        <td>
+          6095
+        </td>
+        <td>
+          9325
+          -
+          9363
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.backend.jvm.DottyPrimitives.addPrimitives
+        </td>
+        <td style="background: #AEF1AE">
+          addPrimitives(CharClass, core.StdNames.nme.MOD, 14)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          266
+        </td>
+        <td>
+          6096
+        </td>
+        <td>
+          9368
+          -
+          9404
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.backend.jvm.DottyPrimitives.addPrimitives
+        </td>
+        <td style="background: #AEF1AE">
+          addPrimitives(CharClass, core.StdNames.nme.LT, 44)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          267
+        </td>
+        <td>
+          6097
+        </td>
+        <td>
+          9409
+          -
+          9445
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.backend.jvm.DottyPrimitives.addPrimitives
+        </td>
+        <td style="background: #AEF1AE">
+          addPrimitives(CharClass, core.StdNames.nme.LE, 45)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          268
+        </td>
+        <td>
+          6098
+        </td>
+        <td>
+          9450
+          -
+          9486
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.backend.jvm.DottyPrimitives.addPrimitives
+        </td>
+        <td style="background: #AEF1AE">
+          addPrimitives(CharClass, core.StdNames.nme.GT, 47)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          269
+        </td>
+        <td>
+          6099
+        </td>
+        <td>
+          9491
+          -
+          9527
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.backend.jvm.DottyPrimitives.addPrimitives
+        </td>
+        <td style="background: #AEF1AE">
+          addPrimitives(CharClass, core.StdNames.nme.GE, 46)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          270
+        </td>
+        <td>
+          6100
+        </td>
+        <td>
+          9532
+          -
+          9570
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.backend.jvm.DottyPrimitives.addPrimitives
+        </td>
+        <td style="background: #AEF1AE">
+          addPrimitives(CharClass, core.StdNames.nme.XOR, 21)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          271
+        </td>
+        <td>
+          6101
+        </td>
+        <td>
+          9575
+          -
+          9611
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.backend.jvm.DottyPrimitives.addPrimitives
+        </td>
+        <td style="background: #AEF1AE">
+          addPrimitives(CharClass, core.StdNames.nme.OR, 20)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          272
+        </td>
+        <td>
+          6102
+        </td>
+        <td>
+          9616
+          -
+          9654
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.backend.jvm.DottyPrimitives.addPrimitives
+        </td>
+        <td style="background: #AEF1AE">
+          addPrimitives(CharClass, core.StdNames.nme.AND, 22)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          273
+        </td>
+        <td>
+          6103
+        </td>
+        <td>
+          9659
+          -
+          9697
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.backend.jvm.DottyPrimitives.addPrimitives
+        </td>
+        <td style="background: #AEF1AE">
+          addPrimitives(CharClass, core.StdNames.nme.LSL, 30)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          274
+        </td>
+        <td>
+          6104
+        </td>
+        <td>
+          9702
+          -
+          9740
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.backend.jvm.DottyPrimitives.addPrimitives
+        </td>
+        <td style="background: #AEF1AE">
+          addPrimitives(CharClass, core.StdNames.nme.LSR, 31)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          275
+        </td>
+        <td>
+          6105
+        </td>
+        <td>
+          9745
+          -
+          9783
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.backend.jvm.DottyPrimitives.addPrimitives
+        </td>
+        <td style="background: #AEF1AE">
+          addPrimitives(CharClass, core.StdNames.nme.ASR, 32)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          277
+        </td>
+        <td>
+          6106
+        </td>
+        <td>
+          9809
+          -
+          9852
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.backend.jvm.DottyPrimitives.addPrimitives
+        </td>
+        <td style="background: #AEF1AE">
+          addPrimitives(CharClass, core.StdNames.nme.toByte, 220)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          278
+        </td>
+        <td>
+          6107
+        </td>
+        <td>
+          9857
+          -
+          9900
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.backend.jvm.DottyPrimitives.addPrimitives
+        </td>
+        <td style="background: #AEF1AE">
+          addPrimitives(CharClass, core.StdNames.nme.toShort, 221)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          279
+        </td>
+        <td>
+          6108
+        </td>
+        <td>
+          9905
+          -
+          9948
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.backend.jvm.DottyPrimitives.addPrimitives
+        </td>
+        <td style="background: #AEF1AE">
+          addPrimitives(CharClass, core.StdNames.nme.toChar, 222)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          280
+        </td>
+        <td>
+          6109
+        </td>
+        <td>
+          9953
+          -
+          9996
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.backend.jvm.DottyPrimitives.addPrimitives
+        </td>
+        <td style="background: #AEF1AE">
+          addPrimitives(CharClass, core.StdNames.nme.toInt, 223)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          281
+        </td>
+        <td>
+          6110
+        </td>
+        <td>
+          10001
+          -
+          10044
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.backend.jvm.DottyPrimitives.addPrimitives
+        </td>
+        <td style="background: #AEF1AE">
+          addPrimitives(CharClass, core.StdNames.nme.toLong, 224)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          283
+        </td>
+        <td>
+          6111
+        </td>
+        <td>
+          10070
+          -
+          10112
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.backend.jvm.DottyPrimitives.addPrimitives
+        </td>
+        <td style="background: #AEF1AE">
+          addPrimitives(CharClass, core.StdNames.nme.UNARY_+, 1)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          284
+        </td>
+        <td>
+          6112
+        </td>
+        <td>
+          10117
+          -
+          10159
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.backend.jvm.DottyPrimitives.addPrimitives
+        </td>
+        <td style="background: #AEF1AE">
+          addPrimitives(CharClass, core.StdNames.nme.UNARY_-, 2)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          285
+        </td>
+        <td>
+          6113
+        </td>
+        <td>
+          10164
+          -
+          10206
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.backend.jvm.DottyPrimitives.addPrimitives
+        </td>
+        <td style="background: #AEF1AE">
+          addPrimitives(CharClass, core.StdNames.nme.UNARY_~, 3)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          286
+        </td>
+        <td>
+          6114
+        </td>
+        <td>
+          10211
+          -
+          10254
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.backend.jvm.DottyPrimitives.addPrimitives
+        </td>
+        <td style="background: #AEF1AE">
+          addPrimitives(CharClass, core.StdNames.nme.toFloat, 225)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          287
+        </td>
+        <td>
+          6115
+        </td>
+        <td>
+          10259
+          -
+          10302
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.backend.jvm.DottyPrimitives.addPrimitives
+        </td>
+        <td style="background: #AEF1AE">
+          addPrimitives(CharClass, core.StdNames.nme.toDouble, 226)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          291
+        </td>
+        <td>
+          6116
+        </td>
+        <td>
+          10363
+          -
+          10398
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.backend.jvm.DottyPrimitives.addPrimitives
+        </td>
+        <td style="background: #AEF1AE">
+          addPrimitives(IntClass, core.StdNames.nme.EQ, 42)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          292
+        </td>
+        <td>
+          6117
+        </td>
+        <td>
+          10403
+          -
+          10438
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.backend.jvm.DottyPrimitives.addPrimitives
+        </td>
+        <td style="background: #AEF1AE">
+          addPrimitives(IntClass, core.StdNames.nme.NE, 43)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          293
+        </td>
+        <td>
+          6118
+        </td>
+        <td>
+          10443
+          -
+          10480
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.backend.jvm.DottyPrimitives.addPrimitives
+        </td>
+        <td style="background: #AEF1AE">
+          addPrimitives(IntClass, core.StdNames.nme.ADD, 10)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          294
+        </td>
+        <td>
+          6119
+        </td>
+        <td>
+          10485
+          -
+          10522
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.backend.jvm.DottyPrimitives.addPrimitives
+        </td>
+        <td style="background: #AEF1AE">
+          addPrimitives(IntClass, core.StdNames.nme.SUB, 11)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          295
+        </td>
+        <td>
+          6120
+        </td>
+        <td>
+          10527
+          -
+          10564
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.backend.jvm.DottyPrimitives.addPrimitives
+        </td>
+        <td style="background: #AEF1AE">
+          addPrimitives(IntClass, core.StdNames.nme.MUL, 12)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          296
+        </td>
+        <td>
+          6121
+        </td>
+        <td>
+          10569
+          -
+          10606
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.backend.jvm.DottyPrimitives.addPrimitives
+        </td>
+        <td style="background: #AEF1AE">
+          addPrimitives(IntClass, core.StdNames.nme.DIV, 13)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          297
+        </td>
+        <td>
+          6122
+        </td>
+        <td>
+          10611
+          -
+          10648
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.backend.jvm.DottyPrimitives.addPrimitives
+        </td>
+        <td style="background: #AEF1AE">
+          addPrimitives(IntClass, core.StdNames.nme.MOD, 14)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          298
+        </td>
+        <td>
+          6123
+        </td>
+        <td>
+          10653
+          -
+          10688
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.backend.jvm.DottyPrimitives.addPrimitives
+        </td>
+        <td style="background: #AEF1AE">
+          addPrimitives(IntClass, core.StdNames.nme.LT, 44)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          299
+        </td>
+        <td>
+          6124
+        </td>
+        <td>
+          10693
+          -
+          10728
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.backend.jvm.DottyPrimitives.addPrimitives
+        </td>
+        <td style="background: #AEF1AE">
+          addPrimitives(IntClass, core.StdNames.nme.LE, 45)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          300
+        </td>
+        <td>
+          6125
+        </td>
+        <td>
+          10733
+          -
+          10768
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.backend.jvm.DottyPrimitives.addPrimitives
+        </td>
+        <td style="background: #AEF1AE">
+          addPrimitives(IntClass, core.StdNames.nme.GT, 47)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          301
+        </td>
+        <td>
+          6126
+        </td>
+        <td>
+          10773
+          -
+          10808
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.backend.jvm.DottyPrimitives.addPrimitives
+        </td>
+        <td style="background: #AEF1AE">
+          addPrimitives(IntClass, core.StdNames.nme.GE, 46)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          302
+        </td>
+        <td>
+          6127
+        </td>
+        <td>
+          10813
+          -
+          10850
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.backend.jvm.DottyPrimitives.addPrimitives
+        </td>
+        <td style="background: #AEF1AE">
+          addPrimitives(IntClass, core.StdNames.nme.XOR, 21)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          303
+        </td>
+        <td>
+          6128
+        </td>
+        <td>
+          10855
+          -
+          10890
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.backend.jvm.DottyPrimitives.addPrimitives
+        </td>
+        <td style="background: #AEF1AE">
+          addPrimitives(IntClass, core.StdNames.nme.OR, 20)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          304
+        </td>
+        <td>
+          6129
+        </td>
+        <td>
+          10895
+          -
+          10932
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.backend.jvm.DottyPrimitives.addPrimitives
+        </td>
+        <td style="background: #AEF1AE">
+          addPrimitives(IntClass, core.StdNames.nme.AND, 22)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          305
+        </td>
+        <td>
+          6130
+        </td>
+        <td>
+          10937
+          -
+          10974
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.backend.jvm.DottyPrimitives.addPrimitives
+        </td>
+        <td style="background: #AEF1AE">
+          addPrimitives(IntClass, core.StdNames.nme.LSL, 30)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          306
+        </td>
+        <td>
+          6131
+        </td>
+        <td>
+          10979
+          -
+          11016
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.backend.jvm.DottyPrimitives.addPrimitives
+        </td>
+        <td style="background: #AEF1AE">
+          addPrimitives(IntClass, core.StdNames.nme.LSR, 31)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          307
+        </td>
+        <td>
+          6132
+        </td>
+        <td>
+          11021
+          -
+          11058
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.backend.jvm.DottyPrimitives.addPrimitives
+        </td>
+        <td style="background: #AEF1AE">
+          addPrimitives(IntClass, core.StdNames.nme.ASR, 32)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          309
+        </td>
+        <td>
+          6133
+        </td>
+        <td>
+          11084
+          -
+          11126
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.backend.jvm.DottyPrimitives.addPrimitives
+        </td>
+        <td style="background: #AEF1AE">
+          addPrimitives(IntClass, core.StdNames.nme.toByte, 230)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          310
+        </td>
+        <td>
+          6134
+        </td>
+        <td>
+          11131
+          -
+          11173
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.backend.jvm.DottyPrimitives.addPrimitives
+        </td>
+        <td style="background: #AEF1AE">
+          addPrimitives(IntClass, core.StdNames.nme.toShort, 231)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          311
+        </td>
+        <td>
+          6135
+        </td>
+        <td>
+          11178
+          -
+          11220
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.backend.jvm.DottyPrimitives.addPrimitives
+        </td>
+        <td style="background: #AEF1AE">
+          addPrimitives(IntClass, core.StdNames.nme.toChar, 232)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          312
+        </td>
+        <td>
+          6136
+        </td>
+        <td>
+          11225
+          -
+          11267
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.backend.jvm.DottyPrimitives.addPrimitives
+        </td>
+        <td style="background: #AEF1AE">
+          addPrimitives(IntClass, core.StdNames.nme.toInt, 233)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          313
+        </td>
+        <td>
+          6137
+        </td>
+        <td>
+          11272
+          -
+          11314
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.backend.jvm.DottyPrimitives.addPrimitives
+        </td>
+        <td style="background: #AEF1AE">
+          addPrimitives(IntClass, core.StdNames.nme.toLong, 234)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          315
+        </td>
+        <td>
+          6138
+        </td>
+        <td>
+          11340
+          -
+          11381
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.backend.jvm.DottyPrimitives.addPrimitives
+        </td>
+        <td style="background: #AEF1AE">
+          addPrimitives(IntClass, core.StdNames.nme.UNARY_+, 1)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          316
+        </td>
+        <td>
+          6139
+        </td>
+        <td>
+          11386
+          -
+          11427
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.backend.jvm.DottyPrimitives.addPrimitives
+        </td>
+        <td style="background: #AEF1AE">
+          addPrimitives(IntClass, core.StdNames.nme.UNARY_-, 2)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          317
+        </td>
+        <td>
+          6140
+        </td>
+        <td>
+          11432
+          -
+          11473
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.backend.jvm.DottyPrimitives.addPrimitives
+        </td>
+        <td style="background: #AEF1AE">
+          addPrimitives(IntClass, core.StdNames.nme.UNARY_~, 3)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          318
+        </td>
+        <td>
+          6141
+        </td>
+        <td>
+          11478
+          -
+          11520
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.backend.jvm.DottyPrimitives.addPrimitives
+        </td>
+        <td style="background: #AEF1AE">
+          addPrimitives(IntClass, core.StdNames.nme.toFloat, 235)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          319
+        </td>
+        <td>
+          6142
+        </td>
+        <td>
+          11525
+          -
+          11567
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.backend.jvm.DottyPrimitives.addPrimitives
+        </td>
+        <td style="background: #AEF1AE">
+          addPrimitives(IntClass, core.StdNames.nme.toDouble, 236)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          323
+        </td>
+        <td>
+          6143
+        </td>
+        <td>
+          11631
+          -
+          11667
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.backend.jvm.DottyPrimitives.addPrimitives
+        </td>
+        <td style="background: #AEF1AE">
+          addPrimitives(LongClass, core.StdNames.nme.EQ, 42)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          324
+        </td>
+        <td>
+          6144
+        </td>
+        <td>
+          11672
+          -
+          11708
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.backend.jvm.DottyPrimitives.addPrimitives
+        </td>
+        <td style="background: #AEF1AE">
+          addPrimitives(LongClass, core.StdNames.nme.NE, 43)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          325
+        </td>
+        <td>
+          6145
+        </td>
+        <td>
+          11713
+          -
+          11751
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.backend.jvm.DottyPrimitives.addPrimitives
+        </td>
+        <td style="background: #AEF1AE">
+          addPrimitives(LongClass, core.StdNames.nme.ADD, 10)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          326
+        </td>
+        <td>
+          6146
+        </td>
+        <td>
+          11756
+          -
+          11794
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.backend.jvm.DottyPrimitives.addPrimitives
+        </td>
+        <td style="background: #AEF1AE">
+          addPrimitives(LongClass, core.StdNames.nme.SUB, 11)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          327
+        </td>
+        <td>
+          6147
+        </td>
+        <td>
+          11799
+          -
+          11837
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.backend.jvm.DottyPrimitives.addPrimitives
+        </td>
+        <td style="background: #AEF1AE">
+          addPrimitives(LongClass, core.StdNames.nme.MUL, 12)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          328
+        </td>
+        <td>
+          6148
+        </td>
+        <td>
+          11842
+          -
+          11880
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.backend.jvm.DottyPrimitives.addPrimitives
+        </td>
+        <td style="background: #AEF1AE">
+          addPrimitives(LongClass, core.StdNames.nme.DIV, 13)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          329
+        </td>
+        <td>
+          6149
+        </td>
+        <td>
+          11885
+          -
+          11923
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.backend.jvm.DottyPrimitives.addPrimitives
+        </td>
+        <td style="background: #AEF1AE">
+          addPrimitives(LongClass, core.StdNames.nme.MOD, 14)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          330
+        </td>
+        <td>
+          6150
+        </td>
+        <td>
+          11928
+          -
+          11964
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.backend.jvm.DottyPrimitives.addPrimitives
+        </td>
+        <td style="background: #AEF1AE">
+          addPrimitives(LongClass, core.StdNames.nme.LT, 44)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          331
+        </td>
+        <td>
+          6151
+        </td>
+        <td>
+          11969
+          -
+          12005
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.backend.jvm.DottyPrimitives.addPrimitives
+        </td>
+        <td style="background: #AEF1AE">
+          addPrimitives(LongClass, core.StdNames.nme.LE, 45)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          332
+        </td>
+        <td>
+          6152
+        </td>
+        <td>
+          12010
+          -
+          12046
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.backend.jvm.DottyPrimitives.addPrimitives
+        </td>
+        <td style="background: #AEF1AE">
+          addPrimitives(LongClass, core.StdNames.nme.GT, 47)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          333
+        </td>
+        <td>
+          6153
+        </td>
+        <td>
+          12051
+          -
+          12087
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.backend.jvm.DottyPrimitives.addPrimitives
+        </td>
+        <td style="background: #AEF1AE">
+          addPrimitives(LongClass, core.StdNames.nme.GE, 46)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          334
+        </td>
+        <td>
+          6154
+        </td>
+        <td>
+          12092
+          -
+          12130
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.backend.jvm.DottyPrimitives.addPrimitives
+        </td>
+        <td style="background: #AEF1AE">
+          addPrimitives(LongClass, core.StdNames.nme.XOR, 21)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          335
+        </td>
+        <td>
+          6155
+        </td>
+        <td>
+          12135
+          -
+          12171
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.backend.jvm.DottyPrimitives.addPrimitives
+        </td>
+        <td style="background: #AEF1AE">
+          addPrimitives(LongClass, core.StdNames.nme.OR, 20)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          336
+        </td>
+        <td>
+          6156
+        </td>
+        <td>
+          12176
+          -
+          12214
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.backend.jvm.DottyPrimitives.addPrimitives
+        </td>
+        <td style="background: #AEF1AE">
+          addPrimitives(LongClass, core.StdNames.nme.AND, 22)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          337
+        </td>
+        <td>
+          6157
+        </td>
+        <td>
+          12219
+          -
+          12257
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.backend.jvm.DottyPrimitives.addPrimitives
+        </td>
+        <td style="background: #AEF1AE">
+          addPrimitives(LongClass, core.StdNames.nme.LSL, 30)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          338
+        </td>
+        <td>
+          6158
+        </td>
+        <td>
+          12262
+          -
+          12300
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.backend.jvm.DottyPrimitives.addPrimitives
+        </td>
+        <td style="background: #AEF1AE">
+          addPrimitives(LongClass, core.StdNames.nme.LSR, 31)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          339
+        </td>
+        <td>
+          6159
+        </td>
+        <td>
+          12305
+          -
+          12343
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.backend.jvm.DottyPrimitives.addPrimitives
+        </td>
+        <td style="background: #AEF1AE">
+          addPrimitives(LongClass, core.StdNames.nme.ASR, 32)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          341
+        </td>
+        <td>
+          6160
+        </td>
+        <td>
+          12369
+          -
+          12412
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.backend.jvm.DottyPrimitives.addPrimitives
+        </td>
+        <td style="background: #AEF1AE">
+          addPrimitives(LongClass, core.StdNames.nme.toByte, 240)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          342
+        </td>
+        <td>
+          6161
+        </td>
+        <td>
+          12417
+          -
+          12460
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.backend.jvm.DottyPrimitives.addPrimitives
+        </td>
+        <td style="background: #AEF1AE">
+          addPrimitives(LongClass, core.StdNames.nme.toShort, 241)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          343
+        </td>
+        <td>
+          6162
+        </td>
+        <td>
+          12465
+          -
+          12508
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.backend.jvm.DottyPrimitives.addPrimitives
+        </td>
+        <td style="background: #AEF1AE">
+          addPrimitives(LongClass, core.StdNames.nme.toChar, 242)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          344
+        </td>
+        <td>
+          6163
+        </td>
+        <td>
+          12513
+          -
+          12556
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.backend.jvm.DottyPrimitives.addPrimitives
+        </td>
+        <td style="background: #AEF1AE">
+          addPrimitives(LongClass, core.StdNames.nme.toInt, 243)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          345
+        </td>
+        <td>
+          6164
+        </td>
+        <td>
+          12561
+          -
+          12604
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.backend.jvm.DottyPrimitives.addPrimitives
+        </td>
+        <td style="background: #AEF1AE">
+          addPrimitives(LongClass, core.StdNames.nme.toLong, 244)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          347
+        </td>
+        <td>
+          6165
+        </td>
+        <td>
+          12630
+          -
+          12672
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.backend.jvm.DottyPrimitives.addPrimitives
+        </td>
+        <td style="background: #AEF1AE">
+          addPrimitives(LongClass, core.StdNames.nme.UNARY_+, 1)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          348
+        </td>
+        <td>
+          6166
+        </td>
+        <td>
+          12677
+          -
+          12719
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.backend.jvm.DottyPrimitives.addPrimitives
+        </td>
+        <td style="background: #AEF1AE">
+          addPrimitives(LongClass, core.StdNames.nme.UNARY_-, 2)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          349
+        </td>
+        <td>
+          6167
+        </td>
+        <td>
+          12724
+          -
+          12766
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.backend.jvm.DottyPrimitives.addPrimitives
+        </td>
+        <td style="background: #AEF1AE">
+          addPrimitives(LongClass, core.StdNames.nme.UNARY_~, 3)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          350
+        </td>
+        <td>
+          6168
+        </td>
+        <td>
+          12771
+          -
+          12814
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.backend.jvm.DottyPrimitives.addPrimitives
+        </td>
+        <td style="background: #AEF1AE">
+          addPrimitives(LongClass, core.StdNames.nme.toFloat, 245)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          351
+        </td>
+        <td>
+          6169
+        </td>
+        <td>
+          12819
+          -
+          12862
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.backend.jvm.DottyPrimitives.addPrimitives
+        </td>
+        <td style="background: #AEF1AE">
+          addPrimitives(LongClass, core.StdNames.nme.toDouble, 246)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          355
+        </td>
+        <td>
+          6170
+        </td>
+        <td>
+          12929
+          -
+          12966
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.backend.jvm.DottyPrimitives.addPrimitives
+        </td>
+        <td style="background: #AEF1AE">
+          addPrimitives(FloatClass, core.StdNames.nme.EQ, 42)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          356
+        </td>
+        <td>
+          6171
+        </td>
+        <td>
+          12971
+          -
+          13008
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.backend.jvm.DottyPrimitives.addPrimitives
+        </td>
+        <td style="background: #AEF1AE">
+          addPrimitives(FloatClass, core.StdNames.nme.NE, 43)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          357
+        </td>
+        <td>
+          6172
+        </td>
+        <td>
+          13013
+          -
+          13052
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.backend.jvm.DottyPrimitives.addPrimitives
+        </td>
+        <td style="background: #AEF1AE">
+          addPrimitives(FloatClass, core.StdNames.nme.ADD, 10)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          358
+        </td>
+        <td>
+          6173
+        </td>
+        <td>
+          13057
+          -
+          13096
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.backend.jvm.DottyPrimitives.addPrimitives
+        </td>
+        <td style="background: #AEF1AE">
+          addPrimitives(FloatClass, core.StdNames.nme.SUB, 11)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          359
+        </td>
+        <td>
+          6174
+        </td>
+        <td>
+          13101
+          -
+          13140
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.backend.jvm.DottyPrimitives.addPrimitives
+        </td>
+        <td style="background: #AEF1AE">
+          addPrimitives(FloatClass, core.StdNames.nme.MUL, 12)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          360
+        </td>
+        <td>
+          6175
+        </td>
+        <td>
+          13145
+          -
+          13184
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.backend.jvm.DottyPrimitives.addPrimitives
+        </td>
+        <td style="background: #AEF1AE">
+          addPrimitives(FloatClass, core.StdNames.nme.DIV, 13)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          361
+        </td>
+        <td>
+          6176
+        </td>
+        <td>
+          13189
+          -
+          13228
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.backend.jvm.DottyPrimitives.addPrimitives
+        </td>
+        <td style="background: #AEF1AE">
+          addPrimitives(FloatClass, core.StdNames.nme.MOD, 14)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          362
+        </td>
+        <td>
+          6177
+        </td>
+        <td>
+          13233
+          -
+          13270
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.backend.jvm.DottyPrimitives.addPrimitives
+        </td>
+        <td style="background: #AEF1AE">
+          addPrimitives(FloatClass, core.StdNames.nme.LT, 44)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          363
+        </td>
+        <td>
+          6178
+        </td>
+        <td>
+          13275
+          -
+          13312
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.backend.jvm.DottyPrimitives.addPrimitives
+        </td>
+        <td style="background: #AEF1AE">
+          addPrimitives(FloatClass, core.StdNames.nme.LE, 45)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          364
+        </td>
+        <td>
+          6179
+        </td>
+        <td>
+          13317
+          -
+          13354
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.backend.jvm.DottyPrimitives.addPrimitives
+        </td>
+        <td style="background: #AEF1AE">
+          addPrimitives(FloatClass, core.StdNames.nme.GT, 47)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          365
+        </td>
+        <td>
+          6180
+        </td>
+        <td>
+          13359
+          -
+          13396
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.backend.jvm.DottyPrimitives.addPrimitives
+        </td>
+        <td style="background: #AEF1AE">
+          addPrimitives(FloatClass, core.StdNames.nme.GE, 46)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          367
+        </td>
+        <td>
+          6181
+        </td>
+        <td>
+          13420
+          -
+          13464
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.backend.jvm.DottyPrimitives.addPrimitives
+        </td>
+        <td style="background: #AEF1AE">
+          addPrimitives(FloatClass, core.StdNames.nme.toByte, 250)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          368
+        </td>
+        <td>
+          6182
+        </td>
+        <td>
+          13469
+          -
+          13513
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.backend.jvm.DottyPrimitives.addPrimitives
+        </td>
+        <td style="background: #AEF1AE">
+          addPrimitives(FloatClass, core.StdNames.nme.toShort, 251)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          369
+        </td>
+        <td>
+          6183
+        </td>
+        <td>
+          13518
+          -
+          13562
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.backend.jvm.DottyPrimitives.addPrimitives
+        </td>
+        <td style="background: #AEF1AE">
+          addPrimitives(FloatClass, core.StdNames.nme.toChar, 252)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          370
+        </td>
+        <td>
+          6184
+        </td>
+        <td>
+          13567
+          -
+          13611
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.backend.jvm.DottyPrimitives.addPrimitives
+        </td>
+        <td style="background: #AEF1AE">
+          addPrimitives(FloatClass, core.StdNames.nme.toInt, 253)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          371
+        </td>
+        <td>
+          6185
+        </td>
+        <td>
+          13616
+          -
+          13660
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.backend.jvm.DottyPrimitives.addPrimitives
+        </td>
+        <td style="background: #AEF1AE">
+          addPrimitives(FloatClass, core.StdNames.nme.toLong, 254)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          372
+        </td>
+        <td>
+          6186
+        </td>
+        <td>
+          13665
+          -
+          13709
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.backend.jvm.DottyPrimitives.addPrimitives
+        </td>
+        <td style="background: #AEF1AE">
+          addPrimitives(FloatClass, core.StdNames.nme.toFloat, 255)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          373
+        </td>
+        <td>
+          6187
+        </td>
+        <td>
+          13714
+          -
+          13758
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.backend.jvm.DottyPrimitives.addPrimitives
+        </td>
+        <td style="background: #AEF1AE">
+          addPrimitives(FloatClass, core.StdNames.nme.toDouble, 256)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          375
+        </td>
+        <td>
+          6188
+        </td>
+        <td>
+          13784
+          -
+          13827
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.backend.jvm.DottyPrimitives.addPrimitives
+        </td>
+        <td style="background: #AEF1AE">
+          addPrimitives(FloatClass, core.StdNames.nme.UNARY_+, 1)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          376
+        </td>
+        <td>
+          6189
+        </td>
+        <td>
+          13832
+          -
+          13875
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.backend.jvm.DottyPrimitives.addPrimitives
+        </td>
+        <td style="background: #AEF1AE">
+          addPrimitives(FloatClass, core.StdNames.nme.UNARY_-, 2)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          380
+        </td>
+        <td>
+          6190
+        </td>
+        <td>
+          13945
+          -
+          13983
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.backend.jvm.DottyPrimitives.addPrimitives
+        </td>
+        <td style="background: #AEF1AE">
+          addPrimitives(DoubleClass, core.StdNames.nme.EQ, 42)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          381
+        </td>
+        <td>
+          6191
+        </td>
+        <td>
+          13988
+          -
+          14026
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.backend.jvm.DottyPrimitives.addPrimitives
+        </td>
+        <td style="background: #AEF1AE">
+          addPrimitives(DoubleClass, core.StdNames.nme.NE, 43)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          382
+        </td>
+        <td>
+          6192
+        </td>
+        <td>
+          14031
+          -
+          14071
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.backend.jvm.DottyPrimitives.addPrimitives
+        </td>
+        <td style="background: #AEF1AE">
+          addPrimitives(DoubleClass, core.StdNames.nme.ADD, 10)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          383
+        </td>
+        <td>
+          6193
+        </td>
+        <td>
+          14076
+          -
+          14116
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.backend.jvm.DottyPrimitives.addPrimitives
+        </td>
+        <td style="background: #AEF1AE">
+          addPrimitives(DoubleClass, core.StdNames.nme.SUB, 11)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          384
+        </td>
+        <td>
+          6194
+        </td>
+        <td>
+          14121
+          -
+          14161
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.backend.jvm.DottyPrimitives.addPrimitives
+        </td>
+        <td style="background: #AEF1AE">
+          addPrimitives(DoubleClass, core.StdNames.nme.MUL, 12)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          385
+        </td>
+        <td>
+          6195
+        </td>
+        <td>
+          14166
+          -
+          14206
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.backend.jvm.DottyPrimitives.addPrimitives
+        </td>
+        <td style="background: #AEF1AE">
+          addPrimitives(DoubleClass, core.StdNames.nme.DIV, 13)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          386
+        </td>
+        <td>
+          6196
+        </td>
+        <td>
+          14211
+          -
+          14251
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.backend.jvm.DottyPrimitives.addPrimitives
+        </td>
+        <td style="background: #AEF1AE">
+          addPrimitives(DoubleClass, core.StdNames.nme.MOD, 14)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          387
+        </td>
+        <td>
+          6197
+        </td>
+        <td>
+          14256
+          -
+          14294
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.backend.jvm.DottyPrimitives.addPrimitives
+        </td>
+        <td style="background: #AEF1AE">
+          addPrimitives(DoubleClass, core.StdNames.nme.LT, 44)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          388
+        </td>
+        <td>
+          6198
+        </td>
+        <td>
+          14299
+          -
+          14337
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.backend.jvm.DottyPrimitives.addPrimitives
+        </td>
+        <td style="background: #AEF1AE">
+          addPrimitives(DoubleClass, core.StdNames.nme.LE, 45)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          389
+        </td>
+        <td>
+          6199
+        </td>
+        <td>
+          14342
+          -
+          14380
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.backend.jvm.DottyPrimitives.addPrimitives
+        </td>
+        <td style="background: #AEF1AE">
+          addPrimitives(DoubleClass, core.StdNames.nme.GT, 47)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          390
+        </td>
+        <td>
+          6200
+        </td>
+        <td>
+          14385
+          -
+          14423
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.backend.jvm.DottyPrimitives.addPrimitives
+        </td>
+        <td style="background: #AEF1AE">
+          addPrimitives(DoubleClass, core.StdNames.nme.GE, 46)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          392
+        </td>
+        <td>
+          6201
+        </td>
+        <td>
+          14447
+          -
+          14492
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.backend.jvm.DottyPrimitives.addPrimitives
+        </td>
+        <td style="background: #AEF1AE">
+          addPrimitives(DoubleClass, core.StdNames.nme.toByte, 260)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          393
+        </td>
+        <td>
+          6202
+        </td>
+        <td>
+          14497
+          -
+          14542
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.backend.jvm.DottyPrimitives.addPrimitives
+        </td>
+        <td style="background: #AEF1AE">
+          addPrimitives(DoubleClass, core.StdNames.nme.toShort, 261)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          394
+        </td>
+        <td>
+          6203
+        </td>
+        <td>
+          14547
+          -
+          14592
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.backend.jvm.DottyPrimitives.addPrimitives
+        </td>
+        <td style="background: #AEF1AE">
+          addPrimitives(DoubleClass, core.StdNames.nme.toChar, 262)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          395
+        </td>
+        <td>
+          6204
+        </td>
+        <td>
+          14597
+          -
+          14642
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.backend.jvm.DottyPrimitives.addPrimitives
+        </td>
+        <td style="background: #AEF1AE">
+          addPrimitives(DoubleClass, core.StdNames.nme.toInt, 263)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          396
+        </td>
+        <td>
+          6205
+        </td>
+        <td>
+          14647
+          -
+          14692
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.backend.jvm.DottyPrimitives.addPrimitives
+        </td>
+        <td style="background: #AEF1AE">
+          addPrimitives(DoubleClass, core.StdNames.nme.toLong, 264)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          397
+        </td>
+        <td>
+          6206
+        </td>
+        <td>
+          14697
+          -
+          14742
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.backend.jvm.DottyPrimitives.addPrimitives
+        </td>
+        <td style="background: #AEF1AE">
+          addPrimitives(DoubleClass, core.StdNames.nme.toFloat, 265)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          398
+        </td>
+        <td>
+          6207
+        </td>
+        <td>
+          14747
+          -
+          14792
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.backend.jvm.DottyPrimitives.addPrimitives
+        </td>
+        <td style="background: #AEF1AE">
+          addPrimitives(DoubleClass, core.StdNames.nme.toDouble, 266)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          400
+        </td>
+        <td>
+          6208
+        </td>
+        <td>
+          14818
+          -
+          14862
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.backend.jvm.DottyPrimitives.addPrimitives
+        </td>
+        <td style="background: #AEF1AE">
+          addPrimitives(DoubleClass, core.StdNames.nme.UNARY_+, 1)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          401
+        </td>
+        <td>
+          6209
+        </td>
+        <td>
+          14867
+          -
+          14911
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.backend.jvm.DottyPrimitives.addPrimitives
+        </td>
+        <td style="background: #AEF1AE">
+          addPrimitives(DoubleClass, core.StdNames.nme.UNARY_-, 2)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          404
+        </td>
+        <td>
+          6210
+        </td>
+        <td>
+          14918
+          -
+          14934
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Symbols.MutableSymbolMap.toMap
+        </td>
+        <td style="background: #AEF1AE">
+          primitives.toMap
+        </td>
+      </tr><tr>
+        <td>
+          408
+        </td>
+        <td>
+          6211
+        </td>
+        <td>
+          15018
+          -
+          15021
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.backend.jvm.DottyPrimitives.ctx
+        </td>
+        <td style="background: #AEF1AE">
+          DottyPrimitives.this.ctx
+        </td>
+      </tr><tr>
+        <td>
+          408
+        </td>
+        <td>
+          6212
+        </td>
+        <td>
+          15007
+          -
+          15022
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Trees.Tree.symbol
+        </td>
+        <td style="background: #AEF1AE">
+          fun.symbol(DottyPrimitives.this.ctx)
+        </td>
+      </tr><tr>
+        <td>
+          408
+        </td>
+        <td>
+          6218
+        </td>
+        <td>
+          14986
+          -
+          15305
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Boolean.||
+        </td>
+        <td style="background: #AEF1AE">
+          DottyPrimitives.this.primitives.contains(fun.symbol(DottyPrimitives.this.ctx)).||(fun.symbol(DottyPrimitives.this.ctx).==(core.Symbols.NoSymbol).&amp;&amp;(fun match {
+  case (qualifier: dotty.tools.dotc.ast.Trees.Tree[dotty.tools.dotc.core.Types.Type], name: dotty.tools.dotc.core.Names.Name)dotty.tools.dotc.ast.Trees.Select[dotty.tools.dotc.core.Types.Type](_, dotty.tools.dotc.core.StdNames.nme.clone_) =&gt; false
+  case _ =&gt; true
+}))
+        </td>
+      </tr><tr>
+        <td>
+          409
+        </td>
+        <td>
+          6214
+        </td>
+        <td>
+          15053
+          -
+          15061
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Symbols.NoSymbol
+        </td>
+        <td style="background: #AEF1AE">
+          core.Symbols.NoSymbol
+        </td>
+      </tr><tr>
+        <td>
+          409
+        </td>
+        <td>
+          6213
+        </td>
+        <td>
+          15045
+          -
+          15048
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.backend.jvm.DottyPrimitives.ctx
+        </td>
+        <td style="background: #AEF1AE">
+          DottyPrimitives.this.ctx
+        </td>
+      </tr><tr>
+        <td>
+          410
+        </td>
+        <td>
+          6217
+        </td>
+        <td>
+          15034
+          -
+          15304
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Boolean.&amp;&amp;
+        </td>
+        <td style="background: #AEF1AE">
+          fun.symbol(DottyPrimitives.this.ctx).==(core.Symbols.NoSymbol).&amp;&amp;(fun match {
+  case (qualifier: dotty.tools.dotc.ast.Trees.Tree[dotty.tools.dotc.core.Types.Type], name: dotty.tools.dotc.core.Names.Name)dotty.tools.dotc.ast.Trees.Select[dotty.tools.dotc.core.Types.Type](_, dotty.tools.dotc.core.StdNames.nme.clone_) =&gt; false
+  case _ =&gt; true
+})
+        </td>
+      </tr><tr>
+        <td>
+          411
+        </td>
+        <td>
+          6215
+        </td>
+        <td>
+          15225
+          -
+          15230
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          false
+        </td>
+      </tr><tr>
+        <td>
+          412
+        </td>
+        <td>
+          6216
+        </td>
+        <td>
+          15291
+          -
+          15295
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          true
+        </td>
+      </tr>
+    </table>
+          </div>
+        </div>
+      </body>
+    </html>

@@ -1,0 +1,3148 @@
+<html>
+      <head>
+        <meta http-equiv="Content-Type" content="text/html; charset=utf-8"/>
+        <title id="title">
+          dotty/tools/dotc/core/TyperState.scala.html
+        </title>
+        <script src="https://ajax.googleapis.com/ajax/libs/jquery/1.10.2/jquery.min.js"></script><link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/jquery.tablesorter/2.20.1/css/theme.default.min.css" type="text/css"/><script src="https://cdnjs.cloudflare.com/ajax/libs/jquery.tablesorter/2.20.1/js/jquery.tablesorter.min.js"></script><link rel="stylesheet" href="https://netdna.bootstrapcdn.com/bootstrap/3.0.3/css/bootstrap.min.css" type="text/css"/><script src="https://netdna.bootstrapcdn.com/bootstrap/3.0.3/js/bootstrap.min.js"></script><script type="text/javascript">
+        $(document).ready(function() {$(".tablesorter").tablesorter();});
+      </script>
+        <style>
+          table.codegrid { font-family: monospace; font-size: 12px; width: auto!important; }table.statementlist { width: auto!important; font-size: 13px; } table.codegrid td { padding: 0!important; border: 0!important } table td.linenumber { width: 40px!important; } 
+        </style>
+      </head>
+      <body style="font-family: monospace;">
+        <ul class="nav nav-tabs">
+          <li>
+            <a href="#codegrid" data-toggle="tab">Codegrid</a>
+          </li>
+          <li>
+            <a href="#statementlist" data-toggle="tab">Statement List</a>
+          </li>
+        </ul>
+        <div class="tab-content">
+          <div class="tab-pane active" id="codegrid">
+            <pre style='font-size: 12pt; font-family: courier;'>1 <span style=''>package dotty.tools
+</span>2 <span style=''>package dotc
+</span>3 <span style=''>package core
+</span>4 <span style=''>
+</span>5 <span style=''>import Types._
+</span>6 <span style=''>import Flags._
+</span>7 <span style=''>import Contexts._
+</span>8 <span style=''>import util.{SimpleIdentityMap, DotClass}
+</span>9 <span style=''>import reporting._
+</span>10 <span style=''>import printing.{Showable, Printer}
+</span>11 <span style=''>import printing.Texts._
+</span>12 <span style=''>import config.Config
+</span>13 <span style=''>import collection.mutable
+</span>14 <span style=''>import java.lang.ref.WeakReference
+</span>15 <span style=''>
+</span>16 <span style=''>class TyperState(previous: TyperState /* | Null */) extends DotClass with Showable {
+</span>17 <span style=''>
+</span>18 <span style=''>  private[this] var myReporter =
+</span>19 <span style=''>    if (</span><span style='background: #AEF1AE'>previous == null</span><span style=''>) </span><span style='background: #AEF1AE'>new ConsoleReporter()</span><span style=''> else </span><span style='background: #AEF1AE'>previous.reporter</span><span style=''>
+</span>20 <span style=''>
+</span>21 <span style=''>  def reporter: Reporter = </span><span style='background: #AEF1AE'>myReporter</span><span style=''>
+</span>22 <span style=''>
+</span>23 <span style=''>  /** A fresh type state with the same constraint as this one and the given reporter */
+</span>24 <span style=''>  def setReporter(reporter: Reporter): this.type = { myReporter = reporter; this }
+</span>25 <span style=''>
+</span>26 <span style=''>  private[this] var myConstraint: Constraint =
+</span>27 <span style=''>    if (</span><span style='background: #AEF1AE'>previous == null</span><span style=''>) </span><span style='background: #AEF1AE'>new OrderingConstraint(SimpleIdentityMap.Empty, SimpleIdentityMap.Empty, SimpleIdentityMap.Empty)</span><span style=''>
+</span>28 <span style=''>    else </span><span style='background: #AEF1AE'>previous.constraint</span><span style=''>
+</span>29 <span style=''>
+</span>30 <span style=''>  def constraint = </span><span style='background: #AEF1AE'>myConstraint</span><span style=''>
+</span>31 <span style=''>  def constraint_=(c: Constraint)(implicit ctx: Context) = {
+</span>32 <span style=''>    if (</span><span style='background: #AEF1AE'>Config.debugCheckConstraintsClosed &amp;&amp; </span><span style='background: #F0ADAD'>isGlobalCommittable</span><span style=''>) </span><span style='background: #F0ADAD'>c.checkClosed()</span><span style=''>
+</span>33 <span style=''>    myConstraint = c
+</span>34 <span style=''>  }
+</span>35 <span style=''>
+</span>36 <span style=''>  /** Reset constraint to `c` and mark current constraint as retracted if it differs from `c` */
+</span>37 <span style=''>  def resetConstraintTo(c: Constraint) = {
+</span>38 <span style=''>    if (</span><span style='background: #AEF1AE'>c `ne` myConstraint</span><span style=''>) </span><span style='background: #AEF1AE'>myConstraint.markRetracted()</span><span style=''>
+</span>39 <span style=''>    myConstraint = c
+</span>40 <span style=''>  }
+</span>41 <span style=''>
+</span>42 <span style=''>  private val previousConstraint =
+</span>43 <span style=''>    if (</span><span style='background: #AEF1AE'>previous == null</span><span style=''>) </span><span style='background: #AEF1AE'>constraint</span><span style=''> else </span><span style='background: #AEF1AE'>previous.constraint</span><span style=''>
+</span>44 <span style=''>
+</span>45 <span style=''>  private[this] var myEphemeral: Boolean =
+</span>46 <span style=''>    if (</span><span style='background: #AEF1AE'>previous == null</span><span style=''>) </span><span style='background: #AEF1AE'>false</span><span style=''> else </span><span style='background: #AEF1AE'>previous.ephemeral</span><span style=''>
+</span>47 <span style=''>
+</span>48 <span style=''>  /** The ephemeral flag is set as a side effect if an operation accesses
+</span>49 <span style=''>   *  the underlying type of a type variable. The reason we need this flag is
+</span>50 <span style=''>   *  that any such operation is not referentially transparent; it might logically change
+</span>51 <span style=''>   *  its value at the moment the type variable is instantiated. Caching code needs to
+</span>52 <span style=''>   *  check the ephemeral flag; If the flag is set during an operation, the result
+</span>53 <span style=''>   *  of that operation should not be cached.
+</span>54 <span style=''>   */
+</span>55 <span style=''>  def ephemeral = </span><span style='background: #AEF1AE'>myEphemeral</span><span style=''>
+</span>56 <span style=''>  def ephemeral_=(x: Boolean): Unit = { myEphemeral = x }
+</span>57 <span style=''>
+</span>58 <span style=''>  private[this] var myIsCommittable = </span><span style='background: #AEF1AE'>true</span><span style=''>
+</span>59 <span style=''>
+</span>60 <span style=''>  def isCommittable = </span><span style='background: #AEF1AE'>myIsCommittable</span><span style=''>
+</span>61 <span style=''>
+</span>62 <span style=''>  def setCommittable(committable: Boolean): this.type = { this.myIsCommittable = committable; this }
+</span>63 <span style=''>
+</span>64 <span style=''>  def isGlobalCommittable: Boolean =
+</span>65 <span style=''>    </span><span style='background: #AEF1AE'>isCommittable &amp;&amp; (previous == null || previous.isGlobalCommittable)</span><span style=''>
+</span>66 <span style=''>
+</span>67 <span style=''>  private[this] var isShared = </span><span style='background: #AEF1AE'>false</span><span style=''>
+</span>68 <span style=''>
+</span>69 <span style=''>  /** Mark typer state as shared (typically because it is the typer state of
+</span>70 <span style=''>   *  the creation context of a source definition that potentially still needs
+</span>71 <span style=''>   *  to be completed). Members of shared typer states are never overwritten in `test`.
+</span>72 <span style=''>   */
+</span>73 <span style=''>  def markShared(): Unit = isShared = </span><span style='background: #AEF1AE'>true</span><span style=''>
+</span>74 <span style=''>
+</span>75 <span style=''>  private[this] var isCommitted = </span><span style='background: #AEF1AE'>false</span><span style=''>
+</span>76 <span style=''>
+</span>77 <span style=''>  /** A fresh typer state with the same constraint as this one. */
+</span>78 <span style=''>  def fresh(): TyperState =
+</span>79 <span style=''>    </span><span style='background: #AEF1AE'>new TyperState(this).setReporter(new StoreReporter(reporter)).setCommittable(isCommittable)</span><span style=''>
+</span>80 <span style=''>
+</span>81 <span style=''>  /** The uninstantiated variables */
+</span>82 <span style=''>  def uninstVars = </span><span style='background: #F0ADAD'>constraint.uninstVars</span><span style=''>
+</span>83 <span style=''>
+</span>84 <span style=''>  /** Gives for each instantiated type var that does not yet have its `inst` field
+</span>85 <span style=''>   *  set, the instance value stored in the constraint. Storing instances in constraints
+</span>86 <span style=''>   *  is done only in a temporary way for contexts that may be retracted
+</span>87 <span style=''>   *  without also retracting the type var as a whole.
+</span>88 <span style=''>   */
+</span>89 <span style=''>  def instType(tvar: TypeVar)(implicit ctx: Context): Type = </span><span style='background: #AEF1AE'>constraint.entry(tvar.origin)</span><span style=''> match {
+</span>90 <span style=''>    case _: TypeBounds =&gt; </span><span style='background: #AEF1AE'>NoType</span><span style=''>
+</span>91 <span style=''>    case tp: TypeParamRef =&gt;
+</span>92 <span style=''>      var tvar1 = </span><span style='background: #AEF1AE'>constraint.typeVarOfParam(tp)</span><span style=''>
+</span>93 <span style=''>      if (</span><span style='background: #AEF1AE'>tvar1.exists</span><span style=''>) </span><span style='background: #AEF1AE'>tvar1</span><span style=''> else </span><span style='background: #F0ADAD'>tp</span><span style=''>
+</span>94 <span style=''>    case tp =&gt; tp
+</span>95 <span style=''>  }
+</span>96 <span style=''>
+</span>97 <span style=''>  /** The closest ancestor of this typer state (including possibly this typer state itself)
+</span>98 <span style=''>   *  which is not yet committed, or which does not have a parent.
+</span>99 <span style=''>   */
+</span>100 <span style=''>  def uncommittedAncestor: TyperState =
+</span>101 <span style=''>    if (</span><span style='background: #AEF1AE'>isCommitted</span><span style=''>) </span><span style='background: #F0ADAD'>previous.uncommittedAncestor</span><span style=''> else </span><span style='background: #AEF1AE'>this</span><span style=''>
+</span>102 <span style=''>
+</span>103 <span style=''>  private[this] var testReporter: StoreReporter = </span><span style='background: #AEF1AE'>null</span><span style=''>
+</span>104 <span style=''>
+</span>105 <span style=''>  /** Test using `op`. If current typerstate is shared, run `op` in a fresh exploration
+</span>106 <span style=''>   *  typerstate. If it is unshared, run `op` in current typerState, restoring typerState
+</span>107 <span style=''>   *  to previous state afterwards.
+</span>108 <span style=''>   */
+</span>109 <span style=''>  def test[T](op: Context =&gt; T)(implicit ctx: Context): T =
+</span>110 <span style=''>    if (</span><span style='background: #AEF1AE'>isShared</span><span style=''>)
+</span>111 <span style=''>      </span><span style='background: #AEF1AE'>op(ctx.fresh.setExploreTyperState())</span><span style=''>
+</span>112 <span style=''>    else </span><span style='background: #AEF1AE'>{
+</span>113 <span style=''></span><span style='background: #AEF1AE'>      val savedConstraint = myConstraint
+</span>114 <span style=''></span><span style='background: #AEF1AE'>      val savedReporter = myReporter
+</span>115 <span style=''></span><span style='background: #AEF1AE'>      val savedCommittable = myIsCommittable
+</span>116 <span style=''></span><span style='background: #AEF1AE'>      val savedCommitted = isCommitted
+</span>117 <span style=''></span><span style='background: #AEF1AE'>      myIsCommittable = false
+</span>118 <span style=''></span><span style='background: #AEF1AE'>      myReporter = {
+</span>119 <span style=''></span><span style='background: #AEF1AE'>        if (testReporter == null) {
+</span>120 <span style=''></span><span style='background: #AEF1AE'>          testReporter = new StoreReporter(reporter)
+</span>121 <span style=''></span><span style='background: #AEF1AE'>        } else {
+</span>122 <span style=''></span><span style='background: #AEF1AE'>          testReporter.reset()
+</span>123 <span style=''></span><span style='background: #AEF1AE'>        }
+</span>124 <span style=''></span><span style='background: #AEF1AE'>        testReporter
+</span>125 <span style=''></span><span style='background: #AEF1AE'>      }
+</span>126 <span style=''></span><span style='background: #AEF1AE'>      try op(ctx)
+</span>127 <span style=''></span><span style='background: #AEF1AE'>      finally {
+</span>128 <span style=''></span><span style='background: #AEF1AE'>        resetConstraintTo(savedConstraint)
+</span>129 <span style=''></span><span style='background: #AEF1AE'>        myReporter = savedReporter
+</span>130 <span style=''></span><span style='background: #AEF1AE'>        myIsCommittable = savedCommittable
+</span>131 <span style=''></span><span style='background: #AEF1AE'>        isCommitted = savedCommitted
+</span>132 <span style=''></span><span style='background: #AEF1AE'>      }
+</span>133 <span style=''></span><span style='background: #AEF1AE'>    }</span><span style=''>
+</span>134 <span style=''>
+</span>135 <span style=''>  /** Commit typer state so that its information is copied into current typer state
+</span>136 <span style=''>   *  In addition (1) the owning state of undetermined or temporarily instantiated
+</span>137 <span style=''>   *  type variables changes from this typer state to the current one. (2) Variables
+</span>138 <span style=''>   *  that were temporarily instantiated in the current typer state are permanently
+</span>139 <span style=''>   *  instantiated instead.
+</span>140 <span style=''>   *
+</span>141 <span style=''>   *  A note on merging: An interesting test case is isApplicableSafe.scala. It turns out that this
+</span>142 <span style=''>   *  requires a context merge using the new `&amp;' operator. Sequence of actions:
+</span>143 <span style=''>   *  1) Typecheck argument in typerstate 1.
+</span>144 <span style=''>   *  2) Cache argument.
+</span>145 <span style=''>   *  3) Evolve same typer state (to typecheck other arguments, say)
+</span>146 <span style=''>   *     leading to a different constraint.
+</span>147 <span style=''>   *  4) Take typechecked argument in same state.
+</span>148 <span style=''>   *
+</span>149 <span style=''>   * It turns out that the merge is needed not just for
+</span>150 <span style=''>   * isApplicableSafe but also for (e.g. erased-lubs.scala) as well as
+</span>151 <span style=''>   * many parts of dotty itself.
+</span>152 <span style=''>   */
+</span>153 <span style=''>  def commit()(implicit ctx: Context) = {
+</span>154 <span style=''>    val targetState = </span><span style='background: #AEF1AE'>ctx.typerState</span><span style=''>
+</span>155 <span style=''>    </span><span style='background: #AEF1AE'>assert(isCommittable)</span><span style=''>
+</span>156 <span style=''>    </span><span style='background: #AEF1AE'>targetState.constraint =
+</span>157 <span style=''></span><span style='background: #AEF1AE'>      if (targetState.constraint eq previousConstraint) constraint
+</span>158 <span style=''></span><span style='background: #AEF1AE'>      else targetState.constraint &amp; constraint</span><span style=''>
+</span>159 <span style=''>    </span><span style='background: #AEF1AE'>constraint foreachTypeVar { tvar =&gt;
+</span>160 <span style=''></span><span style='background: #AEF1AE'>      if (tvar.owningState.get eq this) tvar.owningState = new WeakReference(targetState)</span><span style=''>
+</span>161 <span style=''>    }
+</span>162 <span style=''>    </span><span style='background: #AEF1AE'>targetState.ephemeral |= ephemeral</span><span style=''>
+</span>163 <span style=''>    </span><span style='background: #AEF1AE'>targetState.gc()</span><span style=''>
+</span>164 <span style=''>    </span><span style='background: #AEF1AE'>reporter.flush()</span><span style=''>
+</span>165 <span style=''>    isCommitted = </span><span style='background: #AEF1AE'>true</span><span style=''>
+</span>166 <span style=''>  }
+</span>167 <span style=''>
+</span>168 <span style=''>  /** Make type variable instances permanent by assigning to `inst` field if
+</span>169 <span style=''>   *  type variable instantiation cannot be retracted anymore. Then, remove
+</span>170 <span style=''>   *  no-longer needed constraint entries.
+</span>171 <span style=''>   */
+</span>172 <span style=''>  def gc()(implicit ctx: Context): Unit = {
+</span>173 <span style=''>    val toCollect = </span><span style='background: #AEF1AE'>new mutable.ListBuffer[TypeLambda]</span><span style=''>
+</span>174 <span style=''>    </span><span style='background: #AEF1AE'>constraint foreachTypeVar { tvar =&gt;
+</span>175 <span style=''></span><span style='background: #AEF1AE'>      if (!tvar.inst.exists) {
+</span>176 <span style=''></span><span style='background: #AEF1AE'>        val inst = instType(tvar)
+</span>177 <span style=''></span><span style='background: #AEF1AE'>        if (inst.exists &amp;&amp; (tvar.owningState.get eq this)) {
+</span>178 <span style=''></span><span style='background: #AEF1AE'>          tvar.inst = inst
+</span>179 <span style=''></span><span style='background: #AEF1AE'>          val lam = tvar.origin.binder
+</span>180 <span style=''></span><span style='background: #AEF1AE'>          if (constraint.isRemovable(lam)) toCollect += lam
+</span>181 <span style=''></span><span style='background: #AEF1AE'>        }
+</span>182 <span style=''></span><span style='background: #AEF1AE'>      }</span><span style=''>
+</span>183 <span style=''>    }
+</span>184 <span style=''>    </span><span style='background: #AEF1AE'>for (poly &lt;- toCollect)
+</span>185 <span style=''></span><span style='background: #AEF1AE'>      constraint = constraint.remove(poly)</span><span style=''>
+</span>186 <span style=''>  }
+</span>187 <span style=''>
+</span>188 <span style=''>  override def toText(printer: Printer): Text = </span><span style='background: #F0ADAD'>constraint.toText(printer)</span><span style=''>
+</span>189 <span style=''>
+</span>190 <span style=''>  def hashesStr: String =
+</span>191 <span style=''>    if (</span><span style='background: #F0ADAD'>previous == null</span><span style=''>) </span><span style='background: #F0ADAD'>&quot;&quot;</span><span style=''> else </span><span style='background: #F0ADAD'>hashCode.toString + &quot; -&gt; &quot; + previous.hashesStr</span><span style=''>
+</span>192 <span style=''>}
+</span></pre>
+          </div>
+          <div class="tab-pane" id="statementlist">
+            <table cellspacing="0" cellpadding="0" class="table statementlist">
+      <tr>
+        <th>Line</th>
+        <th>Stmt Id</th>
+        <th>Pos</th>
+        <th>Tree</th>
+        <th>Symbol</th>
+        <th>Code</th>
+      </tr><tr>
+        <td>
+          19
+        </td>
+        <td>
+          26523
+        </td>
+        <td>
+          444
+          -
+          465
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.reporting.ConsoleReporter.&lt;init&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          new reporting.ConsoleReporter(reporting.this.ConsoleReporter.&lt;init&gt;$default$1, reporting.this.ConsoleReporter.&lt;init&gt;$default$2)
+        </td>
+      </tr><tr>
+        <td>
+          19
+        </td>
+        <td>
+          26526
+        </td>
+        <td>
+          471
+          -
+          488
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          dotty.tools.dotc.core.TyperState.reporter
+        </td>
+        <td style="background: #AEF1AE">
+          TyperState.this.previous.reporter
+        </td>
+      </tr><tr>
+        <td>
+          19
+        </td>
+        <td>
+          26520
+        </td>
+        <td>
+          426
+          -
+          442
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.Object.==
+        </td>
+        <td style="background: #AEF1AE">
+          TyperState.this.previous.==(null)
+        </td>
+      </tr><tr>
+        <td>
+          19
+        </td>
+        <td>
+          26522
+        </td>
+        <td>
+          444
+          -
+          444
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.reporting.ConsoleReporter.&lt;init&gt;$default$2
+        </td>
+        <td style="background: #AEF1AE">
+          reporting.this.ConsoleReporter.&lt;init&gt;$default$2
+        </td>
+      </tr><tr>
+        <td>
+          19
+        </td>
+        <td>
+          26525
+        </td>
+        <td>
+          471
+          -
+          488
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.TyperState.reporter
+        </td>
+        <td style="background: #AEF1AE">
+          TyperState.this.previous.reporter
+        </td>
+      </tr><tr>
+        <td>
+          19
+        </td>
+        <td>
+          26521
+        </td>
+        <td>
+          444
+          -
+          444
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.reporting.ConsoleReporter.&lt;init&gt;$default$1
+        </td>
+        <td style="background: #AEF1AE">
+          reporting.this.ConsoleReporter.&lt;init&gt;$default$1
+        </td>
+      </tr><tr>
+        <td>
+          19
+        </td>
+        <td>
+          26524
+        </td>
+        <td>
+          444
+          -
+          465
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          dotty.tools.dotc.reporting.ConsoleReporter.&lt;init&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          new reporting.ConsoleReporter(reporting.this.ConsoleReporter.&lt;init&gt;$default$1, reporting.this.ConsoleReporter.&lt;init&gt;$default$2)
+        </td>
+      </tr><tr>
+        <td>
+          21
+        </td>
+        <td>
+          26527
+        </td>
+        <td>
+          517
+          -
+          527
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.TyperState.myReporter
+        </td>
+        <td style="background: #AEF1AE">
+          TyperState.this.myReporter
+        </td>
+      </tr><tr>
+        <td>
+          27
+        </td>
+        <td>
+          26532
+        </td>
+        <td>
+          774
+          -
+          871
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.core.OrderingConstraint.&lt;init&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          new OrderingConstraint(util.SimpleIdentityMap.Empty[dotty.tools.dotc.core.Types.TypeLambda], util.SimpleIdentityMap.Empty[dotty.tools.dotc.core.Types.TypeLambda], util.SimpleIdentityMap.Empty[dotty.tools.dotc.core.Types.TypeLambda])
+        </td>
+      </tr><tr>
+        <td>
+          27
+        </td>
+        <td>
+          26529
+        </td>
+        <td>
+          797
+          -
+          820
+        </td>
+        <td>
+          TypeApply
+        </td>
+        <td>
+          dotty.tools.dotc.util.SimpleIdentityMap.Empty
+        </td>
+        <td style="background: #AEF1AE">
+          util.SimpleIdentityMap.Empty[dotty.tools.dotc.core.Types.TypeLambda]
+        </td>
+      </tr><tr>
+        <td>
+          27
+        </td>
+        <td>
+          26531
+        </td>
+        <td>
+          847
+          -
+          870
+        </td>
+        <td>
+          TypeApply
+        </td>
+        <td>
+          dotty.tools.dotc.util.SimpleIdentityMap.Empty
+        </td>
+        <td style="background: #AEF1AE">
+          util.SimpleIdentityMap.Empty[dotty.tools.dotc.core.Types.TypeLambda]
+        </td>
+      </tr><tr>
+        <td>
+          27
+        </td>
+        <td>
+          26528
+        </td>
+        <td>
+          756
+          -
+          772
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.Object.==
+        </td>
+        <td style="background: #AEF1AE">
+          TyperState.this.previous.==(null)
+        </td>
+      </tr><tr>
+        <td>
+          27
+        </td>
+        <td>
+          26530
+        </td>
+        <td>
+          822
+          -
+          845
+        </td>
+        <td>
+          TypeApply
+        </td>
+        <td>
+          dotty.tools.dotc.util.SimpleIdentityMap.Empty
+        </td>
+        <td style="background: #AEF1AE">
+          util.SimpleIdentityMap.Empty[dotty.tools.dotc.core.Types.TypeLambda]
+        </td>
+      </tr><tr>
+        <td>
+          27
+        </td>
+        <td>
+          26533
+        </td>
+        <td>
+          774
+          -
+          871
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          dotty.tools.dotc.core.OrderingConstraint.&lt;init&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          new OrderingConstraint(util.SimpleIdentityMap.Empty[dotty.tools.dotc.core.Types.TypeLambda], util.SimpleIdentityMap.Empty[dotty.tools.dotc.core.Types.TypeLambda], util.SimpleIdentityMap.Empty[dotty.tools.dotc.core.Types.TypeLambda])
+        </td>
+      </tr><tr>
+        <td>
+          28
+        </td>
+        <td>
+          26535
+        </td>
+        <td>
+          881
+          -
+          900
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          dotty.tools.dotc.core.TyperState.constraint
+        </td>
+        <td style="background: #AEF1AE">
+          TyperState.this.previous.constraint
+        </td>
+      </tr><tr>
+        <td>
+          28
+        </td>
+        <td>
+          26534
+        </td>
+        <td>
+          881
+          -
+          900
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.TyperState.constraint
+        </td>
+        <td style="background: #AEF1AE">
+          TyperState.this.previous.constraint
+        </td>
+      </tr><tr>
+        <td>
+          30
+        </td>
+        <td>
+          26536
+        </td>
+        <td>
+          921
+          -
+          933
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.TyperState.myConstraint
+        </td>
+        <td style="background: #AEF1AE">
+          TyperState.this.myConstraint
+        </td>
+      </tr><tr>
+        <td>
+          32
+        </td>
+        <td>
+          26541
+        </td>
+        <td>
+          1062
+          -
+          1077
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          dotty.tools.dotc.core.Constraint.checkClosed
+        </td>
+        <td style="background: #F0ADAD">
+          c.checkClosed()(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          32
+        </td>
+        <td>
+          26538
+        </td>
+        <td>
+          1041
+          -
+          1060
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.TyperState.isGlobalCommittable
+        </td>
+        <td style="background: #F0ADAD">
+          TyperState.this.isGlobalCommittable
+        </td>
+      </tr><tr>
+        <td>
+          32
+        </td>
+        <td>
+          26540
+        </td>
+        <td>
+          1062
+          -
+          1077
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.Constraint.checkClosed
+        </td>
+        <td style="background: #F0ADAD">
+          c.checkClosed()(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          32
+        </td>
+        <td>
+          26543
+        </td>
+        <td>
+          999
+          -
+          999
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          ()
+        </td>
+      </tr><tr>
+        <td>
+          32
+        </td>
+        <td>
+          26537
+        </td>
+        <td>
+          1003
+          -
+          1037
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          false
+        </td>
+      </tr><tr>
+        <td>
+          32
+        </td>
+        <td>
+          26539
+        </td>
+        <td>
+          1003
+          -
+          1060
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Boolean.&amp;&amp;
+        </td>
+        <td style="background: #AEF1AE">
+          false.&amp;&amp;(TyperState.this.isGlobalCommittable)
+        </td>
+      </tr><tr>
+        <td>
+          32
+        </td>
+        <td>
+          26542
+        </td>
+        <td>
+          999
+          -
+          999
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          ()
+        </td>
+      </tr><tr>
+        <td>
+          38
+        </td>
+        <td>
+          26544
+        </td>
+        <td>
+          1259
+          -
+          1271
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.TyperState.myConstraint
+        </td>
+        <td style="background: #AEF1AE">
+          TyperState.this.myConstraint
+        </td>
+      </tr><tr>
+        <td>
+          38
+        </td>
+        <td>
+          26547
+        </td>
+        <td>
+          1273
+          -
+          1301
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          dotty.tools.dotc.core.Constraint.markRetracted
+        </td>
+        <td style="background: #AEF1AE">
+          TyperState.this.myConstraint.markRetracted()
+        </td>
+      </tr><tr>
+        <td>
+          38
+        </td>
+        <td>
+          26546
+        </td>
+        <td>
+          1273
+          -
+          1301
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.core.Constraint.markRetracted
+        </td>
+        <td style="background: #AEF1AE">
+          TyperState.this.myConstraint.markRetracted()
+        </td>
+      </tr><tr>
+        <td>
+          38
+        </td>
+        <td>
+          26549
+        </td>
+        <td>
+          1248
+          -
+          1248
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          ()
+        </td>
+      </tr><tr>
+        <td>
+          38
+        </td>
+        <td>
+          26545
+        </td>
+        <td>
+          1252
+          -
+          1271
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.Object.ne
+        </td>
+        <td style="background: #AEF1AE">
+          c.ne(TyperState.this.myConstraint)
+        </td>
+      </tr><tr>
+        <td>
+          38
+        </td>
+        <td>
+          26548
+        </td>
+        <td>
+          1248
+          -
+          1248
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          ()
+        </td>
+      </tr><tr>
+        <td>
+          43
+        </td>
+        <td>
+          26550
+        </td>
+        <td>
+          1371
+          -
+          1387
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.Object.==
+        </td>
+        <td style="background: #AEF1AE">
+          TyperState.this.previous.==(null)
+        </td>
+      </tr><tr>
+        <td>
+          43
+        </td>
+        <td>
+          26553
+        </td>
+        <td>
+          1405
+          -
+          1424
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.TyperState.constraint
+        </td>
+        <td style="background: #AEF1AE">
+          TyperState.this.previous.constraint
+        </td>
+      </tr><tr>
+        <td>
+          43
+        </td>
+        <td>
+          26552
+        </td>
+        <td>
+          1389
+          -
+          1399
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          dotty.tools.dotc.core.TyperState.constraint
+        </td>
+        <td style="background: #AEF1AE">
+          TyperState.this.constraint
+        </td>
+      </tr><tr>
+        <td>
+          43
+        </td>
+        <td>
+          26554
+        </td>
+        <td>
+          1405
+          -
+          1424
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          dotty.tools.dotc.core.TyperState.constraint
+        </td>
+        <td style="background: #AEF1AE">
+          TyperState.this.previous.constraint
+        </td>
+      </tr><tr>
+        <td>
+          43
+        </td>
+        <td>
+          26551
+        </td>
+        <td>
+          1389
+          -
+          1399
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.TyperState.constraint
+        </td>
+        <td style="background: #AEF1AE">
+          TyperState.this.constraint
+        </td>
+      </tr><tr>
+        <td>
+          46
+        </td>
+        <td>
+          26559
+        </td>
+        <td>
+          1506
+          -
+          1524
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          dotty.tools.dotc.core.TyperState.ephemeral
+        </td>
+        <td style="background: #AEF1AE">
+          TyperState.this.previous.ephemeral
+        </td>
+      </tr><tr>
+        <td>
+          46
+        </td>
+        <td>
+          26556
+        </td>
+        <td>
+          1495
+          -
+          1500
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          false
+        </td>
+      </tr><tr>
+        <td>
+          46
+        </td>
+        <td>
+          26555
+        </td>
+        <td>
+          1477
+          -
+          1493
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.Object.==
+        </td>
+        <td style="background: #AEF1AE">
+          TyperState.this.previous.==(null)
+        </td>
+      </tr><tr>
+        <td>
+          46
+        </td>
+        <td>
+          26558
+        </td>
+        <td>
+          1506
+          -
+          1524
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.TyperState.ephemeral
+        </td>
+        <td style="background: #AEF1AE">
+          TyperState.this.previous.ephemeral
+        </td>
+      </tr><tr>
+        <td>
+          46
+        </td>
+        <td>
+          26557
+        </td>
+        <td>
+          1495
+          -
+          1500
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          false
+        </td>
+      </tr><tr>
+        <td>
+          55
+        </td>
+        <td>
+          26560
+        </td>
+        <td>
+          2008
+          -
+          2019
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.TyperState.myEphemeral
+        </td>
+        <td style="background: #AEF1AE">
+          TyperState.this.myEphemeral
+        </td>
+      </tr><tr>
+        <td>
+          58
+        </td>
+        <td>
+          26561
+        </td>
+        <td>
+          2117
+          -
+          2121
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          true
+        </td>
+      </tr><tr>
+        <td>
+          60
+        </td>
+        <td>
+          26562
+        </td>
+        <td>
+          2145
+          -
+          2160
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.TyperState.myIsCommittable
+        </td>
+        <td style="background: #AEF1AE">
+          TyperState.this.myIsCommittable
+        </td>
+      </tr><tr>
+        <td>
+          65
+        </td>
+        <td>
+          26565
+        </td>
+        <td>
+          2323
+          -
+          2371
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Boolean.||
+        </td>
+        <td style="background: #AEF1AE">
+          TyperState.this.previous.==(null).||(TyperState.this.previous.isGlobalCommittable)
+        </td>
+      </tr><tr>
+        <td>
+          65
+        </td>
+        <td>
+          26564
+        </td>
+        <td>
+          2343
+          -
+          2371
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.TyperState.isGlobalCommittable
+        </td>
+        <td style="background: #AEF1AE">
+          TyperState.this.previous.isGlobalCommittable
+        </td>
+      </tr><tr>
+        <td>
+          65
+        </td>
+        <td>
+          26563
+        </td>
+        <td>
+          2335
+          -
+          2339
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          null
+        </td>
+      </tr><tr>
+        <td>
+          65
+        </td>
+        <td>
+          26566
+        </td>
+        <td>
+          2305
+          -
+          2372
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Boolean.&amp;&amp;
+        </td>
+        <td style="background: #AEF1AE">
+          TyperState.this.isCommittable.&amp;&amp;(TyperState.this.previous.==(null).||(TyperState.this.previous.isGlobalCommittable))
+        </td>
+      </tr><tr>
+        <td>
+          67
+        </td>
+        <td>
+          26567
+        </td>
+        <td>
+          2405
+          -
+          2410
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          false
+        </td>
+      </tr><tr>
+        <td>
+          73
+        </td>
+        <td>
+          26568
+        </td>
+        <td>
+          2700
+          -
+          2704
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          true
+        </td>
+      </tr><tr>
+        <td>
+          75
+        </td>
+        <td>
+          26569
+        </td>
+        <td>
+          2740
+          -
+          2745
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          false
+        </td>
+      </tr><tr>
+        <td>
+          79
+        </td>
+        <td>
+          26571
+        </td>
+        <td>
+          2879
+          -
+          2906
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.reporting.StoreReporter.&lt;init&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          new reporting.StoreReporter(TyperState.this.reporter)
+        </td>
+      </tr><tr>
+        <td>
+          79
+        </td>
+        <td>
+          26573
+        </td>
+        <td>
+          2846
+          -
+          2937
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.core.TyperState.setCommittable
+        </td>
+        <td style="background: #AEF1AE">
+          new TyperState(this).setReporter(new reporting.StoreReporter(TyperState.this.reporter)).setCommittable(TyperState.this.isCommittable)
+        </td>
+      </tr><tr>
+        <td>
+          79
+        </td>
+        <td>
+          26570
+        </td>
+        <td>
+          2897
+          -
+          2905
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.TyperState.reporter
+        </td>
+        <td style="background: #AEF1AE">
+          TyperState.this.reporter
+        </td>
+      </tr><tr>
+        <td>
+          79
+        </td>
+        <td>
+          26572
+        </td>
+        <td>
+          2923
+          -
+          2936
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.TyperState.isCommittable
+        </td>
+        <td style="background: #AEF1AE">
+          TyperState.this.isCommittable
+        </td>
+      </tr><tr>
+        <td>
+          82
+        </td>
+        <td>
+          26574
+        </td>
+        <td>
+          2996
+          -
+          3017
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Constraint.uninstVars
+        </td>
+        <td style="background: #F0ADAD">
+          TyperState.this.constraint.uninstVars
+        </td>
+      </tr><tr>
+        <td>
+          89
+        </td>
+        <td>
+          26576
+        </td>
+        <td>
+          3386
+          -
+          3415
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.core.Constraint.entry
+        </td>
+        <td style="background: #AEF1AE">
+          TyperState.this.constraint.entry(tvar.origin)
+        </td>
+      </tr><tr>
+        <td>
+          89
+        </td>
+        <td>
+          26575
+        </td>
+        <td>
+          3403
+          -
+          3414
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Types.TypeVar.origin
+        </td>
+        <td style="background: #AEF1AE">
+          tvar.origin
+        </td>
+      </tr><tr>
+        <td>
+          90
+        </td>
+        <td>
+          26577
+        </td>
+        <td>
+          3450
+          -
+          3456
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Types.NoType
+        </td>
+        <td style="background: #AEF1AE">
+          Types.NoType
+        </td>
+      </tr><tr>
+        <td>
+          92
+        </td>
+        <td>
+          26578
+        </td>
+        <td>
+          3504
+          -
+          3533
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.core.Constraint.typeVarOfParam
+        </td>
+        <td style="background: #AEF1AE">
+          TyperState.this.constraint.typeVarOfParam(tp)
+        </td>
+      </tr><tr>
+        <td>
+          93
+        </td>
+        <td>
+          26580
+        </td>
+        <td>
+          3558
+          -
+          3563
+        </td>
+        <td>
+          Ident
+        </td>
+        <td>
+          dotty.tools.dotc.core.TyperState.tvar1
+        </td>
+        <td style="background: #AEF1AE">
+          tvar1
+        </td>
+      </tr><tr>
+        <td>
+          93
+        </td>
+        <td>
+          26579
+        </td>
+        <td>
+          3544
+          -
+          3556
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Types.Type.exists
+        </td>
+        <td style="background: #AEF1AE">
+          tvar1.exists
+        </td>
+      </tr><tr>
+        <td>
+          93
+        </td>
+        <td>
+          26581
+        </td>
+        <td>
+          3569
+          -
+          3571
+        </td>
+        <td>
+          Ident
+        </td>
+        <td>
+          dotty.tools.dotc.core.TyperState.tp
+        </td>
+        <td style="background: #F0ADAD">
+          tp
+        </td>
+      </tr><tr>
+        <td>
+          101
+        </td>
+        <td>
+          26582
+        </td>
+        <td>
+          3808
+          -
+          3819
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.TyperState.isCommitted
+        </td>
+        <td style="background: #AEF1AE">
+          TyperState.this.isCommitted
+        </td>
+      </tr><tr>
+        <td>
+          101
+        </td>
+        <td>
+          26585
+        </td>
+        <td>
+          3855
+          -
+          3859
+        </td>
+        <td>
+          This
+        </td>
+        <td>
+          dotty.tools.dotc.core.TyperState
+        </td>
+        <td style="background: #AEF1AE">
+          this
+        </td>
+      </tr><tr>
+        <td>
+          101
+        </td>
+        <td>
+          26584
+        </td>
+        <td>
+          3821
+          -
+          3849
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          dotty.tools.dotc.core.TyperState.uncommittedAncestor
+        </td>
+        <td style="background: #F0ADAD">
+          TyperState.this.previous.uncommittedAncestor
+        </td>
+      </tr><tr>
+        <td>
+          101
+        </td>
+        <td>
+          26583
+        </td>
+        <td>
+          3821
+          -
+          3849
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.TyperState.uncommittedAncestor
+        </td>
+        <td style="background: #F0ADAD">
+          TyperState.this.previous.uncommittedAncestor
+        </td>
+      </tr><tr>
+        <td>
+          103
+        </td>
+        <td>
+          26586
+        </td>
+        <td>
+          3911
+          -
+          3915
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          null
+        </td>
+      </tr><tr>
+        <td>
+          110
+        </td>
+        <td>
+          26587
+        </td>
+        <td>
+          4205
+          -
+          4213
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.TyperState.isShared
+        </td>
+        <td style="background: #AEF1AE">
+          TyperState.this.isShared
+        </td>
+      </tr><tr>
+        <td>
+          111
+        </td>
+        <td>
+          26589
+        </td>
+        <td>
+          4221
+          -
+          4257
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Function1.apply
+        </td>
+        <td style="background: #AEF1AE">
+          op.apply(ctx.fresh.setExploreTyperState())
+        </td>
+      </tr><tr>
+        <td>
+          111
+        </td>
+        <td>
+          26588
+        </td>
+        <td>
+          4224
+          -
+          4256
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.core.Contexts.FreshContext.setExploreTyperState
+        </td>
+        <td style="background: #AEF1AE">
+          ctx.fresh.setExploreTyperState()
+        </td>
+      </tr><tr>
+        <td>
+          111
+        </td>
+        <td>
+          26590
+        </td>
+        <td>
+          4221
+          -
+          4257
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          scala.Function1.apply
+        </td>
+        <td style="background: #AEF1AE">
+          op.apply(ctx.fresh.setExploreTyperState())
+        </td>
+      </tr><tr>
+        <td>
+          112
+        </td>
+        <td>
+          26607
+        </td>
+        <td>
+          4267
+          -
+          4863
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          {
+  val savedConstraint: dotty.tools.dotc.core.Constraint = TyperState.this.myConstraint;
+  val savedReporter: dotty.tools.dotc.reporting.Reporter = TyperState.this.myReporter;
+  val savedCommittable: Boolean = TyperState.this.myIsCommittable;
+  val savedCommitted: Boolean = TyperState.this.isCommitted;
+  TyperState.this.myIsCommittable = false;
+  TyperState.this.myReporter = {
+    if (TyperState.this.testReporter.==(null))
+      TyperState.this.testReporter = new reporting.StoreReporter(TyperState.this.reporter)
+    else
+      TyperState.this.testReporter.reset();
+    TyperState.this.testReporter
+  };
+  try {
+    op.apply(ctx)
+  } finally {
+    TyperState.this.resetConstraintTo(savedConstraint);
+    TyperState.this.myReporter = savedReporter;
+    TyperState.this.myIsCommittable = savedCommittable;
+    TyperState.this.isCommitted = savedCommitted
+  }
+}
+        </td>
+      </tr><tr>
+        <td>
+          113
+        </td>
+        <td>
+          26591
+        </td>
+        <td>
+          4297
+          -
+          4309
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.TyperState.myConstraint
+        </td>
+        <td style="background: #AEF1AE">
+          TyperState.this.myConstraint
+        </td>
+      </tr><tr>
+        <td>
+          114
+        </td>
+        <td>
+          26592
+        </td>
+        <td>
+          4336
+          -
+          4346
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.TyperState.myReporter
+        </td>
+        <td style="background: #AEF1AE">
+          TyperState.this.myReporter
+        </td>
+      </tr><tr>
+        <td>
+          115
+        </td>
+        <td>
+          26593
+        </td>
+        <td>
+          4376
+          -
+          4391
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.TyperState.myIsCommittable
+        </td>
+        <td style="background: #AEF1AE">
+          TyperState.this.myIsCommittable
+        </td>
+      </tr><tr>
+        <td>
+          116
+        </td>
+        <td>
+          26594
+        </td>
+        <td>
+          4419
+          -
+          4430
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.TyperState.isCommitted
+        </td>
+        <td style="background: #AEF1AE">
+          TyperState.this.isCommitted
+        </td>
+      </tr><tr>
+        <td>
+          117
+        </td>
+        <td>
+          26595
+        </td>
+        <td>
+          4455
+          -
+          4460
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          false
+        </td>
+      </tr><tr>
+        <td>
+          119
+        </td>
+        <td>
+          26596
+        </td>
+        <td>
+          4494
+          -
+          4514
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.Object.==
+        </td>
+        <td style="background: #AEF1AE">
+          TyperState.this.testReporter.==(null)
+        </td>
+      </tr><tr>
+        <td>
+          120
+        </td>
+        <td>
+          26598
+        </td>
+        <td>
+          4543
+          -
+          4570
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.reporting.StoreReporter.&lt;init&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          new reporting.StoreReporter(TyperState.this.reporter)
+        </td>
+      </tr><tr>
+        <td>
+          120
+        </td>
+        <td>
+          26597
+        </td>
+        <td>
+          4561
+          -
+          4569
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.TyperState.reporter
+        </td>
+        <td style="background: #AEF1AE">
+          TyperState.this.reporter
+        </td>
+      </tr><tr>
+        <td>
+          120
+        </td>
+        <td>
+          26599
+        </td>
+        <td>
+          4528
+          -
+          4570
+        </td>
+        <td>
+          Assign
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          TyperState.this.testReporter = new reporting.StoreReporter(TyperState.this.reporter)
+        </td>
+      </tr><tr>
+        <td>
+          122
+        </td>
+        <td>
+          26600
+        </td>
+        <td>
+          4598
+          -
+          4618
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.reporting.StoreReporter.reset
+        </td>
+        <td style="background: #AEF1AE">
+          TyperState.this.testReporter.reset()
+        </td>
+      </tr><tr>
+        <td>
+          122
+        </td>
+        <td>
+          26601
+        </td>
+        <td>
+          4598
+          -
+          4618
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          dotty.tools.dotc.reporting.StoreReporter.reset
+        </td>
+        <td style="background: #AEF1AE">
+          TyperState.this.testReporter.reset()
+        </td>
+      </tr><tr>
+        <td>
+          124
+        </td>
+        <td>
+          26602
+        </td>
+        <td>
+          4637
+          -
+          4649
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.TyperState.testReporter
+        </td>
+        <td style="background: #AEF1AE">
+          TyperState.this.testReporter
+        </td>
+      </tr><tr>
+        <td>
+          126
+        </td>
+        <td>
+          26604
+        </td>
+        <td>
+          4668
+          -
+          4675
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          scala.Function1.apply
+        </td>
+        <td style="background: #AEF1AE">
+          op.apply(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          126
+        </td>
+        <td>
+          26603
+        </td>
+        <td>
+          4668
+          -
+          4675
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Function1.apply
+        </td>
+        <td style="background: #AEF1AE">
+          op.apply(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          127
+        </td>
+        <td>
+          26606
+        </td>
+        <td>
+          4690
+          -
+          4857
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          {
+  TyperState.this.resetConstraintTo(savedConstraint);
+  TyperState.this.myReporter = savedReporter;
+  TyperState.this.myIsCommittable = savedCommittable;
+  TyperState.this.isCommitted = savedCommitted
+}
+        </td>
+      </tr><tr>
+        <td>
+          128
+        </td>
+        <td>
+          26605
+        </td>
+        <td>
+          4700
+          -
+          4734
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.core.TyperState.resetConstraintTo
+        </td>
+        <td style="background: #AEF1AE">
+          TyperState.this.resetConstraintTo(savedConstraint)
+        </td>
+      </tr><tr>
+        <td>
+          154
+        </td>
+        <td>
+          26608
+        </td>
+        <td>
+          5882
+          -
+          5896
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Contexts.Context.typerState
+        </td>
+        <td style="background: #AEF1AE">
+          ctx.typerState
+        </td>
+      </tr><tr>
+        <td>
+          155
+        </td>
+        <td>
+          26609
+        </td>
+        <td>
+          5908
+          -
+          5921
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.TyperState.isCommittable
+        </td>
+        <td style="background: #AEF1AE">
+          TyperState.this.isCommittable
+        </td>
+      </tr><tr>
+        <td>
+          155
+        </td>
+        <td>
+          26610
+        </td>
+        <td>
+          5901
+          -
+          5922
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Predef.assert
+        </td>
+        <td style="background: #AEF1AE">
+          scala.Predef.assert(TyperState.this.isCommittable)
+        </td>
+      </tr><tr>
+        <td>
+          156
+        </td>
+        <td>
+          26611
+        </td>
+        <td>
+          5927
+          -
+          6065
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.TyperState.constraint_=
+        </td>
+        <td style="background: #AEF1AE">
+          targetState.constraint_=(if (targetState.constraint.eq(TyperState.this.previousConstraint))
+  TyperState.this.constraint
+else
+  targetState.constraint.&amp;(TyperState.this.constraint)(ctx))(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          159
+        </td>
+        <td>
+          26618
+        </td>
+        <td>
+          6070
+          -
+          6195
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.core.Constraint.foreachTypeVar
+        </td>
+        <td style="background: #AEF1AE">
+          TyperState.this.constraint.foreachTypeVar(((tvar: dotty.tools.dotc.core.Types.TypeVar) =&gt; if (tvar.owningState.get().eq(this))
+  tvar.owningState_=(new java.lang.ref.WeakReference[dotty.tools.dotc.core.TyperState](targetState))
+else
+  ()))
+        </td>
+      </tr><tr>
+        <td>
+          160
+        </td>
+        <td>
+          26613
+        </td>
+        <td>
+          6165
+          -
+          6195
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.ref.WeakReference.&lt;init&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          new java.lang.ref.WeakReference[dotty.tools.dotc.core.TyperState](targetState)
+        </td>
+      </tr><tr>
+        <td>
+          160
+        </td>
+        <td>
+          26616
+        </td>
+        <td>
+          6112
+          -
+          6112
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          ()
+        </td>
+      </tr><tr>
+        <td>
+          160
+        </td>
+        <td>
+          26615
+        </td>
+        <td>
+          6146
+          -
+          6195
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          dotty.tools.dotc.core.Types.TypeVar.owningState_=
+        </td>
+        <td style="background: #AEF1AE">
+          tvar.owningState_=(new java.lang.ref.WeakReference[dotty.tools.dotc.core.TyperState](targetState))
+        </td>
+      </tr><tr>
+        <td>
+          160
+        </td>
+        <td>
+          26612
+        </td>
+        <td>
+          6116
+          -
+          6144
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.Object.eq
+        </td>
+        <td style="background: #AEF1AE">
+          tvar.owningState.get().eq(this)
+        </td>
+      </tr><tr>
+        <td>
+          160
+        </td>
+        <td>
+          26614
+        </td>
+        <td>
+          6146
+          -
+          6195
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.core.Types.TypeVar.owningState_=
+        </td>
+        <td style="background: #AEF1AE">
+          tvar.owningState_=(new java.lang.ref.WeakReference[dotty.tools.dotc.core.TyperState](targetState))
+        </td>
+      </tr><tr>
+        <td>
+          160
+        </td>
+        <td>
+          26617
+        </td>
+        <td>
+          6112
+          -
+          6112
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          ()
+        </td>
+      </tr><tr>
+        <td>
+          162
+        </td>
+        <td>
+          26621
+        </td>
+        <td>
+          6206
+          -
+          6240
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.core.TyperState.ephemeral_=
+        </td>
+        <td style="background: #AEF1AE">
+          targetState.ephemeral_=(targetState.ephemeral.|(TyperState.this.ephemeral))
+        </td>
+      </tr><tr>
+        <td>
+          162
+        </td>
+        <td>
+          26620
+        </td>
+        <td>
+          6206
+          -
+          6240
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Boolean.|
+        </td>
+        <td style="background: #AEF1AE">
+          targetState.ephemeral.|(TyperState.this.ephemeral)
+        </td>
+      </tr><tr>
+        <td>
+          162
+        </td>
+        <td>
+          26619
+        </td>
+        <td>
+          6231
+          -
+          6240
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.TyperState.ephemeral
+        </td>
+        <td style="background: #AEF1AE">
+          TyperState.this.ephemeral
+        </td>
+      </tr><tr>
+        <td>
+          163
+        </td>
+        <td>
+          26622
+        </td>
+        <td>
+          6245
+          -
+          6261
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.TyperState.gc
+        </td>
+        <td style="background: #AEF1AE">
+          targetState.gc()(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          164
+        </td>
+        <td>
+          26623
+        </td>
+        <td>
+          6266
+          -
+          6282
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.reporting.Reporter.flush
+        </td>
+        <td style="background: #AEF1AE">
+          TyperState.this.reporter.flush()(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          165
+        </td>
+        <td>
+          26624
+        </td>
+        <td>
+          6301
+          -
+          6305
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          true
+        </td>
+      </tr><tr>
+        <td>
+          173
+        </td>
+        <td>
+          26625
+        </td>
+        <td>
+          6577
+          -
+          6611
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.mutable.ListBuffer.&lt;init&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          new scala.collection.mutable.ListBuffer[dotty.tools.dotc.core.Types.TypeLambda]()
+        </td>
+      </tr><tr>
+        <td>
+          174
+        </td>
+        <td>
+          26644
+        </td>
+        <td>
+          6616
+          -
+          6921
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.core.Constraint.foreachTypeVar
+        </td>
+        <td style="background: #AEF1AE">
+          TyperState.this.constraint.foreachTypeVar(((tvar: dotty.tools.dotc.core.Types.TypeVar) =&gt; if (tvar.inst.exists.unary_!)
+  {
+    val inst: dotty.tools.dotc.core.Types.Type = TyperState.this.instType(tvar)(ctx);
+    if (inst.exists.&amp;&amp;(tvar.owningState.get().eq(this)))
+      {
+        tvar.inst_=(inst);
+        val lam: dotty.tools.dotc.core.Types.TypeLambda = tvar.origin.binder;
+        if (TyperState.this.constraint.isRemovable(lam))
+          {
+            toCollect.+=(lam);
+            ()
+          }
+        else
+          ()
+      }
+    else
+      ()
+  }
+else
+  ()))
+        </td>
+      </tr><tr>
+        <td>
+          175
+        </td>
+        <td>
+          26642
+        </td>
+        <td>
+          6658
+          -
+          6658
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          ()
+        </td>
+      </tr><tr>
+        <td>
+          175
+        </td>
+        <td>
+          26641
+        </td>
+        <td>
+          6681
+          -
+          6921
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          {
+  val inst: dotty.tools.dotc.core.Types.Type = TyperState.this.instType(tvar)(ctx);
+  if (inst.exists.&amp;&amp;(tvar.owningState.get().eq(this)))
+    {
+      tvar.inst_=(inst);
+      val lam: dotty.tools.dotc.core.Types.TypeLambda = tvar.origin.binder;
+      if (TyperState.this.constraint.isRemovable(lam))
+        {
+          toCollect.+=(lam);
+          ()
+        }
+      else
+        ()
+    }
+  else
+    ()
+}
+        </td>
+      </tr><tr>
+        <td>
+          175
+        </td>
+        <td>
+          26626
+        </td>
+        <td>
+          6662
+          -
+          6679
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.Boolean.unary_!
+        </td>
+        <td style="background: #AEF1AE">
+          tvar.inst.exists.unary_!
+        </td>
+      </tr><tr>
+        <td>
+          175
+        </td>
+        <td>
+          26643
+        </td>
+        <td>
+          6658
+          -
+          6658
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          ()
+        </td>
+      </tr><tr>
+        <td>
+          176
+        </td>
+        <td>
+          26627
+        </td>
+        <td>
+          6702
+          -
+          6716
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.TyperState.instType
+        </td>
+        <td style="background: #AEF1AE">
+          TyperState.this.instType(tvar)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          177
+        </td>
+        <td>
+          26640
+        </td>
+        <td>
+          6725
+          -
+          6725
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          ()
+        </td>
+      </tr><tr>
+        <td>
+          177
+        </td>
+        <td>
+          26639
+        </td>
+        <td>
+          6725
+          -
+          6725
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          ()
+        </td>
+      </tr><tr>
+        <td>
+          177
+        </td>
+        <td>
+          26638
+        </td>
+        <td>
+          6776
+          -
+          6913
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          {
+  tvar.inst_=(inst);
+  val lam: dotty.tools.dotc.core.Types.TypeLambda = tvar.origin.binder;
+  if (TyperState.this.constraint.isRemovable(lam))
+    {
+      toCollect.+=(lam);
+      ()
+    }
+  else
+    ()
+}
+        </td>
+      </tr><tr>
+        <td>
+          177
+        </td>
+        <td>
+          26629
+        </td>
+        <td>
+          6729
+          -
+          6774
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Boolean.&amp;&amp;
+        </td>
+        <td style="background: #AEF1AE">
+          inst.exists.&amp;&amp;(tvar.owningState.get().eq(this))
+        </td>
+      </tr><tr>
+        <td>
+          177
+        </td>
+        <td>
+          26628
+        </td>
+        <td>
+          6745
+          -
+          6773
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.Object.eq
+        </td>
+        <td style="background: #AEF1AE">
+          tvar.owningState.get().eq(this)
+        </td>
+      </tr><tr>
+        <td>
+          178
+        </td>
+        <td>
+          26630
+        </td>
+        <td>
+          6788
+          -
+          6804
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.core.Types.TypeVar.inst_=
+        </td>
+        <td style="background: #AEF1AE">
+          tvar.inst_=(inst)
+        </td>
+      </tr><tr>
+        <td>
+          179
+        </td>
+        <td>
+          26631
+        </td>
+        <td>
+          6825
+          -
+          6843
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Types.TypeParamRef.binder
+        </td>
+        <td style="background: #AEF1AE">
+          tvar.origin.binder
+        </td>
+      </tr><tr>
+        <td>
+          180
+        </td>
+        <td>
+          26634
+        </td>
+        <td>
+          6897
+          -
+          6897
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          ()
+        </td>
+      </tr><tr>
+        <td>
+          180
+        </td>
+        <td>
+          26633
+        </td>
+        <td>
+          6887
+          -
+          6903
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.mutable.ListBuffer.+=
+        </td>
+        <td style="background: #AEF1AE">
+          toCollect.+=(lam)
+        </td>
+      </tr><tr>
+        <td>
+          180
+        </td>
+        <td>
+          26636
+        </td>
+        <td>
+          6854
+          -
+          6854
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          ()
+        </td>
+      </tr><tr>
+        <td>
+          180
+        </td>
+        <td>
+          26632
+        </td>
+        <td>
+          6858
+          -
+          6885
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.core.Constraint.isRemovable
+        </td>
+        <td style="background: #AEF1AE">
+          TyperState.this.constraint.isRemovable(lam)
+        </td>
+      </tr><tr>
+        <td>
+          180
+        </td>
+        <td>
+          26635
+        </td>
+        <td>
+          6887
+          -
+          6903
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          {
+  toCollect.+=(lam);
+  ()
+}
+        </td>
+      </tr><tr>
+        <td>
+          180
+        </td>
+        <td>
+          26637
+        </td>
+        <td>
+          6854
+          -
+          6854
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          ()
+        </td>
+      </tr><tr>
+        <td>
+          184
+        </td>
+        <td>
+          26646
+        </td>
+        <td>
+          6932
+          -
+          6998
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.generic.TraversableForwarder.foreach
+        </td>
+        <td style="background: #AEF1AE">
+          toCollect.foreach[Unit](((poly: dotty.tools.dotc.core.Types.TypeLambda) =&gt; TyperState.this.constraint_=(TyperState.this.constraint.remove(poly)(ctx))(ctx)))
+        </td>
+      </tr><tr>
+        <td>
+          185
+        </td>
+        <td>
+          26645
+        </td>
+        <td>
+          6962
+          -
+          6998
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.TyperState.constraint_=
+        </td>
+        <td style="background: #AEF1AE">
+          TyperState.this.constraint_=(TyperState.this.constraint.remove(poly)(ctx))(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          188
+        </td>
+        <td>
+          26647
+        </td>
+        <td>
+          7052
+          -
+          7078
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.printing.Showable.toText
+        </td>
+        <td style="background: #F0ADAD">
+          TyperState.this.constraint.toText(printer)
+        </td>
+      </tr><tr>
+        <td>
+          191
+        </td>
+        <td>
+          26649
+        </td>
+        <td>
+          7132
+          -
+          7134
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          &quot;&quot;
+        </td>
+      </tr><tr>
+        <td>
+          191
+        </td>
+        <td>
+          26651
+        </td>
+        <td>
+          7160
+          -
+          7166
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          &quot; -&gt; &quot;
+        </td>
+      </tr><tr>
+        <td>
+          191
+        </td>
+        <td>
+          26654
+        </td>
+        <td>
+          7140
+          -
+          7187
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          java.lang.String.+
+        </td>
+        <td style="background: #F0ADAD">
+          TyperState.this.hashCode().toString().+(&quot; -&gt; &quot;).+(TyperState.this.previous.hashesStr)
+        </td>
+      </tr><tr>
+        <td>
+          191
+        </td>
+        <td>
+          26648
+        </td>
+        <td>
+          7114
+          -
+          7130
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.Object.==
+        </td>
+        <td style="background: #F0ADAD">
+          TyperState.this.previous.==(null)
+        </td>
+      </tr><tr>
+        <td>
+          191
+        </td>
+        <td>
+          26650
+        </td>
+        <td>
+          7132
+          -
+          7134
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          &quot;&quot;
+        </td>
+      </tr><tr>
+        <td>
+          191
+        </td>
+        <td>
+          26653
+        </td>
+        <td>
+          7140
+          -
+          7187
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.String.+
+        </td>
+        <td style="background: #F0ADAD">
+          TyperState.this.hashCode().toString().+(&quot; -&gt; &quot;).+(TyperState.this.previous.hashesStr)
+        </td>
+      </tr><tr>
+        <td>
+          191
+        </td>
+        <td>
+          26652
+        </td>
+        <td>
+          7169
+          -
+          7187
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.TyperState.hashesStr
+        </td>
+        <td style="background: #F0ADAD">
+          TyperState.this.previous.hashesStr
+        </td>
+      </tr>
+    </table>
+          </div>
+        </div>
+      </body>
+    </html>

@@ -1,0 +1,4628 @@
+<html>
+      <head>
+        <meta http-equiv="Content-Type" content="text/html; charset=utf-8"/>
+        <title id="title">
+          dotty/tools/backend/jvm/BCodeSyncAndTry.scala.html
+        </title>
+        <script src="https://ajax.googleapis.com/ajax/libs/jquery/1.10.2/jquery.min.js"></script><link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/jquery.tablesorter/2.20.1/css/theme.default.min.css" type="text/css"/><script src="https://cdnjs.cloudflare.com/ajax/libs/jquery.tablesorter/2.20.1/js/jquery.tablesorter.min.js"></script><link rel="stylesheet" href="https://netdna.bootstrapcdn.com/bootstrap/3.0.3/css/bootstrap.min.css" type="text/css"/><script src="https://netdna.bootstrapcdn.com/bootstrap/3.0.3/js/bootstrap.min.js"></script><script type="text/javascript">
+        $(document).ready(function() {$(".tablesorter").tablesorter();});
+      </script>
+        <style>
+          table.codegrid { font-family: monospace; font-size: 12px; width: auto!important; }table.statementlist { width: auto!important; font-size: 13px; } table.codegrid td { padding: 0!important; border: 0!important } table td.linenumber { width: 40px!important; } 
+        </style>
+      </head>
+      <body style="font-family: monospace;">
+        <ul class="nav nav-tabs">
+          <li>
+            <a href="#codegrid" data-toggle="tab">Codegrid</a>
+          </li>
+          <li>
+            <a href="#statementlist" data-toggle="tab">Statement List</a>
+          </li>
+        </ul>
+        <div class="tab-content">
+          <div class="tab-pane active" id="codegrid">
+            <pre style='font-size: 12pt; font-family: courier;'>1 <span style=''>/* NSC -- new Scala compiler
+</span>2 <span style=''> * Copyright 2005-2012 LAMP/EPFL
+</span>3 <span style=''> * @author  Martin Odersky
+</span>4 <span style=''> */
+</span>5 <span style=''>
+</span>6 <span style=''>
+</span>7 <span style=''>package scala
+</span>8 <span style=''>package tools.nsc
+</span>9 <span style=''>package backend
+</span>10 <span style=''>package jvm
+</span>11 <span style=''>
+</span>12 <span style=''>import scala.collection.immutable
+</span>13 <span style=''>import scala.tools.asm
+</span>14 <span style=''>
+</span>15 <span style=''>/*
+</span>16 <span style=''> *
+</span>17 <span style=''> *  @author  Miguel Garcia, http://lamp.epfl.ch/~magarcia/ScalaCompilerCornerReloaded/
+</span>18 <span style=''> *  @version 1.0
+</span>19 <span style=''> *
+</span>20 <span style=''> */
+</span>21 <span style=''>trait BCodeSyncAndTry extends BCodeBodyBuilder {
+</span>22 <span style=''>  import int._
+</span>23 <span style=''>  import bTypes._
+</span>24 <span style=''>  import coreBTypes._
+</span>25 <span style=''>  /*
+</span>26 <span style=''>   * Functionality to lower `synchronized` and `try` expressions.
+</span>27 <span style=''>   */
+</span>28 <span style=''>  abstract class SyncAndTryBuilder(cunit: CompilationUnit) extends PlainBodyBuilder(cunit) {
+</span>29 <span style=''>
+</span>30 <span style=''>    def genSynchronized(tree: Apply, expectedType: BType): BType = tree match {
+</span>31 <span style=''>      case Apply(fun, args) =&gt;
+</span>32 <span style=''>      val monitor = </span><span style='background: #AEF1AE'>locals.makeLocal(ObjectReference, &quot;monitor&quot;, Object_Type, tree.pos)</span><span style=''>
+</span>33 <span style=''>      val monCleanup = </span><span style='background: #AEF1AE'>new asm.Label</span><span style=''>
+</span>34 <span style=''>
+</span>35 <span style=''>      // if the synchronized block returns a result, store it in a local variable.
+</span>36 <span style=''>      // Just leaving it on the stack is not valid in MSIL (stack is cleaned when leaving try-blocks).
+</span>37 <span style=''>      val hasResult = (</span><span style='background: #AEF1AE'>expectedType != UNIT</span><span style=''>)
+</span>38 <span style=''>      val monitorResult: Symbol = if (hasResult) </span><span style='background: #AEF1AE'>locals.makeLocal(tpeTK(args.head), &quot;monitorResult&quot;, Object_Type, tree.pos)</span><span style=''> else </span><span style='background: #AEF1AE'>null</span><span style=''>;
+</span>39 <span style=''>
+</span>40 <span style=''>      /* ------ (1) pushing and entering the monitor, also keeping a reference to it in a local var. ------ */
+</span>41 <span style=''>      </span><span style='background: #AEF1AE'>genLoadQualifier(fun)</span><span style=''>
+</span>42 <span style=''>      </span><span style='background: #AEF1AE'>bc dup ObjectReference</span><span style=''>
+</span>43 <span style=''>      </span><span style='background: #AEF1AE'>locals.store(monitor)</span><span style=''>
+</span>44 <span style=''>      </span><span style='background: #AEF1AE'>emit(asm.Opcodes.MONITORENTER)</span><span style=''>
+</span>45 <span style=''>
+</span>46 <span style=''>      /* ------ (2) Synchronized block.
+</span>47 <span style=''>       *            Reached by fall-through from (1).
+</span>48 <span style=''>       *            Protected by:
+</span>49 <span style=''>       *            (2.a) the EH-version of the monitor-exit, and
+</span>50 <span style=''>       *            (2.b) whatever protects the whole synchronized expression.
+</span>51 <span style=''>       * ------
+</span>52 <span style=''>       */
+</span>53 <span style=''>      val startProtected = </span><span style='background: #AEF1AE'>currProgramPoint()</span><span style=''>
+</span>54 <span style=''>      </span><span style='background: #AEF1AE'>registerCleanup(monCleanup)</span><span style=''>
+</span>55 <span style=''>      </span><span style='background: #AEF1AE'>genLoad(args.head, expectedType /* toTypeKind(tree.tpe.resultType) */)</span><span style=''>
+</span>56 <span style=''>      </span><span style='background: #AEF1AE'>unregisterCleanup(monCleanup)</span><span style=''>
+</span>57 <span style=''>      if (hasResult) { </span><span style='background: #AEF1AE'>locals.store(monitorResult)</span><span style=''> }
+</span>58 <span style=''>      </span><span style='background: #AEF1AE'>nopIfNeeded(startProtected)</span><span style=''>
+</span>59 <span style=''>      val endProtected = </span><span style='background: #AEF1AE'>currProgramPoint()</span><span style=''>
+</span>60 <span style=''>
+</span>61 <span style=''>      /* ------ (3) monitor-exit after normal, non-early-return, termination of (2).
+</span>62 <span style=''>       *            Reached by fall-through from (2).
+</span>63 <span style=''>       *            Protected by whatever protects the whole synchronized expression.
+</span>64 <span style=''>       * ------
+</span>65 <span style=''>       */
+</span>66 <span style=''>      </span><span style='background: #AEF1AE'>locals.load(monitor)</span><span style=''>
+</span>67 <span style=''>      </span><span style='background: #AEF1AE'>emit(asm.Opcodes.MONITOREXIT)</span><span style=''>
+</span>68 <span style=''>      if (hasResult) { </span><span style='background: #AEF1AE'>locals.load(monitorResult)</span><span style=''> }
+</span>69 <span style=''>      val postHandler = </span><span style='background: #AEF1AE'>new asm.Label</span><span style=''>
+</span>70 <span style=''>      </span><span style='background: #AEF1AE'>bc goTo postHandler</span><span style=''>
+</span>71 <span style=''>
+</span>72 <span style=''>      /* ------ (4) exception-handler version of monitor-exit code.
+</span>73 <span style=''>       *            Reached upon abrupt termination of (2).
+</span>74 <span style=''>       *            Protected by whatever protects the whole synchronized expression.
+</span>75 <span style=''>       *            null =&gt; &quot;any&quot; exception in bytecode, like we emit for finally.
+</span>76 <span style=''>       *            Important not to use j/l/Throwable which dooms the method to a life of interpretation! (SD-233)
+</span>77 <span style=''>       * ------
+</span>78 <span style=''>       */
+</span>79 <span style=''>      </span><span style='background: #AEF1AE'>protect(startProtected, endProtected, currProgramPoint(), null)</span><span style=''>
+</span>80 <span style=''>      </span><span style='background: #AEF1AE'>locals.load(monitor)</span><span style=''>
+</span>81 <span style=''>      </span><span style='background: #AEF1AE'>emit(asm.Opcodes.MONITOREXIT)</span><span style=''>
+</span>82 <span style=''>      </span><span style='background: #AEF1AE'>emit(asm.Opcodes.ATHROW)</span><span style=''>
+</span>83 <span style=''>
+</span>84 <span style=''>      /* ------ (5) cleanup version of monitor-exit code.
+</span>85 <span style=''>       *            Reached upon early-return from (2).
+</span>86 <span style=''>       *            Protected by whatever protects the whole synchronized expression.
+</span>87 <span style=''>       * ------
+</span>88 <span style=''>       */
+</span>89 <span style=''>      if (</span><span style='background: #AEF1AE'>shouldEmitCleanup</span><span style=''>) </span><span style='background: #AEF1AE'>{
+</span>90 <span style=''></span><span style='background: #AEF1AE'>        markProgramPoint(monCleanup)
+</span>91 <span style=''></span><span style='background: #AEF1AE'>        locals.load(monitor)
+</span>92 <span style=''></span><span style='background: #AEF1AE'>        emit(asm.Opcodes.MONITOREXIT)
+</span>93 <span style=''></span><span style='background: #AEF1AE'>        pendingCleanups()
+</span>94 <span style=''></span><span style='background: #AEF1AE'>      }</span><span style=''>
+</span>95 <span style=''>
+</span>96 <span style=''>      /* ------ (6) normal exit of the synchronized expression.
+</span>97 <span style=''>       *            Reached after normal, non-early-return, termination of (3).
+</span>98 <span style=''>       *            Protected by whatever protects the whole synchronized expression.
+</span>99 <span style=''>       * ------
+</span>100 <span style=''>       */
+</span>101 <span style=''>      </span><span style='background: #AEF1AE'>mnode visitLabel postHandler</span><span style=''>
+</span>102 <span style=''>
+</span>103 <span style=''>      </span><span style='background: #AEF1AE'>lineNumber(tree)</span><span style=''>
+</span>104 <span style=''>
+</span>105 <span style=''>      expectedType
+</span>106 <span style=''>    }
+</span>107 <span style=''>
+</span>108 <span style=''>    /*
+</span>109 <span style=''>     *  Detects whether no instructions have been emitted since label `lbl` and if so emits a NOP.
+</span>110 <span style=''>     *  Useful to avoid emitting an empty try-block being protected by exception handlers,
+</span>111 <span style=''>     *  which results in &quot;java.lang.ClassFormatError: Illegal exception table range&quot;. See SI-6102.
+</span>112 <span style=''>     */
+</span>113 <span style=''>    def nopIfNeeded(lbl: asm.Label): Unit = {
+</span>114 <span style=''>      val noInstructionEmitted = </span><span style='background: #AEF1AE'>isAtProgramPoint(lbl)</span><span style=''>
+</span>115 <span style=''>      if (noInstructionEmitted) { </span><span style='background: #AEF1AE'>emit(asm.Opcodes.NOP)</span><span style=''> }
+</span>116 <span style=''>    }
+</span>117 <span style=''>
+</span>118 <span style=''>    /*
+</span>119 <span style=''>     *  Emitting try-catch is easy, emitting try-catch-finally not quite so.
+</span>120 <span style=''>     *  A finally-block (which always has type Unit, thus leaving the operand stack unchanged)
+</span>121 <span style=''>     *  affects control-transfer from protected regions, as follows:
+</span>122 <span style=''>     *
+</span>123 <span style=''>     *    (a) `return` statement:
+</span>124 <span style=''>     *
+</span>125 <span style=''>     *        First, the value to return (if any) is evaluated.
+</span>126 <span style=''>     *        Afterwards, all enclosing finally-blocks are run, from innermost to outermost.
+</span>127 <span style=''>     *        Only then is the return value (if any) returned.
+</span>128 <span style=''>     *
+</span>129 <span style=''>     *        Some terminology:
+</span>130 <span style=''>     *          (a.1) Executing a return statement that is protected
+</span>131 <span style=''>     *                by one or more finally-blocks is called &quot;early return&quot;
+</span>132 <span style=''>     *          (a.2) the chain of code sections (a code section for each enclosing finally-block)
+</span>133 <span style=''>     *                to run upon early returns is called &quot;cleanup chain&quot;
+</span>134 <span style=''>     *
+</span>135 <span style=''>     *        As an additional spin, consider a return statement in a finally-block.
+</span>136 <span style=''>     *        In this case, the value to return depends on how control arrived at that statement:
+</span>137 <span style=''>     *        in case it arrived via a previous return, the previous return enjoys priority:
+</span>138 <span style=''>     *        the value to return is given by that statement.
+</span>139 <span style=''>     *
+</span>140 <span style=''>     *    (b) A finally-block protects both the try-clause and the catch-clauses.
+</span>141 <span style=''>     *
+</span>142 <span style=''>     *           Sidenote:
+</span>143 <span style=''>     *             A try-clause may contain an empty block. On CLR, a finally-block has special semantics
+</span>144 <span style=''>     *             regarding Abort interruptions; but on the JVM it's safe to elide an exception-handler
+</span>145 <span style=''>     *             that protects an &quot;empty&quot; range (&quot;empty&quot; as in &quot;containing NOPs only&quot;,
+</span>146 <span style=''>     *             see `asm.optimiz.DanglingExcHandlers` and SI-6720).
+</span>147 <span style=''>     *
+</span>148 <span style=''>     *        This means a finally-block indicates instructions that can be reached:
+</span>149 <span style=''>     *          (b.1) Upon normal (non-early-returning) completion of the try-clause or a catch-clause
+</span>150 <span style=''>     *                In this case, the next-program-point is that following the try-catch-finally expression.
+</span>151 <span style=''>     *          (b.2) Upon early-return initiated in the try-clause or a catch-clause
+</span>152 <span style=''>     *                In this case, the next-program-point is the enclosing cleanup section (if any), otherwise return.
+</span>153 <span style=''>     *          (b.3) Upon abrupt termination (due to unhandled exception) of the try-clause or a catch-clause
+</span>154 <span style=''>     *                In this case, the unhandled exception must be re-thrown after running the finally-block.
+</span>155 <span style=''>     *
+</span>156 <span style=''>     *    (c) finally-blocks are implicit to `synchronized` (a finally-block is added to just release the lock)
+</span>157 <span style=''>     *        that's why `genSynchronized()` too emits cleanup-sections.
+</span>158 <span style=''>     *
+</span>159 <span style=''>     *  A number of code patterns can be emitted to realize the intended semantics.
+</span>160 <span style=''>     *
+</span>161 <span style=''>     *  A popular alternative (GenICode, javac) consists in duplicating the cleanup-chain at each early-return position.
+</span>162 <span style=''>     *  The principle at work being that once control is transferred to a cleanup-section,
+</span>163 <span style=''>     *  control will always stay within the cleanup-chain.
+</span>164 <span style=''>     *  That is, barring an exception being thrown in a cleanup-section, in which case the enclosing try-block
+</span>165 <span style=''>     *  (reached via abrupt termination) takes over.
+</span>166 <span style=''>     *
+</span>167 <span style=''>     *  The observations above hint at another code layout, less verbose, for the cleanup-chain.
+</span>168 <span style=''>     *
+</span>169 <span style=''>     *  The code layout that GenBCode emits takes into account that once a cleanup section has been reached,
+</span>170 <span style=''>     *  jumping to the next cleanup-section (and so on, until the outermost one) realizes the correct semantics.
+</span>171 <span style=''>     *
+</span>172 <span style=''>     *  There is still code duplication in that two cleanup-chains are needed (but this is unavoidable, anyway):
+</span>173 <span style=''>     *  one for normal control flow and another chain consisting of exception handlers.
+</span>174 <span style=''>     *  The in-line comments below refer to them as
+</span>175 <span style=''>     *    - &quot;early-return-cleanups&quot; and
+</span>176 <span style=''>     *    - &quot;exception-handler-version-of-finally-block&quot; respectively.
+</span>177 <span style=''>     *
+</span>178 <span style=''>     */
+</span>179 <span style=''>    def genLoadTry(tree: Try): BType = tree match {
+</span>180 <span style=''>      case Try(block, catches, finalizer) =&gt;
+</span>181 <span style=''>      val kind = </span><span style='background: #AEF1AE'>tpeTK(tree)</span><span style=''>
+</span>182 <span style=''>
+</span>183 <span style=''>      val caseHandlers: List[EHClause] =
+</span>184 <span style=''>        </span><span style='background: #AEF1AE'>for (CaseDef(pat, _, caseBody) &lt;- catches) yield {
+</span>185 <span style=''></span><span style='background: #AEF1AE'>          pat match {
+</span>186 <span style=''></span><span style='background: #AEF1AE'>            case Typed(Ident(`nme_WILDCARD`), tpt)  =&gt; NamelessEH(tpeTK(tpt).asClassBType, caseBody)
+</span>187 <span style=''></span><span style='background: #AEF1AE'>            case Ident(`nme_WILDCARD`)              =&gt; NamelessEH(ThrowableReference,  caseBody)
+</span>188 <span style=''></span><span style='background: #AEF1AE'>            case Bind(_, _)                       =&gt; BoundEH   (pat.symbol, caseBody)
+</span>189 <span style=''></span><span style='background: #AEF1AE'>          }</span><span style=''>
+</span>190 <span style=''>        }
+</span>191 <span style=''>
+</span>192 <span style=''>      // ------ (0) locals used later ------
+</span>193 <span style=''>
+</span>194 <span style=''>      /*
+</span>195 <span style=''>       * `postHandlers` is a program point denoting:
+</span>196 <span style=''>       *     (a) the finally-clause conceptually reached via fall-through from try-catch-finally
+</span>197 <span style=''>       *         (in case a finally-block is present); or
+</span>198 <span style=''>       *     (b) the program point right after the try-catch
+</span>199 <span style=''>       *         (in case there's no finally-block).
+</span>200 <span style=''>       * The name choice emphasizes that the code section lies &quot;after all exception handlers&quot;,
+</span>201 <span style=''>       * where &quot;all exception handlers&quot; includes those derived from catch-clauses as well as from finally-blocks.
+</span>202 <span style=''>       */
+</span>203 <span style=''>      val postHandlers = </span><span style='background: #AEF1AE'>new asm.Label</span><span style=''>
+</span>204 <span style=''>
+</span>205 <span style=''>      val hasFinally   = (</span><span style='background: #AEF1AE'>finalizer != EmptyTree</span><span style=''>)
+</span>206 <span style=''>
+</span>207 <span style=''>      /*
+</span>208 <span style=''>       * used in the finally-clause reached via fall-through from try-catch, if any.
+</span>209 <span style=''>       */
+</span>210 <span style=''>      val guardResult  = </span><span style='background: #AEF1AE'>hasFinally &amp;&amp; (kind != UNIT) &amp;&amp; mayCleanStack(finalizer)</span><span style=''>
+</span>211 <span style=''>
+</span>212 <span style=''>      /*
+</span>213 <span style=''>       * please notice `tmp` has type tree.tpe, while `earlyReturnVar` has the method return type.
+</span>214 <span style=''>       * Because those two types can be different, dedicated vars are needed.
+</span>215 <span style=''>       */
+</span>216 <span style=''>      val tmp          = if (guardResult) </span><span style='background: #AEF1AE'>locals.makeLocal(tpeTK(tree), &quot;tmp&quot;, tree.tpe, tree.pos)</span><span style=''> else </span><span style='background: #AEF1AE'>null</span><span style=''>;
+</span>217 <span style=''>
+</span>218 <span style=''>      /*
+</span>219 <span style=''>       * upon early return from the try-body or one of its EHs (but not the EH-version of the finally-clause)
+</span>220 <span style=''>       * AND hasFinally, a cleanup is needed.
+</span>221 <span style=''>       */
+</span>222 <span style=''>      val finCleanup   = if (hasFinally) </span><span style='background: #AEF1AE'>new asm.Label</span><span style=''> else </span><span style='background: #AEF1AE'>null</span><span style=''>
+</span>223 <span style=''>
+</span>224 <span style=''>      /* ------ (1) try-block, protected by:
+</span>225 <span style=''>       *                       (1.a) the EHs due to case-clauses,   emitted in (2),
+</span>226 <span style=''>       *                       (1.b) the EH  due to finally-clause, emitted in (3.A)
+</span>227 <span style=''>       *                       (1.c) whatever protects the whole try-catch-finally expression.
+</span>228 <span style=''>       * ------
+</span>229 <span style=''>       */
+</span>230 <span style=''>
+</span>231 <span style=''>      val startTryBody = </span><span style='background: #AEF1AE'>currProgramPoint()</span><span style=''>
+</span>232 <span style=''>      </span><span style='background: #AEF1AE'>registerCleanup(finCleanup)</span><span style=''>
+</span>233 <span style=''>      </span><span style='background: #AEF1AE'>genLoad(block, kind)</span><span style=''>
+</span>234 <span style=''>      </span><span style='background: #AEF1AE'>unregisterCleanup(finCleanup)</span><span style=''>
+</span>235 <span style=''>      </span><span style='background: #AEF1AE'>nopIfNeeded(startTryBody)</span><span style=''>
+</span>236 <span style=''>      val endTryBody = </span><span style='background: #AEF1AE'>currProgramPoint()</span><span style=''>
+</span>237 <span style=''>      </span><span style='background: #AEF1AE'>bc goTo postHandlers</span><span style=''>
+</span>238 <span style=''>
+</span>239 <span style=''>      /* ------ (2) One EH for each case-clause (this does not include the EH-version of the finally-clause)
+</span>240 <span style=''>       *            An EH in (2) is reached upon abrupt termination of (1).
+</span>241 <span style=''>       *            An EH in (2) is protected by:
+</span>242 <span style=''>       *                         (2.a) the EH-version of the finally-clause, if any.
+</span>243 <span style=''>       *                         (2.b) whatever protects the whole try-catch-finally expression.
+</span>244 <span style=''>       * ------
+</span>245 <span style=''>       */
+</span>246 <span style=''>
+</span>247 <span style=''>      </span><span style='background: #AEF1AE'>for (ch &lt;- caseHandlers) {
+</span>248 <span style=''></span><span style='background: #AEF1AE'>
+</span>249 <span style=''></span><span style='background: #AEF1AE'>        // (2.a) emit case clause proper
+</span>250 <span style=''></span><span style='background: #AEF1AE'>        val startHandler = currProgramPoint()
+</span>251 <span style=''></span><span style='background: #AEF1AE'>        var endHandler: asm.Label = null
+</span>252 <span style=''></span><span style='background: #AEF1AE'>        var excType: ClassBType = null
+</span>253 <span style=''></span><span style='background: #AEF1AE'>        registerCleanup(finCleanup)
+</span>254 <span style=''></span><span style='background: #AEF1AE'>        ch match {
+</span>255 <span style=''></span><span style='background: #AEF1AE'>          case NamelessEH(typeToDrop, caseBody) =&gt;
+</span>256 <span style=''></span><span style='background: #AEF1AE'>            bc drop typeToDrop
+</span>257 <span style=''></span><span style='background: #AEF1AE'>            genLoad(caseBody, kind) // adapts caseBody to `kind`, thus it can be stored, if `guardResult`, in `tmp`.
+</span>258 <span style=''></span><span style='background: #AEF1AE'>            nopIfNeeded(startHandler)
+</span>259 <span style=''></span><span style='background: #AEF1AE'>            endHandler = currProgramPoint()
+</span>260 <span style=''></span><span style='background: #AEF1AE'>            excType = typeToDrop
+</span>261 <span style=''></span><span style='background: #AEF1AE'>
+</span>262 <span style=''></span><span style='background: #AEF1AE'>          case BoundEH   (patSymbol,  caseBody) =&gt;
+</span>263 <span style=''></span><span style='background: #AEF1AE'>            // test/files/run/contrib674.scala , a local-var already exists for patSymbol.
+</span>264 <span style=''></span><span style='background: #AEF1AE'>            // rather than creating on first-access, we do it right away to emit debug-info for the created local var.
+</span>265 <span style=''></span><span style='background: #AEF1AE'>            val Local(patTK, _, patIdx, _) = locals.getOrMakeLocal(patSymbol)
+</span>266 <span style=''></span><span style='background: #AEF1AE'>            bc.store(patIdx, patTK)
+</span>267 <span style=''></span><span style='background: #AEF1AE'>            genLoad(caseBody, kind)
+</span>268 <span style=''></span><span style='background: #AEF1AE'>            nopIfNeeded(startHandler)
+</span>269 <span style=''></span><span style='background: #AEF1AE'>            endHandler = currProgramPoint()
+</span>270 <span style=''></span><span style='background: #AEF1AE'>            emitLocalVarScope(patSymbol, startHandler, endHandler)
+</span>271 <span style=''></span><span style='background: #AEF1AE'>            excType = patTK.asClassBType
+</span>272 <span style=''></span><span style='background: #AEF1AE'>        }
+</span>273 <span style=''></span><span style='background: #AEF1AE'>        unregisterCleanup(finCleanup)
+</span>274 <span style=''></span><span style='background: #AEF1AE'>        // (2.b)  mark the try-body as protected by this case clause.
+</span>275 <span style=''></span><span style='background: #AEF1AE'>        protect(startTryBody, endTryBody, startHandler, excType)
+</span>276 <span style=''></span><span style='background: #AEF1AE'>        // (2.c) emit jump to the program point where the finally-clause-for-normal-exit starts, or in effect `after` if no finally-clause was given.
+</span>277 <span style=''></span><span style='background: #AEF1AE'>        bc goTo postHandlers
+</span>278 <span style=''></span><span style='background: #AEF1AE'>
+</span>279 <span style=''></span><span style='background: #AEF1AE'>      }</span><span style=''>
+</span>280 <span style=''>
+</span>281 <span style=''>      /* ------ (3.A) The exception-handler-version of the finally-clause.
+</span>282 <span style=''>       *              Reached upon abrupt termination of (1) or one of the EHs in (2).
+</span>283 <span style=''>       *              Protected only by whatever protects the whole try-catch-finally expression.
+</span>284 <span style=''>       * ------
+</span>285 <span style=''>       */
+</span>286 <span style=''>
+</span>287 <span style=''>      // a note on terminology: this is not &quot;postHandlers&quot;, despite appearences.
+</span>288 <span style=''>      // &quot;postHandlers&quot; as in the source-code view. And from that perspective, both (3.A) and (3.B) are invisible implementation artifacts.
+</span>289 <span style=''>      if (hasFinally) </span><span style='background: #AEF1AE'>{
+</span>290 <span style=''></span><span style='background: #AEF1AE'>        nopIfNeeded(startTryBody)
+</span>291 <span style=''></span><span style='background: #AEF1AE'>        val finalHandler = currProgramPoint() // version of the finally-clause reached via unhandled exception.
+</span>292 <span style=''></span><span style='background: #AEF1AE'>        protect(startTryBody, finalHandler, finalHandler, null)
+</span>293 <span style=''></span><span style='background: #AEF1AE'>        val Local(eTK, _, eIdx, _) = locals(locals.makeLocal(ThrowableReference, &quot;exc&quot;, Throwable_Type, finalizer.pos))
+</span>294 <span style=''></span><span style='background: #AEF1AE'>        bc.store(eIdx, eTK)
+</span>295 <span style=''></span><span style='background: #AEF1AE'>        emitFinalizer(finalizer, null, isDuplicate = true)
+</span>296 <span style=''></span><span style='background: #AEF1AE'>        bc.load(eIdx, eTK)
+</span>297 <span style=''></span><span style='background: #AEF1AE'>        emit(asm.Opcodes.ATHROW)
+</span>298 <span style=''></span><span style='background: #AEF1AE'>      }</span><span style=''>
+</span>299 <span style=''>
+</span>300 <span style=''>      /* ------ (3.B) Cleanup-version of the finally-clause.
+</span>301 <span style=''>       *              Reached upon early RETURN from (1) or upon early RETURN from one of the EHs in (2)
+</span>302 <span style=''>       *              (and only from there, ie reached only upon early RETURN from
+</span>303 <span style=''>       *               program regions bracketed by registerCleanup/unregisterCleanup).
+</span>304 <span style=''>       *              Protected only by whatever protects the whole try-catch-finally expression.
+</span>305 <span style=''>       *
+</span>306 <span style=''>       *              Given that control arrives to a cleanup section only upon early RETURN,
+</span>307 <span style=''>       *              the value to return (if any) is always available. Therefore, a further RETURN
+</span>308 <span style=''>       *              found in a cleanup section is always ignored (a warning is displayed, @see `genReturn()`).
+</span>309 <span style=''>       *              In order for `genReturn()` to know whether the return statement is enclosed in a cleanup section,
+</span>310 <span style=''>       *              the variable `insideCleanupBlock` is used.
+</span>311 <span style=''>       * ------
+</span>312 <span style=''>       */
+</span>313 <span style=''>
+</span>314 <span style=''>      // this is not &quot;postHandlers&quot; either.
+</span>315 <span style=''>      // `shouldEmitCleanup` can be set, and at the same time this try expression may lack a finally-clause.
+</span>316 <span style=''>      // In other words, all combinations of (hasFinally, shouldEmitCleanup) are valid.
+</span>317 <span style=''>      if (</span><span style='background: #AEF1AE'>hasFinally &amp;&amp; shouldEmitCleanup</span><span style=''>) </span><span style='background: #AEF1AE'>{
+</span>318 <span style=''></span><span style='background: #AEF1AE'>        val savedInsideCleanup = insideCleanupBlock
+</span>319 <span style=''></span><span style='background: #AEF1AE'>        insideCleanupBlock = true
+</span>320 <span style=''></span><span style='background: #AEF1AE'>        markProgramPoint(finCleanup)
+</span>321 <span style=''></span><span style='background: #AEF1AE'>        // regarding return value, the protocol is: in place of a `return-stmt`, a sequence of `adapt, store, jump` are inserted.
+</span>322 <span style=''></span><span style='background: #AEF1AE'>        emitFinalizer(finalizer, null, isDuplicate = true)
+</span>323 <span style=''></span><span style='background: #AEF1AE'>        pendingCleanups()
+</span>324 <span style=''></span><span style='background: #AEF1AE'>        insideCleanupBlock = savedInsideCleanup
+</span>325 <span style=''></span><span style='background: #AEF1AE'>      }</span><span style=''>
+</span>326 <span style=''>
+</span>327 <span style=''>      /* ------ (4) finally-clause-for-normal-nonEarlyReturn-exit
+</span>328 <span style=''>       *            Reached upon normal, non-early-return termination of (1) or of an EH in (2).
+</span>329 <span style=''>       *            Protected only by whatever protects the whole try-catch-finally expression.
+</span>330 <span style=''>       * TODO explain what happens upon RETURN contained in (4)
+</span>331 <span style=''>       * ------
+</span>332 <span style=''>       */
+</span>333 <span style=''>
+</span>334 <span style=''>      </span><span style='background: #AEF1AE'>markProgramPoint(postHandlers)</span><span style=''>
+</span>335 <span style=''>      if (hasFinally) {
+</span>336 <span style=''>        </span><span style='background: #AEF1AE'>emitFinalizer(finalizer, tmp, isDuplicate = false)</span><span style=''> // the only invocation of emitFinalizer with `isDuplicate == false`
+</span>337 <span style=''>      }
+</span>338 <span style=''>
+</span>339 <span style=''>      kind
+</span>340 <span style=''>    } // end of genLoadTry()
+</span>341 <span style=''>
+</span>342 <span style=''>    /* if no more pending cleanups, all that remains to do is return. Otherwise jump to the next (outer) pending cleanup. */
+</span>343 <span style=''>    private def pendingCleanups(): Unit = {
+</span>344 <span style=''>      </span><span style='background: #AEF1AE'>cleanups</span><span style=''> match {
+</span>345 <span style=''>        case Nil =&gt;
+</span>346 <span style=''>          if (</span><span style='background: #AEF1AE'>earlyReturnVar != null</span><span style=''>) </span><span style='background: #AEF1AE'>{
+</span>347 <span style=''></span><span style='background: #AEF1AE'>            locals.load(earlyReturnVar)
+</span>348 <span style=''></span><span style='background: #AEF1AE'>            bc.emitRETURN(locals(earlyReturnVar).tk)
+</span>349 <span style=''></span><span style='background: #AEF1AE'>          }</span><span style=''> else {
+</span>350 <span style=''>            </span><span style='background: #AEF1AE'>bc emitRETURN UNIT</span><span style=''>
+</span>351 <span style=''>          }
+</span>352 <span style=''>          </span><span style='background: #AEF1AE'>shouldEmitCleanup = false</span><span style=''>
+</span>353 <span style=''>
+</span>354 <span style=''>        case nextCleanup :: _ =&gt;
+</span>355 <span style=''>          </span><span style='background: #AEF1AE'>bc goTo nextCleanup</span><span style=''>
+</span>356 <span style=''>      }
+</span>357 <span style=''>    }
+</span>358 <span style=''>
+</span>359 <span style=''>    def protect(start: asm.Label, end: asm.Label, handler: asm.Label, excType: ClassBType): Unit = {
+</span>360 <span style=''>      val excInternalName: String =
+</span>361 <span style=''>        if (</span><span style='background: #AEF1AE'>excType == null</span><span style=''>) </span><span style='background: #AEF1AE'>null</span><span style=''>
+</span>362 <span style=''>        else </span><span style='background: #AEF1AE'>excType.internalName</span><span style=''>
+</span>363 <span style=''>      </span><span style='background: #AEF1AE'>assert(start != end, </span><span style='background: #F0ADAD'>&quot;protecting a range of zero instructions leads to illegal class format. Solution: add a NOP to that range.&quot;</span><span style='background: #AEF1AE'>)</span><span style=''>
+</span>364 <span style=''>      </span><span style='background: #AEF1AE'>mnode.visitTryCatchBlock(start, end, handler, excInternalName)</span><span style=''>
+</span>365 <span style=''>    }
+</span>366 <span style=''>
+</span>367 <span style=''>    /* `tmp` (if non-null) is the symbol of the local-var used to preserve the result of the try-body, see `guardResult` */
+</span>368 <span style=''>    def emitFinalizer(finalizer: Tree, tmp: Symbol, isDuplicate: Boolean): Unit = {
+</span>369 <span style=''>      var saved: immutable.Map[ /* LabelDef */ Symbol, asm.Label ] = </span><span style='background: #AEF1AE'>null</span><span style=''>
+</span>370 <span style=''>      if (isDuplicate) </span><span style='background: #AEF1AE'>{
+</span>371 <span style=''></span><span style='background: #AEF1AE'>        saved = jumpDest
+</span>372 <span style=''></span><span style='background: #AEF1AE'>        for(ldef &lt;- labelDefsAtOrUnder(finalizer)) {
+</span>373 <span style=''></span><span style='background: #AEF1AE'>          </span><span style='background: #F0ADAD'>jumpDest -= ldef.symbol</span><span style='background: #AEF1AE'>
+</span>374 <span style=''></span><span style='background: #AEF1AE'>        }
+</span>375 <span style=''></span><span style='background: #AEF1AE'>      }</span><span style=''>
+</span>376 <span style=''>      // when duplicating, the above guarantees new asm.Labels are used for LabelDefs contained in the finalizer (their vars are reused, that's ok)
+</span>377 <span style=''>      if (</span><span style='background: #AEF1AE'>tmp != null</span><span style=''>) { </span><span style='background: #AEF1AE'>locals.store(tmp)</span><span style=''> }
+</span>378 <span style=''>      </span><span style='background: #AEF1AE'>genLoad(finalizer, UNIT)</span><span style=''>
+</span>379 <span style=''>      if (</span><span style='background: #AEF1AE'>tmp != null</span><span style=''>) { </span><span style='background: #AEF1AE'>locals.load(tmp)</span><span style=''>  }
+</span>380 <span style=''>      if (isDuplicate) {
+</span>381 <span style=''>        </span><span style='background: #AEF1AE'>jumpDest = saved</span><span style=''>
+</span>382 <span style=''>      }
+</span>383 <span style=''>    }
+</span>384 <span style=''>
+</span>385 <span style=''>    /* Does this tree have a try-catch block? */
+</span>386 <span style=''>    def mayCleanStack(tree: Tree): Boolean = </span><span style='background: #AEF1AE'>tree exists { t =&gt; t match {
+</span>387 <span style=''></span><span style='background: #AEF1AE'>        case Try(_, _, _) =&gt; true
+</span>388 <span style=''></span><span style='background: #AEF1AE'>        case _ =&gt; false
+</span>389 <span style=''></span><span style='background: #AEF1AE'>      }</span><span style=''>
+</span>390 <span style=''>    }
+</span>391 <span style=''>
+</span>392 <span style=''>    trait EHClause
+</span>393 <span style=''>    case class NamelessEH(typeToDrop: ClassBType,  caseBody: Tree) extends EHClause
+</span>394 <span style=''>    case class BoundEH    (patSymbol: Symbol, caseBody: Tree) extends EHClause
+</span>395 <span style=''>
+</span>396 <span style=''>  }
+</span>397 <span style=''>
+</span>398 <span style=''>}
+</span></pre>
+          </div>
+          <div class="tab-pane" id="statementlist">
+            <table cellspacing="0" cellpadding="0" class="table statementlist">
+      <tr>
+        <th>Line</th>
+        <th>Stmt Id</th>
+        <th>Pos</th>
+        <th>Tree</th>
+        <th>Symbol</th>
+        <th>Code</th>
+      </tr><tr>
+        <td>
+          32
+        </td>
+        <td>
+          3145
+        </td>
+        <td>
+          782
+          -
+          793
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BackendInterfaceDefinitions.Object_Type
+        </td>
+        <td style="background: #AEF1AE">
+          BCodeSyncAndTry.this.int.Object_Type
+        </td>
+      </tr><tr>
+        <td>
+          32
+        </td>
+        <td>
+          3147
+        </td>
+        <td>
+          737
+          -
+          804
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BCodeSkelBuilder.PlainSkelBuilder.locals.makeLocal
+        </td>
+        <td style="background: #AEF1AE">
+          SyncAndTryBuilder.this.locals.makeLocal(BCodeSyncAndTry.this.bTypes.coreBTypes.ObjectReference, &quot;monitor&quot;, BCodeSyncAndTry.this.int.Object_Type, BCodeSyncAndTry.this.int.treeHelper(tree).pos)
+        </td>
+      </tr><tr>
+        <td>
+          32
+        </td>
+        <td>
+          3144
+        </td>
+        <td>
+          771
+          -
+          780
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          &quot;monitor&quot;
+        </td>
+      </tr><tr>
+        <td>
+          32
+        </td>
+        <td>
+          3143
+        </td>
+        <td>
+          754
+          -
+          769
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.CoreBTypesProxy.ObjectReference
+        </td>
+        <td style="background: #AEF1AE">
+          BCodeSyncAndTry.this.bTypes.coreBTypes.ObjectReference
+        </td>
+      </tr><tr>
+        <td>
+          32
+        </td>
+        <td>
+          3146
+        </td>
+        <td>
+          795
+          -
+          803
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BackendInterface.TreeHelper.pos
+        </td>
+        <td style="background: #AEF1AE">
+          BCodeSyncAndTry.this.int.treeHelper(tree).pos
+        </td>
+      </tr><tr>
+        <td>
+          33
+        </td>
+        <td>
+          3148
+        </td>
+        <td>
+          828
+          -
+          841
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.tools.asm.Label.&lt;init&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          new scala.tools.asm.Label()
+        </td>
+      </tr><tr>
+        <td>
+          37
+        </td>
+        <td>
+          3150
+        </td>
+        <td>
+          1052
+          -
+          1072
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.Object.!=
+        </td>
+        <td style="background: #AEF1AE">
+          expectedType.!=(BCodeSyncAndTry.this.bTypes.UNIT)
+        </td>
+      </tr><tr>
+        <td>
+          37
+        </td>
+        <td>
+          3149
+        </td>
+        <td>
+          1068
+          -
+          1072
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BTypes.UNIT
+        </td>
+        <td style="background: #AEF1AE">
+          BCodeSyncAndTry.this.bTypes.UNIT
+        </td>
+      </tr><tr>
+        <td>
+          38
+        </td>
+        <td>
+          3157
+        </td>
+        <td>
+          1123
+          -
+          1197
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BCodeSkelBuilder.PlainSkelBuilder.locals.makeLocal
+        </td>
+        <td style="background: #AEF1AE">
+          SyncAndTryBuilder.this.locals.makeLocal(SyncAndTryBuilder.this.tpeTK(args.head), &quot;monitorResult&quot;, BCodeSyncAndTry.this.int.Object_Type, BCodeSyncAndTry.this.int.treeHelper(tree).pos)
+        </td>
+      </tr><tr>
+        <td>
+          38
+        </td>
+        <td>
+          3151
+        </td>
+        <td>
+          1146
+          -
+          1155
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.collection.IterableLike.head
+        </td>
+        <td style="background: #AEF1AE">
+          args.head
+        </td>
+      </tr><tr>
+        <td>
+          38
+        </td>
+        <td>
+          3154
+        </td>
+        <td>
+          1175
+          -
+          1186
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BackendInterfaceDefinitions.Object_Type
+        </td>
+        <td style="background: #AEF1AE">
+          BCodeSyncAndTry.this.int.Object_Type
+        </td>
+      </tr><tr>
+        <td>
+          38
+        </td>
+        <td>
+          3156
+        </td>
+        <td>
+          1123
+          -
+          1197
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BCodeSkelBuilder.PlainSkelBuilder.locals.makeLocal
+        </td>
+        <td style="background: #AEF1AE">
+          SyncAndTryBuilder.this.locals.makeLocal(SyncAndTryBuilder.this.tpeTK(args.head), &quot;monitorResult&quot;, BCodeSyncAndTry.this.int.Object_Type, BCodeSyncAndTry.this.int.treeHelper(tree).pos)
+        </td>
+      </tr><tr>
+        <td>
+          38
+        </td>
+        <td>
+          3159
+        </td>
+        <td>
+          1203
+          -
+          1207
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          null
+        </td>
+      </tr><tr>
+        <td>
+          38
+        </td>
+        <td>
+          3153
+        </td>
+        <td>
+          1158
+          -
+          1173
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          &quot;monitorResult&quot;
+        </td>
+      </tr><tr>
+        <td>
+          38
+        </td>
+        <td>
+          3152
+        </td>
+        <td>
+          1140
+          -
+          1156
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BCodeSkelBuilder.PlainSkelBuilder.tpeTK
+        </td>
+        <td style="background: #AEF1AE">
+          SyncAndTryBuilder.this.tpeTK(args.head)
+        </td>
+      </tr><tr>
+        <td>
+          38
+        </td>
+        <td>
+          3155
+        </td>
+        <td>
+          1188
+          -
+          1196
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BackendInterface.TreeHelper.pos
+        </td>
+        <td style="background: #AEF1AE">
+          BCodeSyncAndTry.this.int.treeHelper(tree).pos
+        </td>
+      </tr><tr>
+        <td>
+          38
+        </td>
+        <td>
+          3158
+        </td>
+        <td>
+          1203
+          -
+          1207
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          null
+        </td>
+      </tr><tr>
+        <td>
+          41
+        </td>
+        <td>
+          3160
+        </td>
+        <td>
+          1327
+          -
+          1348
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BCodeBodyBuilder.PlainBodyBuilder.genLoadQualifier
+        </td>
+        <td style="background: #AEF1AE">
+          SyncAndTryBuilder.this.genLoadQualifier(fun)
+        </td>
+      </tr><tr>
+        <td>
+          42
+        </td>
+        <td>
+          3162
+        </td>
+        <td>
+          1355
+          -
+          1377
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BCodeIdiomatic.JCodeMethodN.dup
+        </td>
+        <td style="background: #AEF1AE">
+          SyncAndTryBuilder.this.bc.dup(BCodeSyncAndTry.this.bTypes.coreBTypes.ObjectReference)
+        </td>
+      </tr><tr>
+        <td>
+          42
+        </td>
+        <td>
+          3161
+        </td>
+        <td>
+          1362
+          -
+          1377
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.CoreBTypesProxy.ObjectReference
+        </td>
+        <td style="background: #AEF1AE">
+          BCodeSyncAndTry.this.bTypes.coreBTypes.ObjectReference
+        </td>
+      </tr><tr>
+        <td>
+          43
+        </td>
+        <td>
+          3163
+        </td>
+        <td>
+          1384
+          -
+          1405
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BCodeSkelBuilder.PlainSkelBuilder.locals.store
+        </td>
+        <td style="background: #AEF1AE">
+          SyncAndTryBuilder.this.locals.store(monitor)
+        </td>
+      </tr><tr>
+        <td>
+          44
+        </td>
+        <td>
+          3164
+        </td>
+        <td>
+          1412
+          -
+          1442
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BCodeBodyBuilder.PlainBodyBuilder.emit
+        </td>
+        <td style="background: #AEF1AE">
+          SyncAndTryBuilder.this.emit(194)
+        </td>
+      </tr><tr>
+        <td>
+          53
+        </td>
+        <td>
+          3165
+        </td>
+        <td>
+          1770
+          -
+          1788
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BCodeSkelBuilder.PlainSkelBuilder.currProgramPoint
+        </td>
+        <td style="background: #AEF1AE">
+          SyncAndTryBuilder.this.currProgramPoint()
+        </td>
+      </tr><tr>
+        <td>
+          54
+        </td>
+        <td>
+          3166
+        </td>
+        <td>
+          1795
+          -
+          1822
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BCodeSkelBuilder.PlainSkelBuilder.registerCleanup
+        </td>
+        <td style="background: #AEF1AE">
+          SyncAndTryBuilder.this.registerCleanup(monCleanup)
+        </td>
+      </tr><tr>
+        <td>
+          55
+        </td>
+        <td>
+          3168
+        </td>
+        <td>
+          1829
+          -
+          1899
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BCodeBodyBuilder.PlainBodyBuilder.genLoad
+        </td>
+        <td style="background: #AEF1AE">
+          SyncAndTryBuilder.this.genLoad(args.head, expectedType)
+        </td>
+      </tr><tr>
+        <td>
+          55
+        </td>
+        <td>
+          3167
+        </td>
+        <td>
+          1837
+          -
+          1846
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.collection.IterableLike.head
+        </td>
+        <td style="background: #AEF1AE">
+          args.head
+        </td>
+      </tr><tr>
+        <td>
+          56
+        </td>
+        <td>
+          3169
+        </td>
+        <td>
+          1906
+          -
+          1935
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BCodeSkelBuilder.PlainSkelBuilder.unregisterCleanup
+        </td>
+        <td style="background: #AEF1AE">
+          SyncAndTryBuilder.this.unregisterCleanup(monCleanup)
+        </td>
+      </tr><tr>
+        <td>
+          57
+        </td>
+        <td>
+          3172
+        </td>
+        <td>
+          1942
+          -
+          1942
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          ()
+        </td>
+      </tr><tr>
+        <td>
+          57
+        </td>
+        <td>
+          3171
+        </td>
+        <td>
+          1959
+          -
+          1986
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BCodeSkelBuilder.PlainSkelBuilder.locals.store
+        </td>
+        <td style="background: #AEF1AE">
+          SyncAndTryBuilder.this.locals.store(monitorResult)
+        </td>
+      </tr><tr>
+        <td>
+          57
+        </td>
+        <td>
+          3170
+        </td>
+        <td>
+          1959
+          -
+          1986
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BCodeSkelBuilder.PlainSkelBuilder.locals.store
+        </td>
+        <td style="background: #AEF1AE">
+          SyncAndTryBuilder.this.locals.store(monitorResult)
+        </td>
+      </tr><tr>
+        <td>
+          57
+        </td>
+        <td>
+          3173
+        </td>
+        <td>
+          1942
+          -
+          1942
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          ()
+        </td>
+      </tr><tr>
+        <td>
+          58
+        </td>
+        <td>
+          3174
+        </td>
+        <td>
+          1995
+          -
+          2022
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BCodeSyncAndTry.SyncAndTryBuilder.nopIfNeeded
+        </td>
+        <td style="background: #AEF1AE">
+          SyncAndTryBuilder.this.nopIfNeeded(startProtected)
+        </td>
+      </tr><tr>
+        <td>
+          59
+        </td>
+        <td>
+          3175
+        </td>
+        <td>
+          2048
+          -
+          2066
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BCodeSkelBuilder.PlainSkelBuilder.currProgramPoint
+        </td>
+        <td style="background: #AEF1AE">
+          SyncAndTryBuilder.this.currProgramPoint()
+        </td>
+      </tr><tr>
+        <td>
+          66
+        </td>
+        <td>
+          3176
+        </td>
+        <td>
+          2325
+          -
+          2345
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BCodeSkelBuilder.PlainSkelBuilder.locals.load
+        </td>
+        <td style="background: #AEF1AE">
+          SyncAndTryBuilder.this.locals.load(monitor)
+        </td>
+      </tr><tr>
+        <td>
+          67
+        </td>
+        <td>
+          3177
+        </td>
+        <td>
+          2352
+          -
+          2381
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BCodeBodyBuilder.PlainBodyBuilder.emit
+        </td>
+        <td style="background: #AEF1AE">
+          SyncAndTryBuilder.this.emit(195)
+        </td>
+      </tr><tr>
+        <td>
+          68
+        </td>
+        <td>
+          3178
+        </td>
+        <td>
+          2405
+          -
+          2431
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BCodeSkelBuilder.PlainSkelBuilder.locals.load
+        </td>
+        <td style="background: #AEF1AE">
+          SyncAndTryBuilder.this.locals.load(monitorResult)
+        </td>
+      </tr><tr>
+        <td>
+          68
+        </td>
+        <td>
+          3181
+        </td>
+        <td>
+          2388
+          -
+          2388
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          ()
+        </td>
+      </tr><tr>
+        <td>
+          68
+        </td>
+        <td>
+          3180
+        </td>
+        <td>
+          2388
+          -
+          2388
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          ()
+        </td>
+      </tr><tr>
+        <td>
+          68
+        </td>
+        <td>
+          3179
+        </td>
+        <td>
+          2405
+          -
+          2431
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BCodeSkelBuilder.PlainSkelBuilder.locals.load
+        </td>
+        <td style="background: #AEF1AE">
+          SyncAndTryBuilder.this.locals.load(monitorResult)
+        </td>
+      </tr><tr>
+        <td>
+          69
+        </td>
+        <td>
+          3182
+        </td>
+        <td>
+          2458
+          -
+          2471
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.tools.asm.Label.&lt;init&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          new scala.tools.asm.Label()
+        </td>
+      </tr><tr>
+        <td>
+          70
+        </td>
+        <td>
+          3183
+        </td>
+        <td>
+          2478
+          -
+          2497
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BCodeIdiomatic.JCodeMethodN.goTo
+        </td>
+        <td style="background: #AEF1AE">
+          SyncAndTryBuilder.this.bc.goTo(postHandler)
+        </td>
+      </tr><tr>
+        <td>
+          79
+        </td>
+        <td>
+          3184
+        </td>
+        <td>
+          2982
+          -
+          3000
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BCodeSkelBuilder.PlainSkelBuilder.currProgramPoint
+        </td>
+        <td style="background: #AEF1AE">
+          SyncAndTryBuilder.this.currProgramPoint()
+        </td>
+      </tr><tr>
+        <td>
+          79
+        </td>
+        <td>
+          3186
+        </td>
+        <td>
+          2944
+          -
+          3007
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BCodeSyncAndTry.SyncAndTryBuilder.protect
+        </td>
+        <td style="background: #AEF1AE">
+          SyncAndTryBuilder.this.protect(startProtected, endProtected, SyncAndTryBuilder.this.currProgramPoint(), null)
+        </td>
+      </tr><tr>
+        <td>
+          79
+        </td>
+        <td>
+          3185
+        </td>
+        <td>
+          3002
+          -
+          3006
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          null
+        </td>
+      </tr><tr>
+        <td>
+          80
+        </td>
+        <td>
+          3187
+        </td>
+        <td>
+          3014
+          -
+          3034
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BCodeSkelBuilder.PlainSkelBuilder.locals.load
+        </td>
+        <td style="background: #AEF1AE">
+          SyncAndTryBuilder.this.locals.load(monitor)
+        </td>
+      </tr><tr>
+        <td>
+          81
+        </td>
+        <td>
+          3188
+        </td>
+        <td>
+          3041
+          -
+          3070
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BCodeBodyBuilder.PlainBodyBuilder.emit
+        </td>
+        <td style="background: #AEF1AE">
+          SyncAndTryBuilder.this.emit(195)
+        </td>
+      </tr><tr>
+        <td>
+          82
+        </td>
+        <td>
+          3189
+        </td>
+        <td>
+          3077
+          -
+          3101
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BCodeBodyBuilder.PlainBodyBuilder.emit
+        </td>
+        <td style="background: #AEF1AE">
+          SyncAndTryBuilder.this.emit(191)
+        </td>
+      </tr><tr>
+        <td>
+          89
+        </td>
+        <td>
+          3196
+        </td>
+        <td>
+          3335
+          -
+          3335
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          ()
+        </td>
+      </tr><tr>
+        <td>
+          89
+        </td>
+        <td>
+          3190
+        </td>
+        <td>
+          3339
+          -
+          3356
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BCodeSkelBuilder.PlainSkelBuilder.shouldEmitCleanup
+        </td>
+        <td style="background: #AEF1AE">
+          SyncAndTryBuilder.this.shouldEmitCleanup
+        </td>
+      </tr><tr>
+        <td>
+          89
+        </td>
+        <td>
+          3195
+        </td>
+        <td>
+          3358
+          -
+          3497
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          {
+  SyncAndTryBuilder.this.markProgramPoint(monCleanup);
+  SyncAndTryBuilder.this.locals.load(monitor);
+  SyncAndTryBuilder.this.emit(195);
+  SyncAndTryBuilder.this.pendingCleanups()
+}
+        </td>
+      </tr><tr>
+        <td>
+          89
+        </td>
+        <td>
+          3197
+        </td>
+        <td>
+          3335
+          -
+          3335
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          ()
+        </td>
+      </tr><tr>
+        <td>
+          90
+        </td>
+        <td>
+          3191
+        </td>
+        <td>
+          3368
+          -
+          3396
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BCodeSkelBuilder.PlainSkelBuilder.markProgramPoint
+        </td>
+        <td style="background: #AEF1AE">
+          SyncAndTryBuilder.this.markProgramPoint(monCleanup)
+        </td>
+      </tr><tr>
+        <td>
+          91
+        </td>
+        <td>
+          3192
+        </td>
+        <td>
+          3405
+          -
+          3425
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BCodeSkelBuilder.PlainSkelBuilder.locals.load
+        </td>
+        <td style="background: #AEF1AE">
+          SyncAndTryBuilder.this.locals.load(monitor)
+        </td>
+      </tr><tr>
+        <td>
+          92
+        </td>
+        <td>
+          3193
+        </td>
+        <td>
+          3434
+          -
+          3463
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BCodeBodyBuilder.PlainBodyBuilder.emit
+        </td>
+        <td style="background: #AEF1AE">
+          SyncAndTryBuilder.this.emit(195)
+        </td>
+      </tr><tr>
+        <td>
+          93
+        </td>
+        <td>
+          3194
+        </td>
+        <td>
+          3472
+          -
+          3489
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BCodeSyncAndTry.SyncAndTryBuilder.pendingCleanups
+        </td>
+        <td style="background: #AEF1AE">
+          SyncAndTryBuilder.this.pendingCleanups()
+        </td>
+      </tr><tr>
+        <td>
+          101
+        </td>
+        <td>
+          3198
+        </td>
+        <td>
+          3761
+          -
+          3789
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.tools.asm.tree.MethodNode.visitLabel
+        </td>
+        <td style="background: #AEF1AE">
+          SyncAndTryBuilder.this.mnode.visitLabel(postHandler)
+        </td>
+      </tr><tr>
+        <td>
+          103
+        </td>
+        <td>
+          3199
+        </td>
+        <td>
+          3797
+          -
+          3813
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BCodeSkelBuilder.PlainSkelBuilder.lineNumber
+        </td>
+        <td style="background: #AEF1AE">
+          SyncAndTryBuilder.this.lineNumber(tree)
+        </td>
+      </tr><tr>
+        <td>
+          114
+        </td>
+        <td>
+          3200
+        </td>
+        <td>
+          4224
+          -
+          4245
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BCodeSkelBuilder.PlainSkelBuilder.isAtProgramPoint
+        </td>
+        <td style="background: #AEF1AE">
+          SyncAndTryBuilder.this.isAtProgramPoint(lbl)
+        </td>
+      </tr><tr>
+        <td>
+          115
+        </td>
+        <td>
+          3202
+        </td>
+        <td>
+          4280
+          -
+          4301
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BCodeBodyBuilder.PlainBodyBuilder.emit
+        </td>
+        <td style="background: #AEF1AE">
+          SyncAndTryBuilder.this.emit(0)
+        </td>
+      </tr><tr>
+        <td>
+          115
+        </td>
+        <td>
+          3201
+        </td>
+        <td>
+          4280
+          -
+          4301
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BCodeBodyBuilder.PlainBodyBuilder.emit
+        </td>
+        <td style="background: #AEF1AE">
+          SyncAndTryBuilder.this.emit(0)
+        </td>
+      </tr><tr>
+        <td>
+          115
+        </td>
+        <td>
+          3204
+        </td>
+        <td>
+          4252
+          -
+          4252
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          ()
+        </td>
+      </tr><tr>
+        <td>
+          115
+        </td>
+        <td>
+          3203
+        </td>
+        <td>
+          4252
+          -
+          4252
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          ()
+        </td>
+      </tr><tr>
+        <td>
+          181
+        </td>
+        <td>
+          3205
+        </td>
+        <td>
+          8316
+          -
+          8327
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BCodeSkelBuilder.PlainSkelBuilder.tpeTK
+        </td>
+        <td style="background: #AEF1AE">
+          SyncAndTryBuilder.this.tpeTK(tree)
+        </td>
+      </tr><tr>
+        <td>
+          184
+        </td>
+        <td>
+          3213
+        </td>
+        <td>
+          8378
+          -
+          8746
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          scala.collection.generic.FilterMonadic.map
+        </td>
+        <td style="background: #AEF1AE">
+          catches.withFilter(((check$ifrefutable$1: BCodeSyncAndTry.this.int.Tree) =&gt; (check$ifrefutable$1: BCodeSyncAndTry.this.int.Tree @unchecked) match {
+  case BCodeSyncAndTry.this.int.CaseDefTag.unapply(&lt;unapply-selector&gt;) &lt;unapply&gt; (BCodeSyncAndTry.this.int.CaseDef.unapply(&lt;unapply-selector&gt;) &lt;unapply&gt; ((pat @ _), _, (caseBody @ _))) =&gt; true
+  case _ =&gt; false
+})).map[Product with Serializable with SyncAndTryBuilder.this.EHClause, List[SyncAndTryBuilder.this.EHClause]](((x$1: BCodeSyncAndTry.this.int.Tree) =&gt; (x$1: BCodeSyncAndTry.this.int.Tree @unchecked) match {
+  case BCodeSyncAndTry.this.int.CaseDefTag.unapply(&lt;unapply-selector&gt;) &lt;unapply&gt; (BCodeSyncAndTry.this.int.CaseDef.unapply(&lt;unapply-selector&gt;) &lt;unapply&gt; ((pat @ _), _, (caseBody @ _))) =&gt; pat match {
+    case BCodeSyncAndTry.this.int.TypedTag.unapply(&lt;unapply-selector&gt;) &lt;unapply&gt; (BCodeSyncAndTry.this.int.Typed.unapply(&lt;unapply-selector&gt;) &lt;unapply&gt; (BCodeSyncAndTry.this.int.IdentTag.unapply(&lt;unapply-selector&gt;) &lt;unapply&gt; (BCodeSyncAndTry.this.int.Ident.unapply(&lt;unapply-selector&gt;) &lt;unapply&gt; (BCodeSyncAndTry.this.int.nme_WILDCARD)), (tpt @ _))) =&gt; SyncAndTryBuilder.this.NamelessEH.apply(SyncAndTryBuilder.this.tpeTK(tpt).asClassBType, caseBody)
+    case BCodeSyncAndTry.this.int.IdentTag.unapply(&lt;unapply-selector&gt;) &lt;unapply&gt; (BCodeSyncAndTry.this.int.Ident.unapply(&lt;unapply-selector&gt;) &lt;unapply&gt; (BCodeSyncAndTry.this.int.nme_WILDCARD)) =&gt; SyncAndTryBuilder.this.NamelessEH.apply(BCodeSyncAndTry.this.bTypes.coreBTypes.ThrowableReference, caseBody)
+    case BCodeSyncAndTry.this.int.BindTag.unapply(&lt;unapply-selector&gt;) &lt;unapply&gt; (BCodeSyncAndTry.this.int.Bind.unapply(&lt;unapply-selector&gt;) &lt;unapply&gt; (_, _)) =&gt; SyncAndTryBuilder.this.BoundEH.apply(BCodeSyncAndTry.this.int.treeHelper(pat).symbol, caseBody)
+  }
+}))(immutable.this.List.canBuildFrom[Product with Serializable with SyncAndTryBuilder.this.EHClause])
+        </td>
+      </tr><tr>
+        <td>
+          184
+        </td>
+        <td>
+          3212
+        </td>
+        <td>
+          8409
+          -
+          8409
+        </td>
+        <td>
+          TypeApply
+        </td>
+        <td>
+          scala.collection.immutable.List.canBuildFrom
+        </td>
+        <td style="background: #AEF1AE">
+          immutable.this.List.canBuildFrom[Product with Serializable with SyncAndTryBuilder.this.EHClause]
+        </td>
+      </tr><tr>
+        <td>
+          186
+        </td>
+        <td>
+          3207
+        </td>
+        <td>
+          8506
+          -
+          8551
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BCodeSyncAndTry.SyncAndTryBuilder.NamelessEH.apply
+        </td>
+        <td style="background: #AEF1AE">
+          SyncAndTryBuilder.this.NamelessEH.apply(SyncAndTryBuilder.this.tpeTK(tpt).asClassBType, caseBody)
+        </td>
+      </tr><tr>
+        <td>
+          186
+        </td>
+        <td>
+          3206
+        </td>
+        <td>
+          8517
+          -
+          8540
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BTypes.BType.asClassBType
+        </td>
+        <td style="background: #AEF1AE">
+          SyncAndTryBuilder.this.tpeTK(tpt).asClassBType
+        </td>
+      </tr><tr>
+        <td>
+          187
+        </td>
+        <td>
+          3208
+        </td>
+        <td>
+          8618
+          -
+          8636
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.CoreBTypesProxy.ThrowableReference
+        </td>
+        <td style="background: #AEF1AE">
+          BCodeSyncAndTry.this.bTypes.coreBTypes.ThrowableReference
+        </td>
+      </tr><tr>
+        <td>
+          187
+        </td>
+        <td>
+          3209
+        </td>
+        <td>
+          8607
+          -
+          8648
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BCodeSyncAndTry.SyncAndTryBuilder.NamelessEH.apply
+        </td>
+        <td style="background: #AEF1AE">
+          SyncAndTryBuilder.this.NamelessEH.apply(BCodeSyncAndTry.this.bTypes.coreBTypes.ThrowableReference, caseBody)
+        </td>
+      </tr><tr>
+        <td>
+          188
+        </td>
+        <td>
+          3211
+        </td>
+        <td>
+          8702
+          -
+          8734
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BCodeSyncAndTry.SyncAndTryBuilder.BoundEH.apply
+        </td>
+        <td style="background: #AEF1AE">
+          SyncAndTryBuilder.this.BoundEH.apply(BCodeSyncAndTry.this.int.treeHelper(pat).symbol, caseBody)
+        </td>
+      </tr><tr>
+        <td>
+          188
+        </td>
+        <td>
+          3210
+        </td>
+        <td>
+          8713
+          -
+          8723
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BackendInterface.TreeHelper.symbol
+        </td>
+        <td style="background: #AEF1AE">
+          BCodeSyncAndTry.this.int.treeHelper(pat).symbol
+        </td>
+      </tr><tr>
+        <td>
+          203
+        </td>
+        <td>
+          3214
+        </td>
+        <td>
+          9379
+          -
+          9392
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.tools.asm.Label.&lt;init&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          new scala.tools.asm.Label()
+        </td>
+      </tr><tr>
+        <td>
+          205
+        </td>
+        <td>
+          3216
+        </td>
+        <td>
+          9420
+          -
+          9442
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.Object.!=
+        </td>
+        <td style="background: #AEF1AE">
+          finalizer.!=(BCodeSyncAndTry.this.int.EmptyTree)
+        </td>
+      </tr><tr>
+        <td>
+          205
+        </td>
+        <td>
+          3215
+        </td>
+        <td>
+          9433
+          -
+          9442
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BackendInterfaceDefinitions.EmptyTree
+        </td>
+        <td style="background: #AEF1AE">
+          BCodeSyncAndTry.this.int.EmptyTree
+        </td>
+      </tr><tr>
+        <td>
+          210
+        </td>
+        <td>
+          3217
+        </td>
+        <td>
+          9597
+          -
+          9601
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BTypes.UNIT
+        </td>
+        <td style="background: #AEF1AE">
+          BCodeSyncAndTry.this.bTypes.UNIT
+        </td>
+      </tr><tr>
+        <td>
+          210
+        </td>
+        <td>
+          3220
+        </td>
+        <td>
+          9574
+          -
+          9630
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Boolean.&amp;&amp;
+        </td>
+        <td style="background: #AEF1AE">
+          hasFinally.&amp;&amp;(kind.!=(BCodeSyncAndTry.this.bTypes.UNIT)).&amp;&amp;(SyncAndTryBuilder.this.mayCleanStack(finalizer))
+        </td>
+      </tr><tr>
+        <td>
+          210
+        </td>
+        <td>
+          3219
+        </td>
+        <td>
+          9606
+          -
+          9630
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BCodeSyncAndTry.SyncAndTryBuilder.mayCleanStack
+        </td>
+        <td style="background: #AEF1AE">
+          SyncAndTryBuilder.this.mayCleanStack(finalizer)
+        </td>
+      </tr><tr>
+        <td>
+          210
+        </td>
+        <td>
+          3218
+        </td>
+        <td>
+          9589
+          -
+          9601
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.Object.!=
+        </td>
+        <td style="background: #AEF1AE">
+          kind.!=(BCodeSyncAndTry.this.bTypes.UNIT)
+        </td>
+      </tr><tr>
+        <td>
+          216
+        </td>
+        <td>
+          3226
+        </td>
+        <td>
+          9870
+          -
+          9926
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BCodeSkelBuilder.PlainSkelBuilder.locals.makeLocal
+        </td>
+        <td style="background: #AEF1AE">
+          SyncAndTryBuilder.this.locals.makeLocal(SyncAndTryBuilder.this.tpeTK(tree), &quot;tmp&quot;, BCodeSyncAndTry.this.int.treeHelper(tree).tpe, BCodeSyncAndTry.this.int.treeHelper(tree).pos)
+        </td>
+      </tr><tr>
+        <td>
+          216
+        </td>
+        <td>
+          3223
+        </td>
+        <td>
+          9907
+          -
+          9915
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BackendInterface.TreeHelper.tpe
+        </td>
+        <td style="background: #AEF1AE">
+          BCodeSyncAndTry.this.int.treeHelper(tree).tpe
+        </td>
+      </tr><tr>
+        <td>
+          216
+        </td>
+        <td>
+          3225
+        </td>
+        <td>
+          9870
+          -
+          9926
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BCodeSkelBuilder.PlainSkelBuilder.locals.makeLocal
+        </td>
+        <td style="background: #AEF1AE">
+          SyncAndTryBuilder.this.locals.makeLocal(SyncAndTryBuilder.this.tpeTK(tree), &quot;tmp&quot;, BCodeSyncAndTry.this.int.treeHelper(tree).tpe, BCodeSyncAndTry.this.int.treeHelper(tree).pos)
+        </td>
+      </tr><tr>
+        <td>
+          216
+        </td>
+        <td>
+          3228
+        </td>
+        <td>
+          9932
+          -
+          9936
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          null
+        </td>
+      </tr><tr>
+        <td>
+          216
+        </td>
+        <td>
+          3222
+        </td>
+        <td>
+          9900
+          -
+          9905
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          &quot;tmp&quot;
+        </td>
+      </tr><tr>
+        <td>
+          216
+        </td>
+        <td>
+          3221
+        </td>
+        <td>
+          9887
+          -
+          9898
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BCodeSkelBuilder.PlainSkelBuilder.tpeTK
+        </td>
+        <td style="background: #AEF1AE">
+          SyncAndTryBuilder.this.tpeTK(tree)
+        </td>
+      </tr><tr>
+        <td>
+          216
+        </td>
+        <td>
+          3224
+        </td>
+        <td>
+          9917
+          -
+          9925
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BackendInterface.TreeHelper.pos
+        </td>
+        <td style="background: #AEF1AE">
+          BCodeSyncAndTry.this.int.treeHelper(tree).pos
+        </td>
+      </tr><tr>
+        <td>
+          216
+        </td>
+        <td>
+          3227
+        </td>
+        <td>
+          9932
+          -
+          9936
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          null
+        </td>
+      </tr><tr>
+        <td>
+          222
+        </td>
+        <td>
+          3229
+        </td>
+        <td>
+          10155
+          -
+          10168
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.tools.asm.Label.&lt;init&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          new scala.tools.asm.Label()
+        </td>
+      </tr><tr>
+        <td>
+          222
+        </td>
+        <td>
+          3232
+        </td>
+        <td>
+          10174
+          -
+          10178
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          null
+        </td>
+      </tr><tr>
+        <td>
+          222
+        </td>
+        <td>
+          3231
+        </td>
+        <td>
+          10174
+          -
+          10178
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          null
+        </td>
+      </tr><tr>
+        <td>
+          222
+        </td>
+        <td>
+          3230
+        </td>
+        <td>
+          10155
+          -
+          10168
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          scala.tools.asm.Label.&lt;init&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          new scala.tools.asm.Label()
+        </td>
+      </tr><tr>
+        <td>
+          231
+        </td>
+        <td>
+          3233
+        </td>
+        <td>
+          10541
+          -
+          10559
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BCodeSkelBuilder.PlainSkelBuilder.currProgramPoint
+        </td>
+        <td style="background: #AEF1AE">
+          SyncAndTryBuilder.this.currProgramPoint()
+        </td>
+      </tr><tr>
+        <td>
+          232
+        </td>
+        <td>
+          3234
+        </td>
+        <td>
+          10566
+          -
+          10593
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BCodeSkelBuilder.PlainSkelBuilder.registerCleanup
+        </td>
+        <td style="background: #AEF1AE">
+          SyncAndTryBuilder.this.registerCleanup(finCleanup)
+        </td>
+      </tr><tr>
+        <td>
+          233
+        </td>
+        <td>
+          3235
+        </td>
+        <td>
+          10600
+          -
+          10620
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BCodeBodyBuilder.PlainBodyBuilder.genLoad
+        </td>
+        <td style="background: #AEF1AE">
+          SyncAndTryBuilder.this.genLoad(block, kind)
+        </td>
+      </tr><tr>
+        <td>
+          234
+        </td>
+        <td>
+          3236
+        </td>
+        <td>
+          10627
+          -
+          10656
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BCodeSkelBuilder.PlainSkelBuilder.unregisterCleanup
+        </td>
+        <td style="background: #AEF1AE">
+          SyncAndTryBuilder.this.unregisterCleanup(finCleanup)
+        </td>
+      </tr><tr>
+        <td>
+          235
+        </td>
+        <td>
+          3237
+        </td>
+        <td>
+          10663
+          -
+          10688
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BCodeSyncAndTry.SyncAndTryBuilder.nopIfNeeded
+        </td>
+        <td style="background: #AEF1AE">
+          SyncAndTryBuilder.this.nopIfNeeded(startTryBody)
+        </td>
+      </tr><tr>
+        <td>
+          236
+        </td>
+        <td>
+          3238
+        </td>
+        <td>
+          10712
+          -
+          10730
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BCodeSkelBuilder.PlainSkelBuilder.currProgramPoint
+        </td>
+        <td style="background: #AEF1AE">
+          SyncAndTryBuilder.this.currProgramPoint()
+        </td>
+      </tr><tr>
+        <td>
+          237
+        </td>
+        <td>
+          3239
+        </td>
+        <td>
+          10737
+          -
+          10757
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BCodeIdiomatic.JCodeMethodN.goTo
+        </td>
+        <td style="background: #AEF1AE">
+          SyncAndTryBuilder.this.bc.goTo(postHandlers)
+        </td>
+      </tr><tr>
+        <td>
+          247
+        </td>
+        <td>
+          3260
+        </td>
+        <td>
+          11209
+          -
+          12745
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.immutable.List.foreach
+        </td>
+        <td style="background: #AEF1AE">
+          caseHandlers.foreach[Unit](((ch: SyncAndTryBuilder.this.EHClause) =&gt; {
+  val startHandler: scala.tools.asm.Label = SyncAndTryBuilder.this.currProgramPoint();
+  var endHandler: scala.tools.asm.Label = null;
+  var excType: BCodeSyncAndTry.this.bTypes.ClassBType = null;
+  SyncAndTryBuilder.this.registerCleanup(finCleanup);
+  ch match {
+    case (typeToDrop: BCodeSyncAndTry.this.bTypes.ClassBType, caseBody: BCodeSyncAndTry.this.int.Tree)SyncAndTryBuilder.this.NamelessEH((typeToDrop @ _), (caseBody @ _)) =&gt; {
+      SyncAndTryBuilder.this.bc.drop(typeToDrop);
+      SyncAndTryBuilder.this.genLoad(caseBody, kind);
+      SyncAndTryBuilder.this.nopIfNeeded(startHandler);
+      endHandler = SyncAndTryBuilder.this.currProgramPoint();
+      excType = typeToDrop
+    }
+    case (patSymbol: BCodeSyncAndTry.this.int.Symbol, caseBody: BCodeSyncAndTry.this.int.Tree)SyncAndTryBuilder.this.BoundEH((patSymbol @ _), (caseBody @ _)) =&gt; {
+      &lt;synthetic&gt; &lt;artifact&gt; private[this] val x$2: (BCodeSyncAndTry.this.bTypes.BType, Int) = (SyncAndTryBuilder.this.locals.getOrMakeLocal(patSymbol): SyncAndTryBuilder.this.Local @unchecked) match {
+        case (tk: BCodeSyncAndTry.this.bTypes.BType, name: String, idx: Int, isSynth: Boolean)SyncAndTryBuilder.this.Local((patTK @ _), _, (patIdx @ _), _) =&gt; scala.Tuple2.apply[BCodeSyncAndTry.this.bTypes.BType, Int](patTK, patIdx)
+      };
+      val patTK: BCodeSyncAndTry.this.bTypes.BType = x$2._1;
+      val patIdx: Int = x$2._2;
+      SyncAndTryBuilder.this.bc.store(patIdx, patTK);
+      SyncAndTryBuilder.this.genLoad(caseBody, kind);
+      SyncAndTryBuilder.this.nopIfNeeded(startHandler);
+      endHandler = SyncAndTryBuilder.this.currProgramPoint();
+      SyncAndTryBuilder.this.emitLocalVarScope(patSymbol, startHandler, endHandler, SyncAndTryBuilder.this.emitLocalVarScope$default$4);
+      excType = patTK.asClassBType
+    }
+  };
+  SyncAndTryBuilder.this.unregisterCleanup(finCleanup);
+  SyncAndTryBuilder.this.protect(startTryBody, endTryBody, startHandler, excType);
+  SyncAndTryBuilder.this.bc.goTo(postHandlers)
+}))
+        </td>
+      </tr><tr>
+        <td>
+          250
+        </td>
+        <td>
+          3240
+        </td>
+        <td>
+          11305
+          -
+          11323
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BCodeSkelBuilder.PlainSkelBuilder.currProgramPoint
+        </td>
+        <td style="background: #AEF1AE">
+          SyncAndTryBuilder.this.currProgramPoint()
+        </td>
+      </tr><tr>
+        <td>
+          251
+        </td>
+        <td>
+          3241
+        </td>
+        <td>
+          11360
+          -
+          11364
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          null
+        </td>
+      </tr><tr>
+        <td>
+          252
+        </td>
+        <td>
+          3242
+        </td>
+        <td>
+          11399
+          -
+          11403
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          null
+        </td>
+      </tr><tr>
+        <td>
+          253
+        </td>
+        <td>
+          3243
+        </td>
+        <td>
+          11412
+          -
+          11439
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BCodeSkelBuilder.PlainSkelBuilder.registerCleanup
+        </td>
+        <td style="background: #AEF1AE">
+          SyncAndTryBuilder.this.registerCleanup(finCleanup)
+        </td>
+      </tr><tr>
+        <td>
+          256
+        </td>
+        <td>
+          3244
+        </td>
+        <td>
+          11522
+          -
+          11540
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BCodeIdiomatic.JCodeMethodN.drop
+        </td>
+        <td style="background: #AEF1AE">
+          SyncAndTryBuilder.this.bc.drop(typeToDrop)
+        </td>
+      </tr><tr>
+        <td>
+          257
+        </td>
+        <td>
+          3245
+        </td>
+        <td>
+          11553
+          -
+          11576
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BCodeBodyBuilder.PlainBodyBuilder.genLoad
+        </td>
+        <td style="background: #AEF1AE">
+          SyncAndTryBuilder.this.genLoad(caseBody, kind)
+        </td>
+      </tr><tr>
+        <td>
+          258
+        </td>
+        <td>
+          3246
+        </td>
+        <td>
+          11670
+          -
+          11695
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BCodeSyncAndTry.SyncAndTryBuilder.nopIfNeeded
+        </td>
+        <td style="background: #AEF1AE">
+          SyncAndTryBuilder.this.nopIfNeeded(startHandler)
+        </td>
+      </tr><tr>
+        <td>
+          259
+        </td>
+        <td>
+          3247
+        </td>
+        <td>
+          11721
+          -
+          11739
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BCodeSkelBuilder.PlainSkelBuilder.currProgramPoint
+        </td>
+        <td style="background: #AEF1AE">
+          SyncAndTryBuilder.this.currProgramPoint()
+        </td>
+      </tr><tr>
+        <td>
+          265
+        </td>
+        <td>
+          3249
+        </td>
+        <td>
+          12067
+          -
+          12067
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.Tuple2._2
+        </td>
+        <td style="background: #AEF1AE">
+          x$2._2
+        </td>
+      </tr><tr>
+        <td>
+          265
+        </td>
+        <td>
+          3248
+        </td>
+        <td>
+          12057
+          -
+          12057
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.Tuple2._1
+        </td>
+        <td style="background: #AEF1AE">
+          x$2._1
+        </td>
+      </tr><tr>
+        <td>
+          266
+        </td>
+        <td>
+          3250
+        </td>
+        <td>
+          12125
+          -
+          12148
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BCodeIdiomatic.JCodeMethodN.store
+        </td>
+        <td style="background: #AEF1AE">
+          SyncAndTryBuilder.this.bc.store(patIdx, patTK)
+        </td>
+      </tr><tr>
+        <td>
+          267
+        </td>
+        <td>
+          3251
+        </td>
+        <td>
+          12161
+          -
+          12184
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BCodeBodyBuilder.PlainBodyBuilder.genLoad
+        </td>
+        <td style="background: #AEF1AE">
+          SyncAndTryBuilder.this.genLoad(caseBody, kind)
+        </td>
+      </tr><tr>
+        <td>
+          268
+        </td>
+        <td>
+          3252
+        </td>
+        <td>
+          12197
+          -
+          12222
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BCodeSyncAndTry.SyncAndTryBuilder.nopIfNeeded
+        </td>
+        <td style="background: #AEF1AE">
+          SyncAndTryBuilder.this.nopIfNeeded(startHandler)
+        </td>
+      </tr><tr>
+        <td>
+          269
+        </td>
+        <td>
+          3253
+        </td>
+        <td>
+          12248
+          -
+          12266
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BCodeSkelBuilder.PlainSkelBuilder.currProgramPoint
+        </td>
+        <td style="background: #AEF1AE">
+          SyncAndTryBuilder.this.currProgramPoint()
+        </td>
+      </tr><tr>
+        <td>
+          270
+        </td>
+        <td>
+          3255
+        </td>
+        <td>
+          12279
+          -
+          12333
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BCodeSkelBuilder.PlainSkelBuilder.emitLocalVarScope
+        </td>
+        <td style="background: #AEF1AE">
+          SyncAndTryBuilder.this.emitLocalVarScope(patSymbol, startHandler, endHandler, SyncAndTryBuilder.this.emitLocalVarScope$default$4)
+        </td>
+      </tr><tr>
+        <td>
+          270
+        </td>
+        <td>
+          3254
+        </td>
+        <td>
+          12279
+          -
+          12279
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BCodeSkelBuilder.PlainSkelBuilder.emitLocalVarScope$default$4
+        </td>
+        <td style="background: #AEF1AE">
+          SyncAndTryBuilder.this.emitLocalVarScope$default$4
+        </td>
+      </tr><tr>
+        <td>
+          271
+        </td>
+        <td>
+          3256
+        </td>
+        <td>
+          12356
+          -
+          12374
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BTypes.BType.asClassBType
+        </td>
+        <td style="background: #AEF1AE">
+          patTK.asClassBType
+        </td>
+      </tr><tr>
+        <td>
+          273
+        </td>
+        <td>
+          3257
+        </td>
+        <td>
+          12393
+          -
+          12422
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BCodeSkelBuilder.PlainSkelBuilder.unregisterCleanup
+        </td>
+        <td style="background: #AEF1AE">
+          SyncAndTryBuilder.this.unregisterCleanup(finCleanup)
+        </td>
+      </tr><tr>
+        <td>
+          275
+        </td>
+        <td>
+          3258
+        </td>
+        <td>
+          12501
+          -
+          12557
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BCodeSyncAndTry.SyncAndTryBuilder.protect
+        </td>
+        <td style="background: #AEF1AE">
+          SyncAndTryBuilder.this.protect(startTryBody, endTryBody, startHandler, excType)
+        </td>
+      </tr><tr>
+        <td>
+          277
+        </td>
+        <td>
+          3259
+        </td>
+        <td>
+          12716
+          -
+          12736
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BCodeIdiomatic.JCodeMethodN.goTo
+        </td>
+        <td style="background: #AEF1AE">
+          SyncAndTryBuilder.this.bc.goTo(postHandlers)
+        </td>
+      </tr><tr>
+        <td>
+          289
+        </td>
+        <td>
+          3271
+        </td>
+        <td>
+          13261
+          -
+          13261
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          ()
+        </td>
+      </tr><tr>
+        <td>
+          289
+        </td>
+        <td>
+          3270
+        </td>
+        <td>
+          13277
+          -
+          13763
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          {
+  SyncAndTryBuilder.this.nopIfNeeded(startTryBody);
+  val finalHandler: scala.tools.asm.Label = SyncAndTryBuilder.this.currProgramPoint();
+  SyncAndTryBuilder.this.protect(startTryBody, finalHandler, finalHandler, null);
+  &lt;synthetic&gt; &lt;artifact&gt; private[this] val x$3: (BCodeSyncAndTry.this.bTypes.BType, Int) = (SyncAndTryBuilder.this.locals.apply(SyncAndTryBuilder.this.locals.makeLocal(BCodeSyncAndTry.this.bTypes.coreBTypes.ThrowableReference, &quot;exc&quot;, BCodeSyncAndTry.this.int.Throwable_Type, BCodeSyncAndTry.this.int.treeHelper(finalizer).pos)): SyncAndTryBuilder.this.Local @unchecked) match {
+    case (tk: BCodeSyncAndTry.this.bTypes.BType, name: String, idx: Int, isSynth: Boolean)SyncAndTryBuilder.this.Local((eTK @ _), _, (eIdx @ _), _) =&gt; scala.Tuple2.apply[BCodeSyncAndTry.this.bTypes.BType, Int](eTK, eIdx)
+  };
+  val eTK: BCodeSyncAndTry.this.bTypes.BType = x$3._1;
+  val eIdx: Int = x$3._2;
+  SyncAndTryBuilder.this.bc.store(eIdx, eTK);
+  SyncAndTryBuilder.this.emitFinalizer(finalizer, null, true);
+  SyncAndTryBuilder.this.bc.load(eIdx, eTK);
+  SyncAndTryBuilder.this.emit(191)
+}
+        </td>
+      </tr><tr>
+        <td>
+          289
+        </td>
+        <td>
+          3272
+        </td>
+        <td>
+          13261
+          -
+          13261
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          ()
+        </td>
+      </tr><tr>
+        <td>
+          290
+        </td>
+        <td>
+          3261
+        </td>
+        <td>
+          13287
+          -
+          13312
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BCodeSyncAndTry.SyncAndTryBuilder.nopIfNeeded
+        </td>
+        <td style="background: #AEF1AE">
+          SyncAndTryBuilder.this.nopIfNeeded(startTryBody)
+        </td>
+      </tr><tr>
+        <td>
+          291
+        </td>
+        <td>
+          3262
+        </td>
+        <td>
+          13340
+          -
+          13358
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BCodeSkelBuilder.PlainSkelBuilder.currProgramPoint
+        </td>
+        <td style="background: #AEF1AE">
+          SyncAndTryBuilder.this.currProgramPoint()
+        </td>
+      </tr><tr>
+        <td>
+          292
+        </td>
+        <td>
+          3263
+        </td>
+        <td>
+          13433
+          -
+          13488
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BCodeSyncAndTry.SyncAndTryBuilder.protect
+        </td>
+        <td style="background: #AEF1AE">
+          SyncAndTryBuilder.this.protect(startTryBody, finalHandler, finalHandler, null)
+        </td>
+      </tr><tr>
+        <td>
+          293
+        </td>
+        <td>
+          3265
+        </td>
+        <td>
+          13515
+          -
+          13515
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.Tuple2._2
+        </td>
+        <td style="background: #AEF1AE">
+          x$3._2
+        </td>
+      </tr><tr>
+        <td>
+          293
+        </td>
+        <td>
+          3264
+        </td>
+        <td>
+          13507
+          -
+          13507
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.Tuple2._1
+        </td>
+        <td style="background: #AEF1AE">
+          x$3._1
+        </td>
+      </tr><tr>
+        <td>
+          294
+        </td>
+        <td>
+          3266
+        </td>
+        <td>
+          13617
+          -
+          13636
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BCodeIdiomatic.JCodeMethodN.store
+        </td>
+        <td style="background: #AEF1AE">
+          SyncAndTryBuilder.this.bc.store(eIdx, eTK)
+        </td>
+      </tr><tr>
+        <td>
+          295
+        </td>
+        <td>
+          3267
+        </td>
+        <td>
+          13645
+          -
+          13695
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BCodeSyncAndTry.SyncAndTryBuilder.emitFinalizer
+        </td>
+        <td style="background: #AEF1AE">
+          SyncAndTryBuilder.this.emitFinalizer(finalizer, null, true)
+        </td>
+      </tr><tr>
+        <td>
+          296
+        </td>
+        <td>
+          3268
+        </td>
+        <td>
+          13704
+          -
+          13722
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BCodeIdiomatic.JCodeMethodN.load
+        </td>
+        <td style="background: #AEF1AE">
+          SyncAndTryBuilder.this.bc.load(eIdx, eTK)
+        </td>
+      </tr><tr>
+        <td>
+          297
+        </td>
+        <td>
+          3269
+        </td>
+        <td>
+          13731
+          -
+          13755
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BCodeBodyBuilder.PlainBodyBuilder.emit
+        </td>
+        <td style="background: #AEF1AE">
+          SyncAndTryBuilder.this.emit(191)
+        </td>
+      </tr><tr>
+        <td>
+          317
+        </td>
+        <td>
+          3274
+        </td>
+        <td>
+          14979
+          -
+          15010
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Boolean.&amp;&amp;
+        </td>
+        <td style="background: #AEF1AE">
+          hasFinally.&amp;&amp;(SyncAndTryBuilder.this.shouldEmitCleanup)
+        </td>
+      </tr><tr>
+        <td>
+          317
+        </td>
+        <td>
+          3283
+        </td>
+        <td>
+          14975
+          -
+          14975
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          ()
+        </td>
+      </tr><tr>
+        <td>
+          317
+        </td>
+        <td>
+          3273
+        </td>
+        <td>
+          14993
+          -
+          15010
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BCodeSkelBuilder.PlainSkelBuilder.shouldEmitCleanup
+        </td>
+        <td style="background: #AEF1AE">
+          SyncAndTryBuilder.this.shouldEmitCleanup
+        </td>
+      </tr><tr>
+        <td>
+          317
+        </td>
+        <td>
+          3282
+        </td>
+        <td>
+          14975
+          -
+          14975
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          ()
+        </td>
+      </tr><tr>
+        <td>
+          317
+        </td>
+        <td>
+          3281
+        </td>
+        <td>
+          15012
+          -
+          15407
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          {
+  val savedInsideCleanup: Boolean = SyncAndTryBuilder.this.insideCleanupBlock;
+  SyncAndTryBuilder.this.insideCleanupBlock_=(true);
+  SyncAndTryBuilder.this.markProgramPoint(finCleanup);
+  SyncAndTryBuilder.this.emitFinalizer(finalizer, null, true);
+  SyncAndTryBuilder.this.pendingCleanups();
+  SyncAndTryBuilder.this.insideCleanupBlock_=(savedInsideCleanup)
+}
+        </td>
+      </tr><tr>
+        <td>
+          318
+        </td>
+        <td>
+          3275
+        </td>
+        <td>
+          15047
+          -
+          15065
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BCodeSkelBuilder.PlainSkelBuilder.insideCleanupBlock
+        </td>
+        <td style="background: #AEF1AE">
+          SyncAndTryBuilder.this.insideCleanupBlock
+        </td>
+      </tr><tr>
+        <td>
+          319
+        </td>
+        <td>
+          3276
+        </td>
+        <td>
+          15074
+          -
+          15099
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BCodeSkelBuilder.PlainSkelBuilder.insideCleanupBlock_=
+        </td>
+        <td style="background: #AEF1AE">
+          SyncAndTryBuilder.this.insideCleanupBlock_=(true)
+        </td>
+      </tr><tr>
+        <td>
+          320
+        </td>
+        <td>
+          3277
+        </td>
+        <td>
+          15108
+          -
+          15136
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BCodeSkelBuilder.PlainSkelBuilder.markProgramPoint
+        </td>
+        <td style="background: #AEF1AE">
+          SyncAndTryBuilder.this.markProgramPoint(finCleanup)
+        </td>
+      </tr><tr>
+        <td>
+          322
+        </td>
+        <td>
+          3278
+        </td>
+        <td>
+          15275
+          -
+          15325
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BCodeSyncAndTry.SyncAndTryBuilder.emitFinalizer
+        </td>
+        <td style="background: #AEF1AE">
+          SyncAndTryBuilder.this.emitFinalizer(finalizer, null, true)
+        </td>
+      </tr><tr>
+        <td>
+          323
+        </td>
+        <td>
+          3279
+        </td>
+        <td>
+          15334
+          -
+          15351
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BCodeSyncAndTry.SyncAndTryBuilder.pendingCleanups
+        </td>
+        <td style="background: #AEF1AE">
+          SyncAndTryBuilder.this.pendingCleanups()
+        </td>
+      </tr><tr>
+        <td>
+          324
+        </td>
+        <td>
+          3280
+        </td>
+        <td>
+          15360
+          -
+          15399
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BCodeSkelBuilder.PlainSkelBuilder.insideCleanupBlock_=
+        </td>
+        <td style="background: #AEF1AE">
+          SyncAndTryBuilder.this.insideCleanupBlock_=(savedInsideCleanup)
+        </td>
+      </tr><tr>
+        <td>
+          334
+        </td>
+        <td>
+          3284
+        </td>
+        <td>
+          15765
+          -
+          15795
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BCodeSkelBuilder.PlainSkelBuilder.markProgramPoint
+        </td>
+        <td style="background: #AEF1AE">
+          SyncAndTryBuilder.this.markProgramPoint(postHandlers)
+        </td>
+      </tr><tr>
+        <td>
+          335
+        </td>
+        <td>
+          3288
+        </td>
+        <td>
+          15802
+          -
+          15802
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          ()
+        </td>
+      </tr><tr>
+        <td>
+          335
+        </td>
+        <td>
+          3287
+        </td>
+        <td>
+          15802
+          -
+          15802
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          ()
+        </td>
+      </tr><tr>
+        <td>
+          336
+        </td>
+        <td>
+          3286
+        </td>
+        <td>
+          15828
+          -
+          15878
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BCodeSyncAndTry.SyncAndTryBuilder.emitFinalizer
+        </td>
+        <td style="background: #AEF1AE">
+          SyncAndTryBuilder.this.emitFinalizer(finalizer, tmp, false)
+        </td>
+      </tr><tr>
+        <td>
+          336
+        </td>
+        <td>
+          3285
+        </td>
+        <td>
+          15828
+          -
+          15878
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BCodeSyncAndTry.SyncAndTryBuilder.emitFinalizer
+        </td>
+        <td style="background: #AEF1AE">
+          SyncAndTryBuilder.this.emitFinalizer(finalizer, tmp, false)
+        </td>
+      </tr><tr>
+        <td>
+          344
+        </td>
+        <td>
+          3289
+        </td>
+        <td>
+          16172
+          -
+          16180
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BCodeSkelBuilder.PlainSkelBuilder.cleanups
+        </td>
+        <td style="background: #AEF1AE">
+          SyncAndTryBuilder.this.cleanups
+        </td>
+      </tr><tr>
+        <td>
+          346
+        </td>
+        <td>
+          3290
+        </td>
+        <td>
+          16223
+          -
+          16245
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.Object.!=
+        </td>
+        <td style="background: #AEF1AE">
+          SyncAndTryBuilder.this.earlyReturnVar.!=(null)
+        </td>
+      </tr><tr>
+        <td>
+          346
+        </td>
+        <td>
+          3296
+        </td>
+        <td>
+          16247
+          -
+          16353
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          {
+  SyncAndTryBuilder.this.locals.load(SyncAndTryBuilder.this.earlyReturnVar);
+  SyncAndTryBuilder.this.bc.emitRETURN(SyncAndTryBuilder.this.locals.apply(SyncAndTryBuilder.this.earlyReturnVar).tk)
+}
+        </td>
+      </tr><tr>
+        <td>
+          347
+        </td>
+        <td>
+          3292
+        </td>
+        <td>
+          16261
+          -
+          16288
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BCodeSkelBuilder.PlainSkelBuilder.locals.load
+        </td>
+        <td style="background: #AEF1AE">
+          SyncAndTryBuilder.this.locals.load(SyncAndTryBuilder.this.earlyReturnVar)
+        </td>
+      </tr><tr>
+        <td>
+          347
+        </td>
+        <td>
+          3291
+        </td>
+        <td>
+          16273
+          -
+          16287
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BCodeSkelBuilder.PlainSkelBuilder.earlyReturnVar
+        </td>
+        <td style="background: #AEF1AE">
+          SyncAndTryBuilder.this.earlyReturnVar
+        </td>
+      </tr><tr>
+        <td>
+          348
+        </td>
+        <td>
+          3295
+        </td>
+        <td>
+          16301
+          -
+          16341
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BCodeIdiomatic.JCodeMethodN.emitRETURN
+        </td>
+        <td style="background: #AEF1AE">
+          SyncAndTryBuilder.this.bc.emitRETURN(SyncAndTryBuilder.this.locals.apply(SyncAndTryBuilder.this.earlyReturnVar).tk)
+        </td>
+      </tr><tr>
+        <td>
+          348
+        </td>
+        <td>
+          3294
+        </td>
+        <td>
+          16315
+          -
+          16340
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BCodeSkelBuilder.PlainSkelBuilder.Local.tk
+        </td>
+        <td style="background: #AEF1AE">
+          SyncAndTryBuilder.this.locals.apply(SyncAndTryBuilder.this.earlyReturnVar).tk
+        </td>
+      </tr><tr>
+        <td>
+          348
+        </td>
+        <td>
+          3293
+        </td>
+        <td>
+          16322
+          -
+          16336
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BCodeSkelBuilder.PlainSkelBuilder.earlyReturnVar
+        </td>
+        <td style="background: #AEF1AE">
+          SyncAndTryBuilder.this.earlyReturnVar
+        </td>
+      </tr><tr>
+        <td>
+          350
+        </td>
+        <td>
+          3298
+        </td>
+        <td>
+          16373
+          -
+          16391
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BCodeIdiomatic.JCodeMethodN.emitRETURN
+        </td>
+        <td style="background: #AEF1AE">
+          SyncAndTryBuilder.this.bc.emitRETURN(BCodeSyncAndTry.this.bTypes.UNIT)
+        </td>
+      </tr><tr>
+        <td>
+          350
+        </td>
+        <td>
+          3297
+        </td>
+        <td>
+          16387
+          -
+          16391
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BTypes.UNIT
+        </td>
+        <td style="background: #AEF1AE">
+          BCodeSyncAndTry.this.bTypes.UNIT
+        </td>
+      </tr><tr>
+        <td>
+          350
+        </td>
+        <td>
+          3299
+        </td>
+        <td>
+          16373
+          -
+          16391
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BCodeIdiomatic.JCodeMethodN.emitRETURN
+        </td>
+        <td style="background: #AEF1AE">
+          SyncAndTryBuilder.this.bc.emitRETURN(BCodeSyncAndTry.this.bTypes.UNIT)
+        </td>
+      </tr><tr>
+        <td>
+          352
+        </td>
+        <td>
+          3300
+        </td>
+        <td>
+          16414
+          -
+          16439
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BCodeSkelBuilder.PlainSkelBuilder.shouldEmitCleanup_=
+        </td>
+        <td style="background: #AEF1AE">
+          SyncAndTryBuilder.this.shouldEmitCleanup_=(false)
+        </td>
+      </tr><tr>
+        <td>
+          355
+        </td>
+        <td>
+          3301
+        </td>
+        <td>
+          16484
+          -
+          16503
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BCodeIdiomatic.JCodeMethodN.goTo
+        </td>
+        <td style="background: #AEF1AE">
+          SyncAndTryBuilder.this.bc.goTo(nextCleanup)
+        </td>
+      </tr><tr>
+        <td>
+          361
+        </td>
+        <td>
+          3304
+        </td>
+        <td>
+          16685
+          -
+          16689
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          null
+        </td>
+      </tr><tr>
+        <td>
+          361
+        </td>
+        <td>
+          3303
+        </td>
+        <td>
+          16685
+          -
+          16689
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          null
+        </td>
+      </tr><tr>
+        <td>
+          361
+        </td>
+        <td>
+          3302
+        </td>
+        <td>
+          16668
+          -
+          16683
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.Object.==
+        </td>
+        <td style="background: #AEF1AE">
+          excType.==(null)
+        </td>
+      </tr><tr>
+        <td>
+          362
+        </td>
+        <td>
+          3306
+        </td>
+        <td>
+          16703
+          -
+          16723
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BTypes.ClassBType.internalName
+        </td>
+        <td style="background: #AEF1AE">
+          excType.internalName
+        </td>
+      </tr><tr>
+        <td>
+          362
+        </td>
+        <td>
+          3305
+        </td>
+        <td>
+          16703
+          -
+          16723
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BTypes.ClassBType.internalName
+        </td>
+        <td style="background: #AEF1AE">
+          excType.internalName
+        </td>
+      </tr><tr>
+        <td>
+          363
+        </td>
+        <td>
+          3307
+        </td>
+        <td>
+          16737
+          -
+          16749
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.Object.!=
+        </td>
+        <td style="background: #AEF1AE">
+          start.!=(end)
+        </td>
+      </tr><tr>
+        <td>
+          363
+        </td>
+        <td>
+          3309
+        </td>
+        <td>
+          16730
+          -
+          16859
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Predef.assert
+        </td>
+        <td style="background: #AEF1AE">
+          scala.Predef.assert(start.!=(end), &quot;protecting a range of zero instructions leads to illegal class format. Solution: add a NOP to that range.&quot;)
+        </td>
+      </tr><tr>
+        <td>
+          363
+        </td>
+        <td>
+          3308
+        </td>
+        <td>
+          16751
+          -
+          16858
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          &quot;protecting a range of zero instructions leads to illegal class format. Solution: add a NOP to that range.&quot;
+        </td>
+      </tr><tr>
+        <td>
+          364
+        </td>
+        <td>
+          3310
+        </td>
+        <td>
+          16866
+          -
+          16928
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.tools.asm.tree.MethodNode.visitTryCatchBlock
+        </td>
+        <td style="background: #AEF1AE">
+          SyncAndTryBuilder.this.mnode.visitTryCatchBlock(start, end, handler, excInternalName)
+        </td>
+      </tr><tr>
+        <td>
+          369
+        </td>
+        <td>
+          3311
+        </td>
+        <td>
+          17213
+          -
+          17217
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          null
+        </td>
+      </tr><tr>
+        <td>
+          370
+        </td>
+        <td>
+          3319
+        </td>
+        <td>
+          17224
+          -
+          17224
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          ()
+        </td>
+      </tr><tr>
+        <td>
+          370
+        </td>
+        <td>
+          3318
+        </td>
+        <td>
+          17224
+          -
+          17224
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          ()
+        </td>
+      </tr><tr>
+        <td>
+          370
+        </td>
+        <td>
+          3317
+        </td>
+        <td>
+          17241
+          -
+          17372
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          {
+  saved = SyncAndTryBuilder.this.jumpDest;
+  SyncAndTryBuilder.this.labelDefsAtOrUnder.apply(finalizer).foreach[Unit](((ldef: BCodeSyncAndTry.this.int.LabelDef) =&gt; SyncAndTryBuilder.this.jumpDest_=(SyncAndTryBuilder.this.jumpDest.-(BCodeSyncAndTry.this.int.treeHelper(ldef).symbol))))
+}
+        </td>
+      </tr><tr>
+        <td>
+          371
+        </td>
+        <td>
+          3312
+        </td>
+        <td>
+          17259
+          -
+          17267
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BCodeSkelBuilder.PlainSkelBuilder.jumpDest
+        </td>
+        <td style="background: #AEF1AE">
+          SyncAndTryBuilder.this.jumpDest
+        </td>
+      </tr><tr>
+        <td>
+          372
+        </td>
+        <td>
+          3316
+        </td>
+        <td>
+          17276
+          -
+          17354
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.immutable.List.foreach
+        </td>
+        <td style="background: #AEF1AE">
+          SyncAndTryBuilder.this.labelDefsAtOrUnder.apply(finalizer).foreach[Unit](((ldef: BCodeSyncAndTry.this.int.LabelDef) =&gt; SyncAndTryBuilder.this.jumpDest_=(SyncAndTryBuilder.this.jumpDest.-(BCodeSyncAndTry.this.int.treeHelper(ldef).symbol))))
+        </td>
+      </tr><tr>
+        <td>
+          373
+        </td>
+        <td>
+          3313
+        </td>
+        <td>
+          17343
+          -
+          17354
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BackendInterface.TreeHelper.symbol
+        </td>
+        <td style="background: #F0ADAD">
+          BCodeSyncAndTry.this.int.treeHelper(ldef).symbol
+        </td>
+      </tr><tr>
+        <td>
+          373
+        </td>
+        <td>
+          3315
+        </td>
+        <td>
+          17331
+          -
+          17354
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BCodeSkelBuilder.PlainSkelBuilder.jumpDest_=
+        </td>
+        <td style="background: #F0ADAD">
+          SyncAndTryBuilder.this.jumpDest_=(SyncAndTryBuilder.this.jumpDest.-(BCodeSyncAndTry.this.int.treeHelper(ldef).symbol))
+        </td>
+      </tr><tr>
+        <td>
+          373
+        </td>
+        <td>
+          3314
+        </td>
+        <td>
+          17331
+          -
+          17354
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.MapLike.-
+        </td>
+        <td style="background: #F0ADAD">
+          SyncAndTryBuilder.this.jumpDest.-(BCodeSyncAndTry.this.int.treeHelper(ldef).symbol)
+        </td>
+      </tr><tr>
+        <td>
+          377
+        </td>
+        <td>
+          3322
+        </td>
+        <td>
+          17546
+          -
+          17563
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BCodeSkelBuilder.PlainSkelBuilder.locals.store
+        </td>
+        <td style="background: #AEF1AE">
+          SyncAndTryBuilder.this.locals.store(tmp)
+        </td>
+      </tr><tr>
+        <td>
+          377
+        </td>
+        <td>
+          3321
+        </td>
+        <td>
+          17546
+          -
+          17563
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BCodeSkelBuilder.PlainSkelBuilder.locals.store
+        </td>
+        <td style="background: #AEF1AE">
+          SyncAndTryBuilder.this.locals.store(tmp)
+        </td>
+      </tr><tr>
+        <td>
+          377
+        </td>
+        <td>
+          3324
+        </td>
+        <td>
+          17527
+          -
+          17527
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          ()
+        </td>
+      </tr><tr>
+        <td>
+          377
+        </td>
+        <td>
+          3323
+        </td>
+        <td>
+          17527
+          -
+          17527
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          ()
+        </td>
+      </tr><tr>
+        <td>
+          377
+        </td>
+        <td>
+          3320
+        </td>
+        <td>
+          17531
+          -
+          17542
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.Object.!=
+        </td>
+        <td style="background: #AEF1AE">
+          tmp.!=(null)
+        </td>
+      </tr><tr>
+        <td>
+          378
+        </td>
+        <td>
+          3325
+        </td>
+        <td>
+          17591
+          -
+          17595
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BTypes.UNIT
+        </td>
+        <td style="background: #AEF1AE">
+          BCodeSyncAndTry.this.bTypes.UNIT
+        </td>
+      </tr><tr>
+        <td>
+          378
+        </td>
+        <td>
+          3326
+        </td>
+        <td>
+          17572
+          -
+          17596
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BCodeBodyBuilder.PlainBodyBuilder.genLoad
+        </td>
+        <td style="background: #AEF1AE">
+          SyncAndTryBuilder.this.genLoad(finalizer, BCodeSyncAndTry.this.bTypes.UNIT)
+        </td>
+      </tr><tr>
+        <td>
+          379
+        </td>
+        <td>
+          3331
+        </td>
+        <td>
+          17603
+          -
+          17603
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          ()
+        </td>
+      </tr><tr>
+        <td>
+          379
+        </td>
+        <td>
+          3327
+        </td>
+        <td>
+          17607
+          -
+          17618
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.Object.!=
+        </td>
+        <td style="background: #AEF1AE">
+          tmp.!=(null)
+        </td>
+      </tr><tr>
+        <td>
+          379
+        </td>
+        <td>
+          3330
+        </td>
+        <td>
+          17603
+          -
+          17603
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          ()
+        </td>
+      </tr><tr>
+        <td>
+          379
+        </td>
+        <td>
+          3329
+        </td>
+        <td>
+          17622
+          -
+          17638
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BCodeSkelBuilder.PlainSkelBuilder.locals.load
+        </td>
+        <td style="background: #AEF1AE">
+          SyncAndTryBuilder.this.locals.load(tmp)
+        </td>
+      </tr><tr>
+        <td>
+          379
+        </td>
+        <td>
+          3328
+        </td>
+        <td>
+          17622
+          -
+          17638
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BCodeSkelBuilder.PlainSkelBuilder.locals.load
+        </td>
+        <td style="background: #AEF1AE">
+          SyncAndTryBuilder.this.locals.load(tmp)
+        </td>
+      </tr><tr>
+        <td>
+          380
+        </td>
+        <td>
+          3334
+        </td>
+        <td>
+          17648
+          -
+          17648
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          ()
+        </td>
+      </tr><tr>
+        <td>
+          380
+        </td>
+        <td>
+          3335
+        </td>
+        <td>
+          17648
+          -
+          17648
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          ()
+        </td>
+      </tr><tr>
+        <td>
+          381
+        </td>
+        <td>
+          3333
+        </td>
+        <td>
+          17675
+          -
+          17691
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BCodeSkelBuilder.PlainSkelBuilder.jumpDest_=
+        </td>
+        <td style="background: #AEF1AE">
+          SyncAndTryBuilder.this.jumpDest_=(saved)
+        </td>
+      </tr><tr>
+        <td>
+          381
+        </td>
+        <td>
+          3332
+        </td>
+        <td>
+          17675
+          -
+          17691
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BCodeSkelBuilder.PlainSkelBuilder.jumpDest_=
+        </td>
+        <td style="background: #AEF1AE">
+          SyncAndTryBuilder.this.jumpDest_=(saved)
+        </td>
+      </tr><tr>
+        <td>
+          386
+        </td>
+        <td>
+          3338
+        </td>
+        <td>
+          17801
+          -
+          17895
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BackendInterface.TreeHelper.exists
+        </td>
+        <td style="background: #AEF1AE">
+          BCodeSyncAndTry.this.int.treeHelper(tree).exists(((t: BCodeSyncAndTry.this.int.Tree) =&gt; t match {
+  case BCodeSyncAndTry.this.int.TryTag.unapply(&lt;unapply-selector&gt;) &lt;unapply&gt; (BCodeSyncAndTry.this.int.Try.unapply(&lt;unapply-selector&gt;) &lt;unapply&gt; (_, _, _)) =&gt; true
+  case _ =&gt; false
+}))
+        </td>
+      </tr><tr>
+        <td>
+          387
+        </td>
+        <td>
+          3336
+        </td>
+        <td>
+          17859
+          -
+          17863
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          true
+        </td>
+      </tr><tr>
+        <td>
+          388
+        </td>
+        <td>
+          3337
+        </td>
+        <td>
+          17882
+          -
+          17887
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          false
+        </td>
+      </tr>
+    </table>
+          </div>
+        </div>
+      </body>
+    </html>

@@ -1,0 +1,1937 @@
+<html>
+      <head>
+        <meta http-equiv="Content-Type" content="text/html; charset=utf-8"/>
+        <title id="title">
+          dotty/tools/io/ClassPath.scala.html
+        </title>
+        <script src="https://ajax.googleapis.com/ajax/libs/jquery/1.10.2/jquery.min.js"></script><link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/jquery.tablesorter/2.20.1/css/theme.default.min.css" type="text/css"/><script src="https://cdnjs.cloudflare.com/ajax/libs/jquery.tablesorter/2.20.1/js/jquery.tablesorter.min.js"></script><link rel="stylesheet" href="https://netdna.bootstrapcdn.com/bootstrap/3.0.3/css/bootstrap.min.css" type="text/css"/><script src="https://netdna.bootstrapcdn.com/bootstrap/3.0.3/js/bootstrap.min.js"></script><script type="text/javascript">
+        $(document).ready(function() {$(".tablesorter").tablesorter();});
+      </script>
+        <style>
+          table.codegrid { font-family: monospace; font-size: 12px; width: auto!important; }table.statementlist { width: auto!important; font-size: 13px; } table.codegrid td { padding: 0!important; border: 0!important } table td.linenumber { width: 40px!important; } 
+        </style>
+      </head>
+      <body style="font-family: monospace;">
+        <ul class="nav nav-tabs">
+          <li>
+            <a href="#codegrid" data-toggle="tab">Codegrid</a>
+          </li>
+          <li>
+            <a href="#statementlist" data-toggle="tab">Statement List</a>
+          </li>
+        </ul>
+        <div class="tab-content">
+          <div class="tab-pane active" id="codegrid">
+            <pre style='font-size: 12pt; font-family: courier;'>1 <span style=''>/* NSC -- new Scala compiler
+</span>2 <span style=''> * Copyright 2006-2013 LAMP/EPFL
+</span>3 <span style=''> * @author  Martin Odersky
+</span>4 <span style=''> */
+</span>5 <span style=''>
+</span>6 <span style=''>
+</span>7 <span style=''>package dotty.tools
+</span>8 <span style=''>package io
+</span>9 <span style=''>
+</span>10 <span style=''>import java.net.MalformedURLException
+</span>11 <span style=''>import java.net.URL
+</span>12 <span style=''>import java.util.regex.PatternSyntaxException
+</span>13 <span style=''>
+</span>14 <span style=''>import File.pathSeparator
+</span>15 <span style=''>import Jar.isJarOrZip
+</span>16 <span style=''>
+</span>17 <span style=''>/**
+</span>18 <span style=''>  * A representation of the compiler's class- or sourcepath.
+</span>19 <span style=''>  */
+</span>20 <span style=''>trait ClassPath {
+</span>21 <span style=''>  import dotty.tools.dotc.classpath._
+</span>22 <span style=''>  def asURLs: Seq[URL]
+</span>23 <span style=''>
+</span>24 <span style=''>  /*
+</span>25 <span style=''>   * These methods are mostly used in the ClassPath implementation to implement the `list` and
+</span>26 <span style=''>   * `findX` methods below.
+</span>27 <span style=''>   *
+</span>28 <span style=''>   * However, there are some other uses in the compiler, to implement `invalidateClassPathEntries`,
+</span>29 <span style=''>   * which is used by the repl's `:require` (and maybe the spark repl, https://github.com/scala/scala/pull/4051).
+</span>30 <span style=''>   * Using these methods directly is more efficient than calling `list`.
+</span>31 <span style=''>   *
+</span>32 <span style=''>   * The `inPackage` string is a full package name, e.g. &quot;&quot; or &quot;scala.collection&quot;.
+</span>33 <span style=''>   */
+</span>34 <span style=''>
+</span>35 <span style=''>  private[dotty] def hasPackage(pkg: String): Boolean
+</span>36 <span style=''>  private[dotty] def packages(inPackage: String): Seq[PackageEntry]
+</span>37 <span style=''>  private[dotty] def classes(inPackage: String): Seq[ClassFileEntry]
+</span>38 <span style=''>  private[dotty] def sources(inPackage: String): Seq[SourceFileEntry]
+</span>39 <span style=''>
+</span>40 <span style=''>  /**
+</span>41 <span style=''>    * Returns packages and classes (source or classfile) that are members of `inPackage` (not
+</span>42 <span style=''>    * recursively). The `inPackage` string is a full package name, e.g., &quot;scala.collection&quot;.
+</span>43 <span style=''>    *
+</span>44 <span style=''>    * This is the main method uses to find classes, see class `PackageLoader`. The
+</span>45 <span style=''>    * `rootMirror.rootLoader` is created with `inPackage = &quot;&quot;`.
+</span>46 <span style=''>    */
+</span>47 <span style=''>  private[dotty] def list(inPackage: String): ClassPathEntries
+</span>48 <span style=''>
+</span>49 <span style=''>  /**
+</span>50 <span style=''>    * Returns the class file and / or source file for a given external name, e.g., &quot;java.lang.String&quot;.
+</span>51 <span style=''>    * If there is both a class file and source file, the compiler can decide whether to read the
+</span>52 <span style=''>    * class file or compile the source file.
+</span>53 <span style=''>    *
+</span>54 <span style=''>    * Internally this seems to be used only by `ScriptRunner`, but only to call `.isDefined`. That
+</span>55 <span style=''>    * could probably be implemented differently.
+</span>56 <span style=''>    *
+</span>57 <span style=''>    * Externally, it is used by sbt's compiler interface:
+</span>58 <span style=''>    * https://github.com/sbt/sbt/blob/v0.13.15/compile/interface/src/main/scala/xsbt/CompilerInterface.scala#L249
+</span>59 <span style=''>    * Jason has some improvements for that in the works (https://github.com/scala/bug/issues/10289#issuecomment-310022699)
+</span>60 <span style=''>    */
+</span>61 <span style=''>  def findClass(className: String): Option[ClassRepresentation] = {
+</span>62 <span style=''>    // A default implementation which should be overridden, if we can create the more efficient
+</span>63 <span style=''>    // solution for a given type of ClassPath
+</span>64 <span style=''>    val (pkg, simpleClassName) = PackageNameUtils.separatePkgAndClassNames(className)
+</span>65 <span style=''>
+</span>66 <span style=''>    val foundClassFromClassFiles = </span><span style='background: #F0ADAD'>classes(pkg).find(_.name == simpleClassName)</span><span style=''>
+</span>67 <span style=''>    def findClassInSources = </span><span style='background: #F0ADAD'>sources(pkg).find(_.name == simpleClassName)</span><span style=''>
+</span>68 <span style=''>
+</span>69 <span style=''>    </span><span style='background: #F0ADAD'>foundClassFromClassFiles orElse findClassInSources</span><span style=''>
+</span>70 <span style=''>  }
+</span>71 <span style=''>
+</span>72 <span style=''> /**
+</span>73 <span style=''>   * Returns the classfile for an external name, e.g., &quot;java.lang.String&quot;. This method does not
+</span>74 <span style=''>   * return source files.
+</span>75 <span style=''>   *
+</span>76 <span style=''>   * This method is used by the classfile parser. When parsing a Java class, its own inner classes
+</span>77 <span style=''>   * are entered with a `ClassfileLoader` that parses the classfile returned by this method.
+</span>78 <span style=''>   * It is also used in the backend, by the inliner, to obtain the bytecode when inlining from the
+</span>79 <span style=''>   * classpath. It's also used by scalap.
+</span>80 <span style=''>   */
+</span>81 <span style=''>  def findClassFile(className: String): Option[AbstractFile]
+</span>82 <span style=''>
+</span>83 <span style=''>  def asClassPathStrings: Seq[String]
+</span>84 <span style=''>
+</span>85 <span style=''>  /** The whole classpath in the form of one String.
+</span>86 <span style=''>    */
+</span>87 <span style=''>  def asClassPathString: String = </span><span style='background: #F0ADAD'>ClassPath.join(asClassPathStrings: _*)</span><span style=''>
+</span>88 <span style=''>  // for compatibility purposes
+</span>89 <span style=''>  @deprecated(&quot;use asClassPathString instead of this one&quot;, &quot;2.11.5&quot;)
+</span>90 <span style=''>  def asClasspathString: String = </span><span style='background: #F0ADAD'>asClassPathString</span><span style=''>
+</span>91 <span style=''>
+</span>92 <span style=''>  /** The whole sourcepath in the form of one String.
+</span>93 <span style=''>    */
+</span>94 <span style=''>  def asSourcePathString: String
+</span>95 <span style=''>}
+</span>96 <span style=''>
+</span>97 <span style=''>object ClassPath {
+</span>98 <span style=''>  val RootPackage = </span><span style='background: #AEF1AE'>&quot;&quot;</span><span style=''>
+</span>99 <span style=''>
+</span>100 <span style=''>  /** Expand single path entry */
+</span>101 <span style=''>  private def expandS(pattern: String): List[String] = {
+</span>102 <span style=''>    val wildSuffix = </span><span style='background: #AEF1AE'>File.separator + &quot;*&quot;</span><span style=''>
+</span>103 <span style=''>
+</span>104 <span style=''>    /* Get all subdirectories, jars, zips out of a directory. */
+</span>105 <span style=''>    def lsDir(dir: Directory, filt: String =&gt; Boolean = _ =&gt; true) =
+</span>106 <span style=''>      </span><span style='background: #F0ADAD'>dir.list.filter(x =&gt; filt(x.name) &amp;&amp; (x.isDirectory || isJarOrZip(x))).map(_.path).toList</span><span style=''>
+</span>107 <span style=''>
+</span>108 <span style=''>    if (</span><span style='background: #AEF1AE'>pattern == &quot;*&quot;</span><span style=''>) </span><span style='background: #F0ADAD'>lsDir(Directory(&quot;.&quot;))</span><span style=''>
+</span>109 <span style=''>    else </span><span style='background: #AEF1AE'>if (pattern endsWith wildSuffix) </span><span style='background: #F0ADAD'>lsDir(Directory(pattern dropRight 2))</span><span style='background: #AEF1AE'>
+</span>110 <span style=''></span><span style='background: #AEF1AE'>    else if (pattern contains '*') {
+</span>111 <span style=''></span><span style='background: #AEF1AE'>      </span><span style='background: #F0ADAD'>try {
+</span>112 <span style=''></span><span style='background: #F0ADAD'>        val regexp = (&quot;^&quot; + pattern.replaceAllLiterally(&quot;&quot;&quot;\*&quot;&quot;&quot;, &quot;&quot;&quot;.*&quot;&quot;&quot;) + &quot;$&quot;).r
+</span>113 <span style=''></span><span style='background: #F0ADAD'>        lsDir(Directory(pattern).parent, regexp.findFirstIn(_).isDefined)
+</span>114 <span style=''></span><span style='background: #F0ADAD'>      }
+</span>115 <span style=''></span><span style='background: #F0ADAD'>      catch { case _: PatternSyntaxException =&gt; List(pattern) }</span><span style='background: #AEF1AE'>
+</span>116 <span style=''></span><span style='background: #AEF1AE'>    }
+</span>117 <span style=''></span><span style='background: #AEF1AE'>    else List(pattern)</span><span style=''>
+</span>118 <span style=''>  }
+</span>119 <span style=''>
+</span>120 <span style=''>  /** Split classpath using platform-dependent path separator */
+</span>121 <span style=''>  def split(path: String): List[String] = (</span><span style='background: #AEF1AE'>path split pathSeparator).toList.filterNot(_ == &quot;&quot;).distinct</span><span style=''>
+</span>122 <span style=''>
+</span>123 <span style=''>  /** Join classpath using platform-dependent path separator */
+</span>124 <span style=''>  def join(paths: String*): String  = </span><span style='background: #F0ADAD'>paths filterNot (_ == &quot;&quot;) mkString pathSeparator</span><span style=''>
+</span>125 <span style=''>
+</span>126 <span style=''>  /** Split the classpath, apply a transformation function, and reassemble it. */
+</span>127 <span style=''>  def map(cp: String, f: String =&gt; String): String = </span><span style='background: #F0ADAD'>join(split(cp) map f: _*)</span><span style=''>
+</span>128 <span style=''>
+</span>129 <span style=''>  /** Expand path and possibly expanding stars */
+</span>130 <span style=''>  def expandPath(path: String, expandStar: Boolean = true): List[String] =
+</span>131 <span style=''>    if (expandStar) </span><span style='background: #AEF1AE'>split(path) flatMap expandS</span><span style=''>
+</span>132 <span style=''>    else </span><span style='background: #AEF1AE'>split(path)</span><span style=''>
+</span>133 <span style=''>
+</span>134 <span style=''>  /** Expand dir out to contents, a la extdir */
+</span>135 <span style=''>  def expandDir(extdir: String): List[String] = {
+</span>136 <span style=''>    </span><span style='background: #AEF1AE'>AbstractFile getDirectory extdir</span><span style=''> match {
+</span>137 <span style=''>      case null =&gt; </span><span style='background: #AEF1AE'>Nil</span><span style=''>
+</span>138 <span style=''>      case dir  =&gt; </span><span style='background: #AEF1AE'>dir.filter(_.isClassContainer).map(x =&gt; new java.io.File(dir.file, x.name).getPath).toList</span><span style=''>
+</span>139 <span style=''>    }
+</span>140 <span style=''>  }
+</span>141 <span style=''>
+</span>142 <span style=''>  /** Expand manifest jar classpath entries: these are either urls, or paths
+</span>143 <span style=''>   *  relative to the location of the jar.
+</span>144 <span style=''>   */
+</span>145 <span style=''>  def expandManifestPath(jarPath: String): List[URL] = {
+</span>146 <span style=''>    val file = </span><span style='background: #F0ADAD'>File(jarPath)</span><span style=''>
+</span>147 <span style=''>    if (</span><span style='background: #F0ADAD'>!file.isFile</span><span style=''>) </span><span style='background: #F0ADAD'>return Nil</span><span style=''>
+</span>148 <span style=''>
+</span>149 <span style=''>    val baseDir = </span><span style='background: #F0ADAD'>file.parent</span><span style=''>
+</span>150 <span style=''>    </span><span style='background: #F0ADAD'>new Jar(file).classPathElements map (elem =&gt;
+</span>151 <span style=''></span><span style='background: #F0ADAD'>      specToURL(elem) getOrElse (baseDir / elem).toURL
+</span>152 <span style=''></span><span style='background: #F0ADAD'>    )</span><span style=''>
+</span>153 <span style=''>  }
+</span>154 <span style=''>
+</span>155 <span style=''>  def specToURL(spec: String): Option[URL] =
+</span>156 <span style=''>    try </span><span style='background: #F0ADAD'>Some(new URL(spec))</span><span style=''>
+</span>157 <span style=''>    catch { case _: MalformedURLException =&gt; </span><span style='background: #F0ADAD'>None</span><span style=''> }
+</span>158 <span style=''>
+</span>159 <span style=''>  def manifests: List[java.net.URL] = {
+</span>160 <span style=''>    import scala.collection.JavaConverters._
+</span>161 <span style=''>    val resources = </span><span style='background: #F0ADAD'>Thread.currentThread().getContextClassLoader().getResources(&quot;META-INF/MANIFEST.MF&quot;)</span><span style=''>
+</span>162 <span style=''>    </span><span style='background: #F0ADAD'>resources.asScala.filter(_.getProtocol == &quot;jar&quot;).toList</span><span style=''>
+</span>163 <span style=''>  }
+</span>164 <span style=''>
+</span>165 <span style=''>  @deprecated(&quot;shim for sbt's compiler interface&quot;, since = &quot;2.12.0&quot;)
+</span>166 <span style=''>  sealed abstract class ClassPathContext
+</span>167 <span style=''>
+</span>168 <span style=''>  @deprecated(&quot;shim for sbt's compiler interface&quot;, since = &quot;2.12.0&quot;)
+</span>169 <span style=''>  sealed abstract class JavaContext
+</span>170 <span style=''>}
+</span>171 <span style=''>
+</span>172 <span style=''>trait ClassRepresentation {
+</span>173 <span style=''>  def name: String
+</span>174 <span style=''>  def binary: Option[AbstractFile]
+</span>175 <span style=''>  def source: Option[AbstractFile]
+</span>176 <span style=''>}
+</span>177 <span style=''>
+</span>178 <span style=''>@deprecated(&quot;shim for sbt's compiler interface&quot;, since = &quot;2.12.0&quot;)
+</span>179 <span style=''>sealed abstract class DirectoryClassPath
+</span>180 <span style=''>
+</span>181 <span style=''>@deprecated(&quot;shim for sbt's compiler interface&quot;, since = &quot;2.12.0&quot;)
+</span>182 <span style=''>sealed abstract class MergedClassPath
+</span>183 <span style=''>
+</span>184 <span style=''>@deprecated(&quot;shim for sbt's compiler interface&quot;, since = &quot;2.12.0&quot;)
+</span>185 <span style=''>sealed abstract class JavaClassPath
+</span></pre>
+          </div>
+          <div class="tab-pane" id="statementlist">
+            <table cellspacing="0" cellpadding="0" class="table statementlist">
+      <tr>
+        <th>Line</th>
+        <th>Stmt Id</th>
+        <th>Pos</th>
+        <th>Tree</th>
+        <th>Symbol</th>
+        <th>Code</th>
+      </tr><tr>
+        <td>
+          64
+        </td>
+        <td>
+          79429
+        </td>
+        <td>
+          2562
+          -
+          2562
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.Tuple2._2
+        </td>
+        <td style="background: #F0ADAD">
+          x$1._2
+        </td>
+      </tr><tr>
+        <td>
+          64
+        </td>
+        <td>
+          79428
+        </td>
+        <td>
+          2557
+          -
+          2557
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.Tuple2._1
+        </td>
+        <td style="background: #F0ADAD">
+          x$1._1
+        </td>
+      </tr><tr>
+        <td>
+          66
+        </td>
+        <td>
+          79430
+        </td>
+        <td>
+          2688
+          -
+          2713
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.Object.==
+        </td>
+        <td style="background: #F0ADAD">
+          x$2.name.==(simpleClassName)
+        </td>
+      </tr><tr>
+        <td>
+          66
+        </td>
+        <td>
+          79431
+        </td>
+        <td>
+          2670
+          -
+          2714
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.IterableLike.find
+        </td>
+        <td style="background: #F0ADAD">
+          ClassPath.this.classes(pkg).find(((x$2: dotty.tools.dotc.classpath.ClassFileEntry) =&gt; x$2.name.==(simpleClassName)))
+        </td>
+      </tr><tr>
+        <td>
+          67
+        </td>
+        <td>
+          79433
+        </td>
+        <td>
+          2744
+          -
+          2788
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.IterableLike.find
+        </td>
+        <td style="background: #F0ADAD">
+          ClassPath.this.sources(pkg).find(((x$3: dotty.tools.dotc.classpath.SourceFileEntry) =&gt; x$3.name.==(simpleClassName)))
+        </td>
+      </tr><tr>
+        <td>
+          67
+        </td>
+        <td>
+          79432
+        </td>
+        <td>
+          2762
+          -
+          2787
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.Object.==
+        </td>
+        <td style="background: #F0ADAD">
+          x$3.name.==(simpleClassName)
+        </td>
+      </tr><tr>
+        <td>
+          69
+        </td>
+        <td>
+          79434
+        </td>
+        <td>
+          2794
+          -
+          2844
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Option.orElse
+        </td>
+        <td style="background: #F0ADAD">
+          foundClassFromClassFiles.orElse[dotty.tools.io.ClassRepresentation](findClassInSources)
+        </td>
+      </tr><tr>
+        <td>
+          87
+        </td>
+        <td>
+          79436
+        </td>
+        <td>
+          3516
+          -
+          3554
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.io.ClassPath.join
+        </td>
+        <td style="background: #F0ADAD">
+          ClassPath.join((ClassPath.this.asClassPathStrings: _*))
+        </td>
+      </tr><tr>
+        <td>
+          87
+        </td>
+        <td>
+          79435
+        </td>
+        <td>
+          3531
+          -
+          3549
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.io.ClassPath.asClassPathStrings
+        </td>
+        <td style="background: #F0ADAD">
+          ClassPath.this.asClassPathStrings
+        </td>
+      </tr><tr>
+        <td>
+          90
+        </td>
+        <td>
+          79437
+        </td>
+        <td>
+          3690
+          -
+          3707
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.io.ClassPath.asClassPathString
+        </td>
+        <td style="background: #F0ADAD">
+          ClassPath.this.asClassPathString
+        </td>
+      </tr><tr>
+        <td>
+          98
+        </td>
+        <td>
+          79438
+        </td>
+        <td>
+          3845
+          -
+          3847
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          &quot;&quot;
+        </td>
+      </tr><tr>
+        <td>
+          102
+        </td>
+        <td>
+          79439
+        </td>
+        <td>
+          3961
+          -
+          3981
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.String.+
+        </td>
+        <td style="background: #AEF1AE">
+          File.separator.+(&quot;*&quot;)
+        </td>
+      </tr><tr>
+        <td>
+          106
+        </td>
+        <td>
+          79442
+        </td>
+        <td>
+          4161
+          -
+          4191
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Boolean.||
+        </td>
+        <td style="background: #F0ADAD">
+          x.isDirectory.||(Jar.isJarOrZip(x))
+        </td>
+      </tr><tr>
+        <td>
+          106
+        </td>
+        <td>
+          79445
+        </td>
+        <td>
+          4123
+          -
+          4212
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.collection.TraversableOnce.toList
+        </td>
+        <td style="background: #F0ADAD">
+          dir.list.filter(((x: dotty.tools.io.Path) =&gt; filt.apply(x.name).&amp;&amp;(x.isDirectory.||(Jar.isJarOrZip(x))))).map[String](((x$5: dotty.tools.io.Path) =&gt; x$5.path)).toList
+        </td>
+      </tr><tr>
+        <td>
+          106
+        </td>
+        <td>
+          79444
+        </td>
+        <td>
+          4198
+          -
+          4204
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.io.Path.path
+        </td>
+        <td style="background: #F0ADAD">
+          x$5.path
+        </td>
+      </tr><tr>
+        <td>
+          106
+        </td>
+        <td>
+          79441
+        </td>
+        <td>
+          4178
+          -
+          4191
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.io.Jar.isJarOrZip
+        </td>
+        <td style="background: #F0ADAD">
+          Jar.isJarOrZip(x)
+        </td>
+      </tr><tr>
+        <td>
+          106
+        </td>
+        <td>
+          79440
+        </td>
+        <td>
+          4149
+          -
+          4155
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.io.Path.name
+        </td>
+        <td style="background: #F0ADAD">
+          x.name
+        </td>
+      </tr><tr>
+        <td>
+          106
+        </td>
+        <td>
+          79443
+        </td>
+        <td>
+          4144
+          -
+          4192
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Boolean.&amp;&amp;
+        </td>
+        <td style="background: #F0ADAD">
+          filt.apply(x.name).&amp;&amp;(x.isDirectory.||(Jar.isJarOrZip(x)))
+        </td>
+      </tr><tr>
+        <td>
+          108
+        </td>
+        <td>
+          79448
+        </td>
+        <td>
+          4238
+          -
+          4259
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.io.ClassPath.lsDir
+        </td>
+        <td style="background: #F0ADAD">
+          lsDir(Directory.apply(&quot;.&quot;), lsDir$default$2)
+        </td>
+      </tr><tr>
+        <td>
+          108
+        </td>
+        <td>
+          79447
+        </td>
+        <td>
+          4244
+          -
+          4258
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.io.Directory.apply
+        </td>
+        <td style="background: #F0ADAD">
+          Directory.apply(&quot;.&quot;)
+        </td>
+      </tr><tr>
+        <td>
+          108
+        </td>
+        <td>
+          79449
+        </td>
+        <td>
+          4238
+          -
+          4259
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          dotty.tools.io.ClassPath.lsDir
+        </td>
+        <td style="background: #F0ADAD">
+          lsDir(Directory.apply(&quot;.&quot;), lsDir$default$2)
+        </td>
+      </tr><tr>
+        <td>
+          108
+        </td>
+        <td>
+          79446
+        </td>
+        <td>
+          4222
+          -
+          4236
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.Object.==
+        </td>
+        <td style="background: #AEF1AE">
+          pattern.==(&quot;*&quot;)
+        </td>
+      </tr><tr>
+        <td>
+          109
+        </td>
+        <td>
+          79451
+        </td>
+        <td>
+          4318
+          -
+          4337
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.IndexedSeqOptimized.dropRight
+        </td>
+        <td style="background: #F0ADAD">
+          scala.Predef.augmentString(pattern).dropRight(2)
+        </td>
+      </tr><tr>
+        <td>
+          109
+        </td>
+        <td>
+          79454
+        </td>
+        <td>
+          4302
+          -
+          4339
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          dotty.tools.io.ClassPath.lsDir
+        </td>
+        <td style="background: #F0ADAD">
+          lsDir(Directory.apply(scala.Predef.augmentString(pattern).dropRight(2)), lsDir$default$2)
+        </td>
+      </tr><tr>
+        <td>
+          109
+        </td>
+        <td>
+          79453
+        </td>
+        <td>
+          4302
+          -
+          4339
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.io.ClassPath.lsDir
+        </td>
+        <td style="background: #F0ADAD">
+          lsDir(Directory.apply(scala.Predef.augmentString(pattern).dropRight(2)), lsDir$default$2)
+        </td>
+      </tr><tr>
+        <td>
+          109
+        </td>
+        <td>
+          79450
+        </td>
+        <td>
+          4273
+          -
+          4300
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.String.endsWith
+        </td>
+        <td style="background: #AEF1AE">
+          pattern.endsWith(wildSuffix)
+        </td>
+      </tr><tr>
+        <td>
+          109
+        </td>
+        <td>
+          79467
+        </td>
+        <td>
+          4269
+          -
+          4648
+        </td>
+        <td>
+          If
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          if (pattern.endsWith(wildSuffix))
+  lsDir(Directory.apply(scala.Predef.augmentString(pattern).dropRight(2)), lsDir$default$2)
+else
+  if (scala.Predef.augmentString(pattern).contains[Char]('*'))
+    try {
+      val regexp: scala.util.matching.Regex = scala.Predef.augmentString(&quot;^&quot;.+(scala.Predef.augmentString(pattern).replaceAllLiterally(&quot;\\*&quot;, &quot;.*&quot;)).+(&quot;$&quot;)).r;
+      lsDir(Directory.apply(pattern).parent, ((x$6: String) =&gt; regexp.findFirstIn(x$6).isDefined))
+    } catch {
+      case (_: java.util.regex.PatternSyntaxException) =&gt; scala.collection.immutable.List.apply[String](pattern)
+    }
+  else
+    scala.collection.immutable.List.apply[String](pattern)
+        </td>
+      </tr><tr>
+        <td>
+          109
+        </td>
+        <td>
+          79452
+        </td>
+        <td>
+          4308
+          -
+          4338
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.io.Directory.apply
+        </td>
+        <td style="background: #F0ADAD">
+          Directory.apply(scala.Predef.augmentString(pattern).dropRight(2))
+        </td>
+      </tr><tr>
+        <td>
+          110
+        </td>
+        <td>
+          79466
+        </td>
+        <td>
+          4349
+          -
+          4648
+        </td>
+        <td>
+          If
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          if (scala.Predef.augmentString(pattern).contains[Char]('*'))
+  try {
+    val regexp: scala.util.matching.Regex = scala.Predef.augmentString(&quot;^&quot;.+(scala.Predef.augmentString(pattern).replaceAllLiterally(&quot;\\*&quot;, &quot;.*&quot;)).+(&quot;$&quot;)).r;
+    lsDir(Directory.apply(pattern).parent, ((x$6: String) =&gt; regexp.findFirstIn(x$6).isDefined))
+  } catch {
+    case (_: java.util.regex.PatternSyntaxException) =&gt; scala.collection.immutable.List.apply[String](pattern)
+  }
+else
+  scala.collection.immutable.List.apply[String](pattern)
+        </td>
+      </tr><tr>
+        <td>
+          110
+        </td>
+        <td>
+          79455
+        </td>
+        <td>
+          4353
+          -
+          4373
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.SeqLike.contains
+        </td>
+        <td style="background: #AEF1AE">
+          scala.Predef.augmentString(pattern).contains[Char]('*')
+        </td>
+      </tr><tr>
+        <td>
+          111
+        </td>
+        <td>
+          79461
+        </td>
+        <td>
+          4397
+          -
+          4547
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          {
+  val regexp: scala.util.matching.Regex = scala.Predef.augmentString(&quot;^&quot;.+(scala.Predef.augmentString(pattern).replaceAllLiterally(&quot;\\*&quot;, &quot;.*&quot;)).+(&quot;$&quot;)).r;
+  lsDir(Directory.apply(pattern).parent, ((x$6: String) =&gt; regexp.findFirstIn(x$6).isDefined))
+}
+        </td>
+      </tr><tr>
+        <td>
+          111
+        </td>
+        <td>
+          79463
+        </td>
+        <td>
+          4383
+          -
+          4619
+        </td>
+        <td>
+          Try
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          try {
+  val regexp: scala.util.matching.Regex = scala.Predef.augmentString(&quot;^&quot;.+(scala.Predef.augmentString(pattern).replaceAllLiterally(&quot;\\*&quot;, &quot;.*&quot;)).+(&quot;$&quot;)).r;
+  lsDir(Directory.apply(pattern).parent, ((x$6: String) =&gt; regexp.findFirstIn(x$6).isDefined))
+} catch {
+  case (_: java.util.regex.PatternSyntaxException) =&gt; scala.collection.immutable.List.apply[String](pattern)
+}
+        </td>
+      </tr><tr>
+        <td>
+          112
+        </td>
+        <td>
+          79457
+        </td>
+        <td>
+          4411
+          -
+          4473
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.collection.immutable.StringLike.r
+        </td>
+        <td style="background: #F0ADAD">
+          scala.Predef.augmentString(&quot;^&quot;.+(scala.Predef.augmentString(pattern).replaceAllLiterally(&quot;\\*&quot;, &quot;.*&quot;)).+(&quot;$&quot;)).r
+        </td>
+      </tr><tr>
+        <td>
+          112
+        </td>
+        <td>
+          79456
+        </td>
+        <td>
+          4411
+          -
+          4470
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.String.+
+        </td>
+        <td style="background: #F0ADAD">
+          &quot;^&quot;.+(scala.Predef.augmentString(pattern).replaceAllLiterally(&quot;\\*&quot;, &quot;.*&quot;)).+(&quot;$&quot;)
+        </td>
+      </tr><tr>
+        <td>
+          113
+        </td>
+        <td>
+          79460
+        </td>
+        <td>
+          4482
+          -
+          4547
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.io.ClassPath.lsDir
+        </td>
+        <td style="background: #F0ADAD">
+          lsDir(Directory.apply(pattern).parent, ((x$6: String) =&gt; regexp.findFirstIn(x$6).isDefined))
+        </td>
+      </tr><tr>
+        <td>
+          113
+        </td>
+        <td>
+          79459
+        </td>
+        <td>
+          4515
+          -
+          4546
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.Option.isDefined
+        </td>
+        <td style="background: #F0ADAD">
+          regexp.findFirstIn(x$6).isDefined
+        </td>
+      </tr><tr>
+        <td>
+          113
+        </td>
+        <td>
+          79458
+        </td>
+        <td>
+          4488
+          -
+          4513
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.io.Path.parent
+        </td>
+        <td style="background: #F0ADAD">
+          Directory.apply(pattern).parent
+        </td>
+      </tr><tr>
+        <td>
+          115
+        </td>
+        <td>
+          79462
+        </td>
+        <td>
+          4604
+          -
+          4617
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.immutable.List.apply
+        </td>
+        <td style="background: #F0ADAD">
+          scala.collection.immutable.List.apply[String](pattern)
+        </td>
+      </tr><tr>
+        <td>
+          117
+        </td>
+        <td>
+          79465
+        </td>
+        <td>
+          4635
+          -
+          4648
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          scala.collection.immutable.List.apply
+        </td>
+        <td style="background: #AEF1AE">
+          scala.collection.immutable.List.apply[String](pattern)
+        </td>
+      </tr><tr>
+        <td>
+          117
+        </td>
+        <td>
+          79464
+        </td>
+        <td>
+          4635
+          -
+          4648
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.immutable.List.apply
+        </td>
+        <td style="background: #AEF1AE">
+          scala.collection.immutable.List.apply[String](pattern)
+        </td>
+      </tr><tr>
+        <td>
+          121
+        </td>
+        <td>
+          79469
+        </td>
+        <td>
+          4762
+          -
+          4786
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.String.split
+        </td>
+        <td style="background: #AEF1AE">
+          path.split(File.pathSeparator)
+        </td>
+      </tr><tr>
+        <td>
+          121
+        </td>
+        <td>
+          79471
+        </td>
+        <td>
+          4762
+          -
+          4822
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.collection.SeqLike.distinct
+        </td>
+        <td style="background: #AEF1AE">
+          scala.Predef.refArrayOps[String](path.split(File.pathSeparator)).toList.filterNot(((x$7: String) =&gt; x$7.==(&quot;&quot;))).distinct
+        </td>
+      </tr><tr>
+        <td>
+          121
+        </td>
+        <td>
+          79468
+        </td>
+        <td>
+          4773
+          -
+          4786
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.io.File.pathSeparator
+        </td>
+        <td style="background: #AEF1AE">
+          File.pathSeparator
+        </td>
+      </tr><tr>
+        <td>
+          121
+        </td>
+        <td>
+          79470
+        </td>
+        <td>
+          4805
+          -
+          4812
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.Object.==
+        </td>
+        <td style="background: #AEF1AE">
+          x$7.==(&quot;&quot;)
+        </td>
+      </tr><tr>
+        <td>
+          124
+        </td>
+        <td>
+          79474
+        </td>
+        <td>
+          4926
+          -
+          4974
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.TraversableOnce.mkString
+        </td>
+        <td style="background: #F0ADAD">
+          paths.filterNot(((x$8: String) =&gt; x$8.==(&quot;&quot;))).mkString(File.pathSeparator)
+        </td>
+      </tr><tr>
+        <td>
+          124
+        </td>
+        <td>
+          79473
+        </td>
+        <td>
+          4961
+          -
+          4974
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.io.File.pathSeparator
+        </td>
+        <td style="background: #F0ADAD">
+          File.pathSeparator
+        </td>
+      </tr><tr>
+        <td>
+          124
+        </td>
+        <td>
+          79472
+        </td>
+        <td>
+          4943
+          -
+          4950
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.Object.==
+        </td>
+        <td style="background: #F0ADAD">
+          x$8.==(&quot;&quot;)
+        </td>
+      </tr><tr>
+        <td>
+          127
+        </td>
+        <td>
+          79475
+        </td>
+        <td>
+          5126
+          -
+          5126
+        </td>
+        <td>
+          TypeApply
+        </td>
+        <td>
+          scala.collection.immutable.List.canBuildFrom
+        </td>
+        <td style="background: #F0ADAD">
+          immutable.this.List.canBuildFrom[String]
+        </td>
+      </tr><tr>
+        <td>
+          127
+        </td>
+        <td>
+          79477
+        </td>
+        <td>
+          5111
+          -
+          5136
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.io.ClassPath.join
+        </td>
+        <td style="background: #F0ADAD">
+          ClassPath.this.join((ClassPath.this.split(cp).map[String, List[String]](f)(immutable.this.List.canBuildFrom[String]): _*))
+        </td>
+      </tr><tr>
+        <td>
+          127
+        </td>
+        <td>
+          79476
+        </td>
+        <td>
+          5116
+          -
+          5131
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          scala.collection.immutable.List.map
+        </td>
+        <td style="background: #F0ADAD">
+          ClassPath.this.split(cp).map[String, List[String]](f)(immutable.this.List.canBuildFrom[String])
+        </td>
+      </tr><tr>
+        <td>
+          131
+        </td>
+        <td>
+          79478
+        </td>
+        <td>
+          5303
+          -
+          5310
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.io.ClassPath.expandS
+        </td>
+        <td style="background: #AEF1AE">
+          ClassPath.this.expandS(pattern)
+        </td>
+      </tr><tr>
+        <td>
+          131
+        </td>
+        <td>
+          79480
+        </td>
+        <td>
+          5283
+          -
+          5310
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          scala.collection.immutable.List.flatMap
+        </td>
+        <td style="background: #AEF1AE">
+          ClassPath.this.split(path).flatMap[String, List[String]]({
+  ((pattern: String) =&gt; ClassPath.this.expandS(pattern))
+})(immutable.this.List.canBuildFrom[String])
+        </td>
+      </tr><tr>
+        <td>
+          131
+        </td>
+        <td>
+          79479
+        </td>
+        <td>
+          5295
+          -
+          5295
+        </td>
+        <td>
+          TypeApply
+        </td>
+        <td>
+          scala.collection.immutable.List.canBuildFrom
+        </td>
+        <td style="background: #AEF1AE">
+          immutable.this.List.canBuildFrom[String]
+        </td>
+      </tr><tr>
+        <td>
+          131
+        </td>
+        <td>
+          79481
+        </td>
+        <td>
+          5283
+          -
+          5310
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          scala.collection.immutable.List.flatMap
+        </td>
+        <td style="background: #AEF1AE">
+          ClassPath.this.split(path).flatMap[String, List[String]]({
+  ((pattern: String) =&gt; ClassPath.this.expandS(pattern))
+})(immutable.this.List.canBuildFrom[String])
+        </td>
+      </tr><tr>
+        <td>
+          132
+        </td>
+        <td>
+          79483
+        </td>
+        <td>
+          5320
+          -
+          5331
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          dotty.tools.io.ClassPath.split
+        </td>
+        <td style="background: #AEF1AE">
+          ClassPath.this.split(path)
+        </td>
+      </tr><tr>
+        <td>
+          132
+        </td>
+        <td>
+          79482
+        </td>
+        <td>
+          5320
+          -
+          5331
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.io.ClassPath.split
+        </td>
+        <td style="background: #AEF1AE">
+          ClassPath.this.split(path)
+        </td>
+      </tr><tr>
+        <td>
+          136
+        </td>
+        <td>
+          79484
+        </td>
+        <td>
+          5436
+          -
+          5468
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.io.AbstractFile.getDirectory
+        </td>
+        <td style="background: #AEF1AE">
+          AbstractFile.getDirectory(extdir)
+        </td>
+      </tr><tr>
+        <td>
+          137
+        </td>
+        <td>
+          79485
+        </td>
+        <td>
+          5496
+          -
+          5499
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.collection.immutable.Nil
+        </td>
+        <td style="background: #AEF1AE">
+          scala.collection.immutable.Nil
+        </td>
+      </tr><tr>
+        <td>
+          138
+        </td>
+        <td>
+          79487
+        </td>
+        <td>
+          5559
+          -
+          5601
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.io.File.getPath
+        </td>
+        <td style="background: #AEF1AE">
+          new java.io.File(dir.file, x.name).getPath()
+        </td>
+      </tr><tr>
+        <td>
+          138
+        </td>
+        <td>
+          79486
+        </td>
+        <td>
+          5530
+          -
+          5548
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.io.AbstractFile.isClassContainer
+        </td>
+        <td style="background: #AEF1AE">
+          x$9.isClassContainer
+        </td>
+      </tr><tr>
+        <td>
+          138
+        </td>
+        <td>
+          79489
+        </td>
+        <td>
+          5519
+          -
+          5609
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.collection.TraversableOnce.toList
+        </td>
+        <td style="background: #AEF1AE">
+          dir.filter(((x$9: dotty.tools.io.AbstractFile) =&gt; x$9.isClassContainer)).map[String, Iterable[String]](((x: dotty.tools.io.AbstractFile) =&gt; new java.io.File(dir.file, x.name).getPath()))(collection.this.Iterable.canBuildFrom[String]).toList
+        </td>
+      </tr><tr>
+        <td>
+          138
+        </td>
+        <td>
+          79488
+        </td>
+        <td>
+          5553
+          -
+          5553
+        </td>
+        <td>
+          TypeApply
+        </td>
+        <td>
+          scala.collection.Iterable.canBuildFrom
+        </td>
+        <td style="background: #AEF1AE">
+          collection.this.Iterable.canBuildFrom[String]
+        </td>
+      </tr><tr>
+        <td>
+          146
+        </td>
+        <td>
+          79490
+        </td>
+        <td>
+          5819
+          -
+          5832
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.io.File.apply
+        </td>
+        <td style="background: #F0ADAD">
+          File.apply(jarPath)(io.this.Codec.fallbackSystemCodec)
+        </td>
+      </tr><tr>
+        <td>
+          147
+        </td>
+        <td>
+          79493
+        </td>
+        <td>
+          5855
+          -
+          5865
+        </td>
+        <td>
+          Return
+        </td>
+        <td>
+          dotty.tools.io.ClassPath.expandManifestPath
+        </td>
+        <td style="background: #F0ADAD">
+          return scala.collection.immutable.Nil
+        </td>
+      </tr><tr>
+        <td>
+          147
+        </td>
+        <td>
+          79495
+        </td>
+        <td>
+          5837
+          -
+          5837
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          ()
+        </td>
+      </tr><tr>
+        <td>
+          147
+        </td>
+        <td>
+          79492
+        </td>
+        <td>
+          5862
+          -
+          5865
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.collection.immutable.Nil
+        </td>
+        <td style="background: #F0ADAD">
+          scala.collection.immutable.Nil
+        </td>
+      </tr><tr>
+        <td>
+          147
+        </td>
+        <td>
+          79494
+        </td>
+        <td>
+          5837
+          -
+          5837
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          ()
+        </td>
+      </tr><tr>
+        <td>
+          147
+        </td>
+        <td>
+          79491
+        </td>
+        <td>
+          5841
+          -
+          5853
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.Boolean.unary_!
+        </td>
+        <td style="background: #F0ADAD">
+          file.isFile.unary_!
+        </td>
+      </tr><tr>
+        <td>
+          149
+        </td>
+        <td>
+          79496
+        </td>
+        <td>
+          5885
+          -
+          5896
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.io.Path.parent
+        </td>
+        <td style="background: #F0ADAD">
+          file.parent
+        </td>
+      </tr><tr>
+        <td>
+          150
+        </td>
+        <td>
+          79500
+        </td>
+        <td>
+          5901
+          -
+          6006
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          scala.collection.immutable.List.map
+        </td>
+        <td style="background: #F0ADAD">
+          new Jar(file).classPathElements.map[java.net.URL, List[java.net.URL]](((elem: String) =&gt; ClassPath.this.specToURL(elem).getOrElse[java.net.URL](baseDir./(elem).toURL)))(immutable.this.List.canBuildFrom[java.net.URL])
+        </td>
+      </tr><tr>
+        <td>
+          150
+        </td>
+        <td>
+          79499
+        </td>
+        <td>
+          5933
+          -
+          5933
+        </td>
+        <td>
+          TypeApply
+        </td>
+        <td>
+          scala.collection.immutable.List.canBuildFrom
+        </td>
+        <td style="background: #F0ADAD">
+          immutable.this.List.canBuildFrom[java.net.URL]
+        </td>
+      </tr><tr>
+        <td>
+          151
+        </td>
+        <td>
+          79498
+        </td>
+        <td>
+          5952
+          -
+          6000
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Option.getOrElse
+        </td>
+        <td style="background: #F0ADAD">
+          ClassPath.this.specToURL(elem).getOrElse[java.net.URL](baseDir./(elem).toURL)
+        </td>
+      </tr><tr>
+        <td>
+          151
+        </td>
+        <td>
+          79497
+        </td>
+        <td>
+          5979
+          -
+          6000
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.io.Path.toURL
+        </td>
+        <td style="background: #F0ADAD">
+          baseDir./(elem).toURL
+        </td>
+      </tr><tr>
+        <td>
+          156
+        </td>
+        <td>
+          79502
+        </td>
+        <td>
+          6065
+          -
+          6084
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Some.apply
+        </td>
+        <td style="background: #F0ADAD">
+          scala.Some.apply[java.net.URL](new java.net.URL(spec))
+        </td>
+      </tr><tr>
+        <td>
+          156
+        </td>
+        <td>
+          79501
+        </td>
+        <td>
+          6070
+          -
+          6083
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.net.URL.&lt;init&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          new java.net.URL(spec)
+        </td>
+      </tr><tr>
+        <td>
+          156
+        </td>
+        <td>
+          79503
+        </td>
+        <td>
+          6065
+          -
+          6084
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          scala.Some.apply
+        </td>
+        <td style="background: #F0ADAD">
+          scala.Some.apply[java.net.URL](new java.net.URL(spec))
+        </td>
+      </tr><tr>
+        <td>
+          157
+        </td>
+        <td>
+          79504
+        </td>
+        <td>
+          6130
+          -
+          6134
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.None
+        </td>
+        <td style="background: #F0ADAD">
+          scala.None
+        </td>
+      </tr><tr>
+        <td>
+          161
+        </td>
+        <td>
+          79505
+        </td>
+        <td>
+          6243
+          -
+          6326
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.ClassLoader.getResources
+        </td>
+        <td style="background: #F0ADAD">
+          java.lang.Thread.currentThread().getContextClassLoader().getResources(&quot;META-INF/MANIFEST.MF&quot;)
+        </td>
+      </tr><tr>
+        <td>
+          162
+        </td>
+        <td>
+          79507
+        </td>
+        <td>
+          6331
+          -
+          6386
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.collection.TraversableOnce.toList
+        </td>
+        <td style="background: #F0ADAD">
+          scala.collection.JavaConverters.enumerationAsScalaIteratorConverter[java.net.URL](resources).asScala.filter(((x$10: java.net.URL) =&gt; x$10.getProtocol().==(&quot;jar&quot;))).toList
+        </td>
+      </tr><tr>
+        <td>
+          162
+        </td>
+        <td>
+          79506
+        </td>
+        <td>
+          6356
+          -
+          6378
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.Object.==
+        </td>
+        <td style="background: #F0ADAD">
+          x$10.getProtocol().==(&quot;jar&quot;)
+        </td>
+      </tr>
+    </table>
+          </div>
+        </div>
+      </body>
+    </html>

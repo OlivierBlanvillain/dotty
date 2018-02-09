@@ -1,0 +1,1138 @@
+<html>
+      <head>
+        <meta http-equiv="Content-Type" content="text/html; charset=utf-8"/>
+        <title id="title">
+          dotty/tools/dotc/transform/NonLocalReturns.scala.html
+        </title>
+        <script src="https://ajax.googleapis.com/ajax/libs/jquery/1.10.2/jquery.min.js"></script><link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/jquery.tablesorter/2.20.1/css/theme.default.min.css" type="text/css"/><script src="https://cdnjs.cloudflare.com/ajax/libs/jquery.tablesorter/2.20.1/js/jquery.tablesorter.min.js"></script><link rel="stylesheet" href="https://netdna.bootstrapcdn.com/bootstrap/3.0.3/css/bootstrap.min.css" type="text/css"/><script src="https://netdna.bootstrapcdn.com/bootstrap/3.0.3/js/bootstrap.min.js"></script><script type="text/javascript">
+        $(document).ready(function() {$(".tablesorter").tablesorter();});
+      </script>
+        <style>
+          table.codegrid { font-family: monospace; font-size: 12px; width: auto!important; }table.statementlist { width: auto!important; font-size: 13px; } table.codegrid td { padding: 0!important; border: 0!important } table td.linenumber { width: 40px!important; } 
+        </style>
+      </head>
+      <body style="font-family: monospace;">
+        <ul class="nav nav-tabs">
+          <li>
+            <a href="#codegrid" data-toggle="tab">Codegrid</a>
+          </li>
+          <li>
+            <a href="#statementlist" data-toggle="tab">Statement List</a>
+          </li>
+        </ul>
+        <div class="tab-content">
+          <div class="tab-pane active" id="codegrid">
+            <pre style='font-size: 12pt; font-family: courier;'>1 <span style=''>package dotty.tools.dotc
+</span>2 <span style=''>package transform
+</span>3 <span style=''>
+</span>4 <span style=''>import core._
+</span>5 <span style=''>import Contexts._, Symbols._, Types._, Flags._, Decorators._, StdNames._, Constants._, Phases._
+</span>6 <span style=''>import MegaPhase._
+</span>7 <span style=''>import ast.Trees._
+</span>8 <span style=''>import NameKinds.NonLocalReturnKeyName
+</span>9 <span style=''>import collection.mutable
+</span>10 <span style=''>
+</span>11 <span style=''>object NonLocalReturns {
+</span>12 <span style=''>  import ast.tpd._
+</span>13 <span style=''>  def isNonLocalReturn(ret: Return)(implicit ctx: Context) =
+</span>14 <span style=''>    </span><span style='background: #AEF1AE'>ret.from.symbol != ctx.owner.enclosingMethod || ctx.owner.is(Lazy)</span><span style=''>
+</span>15 <span style=''>}
+</span>16 <span style=''>
+</span>17 <span style=''>/** Implement non-local returns using NonLocalReturnControl exceptions.
+</span>18 <span style=''> */
+</span>19 <span style=''>class NonLocalReturns extends MiniPhase {
+</span>20 <span style=''>  override def phaseName = </span><span style='background: #AEF1AE'>&quot;nonLocalReturns&quot;</span><span style=''>
+</span>21 <span style=''>
+</span>22 <span style=''>  import NonLocalReturns._
+</span>23 <span style=''>  import ast.tpd._
+</span>24 <span style=''>
+</span>25 <span style=''>  override def runsAfter: Set[Class[_ &lt;: Phase]] = </span><span style='background: #AEF1AE'>Set(classOf[ElimByName])</span><span style=''>
+</span>26 <span style=''>
+</span>27 <span style=''>  private def ensureConforms(tree: Tree, pt: Type)(implicit ctx: Context) =
+</span>28 <span style=''>    if (</span><span style='background: #F0ADAD'>tree.tpe &lt;:&lt; pt</span><span style=''>) </span><span style='background: #F0ADAD'>tree</span><span style=''>
+</span>29 <span style=''>    else </span><span style='background: #F0ADAD'>Erasure.Boxing.adaptToType(tree, pt)</span><span style=''>
+</span>30 <span style=''>
+</span>31 <span style=''>  /** The type of a non-local return expression with given argument type */
+</span>32 <span style=''>  private def nonLocalReturnExceptionType(argtype: Type)(implicit ctx: Context) =
+</span>33 <span style=''>    </span><span style='background: #F0ADAD'>defn.NonLocalReturnControlType.appliedTo(argtype)</span><span style=''>
+</span>34 <span style=''>
+</span>35 <span style=''>  /** A hashmap from method symbols to non-local return keys */
+</span>36 <span style=''>  private val nonLocalReturnKeys = </span><span style='background: #AEF1AE'>newMutableSymbolMap[TermSymbol]</span><span style=''>
+</span>37 <span style=''>
+</span>38 <span style=''>  /** Return non-local return key for given method */
+</span>39 <span style=''>  private def nonLocalReturnKey(meth: Symbol)(implicit ctx: Context) =
+</span>40 <span style=''>    </span><span style='background: #AEF1AE'>nonLocalReturnKeys.getOrElseUpdate(meth,
+</span>41 <span style=''></span><span style='background: #AEF1AE'>      ctx.newSymbol(
+</span>42 <span style=''></span><span style='background: #AEF1AE'>        meth, NonLocalReturnKeyName.fresh(), Synthetic, defn.ObjectType, coord = meth.pos))</span><span style=''>
+</span>43 <span style=''>
+</span>44 <span style=''>  /** Generate a non-local return throw with given return expression from given method.
+</span>45 <span style=''>   *  I.e. for the method's non-local return key, generate:
+</span>46 <span style=''>   *
+</span>47 <span style=''>   *    throw new NonLocalReturnControl(key, expr)
+</span>48 <span style=''>   *  todo: maybe clone a pre-existing exception instead?
+</span>49 <span style=''>   *  (but what to do about exceptions that miss their targets?)
+</span>50 <span style=''>   */
+</span>51 <span style=''>  private def nonLocalReturnThrow(expr: Tree, meth: Symbol)(implicit ctx: Context) =
+</span>52 <span style=''>    </span><span style='background: #AEF1AE'>Throw(
+</span>53 <span style=''></span><span style='background: #AEF1AE'>      New(
+</span>54 <span style=''></span><span style='background: #AEF1AE'>        defn.NonLocalReturnControlType,
+</span>55 <span style=''></span><span style='background: #AEF1AE'>        ref(nonLocalReturnKey(meth)) :: expr.ensureConforms(defn.ObjectType) :: Nil))</span><span style=''>
+</span>56 <span style=''>
+</span>57 <span style=''>  /** Transform (body, key) to:
+</span>58 <span style=''>   *
+</span>59 <span style=''>   *  {
+</span>60 <span style=''>   *    val key = new Object()
+</span>61 <span style=''>   *    try {
+</span>62 <span style=''>   *      body
+</span>63 <span style=''>   *    } catch {
+</span>64 <span style=''>   *      case ex: NonLocalReturnControl =&gt;
+</span>65 <span style=''>   *        if (ex.key().eq(key)) ex.value().asInstanceOf[T]
+</span>66 <span style=''>   *        else throw ex
+</span>67 <span style=''>   *    }
+</span>68 <span style=''>   *  }
+</span>69 <span style=''>   */
+</span>70 <span style=''>  private def nonLocalReturnTry(body: Tree, key: TermSymbol, meth: Symbol)(implicit ctx: Context) = {
+</span>71 <span style=''>    val keyDef = </span><span style='background: #AEF1AE'>ValDef(key, New(defn.ObjectType, Nil))</span><span style=''>
+</span>72 <span style=''>    val nonLocalReturnControl = defn.NonLocalReturnControlType
+</span>73 <span style=''>    val ex = </span><span style='background: #AEF1AE'>ctx.newSymbol(meth, nme.ex, EmptyFlags, nonLocalReturnControl, coord = body.pos)</span><span style=''>
+</span>74 <span style=''>    val pat = </span><span style='background: #AEF1AE'>BindTyped(ex, nonLocalReturnControl)</span><span style=''>
+</span>75 <span style=''>    val rhs = </span><span style='background: #AEF1AE'>If(
+</span>76 <span style=''></span><span style='background: #AEF1AE'>        ref(ex).select(nme.key).appliedToNone.select(nme.eq).appliedTo(ref(key)),
+</span>77 <span style=''></span><span style='background: #AEF1AE'>        ref(ex).select(nme.value).ensureConforms(meth.info.finalResultType),
+</span>78 <span style=''></span><span style='background: #AEF1AE'>        Throw(ref(ex)))</span><span style=''>
+</span>79 <span style=''>    val catches = CaseDef(pat, EmptyTree, rhs) </span><span style='background: #AEF1AE'>:: Nil</span><span style=''>
+</span>80 <span style=''>    val tryCatch = </span><span style='background: #AEF1AE'>Try(body, catches, EmptyTree)</span><span style=''>
+</span>81 <span style=''>    </span><span style='background: #AEF1AE'>Block(keyDef :: Nil, tryCatch)</span><span style=''>
+</span>82 <span style=''>  }
+</span>83 <span style=''>
+</span>84 <span style=''>  override def transformDefDef(tree: DefDef)(implicit ctx: Context): Tree =
+</span>85 <span style=''>    </span><span style='background: #AEF1AE'>nonLocalReturnKeys.remove(tree.symbol)</span><span style=''> match {
+</span>86 <span style=''>      case Some(key) =&gt; </span><span style='background: #AEF1AE'>cpy.DefDef(tree)(rhs = nonLocalReturnTry(tree.rhs, key, tree.symbol))</span><span style=''>
+</span>87 <span style=''>      case _ =&gt; tree
+</span>88 <span style=''>    }
+</span>89 <span style=''>
+</span>90 <span style=''>  override def transformReturn(tree: Return)(implicit ctx: Context): Tree =
+</span>91 <span style=''>    if (</span><span style='background: #AEF1AE'>isNonLocalReturn(tree)</span><span style=''>) </span><span style='background: #AEF1AE'>nonLocalReturnThrow(tree.expr, tree.from.symbol).withPos(tree.pos)</span><span style=''>
+</span>92 <span style=''>    else </span><span style='background: #AEF1AE'>tree</span><span style=''>
+</span>93 <span style=''>}
+</span></pre>
+          </div>
+          <div class="tab-pane" id="statementlist">
+            <table cellspacing="0" cellpadding="0" class="table statementlist">
+      <tr>
+        <th>Line</th>
+        <th>Stmt Id</th>
+        <th>Pos</th>
+        <th>Tree</th>
+        <th>Symbol</th>
+        <th>Code</th>
+      </tr><tr>
+        <td>
+          14
+        </td>
+        <td>
+          58552
+        </td>
+        <td>
+          415
+          -
+          433
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.SymDenotations.SymDenotation.is
+        </td>
+        <td style="background: #AEF1AE">
+          core.Symbols.toDenot(ctx.owner)(ctx).is(core.Flags.Lazy)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          14
+        </td>
+        <td>
+          58551
+        </td>
+        <td>
+          386
+          -
+          411
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.SymDenotations.SymDenotation.enclosingMethod
+        </td>
+        <td style="background: #AEF1AE">
+          core.Symbols.toDenot(ctx.owner)(ctx).enclosingMethod(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          14
+        </td>
+        <td>
+          58553
+        </td>
+        <td>
+          367
+          -
+          433
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Boolean.||
+        </td>
+        <td style="background: #AEF1AE">
+          ret.from.symbol(ctx).!=(core.Symbols.toDenot(ctx.owner)(ctx).enclosingMethod(ctx)).||(core.Symbols.toDenot(ctx.owner)(ctx).is(core.Flags.Lazy)(ctx))
+        </td>
+      </tr><tr>
+        <td>
+          20
+        </td>
+        <td>
+          58554
+        </td>
+        <td>
+          582
+          -
+          599
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          &quot;nonLocalReturns&quot;
+        </td>
+      </tr><tr>
+        <td>
+          25
+        </td>
+        <td>
+          58555
+        </td>
+        <td>
+          699
+          -
+          723
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.generic.GenericCompanion.apply
+        </td>
+        <td style="background: #AEF1AE">
+          scala.Predef.Set.apply[Class[_ &lt;: dotty.tools.dotc.core.Phases.Phase]](classOf[dotty.tools.dotc.transform.ElimByName])
+        </td>
+      </tr><tr>
+        <td>
+          28
+        </td>
+        <td>
+          58557
+        </td>
+        <td>
+          826
+          -
+          830
+        </td>
+        <td>
+          Ident
+        </td>
+        <td>
+          dotty.tools.dotc.transform.NonLocalReturns.tree
+        </td>
+        <td style="background: #F0ADAD">
+          tree
+        </td>
+      </tr><tr>
+        <td>
+          28
+        </td>
+        <td>
+          58556
+        </td>
+        <td>
+          809
+          -
+          824
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.Types.Type.&lt;:&lt;
+        </td>
+        <td style="background: #F0ADAD">
+          tree.tpe.&lt;:&lt;(pt)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          29
+        </td>
+        <td>
+          58558
+        </td>
+        <td>
+          840
+          -
+          876
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.transform.Erasure.Boxing.adaptToType
+        </td>
+        <td style="background: #F0ADAD">
+          Erasure.Boxing.adaptToType(tree, pt)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          29
+        </td>
+        <td>
+          58559
+        </td>
+        <td>
+          840
+          -
+          876
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          dotty.tools.dotc.transform.Erasure.Boxing.adaptToType
+        </td>
+        <td style="background: #F0ADAD">
+          Erasure.Boxing.adaptToType(tree, pt)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          33
+        </td>
+        <td>
+          58560
+        </td>
+        <td>
+          1040
+          -
+          1089
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.TypeApplications.appliedTo
+        </td>
+        <td style="background: #F0ADAD">
+          core.Types.decorateTypeApplications(core.Symbols.defn(ctx).NonLocalReturnControlType).appliedTo(argtype)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          36
+        </td>
+        <td>
+          58561
+        </td>
+        <td>
+          1190
+          -
+          1221
+        </td>
+        <td>
+          TypeApply
+        </td>
+        <td>
+          dotty.tools.dotc.core.Symbols.newMutableSymbolMap
+        </td>
+        <td style="background: #AEF1AE">
+          core.Symbols.newMutableSymbolMap[dotty.tools.dotc.core.Symbols.TermSymbol]
+        </td>
+      </tr><tr>
+        <td>
+          40
+        </td>
+        <td>
+          58569
+        </td>
+        <td>
+          1352
+          -
+          1505
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.core.Symbols.MutableSymbolMap.getOrElseUpdate
+        </td>
+        <td style="background: #AEF1AE">
+          NonLocalReturns.this.nonLocalReturnKeys.getOrElseUpdate(meth, {
+  &lt;artifact&gt; val x$5: dotty.tools.dotc.core.Symbols.Symbol = meth;
+  &lt;artifact&gt; val x$6: dotty.tools.dotc.core.Names.TermName = core.NameKinds.NonLocalReturnKeyName.fresh(core.NameKinds.NonLocalReturnKeyName.fresh$default$1)(ctx);
+  &lt;artifact&gt; val x$7: dotty.tools.dotc.core.Flags.FlagSet = core.Flags.Synthetic;
+  &lt;artifact&gt; val x$8: dotty.tools.dotc.core.Types.TypeRef = core.Symbols.defn(ctx).ObjectType;
+  &lt;artifact&gt; val x$9: dotty.tools.dotc.util.Positions.Coord = util.this.Positions.positionCoord(meth.pos);
+  &lt;artifact&gt; val x$10: dotty.tools.dotc.core.Symbols.Symbol = ctx.newSymbol$default$5[Nothing];
+  ctx.newSymbol[dotty.tools.dotc.core.Names.TermName](x$5, x$6, x$7, x$8, x$10, x$9)
+})
+        </td>
+      </tr><tr>
+        <td>
+          41
+        </td>
+        <td>
+          58567
+        </td>
+        <td>
+          1403
+          -
+          1403
+        </td>
+        <td>
+          TypeApply
+        </td>
+        <td>
+          dotty.tools.dotc.core.Symbols.newSymbol$default$5
+        </td>
+        <td style="background: #AEF1AE">
+          ctx.newSymbol$default$5[Nothing]
+        </td>
+      </tr><tr>
+        <td>
+          41
+        </td>
+        <td>
+          58568
+        </td>
+        <td>
+          1399
+          -
+          1504
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.core.Symbols.newSymbol
+        </td>
+        <td style="background: #AEF1AE">
+          ctx.newSymbol[dotty.tools.dotc.core.Names.TermName](x$5, x$6, x$7, x$8, x$10, x$9)
+        </td>
+      </tr><tr>
+        <td>
+          42
+        </td>
+        <td>
+          58564
+        </td>
+        <td>
+          1470
+          -
+          1485
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Definitions.ObjectType
+        </td>
+        <td style="background: #AEF1AE">
+          core.Symbols.defn(ctx).ObjectType
+        </td>
+      </tr><tr>
+        <td>
+          42
+        </td>
+        <td>
+          58566
+        </td>
+        <td>
+          1495
+          -
+          1503
+        </td>
+        <td>
+          ApplyImplicitView
+        </td>
+        <td>
+          dotty.tools.dotc.util.Positions.positionCoord
+        </td>
+        <td style="background: #AEF1AE">
+          util.this.Positions.positionCoord(meth.pos)
+        </td>
+      </tr><tr>
+        <td>
+          42
+        </td>
+        <td>
+          58563
+        </td>
+        <td>
+          1459
+          -
+          1468
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Flags.Synthetic
+        </td>
+        <td style="background: #AEF1AE">
+          core.Flags.Synthetic
+        </td>
+      </tr><tr>
+        <td>
+          42
+        </td>
+        <td>
+          58562
+        </td>
+        <td>
+          1428
+          -
+          1457
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.NameKinds.UniqueNameKind.fresh
+        </td>
+        <td style="background: #AEF1AE">
+          core.NameKinds.NonLocalReturnKeyName.fresh(core.NameKinds.NonLocalReturnKeyName.fresh$default$1)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          42
+        </td>
+        <td>
+          58565
+        </td>
+        <td>
+          1495
+          -
+          1503
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Symbols.Symbol.pos
+        </td>
+        <td style="background: #AEF1AE">
+          meth.pos
+        </td>
+      </tr><tr>
+        <td>
+          52
+        </td>
+        <td>
+          58570
+        </td>
+        <td>
+          1929
+          -
+          2072
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.tpd.Throw
+        </td>
+        <td style="background: #AEF1AE">
+          ast.tpd.Throw(ast.tpd.New(core.Symbols.defn(ctx).NonLocalReturnControlType, {
+  &lt;synthetic&gt; &lt;artifact&gt; val x$2: dotty.tools.dotc.ast.tpd.Tree = ast.tpd.ref(NonLocalReturns.this.nonLocalReturnKey(meth)(ctx))(ctx);
+  {
+  &lt;synthetic&gt; &lt;artifact&gt; val x$1: dotty.tools.dotc.ast.tpd.Tree = ast.tpd.TreeOps[dotty.tools.dotc.ast.tpd.Tree](expr).ensureConforms(core.Symbols.defn(ctx).ObjectType)(ctx);
+  scala.collection.immutable.Nil.::[dotty.tools.dotc.ast.tpd.Tree](x$1)
+}.::[dotty.tools.dotc.ast.tpd.Tree](x$2)
+})(ctx))(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          71
+        </td>
+        <td>
+          58571
+        </td>
+        <td>
+          2471
+          -
+          2509
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.tpd.ValDef
+        </td>
+        <td style="background: #AEF1AE">
+          ast.tpd.ValDef(key, ast.tpd.New(core.Symbols.defn(ctx).ObjectType, scala.collection.immutable.Nil)(ctx))(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          73
+        </td>
+        <td>
+          58576
+        </td>
+        <td>
+          2590
+          -
+          2590
+        </td>
+        <td>
+          TypeApply
+        </td>
+        <td>
+          dotty.tools.dotc.core.Symbols.newSymbol$default$5
+        </td>
+        <td style="background: #AEF1AE">
+          ctx.newSymbol$default$5[Nothing]
+        </td>
+      </tr><tr>
+        <td>
+          73
+        </td>
+        <td>
+          58573
+        </td>
+        <td>
+          2614
+          -
+          2624
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Flags.EmptyFlags
+        </td>
+        <td style="background: #AEF1AE">
+          core.Flags.EmptyFlags
+        </td>
+      </tr><tr>
+        <td>
+          73
+        </td>
+        <td>
+          58575
+        </td>
+        <td>
+          2657
+          -
+          2665
+        </td>
+        <td>
+          ApplyImplicitView
+        </td>
+        <td>
+          dotty.tools.dotc.util.Positions.positionCoord
+        </td>
+        <td style="background: #AEF1AE">
+          util.this.Positions.positionCoord(body.pos)
+        </td>
+      </tr><tr>
+        <td>
+          73
+        </td>
+        <td>
+          58572
+        </td>
+        <td>
+          2606
+          -
+          2612
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.StdNames.ScalaNames.ex
+        </td>
+        <td style="background: #AEF1AE">
+          core.StdNames.nme.ex
+        </td>
+      </tr><tr>
+        <td>
+          73
+        </td>
+        <td>
+          58574
+        </td>
+        <td>
+          2657
+          -
+          2665
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Positioned.pos
+        </td>
+        <td style="background: #AEF1AE">
+          body.pos
+        </td>
+      </tr><tr>
+        <td>
+          73
+        </td>
+        <td>
+          58577
+        </td>
+        <td>
+          2586
+          -
+          2666
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.core.Symbols.newSymbol
+        </td>
+        <td style="background: #AEF1AE">
+          ctx.newSymbol[dotty.tools.dotc.core.Names.TermName](x$11, x$12, x$13, x$14, x$16, x$15)
+        </td>
+      </tr><tr>
+        <td>
+          74
+        </td>
+        <td>
+          58578
+        </td>
+        <td>
+          2681
+          -
+          2717
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.tpd.BindTyped
+        </td>
+        <td style="background: #AEF1AE">
+          ast.tpd.BindTyped(ex, nonLocalReturnControl)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          75
+        </td>
+        <td>
+          58579
+        </td>
+        <td>
+          2732
+          -
+          2918
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.tpd.If
+        </td>
+        <td style="background: #AEF1AE">
+          ast.tpd.If(ast.tpd.TreeOps[dotty.tools.dotc.ast.tpd.Select](ast.tpd.TreeOps[dotty.tools.dotc.ast.tpd.Apply](ast.tpd.TreeOps[dotty.tools.dotc.ast.tpd.Select](ast.tpd.TreeOps[dotty.tools.dotc.ast.tpd.Tree](ast.tpd.ref(ex)(ctx)).select(core.StdNames.nme.key)(ctx)).appliedToNone(ctx)).select(core.StdNames.nme.eq)(ctx)).appliedTo(ast.tpd.ref(key)(ctx))(ctx), ast.tpd.TreeOps[dotty.tools.dotc.ast.tpd.Select](ast.tpd.TreeOps[dotty.tools.dotc.ast.tpd.Tree](ast.tpd.ref(ex)(ctx)).select(core.StdNames.nme.value)(ctx)).ensureConforms(core.Symbols.toDenot(meth)(ctx).info(ctx).finalResultType(ctx))(ctx), ast.tpd.Throw(ast.tpd.ref(ex)(ctx))(ctx))(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          79
+        </td>
+        <td>
+          58580
+        </td>
+        <td>
+          2966
+          -
+          2972
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.immutable.List.::
+        </td>
+        <td style="background: #AEF1AE">
+          scala.collection.immutable.Nil.::[dotty.tools.dotc.ast.tpd.CaseDef](x$3)
+        </td>
+      </tr><tr>
+        <td>
+          80
+        </td>
+        <td>
+          58581
+        </td>
+        <td>
+          2992
+          -
+          3021
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.tpd.Try
+        </td>
+        <td style="background: #AEF1AE">
+          ast.tpd.Try(body, catches, ast.tpd.EmptyTree)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          81
+        </td>
+        <td>
+          58582
+        </td>
+        <td>
+          3026
+          -
+          3056
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.tpd.Block
+        </td>
+        <td style="background: #AEF1AE">
+          ast.tpd.Block({
+  &lt;synthetic&gt; &lt;artifact&gt; val x$4: dotty.tools.dotc.ast.tpd.ValDef = keyDef;
+  scala.collection.immutable.Nil.::[dotty.tools.dotc.ast.tpd.ValDef](x$4)
+}, tryCatch)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          85
+        </td>
+        <td>
+          58584
+        </td>
+        <td>
+          3142
+          -
+          3180
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.core.Symbols.MutableSymbolMap.remove
+        </td>
+        <td style="background: #AEF1AE">
+          NonLocalReturns.this.nonLocalReturnKeys.remove(tree.symbol(ctx))
+        </td>
+      </tr><tr>
+        <td>
+          85
+        </td>
+        <td>
+          58583
+        </td>
+        <td>
+          3168
+          -
+          3179
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Trees.Tree.symbol
+        </td>
+        <td style="background: #AEF1AE">
+          tree.symbol(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          86
+        </td>
+        <td>
+          58585
+        </td>
+        <td>
+          3236
+          -
+          3281
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.transform.NonLocalReturns.nonLocalReturnTry
+        </td>
+        <td style="background: #AEF1AE">
+          NonLocalReturns.this.nonLocalReturnTry(tree.rhs(ctx), key, tree.symbol(ctx))(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          86
+        </td>
+        <td>
+          58588
+        </td>
+        <td>
+          3223
+          -
+          3223
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Trees.Instance.TreeCopier.DefDef$default$4
+        </td>
+        <td style="background: #AEF1AE">
+          NonLocalReturns.this.cpy.DefDef$default$4(x$17)
+        </td>
+      </tr><tr>
+        <td>
+          86
+        </td>
+        <td>
+          58587
+        </td>
+        <td>
+          3223
+          -
+          3223
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Trees.Instance.TreeCopier.DefDef$default$3
+        </td>
+        <td style="background: #AEF1AE">
+          NonLocalReturns.this.cpy.DefDef$default$3(x$17)
+        </td>
+      </tr><tr>
+        <td>
+          86
+        </td>
+        <td>
+          58590
+        </td>
+        <td>
+          3213
+          -
+          3282
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Trees.Instance.TreeCopier.DefDef
+        </td>
+        <td style="background: #AEF1AE">
+          NonLocalReturns.this.cpy.DefDef(x$17)(x$19, x$20, x$21, x$22, x$18)
+        </td>
+      </tr><tr>
+        <td>
+          86
+        </td>
+        <td>
+          58589
+        </td>
+        <td>
+          3223
+          -
+          3223
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Trees.Instance.TreeCopier.DefDef$default$5
+        </td>
+        <td style="background: #AEF1AE">
+          NonLocalReturns.this.cpy.DefDef$default$5(x$17)
+        </td>
+      </tr><tr>
+        <td>
+          86
+        </td>
+        <td>
+          58586
+        </td>
+        <td>
+          3223
+          -
+          3223
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Trees.Instance.TreeCopier.DefDef$default$2
+        </td>
+        <td style="background: #AEF1AE">
+          NonLocalReturns.this.cpy.DefDef$default$2(x$17)
+        </td>
+      </tr><tr>
+        <td>
+          91
+        </td>
+        <td>
+          58594
+        </td>
+        <td>
+          3476
+          -
+          3484
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Positioned.pos
+        </td>
+        <td style="background: #AEF1AE">
+          tree.pos
+        </td>
+      </tr><tr>
+        <td>
+          91
+        </td>
+        <td>
+          58591
+        </td>
+        <td>
+          3395
+          -
+          3417
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.transform.NonLocalReturns.isNonLocalReturn
+        </td>
+        <td style="background: #AEF1AE">
+          NonLocalReturns.isNonLocalReturn(tree)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          91
+        </td>
+        <td>
+          58593
+        </td>
+        <td>
+          3450
+          -
+          3466
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Trees.Tree.symbol
+        </td>
+        <td style="background: #AEF1AE">
+          tree.from.symbol(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          91
+        </td>
+        <td>
+          58596
+        </td>
+        <td>
+          3419
+          -
+          3485
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Positioned.withPos
+        </td>
+        <td style="background: #AEF1AE">
+          NonLocalReturns.this.nonLocalReturnThrow(tree.expr, tree.from.symbol(ctx))(ctx).withPos(tree.pos)
+        </td>
+      </tr><tr>
+        <td>
+          91
+        </td>
+        <td>
+          58592
+        </td>
+        <td>
+          3439
+          -
+          3448
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Trees.Return.expr
+        </td>
+        <td style="background: #AEF1AE">
+          tree.expr
+        </td>
+      </tr><tr>
+        <td>
+          91
+        </td>
+        <td>
+          58595
+        </td>
+        <td>
+          3419
+          -
+          3485
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Positioned.withPos
+        </td>
+        <td style="background: #AEF1AE">
+          NonLocalReturns.this.nonLocalReturnThrow(tree.expr, tree.from.symbol(ctx))(ctx).withPos(tree.pos)
+        </td>
+      </tr><tr>
+        <td>
+          92
+        </td>
+        <td>
+          58597
+        </td>
+        <td>
+          3495
+          -
+          3499
+        </td>
+        <td>
+          Ident
+        </td>
+        <td>
+          dotty.tools.dotc.transform.NonLocalReturns.tree
+        </td>
+        <td style="background: #AEF1AE">
+          tree
+        </td>
+      </tr>
+    </table>
+          </div>
+        </div>
+      </body>
+    </html>

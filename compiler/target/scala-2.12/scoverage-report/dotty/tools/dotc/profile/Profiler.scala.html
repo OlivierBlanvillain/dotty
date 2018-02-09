@@ -1,0 +1,5808 @@
+<html>
+      <head>
+        <meta http-equiv="Content-Type" content="text/html; charset=utf-8"/>
+        <title id="title">
+          dotty/tools/dotc/profile/Profiler.scala.html
+        </title>
+        <script src="https://ajax.googleapis.com/ajax/libs/jquery/1.10.2/jquery.min.js"></script><link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/jquery.tablesorter/2.20.1/css/theme.default.min.css" type="text/css"/><script src="https://cdnjs.cloudflare.com/ajax/libs/jquery.tablesorter/2.20.1/js/jquery.tablesorter.min.js"></script><link rel="stylesheet" href="https://netdna.bootstrapcdn.com/bootstrap/3.0.3/css/bootstrap.min.css" type="text/css"/><script src="https://netdna.bootstrapcdn.com/bootstrap/3.0.3/js/bootstrap.min.js"></script><script type="text/javascript">
+        $(document).ready(function() {$(".tablesorter").tablesorter();});
+      </script>
+        <style>
+          table.codegrid { font-family: monospace; font-size: 12px; width: auto!important; }table.statementlist { width: auto!important; font-size: 13px; } table.codegrid td { padding: 0!important; border: 0!important } table td.linenumber { width: 40px!important; } 
+        </style>
+      </head>
+      <body style="font-family: monospace;">
+        <ul class="nav nav-tabs">
+          <li>
+            <a href="#codegrid" data-toggle="tab">Codegrid</a>
+          </li>
+          <li>
+            <a href="#statementlist" data-toggle="tab">Statement List</a>
+          </li>
+        </ul>
+        <div class="tab-content">
+          <div class="tab-pane active" id="codegrid">
+            <pre style='font-size: 12pt; font-family: courier;'>1 <span style=''>package dotty.tools.dotc.profile
+</span>2 <span style=''>
+</span>3 <span style=''>import java.io.{FileWriter, PrintWriter}
+</span>4 <span style=''>import java.lang.management.ManagementFactory
+</span>5 <span style=''>import java.util.concurrent.TimeUnit
+</span>6 <span style=''>import java.util.concurrent.atomic.AtomicInteger
+</span>7 <span style=''>import javax.management.openmbean.CompositeData
+</span>8 <span style=''>import javax.management.{Notification, NotificationEmitter, NotificationListener}
+</span>9 <span style=''>
+</span>10 <span style=''>import dotty.tools.dotc.core.Phases.Phase
+</span>11 <span style=''>import dotty.tools.dotc.core.Contexts.Context
+</span>12 <span style=''>
+</span>13 <span style=''>object Profiler {
+</span>14 <span style=''>  def apply()(implicit ctx: Context): Profiler =
+</span>15 <span style=''>    if (</span><span style='background: #AEF1AE'>!ctx.settings.YprofileEnabled.value</span><span style=''>) </span><span style='background: #AEF1AE'>NoOpProfiler</span><span style=''>
+</span>16 <span style=''>    else </span><span style='background: #F0ADAD'>{
+</span>17 <span style=''></span><span style='background: #F0ADAD'>      val reporter = if (ctx.settings.YprofileDestination.value != &quot;&quot;)
+</span>18 <span style=''></span><span style='background: #F0ADAD'>        new StreamProfileReporter(new PrintWriter(new FileWriter(ctx.settings.YprofileDestination.value, true)))
+</span>19 <span style=''></span><span style='background: #F0ADAD'>      else ConsoleProfileReporter
+</span>20 <span style=''></span><span style='background: #F0ADAD'>      new RealProfiler(reporter)
+</span>21 <span style=''></span><span style='background: #F0ADAD'>    }</span><span style=''>
+</span>22 <span style=''>
+</span>23 <span style=''>  private[profile] val emptySnap = </span><span style='background: #AEF1AE'>ProfileSnap(0, &quot;&quot;, 0, 0, 0, 0, 0, 0)</span><span style=''>
+</span>24 <span style=''>}
+</span>25 <span style=''>
+</span>26 <span style=''>case class GcEventData(pool:String, reportTimeNs: Long, gcStartMillis:Long, gcEndMillis:Long, name:String, action:String, cause:String, threads:Long)
+</span>27 <span style=''>
+</span>28 <span style=''>case class ProfileSnap(threadId: Long, threadName: String, snapTimeNanos : Long,
+</span>29 <span style=''>                       idleTimeNanos:Long, cpuTimeNanos: Long, userTimeNanos: Long,
+</span>30 <span style=''>                       allocatedBytes:Long, heapBytes:Long) {
+</span>31 <span style=''>  def updateHeap(heapBytes:Long) = {
+</span>32 <span style=''>    </span><span style='background: #F0ADAD'>copy(heapBytes = heapBytes)</span><span style=''>
+</span>33 <span style=''>  }
+</span>34 <span style=''>}
+</span>35 <span style=''>case class ProfileRange(start: ProfileSnap, end:ProfileSnap, phase:Phase, purpose:String, taskCount:Int, thread:Thread) {
+</span>36 <span style=''>  def allocatedBytes = </span><span style='background: #F0ADAD'>end.allocatedBytes - start.allocatedBytes</span><span style=''>
+</span>37 <span style=''>
+</span>38 <span style=''>  def userNs = </span><span style='background: #F0ADAD'>end.userTimeNanos - start.userTimeNanos</span><span style=''>
+</span>39 <span style=''>
+</span>40 <span style=''>  def cpuNs = </span><span style='background: #F0ADAD'>end.cpuTimeNanos - start.cpuTimeNanos</span><span style=''>
+</span>41 <span style=''>
+</span>42 <span style=''>  def idleNs = </span><span style='background: #F0ADAD'>end.idleTimeNanos - start.idleTimeNanos</span><span style=''>
+</span>43 <span style=''>
+</span>44 <span style=''>  def runNs = </span><span style='background: #F0ADAD'>end.snapTimeNanos - start.snapTimeNanos</span><span style=''>
+</span>45 <span style=''>
+</span>46 <span style=''>
+</span>47 <span style=''>  private def toMillis(ns: Long) = </span><span style='background: #F0ADAD'>ns / 1000000.0D</span><span style=''>
+</span>48 <span style=''>
+</span>49 <span style=''>  private def toMegaBytes(bytes: Long) = </span><span style='background: #F0ADAD'>bytes / 1000000.0D</span><span style=''>
+</span>50 <span style=''>
+</span>51 <span style=''>
+</span>52 <span style=''>  def wallClockTimeMillis = </span><span style='background: #F0ADAD'>toMillis(end.snapTimeNanos - start.snapTimeNanos)</span><span style=''>
+</span>53 <span style=''>
+</span>54 <span style=''>  def idleTimeMillis = </span><span style='background: #F0ADAD'>toMillis(end.idleTimeNanos - start.idleTimeNanos)</span><span style=''>
+</span>55 <span style=''>
+</span>56 <span style=''>  def cpuTimeMillis = </span><span style='background: #F0ADAD'>toMillis(end.cpuTimeNanos - start.cpuTimeNanos)</span><span style=''>
+</span>57 <span style=''>
+</span>58 <span style=''>  def userTimeMillis = </span><span style='background: #F0ADAD'>toMillis(end.userTimeNanos - start.userTimeNanos)</span><span style=''>
+</span>59 <span style=''>
+</span>60 <span style=''>  def allocatedMB = </span><span style='background: #F0ADAD'>toMegaBytes(end.allocatedBytes - start.allocatedBytes)</span><span style=''>
+</span>61 <span style=''>
+</span>62 <span style=''>  def retainedHeapMB = </span><span style='background: #F0ADAD'>toMegaBytes(end.heapBytes - start.heapBytes)</span><span style=''>
+</span>63 <span style=''>}
+</span>64 <span style=''>
+</span>65 <span style=''>sealed trait Profiler {
+</span>66 <span style=''>
+</span>67 <span style=''>  def finished(): Unit
+</span>68 <span style=''>
+</span>69 <span style=''>  def beforePhase(phase: Phase): ProfileSnap
+</span>70 <span style=''>
+</span>71 <span style=''>  def afterPhase(phase: Phase, profileBefore: ProfileSnap): Unit
+</span>72 <span style=''>}
+</span>73 <span style=''>private [profile] object NoOpProfiler extends Profiler {
+</span>74 <span style=''>
+</span>75 <span style=''>  override def beforePhase(phase: Phase): ProfileSnap = </span><span style='background: #AEF1AE'>Profiler.emptySnap</span><span style=''>
+</span>76 <span style=''>
+</span>77 <span style=''>  override def afterPhase(phase: Phase, profileBefore: ProfileSnap): Unit = </span><span style='background: #AEF1AE'>()</span><span style=''>
+</span>78 <span style=''>
+</span>79 <span style=''>  override def finished(): Unit = </span><span style='background: #AEF1AE'>()</span><span style=''>
+</span>80 <span style=''>}
+</span>81 <span style=''>private [profile] object RealProfiler {
+</span>82 <span style=''>  import scala.collection.JavaConverters._
+</span>83 <span style=''>  val runtimeMx = </span><span style='background: #F0ADAD'>ManagementFactory.getRuntimeMXBean</span><span style=''>
+</span>84 <span style=''>  val memoryMx = </span><span style='background: #F0ADAD'>ManagementFactory.getMemoryMXBean</span><span style=''>
+</span>85 <span style=''>  val gcMx = </span><span style='background: #F0ADAD'>ManagementFactory.getGarbageCollectorMXBeans.asScala.toList</span><span style=''>
+</span>86 <span style=''>  val classLoaderMx = </span><span style='background: #F0ADAD'>ManagementFactory.getClassLoadingMXBean</span><span style=''>
+</span>87 <span style=''>  val compileMx = </span><span style='background: #F0ADAD'>ManagementFactory.getCompilationMXBean</span><span style=''>
+</span>88 <span style=''>  val threadMx = </span><span style='background: #F0ADAD'>ExtendedThreadMxBean.proxy</span><span style=''>
+</span>89 <span style=''>  if (</span><span style='background: #F0ADAD'>threadMx.isThreadCpuTimeSupported</span><span style=''>) </span><span style='background: #F0ADAD'>threadMx.setThreadCpuTimeEnabled(true)</span><span style=''>
+</span>90 <span style=''>  private val idGen = </span><span style='background: #F0ADAD'>new AtomicInteger()</span><span style=''>
+</span>91 <span style=''>}
+</span>92 <span style=''>
+</span>93 <span style=''>private [profile] class RealProfiler(reporter : ProfileReporter)(implicit ctx: Context) extends Profiler with NotificationListener {
+</span>94 <span style=''>  def completeBackground(threadRange: ProfileRange): Unit = {
+</span>95 <span style=''>    </span><span style='background: #F0ADAD'>reporter.reportBackground(this, threadRange)</span><span style=''>
+</span>96 <span style=''>  }
+</span>97 <span style=''>
+</span>98 <span style=''>  def outDir = </span><span style='background: #F0ADAD'>ctx.settings.outputDir.value</span><span style=''>
+</span>99 <span style=''>
+</span>100 <span style=''>  val id = </span><span style='background: #F0ADAD'>RealProfiler.idGen.incrementAndGet()</span><span style=''>
+</span>101 <span style=''>  </span><span style='background: #F0ADAD'>RealProfiler.gcMx foreach {
+</span>102 <span style=''></span><span style='background: #F0ADAD'>    case emitter: NotificationEmitter =&gt; emitter.addNotificationListener(this, null, null)
+</span>103 <span style=''></span><span style='background: #F0ADAD'>    case gc =&gt; println(s&quot;Cant connect gcListener to ${gc.getClass}&quot;)
+</span>104 <span style=''></span><span style='background: #F0ADAD'>  }</span><span style=''>
+</span>105 <span style=''>
+</span>106 <span style=''>  private val mainThread = </span><span style='background: #F0ADAD'>Thread.currentThread()</span><span style=''>
+</span>107 <span style=''>
+</span>108 <span style=''>  private[profile] def snapThread(idleTimeNanos: Long): ProfileSnap = {
+</span>109 <span style=''>    import RealProfiler._
+</span>110 <span style=''>    val current = </span><span style='background: #F0ADAD'>Thread.currentThread()</span><span style=''>
+</span>111 <span style=''>
+</span>112 <span style=''>    </span><span style='background: #F0ADAD'>ProfileSnap(
+</span>113 <span style=''></span><span style='background: #F0ADAD'>      threadId = current.getId,
+</span>114 <span style=''></span><span style='background: #F0ADAD'>      threadName = current.getName,
+</span>115 <span style=''></span><span style='background: #F0ADAD'>      snapTimeNanos = System.nanoTime(),
+</span>116 <span style=''></span><span style='background: #F0ADAD'>      idleTimeNanos = idleTimeNanos,
+</span>117 <span style=''></span><span style='background: #F0ADAD'>      cpuTimeNanos = threadMx.getCurrentThreadCpuTime,
+</span>118 <span style=''></span><span style='background: #F0ADAD'>      userTimeNanos = threadMx.getCurrentThreadUserTime,
+</span>119 <span style=''></span><span style='background: #F0ADAD'>      allocatedBytes = threadMx.getThreadAllocatedBytes(Thread.currentThread().getId),
+</span>120 <span style=''></span><span style='background: #F0ADAD'>      heapBytes = readHeapUsage()
+</span>121 <span style=''></span><span style='background: #F0ADAD'>    )</span><span style=''>
+</span>122 <span style=''>  }
+</span>123 <span style=''>  private def readHeapUsage() = </span><span style='background: #F0ADAD'>RealProfiler.memoryMx.getHeapMemoryUsage.getUsed</span><span style=''>
+</span>124 <span style=''>
+</span>125 <span style=''>  private def doGC: Unit = {
+</span>126 <span style=''>    </span><span style='background: #F0ADAD'>System.gc()</span><span style=''>
+</span>127 <span style=''>    </span><span style='background: #F0ADAD'>System.runFinalization()</span><span style=''>
+</span>128 <span style=''>  }
+</span>129 <span style=''>
+</span>130 <span style=''>  </span><span style='background: #F0ADAD'>reporter.header(this)</span><span style=''>
+</span>131 <span style=''>
+</span>132 <span style=''>  override def finished(): Unit = {
+</span>133 <span style=''>    //we may miss a GC event if gc is occurring as we call this
+</span>134 <span style=''>    </span><span style='background: #F0ADAD'>RealProfiler.gcMx foreach {
+</span>135 <span style=''></span><span style='background: #F0ADAD'>      case emitter: NotificationEmitter =&gt; emitter.removeNotificationListener(this)
+</span>136 <span style=''></span><span style='background: #F0ADAD'>      case gc =&gt;
+</span>137 <span style=''></span><span style='background: #F0ADAD'>    }</span><span style=''>
+</span>138 <span style=''>    </span><span style='background: #F0ADAD'>reporter.close(this)</span><span style=''>
+</span>139 <span style=''>  }
+</span>140 <span style=''>
+</span>141 <span style=''>
+</span>142 <span style=''>  override def handleNotification(notification: Notification, handback: scala.Any): Unit = {
+</span>143 <span style=''>    import java.lang.{Long =&gt; jLong}
+</span>144 <span style=''>    import java.lang.{Integer =&gt; jInt}
+</span>145 <span style=''>    val reportNs = </span><span style='background: #F0ADAD'>System.nanoTime()</span><span style=''>
+</span>146 <span style=''>    val data = </span><span style='background: #F0ADAD'>notification.getUserData</span><span style=''>
+</span>147 <span style=''>    val seq = </span><span style='background: #F0ADAD'>notification.getSequenceNumber</span><span style=''>
+</span>148 <span style=''>    val message = </span><span style='background: #F0ADAD'>notification.getMessage</span><span style=''>
+</span>149 <span style=''>    val tpe = </span><span style='background: #F0ADAD'>notification.getType</span><span style=''>
+</span>150 <span style=''>    val time= </span><span style='background: #F0ADAD'>notification.getTimeStamp</span><span style=''>
+</span>151 <span style=''>    data match {
+</span>152 <span style=''>      case cd: CompositeData if </span><span style='background: #F0ADAD'>tpe == &quot;com.sun.management.gc.notification&quot;</span><span style=''> =&gt;
+</span>153 <span style=''>        val name = </span><span style='background: #F0ADAD'>cd.get(&quot;gcName&quot;).toString</span><span style=''>
+</span>154 <span style=''>        val action = </span><span style='background: #F0ADAD'>cd.get(&quot;gcAction&quot;).toString</span><span style=''>
+</span>155 <span style=''>        val cause = </span><span style='background: #F0ADAD'>cd.get(&quot;gcCause&quot;).toString</span><span style=''>
+</span>156 <span style=''>        val info = </span><span style='background: #F0ADAD'>cd.get(&quot;gcInfo&quot;).asInstanceOf[CompositeData]</span><span style=''>
+</span>157 <span style=''>        val duration = </span><span style='background: #F0ADAD'>info.get(&quot;duration&quot;).asInstanceOf[jLong].longValue()</span><span style=''>
+</span>158 <span style=''>        val startTime = </span><span style='background: #F0ADAD'>info.get(&quot;startTime&quot;).asInstanceOf[jLong].longValue()</span><span style=''>
+</span>159 <span style=''>        val endTime = </span><span style='background: #F0ADAD'>info.get(&quot;endTime&quot;).asInstanceOf[jLong].longValue()</span><span style=''>
+</span>160 <span style=''>        val threads = </span><span style='background: #F0ADAD'>info.get(&quot;GcThreadCount&quot;).asInstanceOf[jInt].longValue()</span><span style=''>
+</span>161 <span style=''>        </span><span style='background: #F0ADAD'>reporter.reportGc(GcEventData(&quot;&quot;, reportNs, startTime, endTime, name, action, cause, threads))</span><span style=''>
+</span>162 <span style=''>    }
+</span>163 <span style=''>  }
+</span>164 <span style=''>
+</span>165 <span style=''>  override def afterPhase(phase: Phase, snapBefore: ProfileSnap): Unit = {
+</span>166 <span style=''>    </span><span style='background: #F0ADAD'>assert(mainThread eq Thread.currentThread())</span><span style=''>
+</span>167 <span style=''>    val initialSnap = </span><span style='background: #F0ADAD'>snapThread(0)</span><span style=''>
+</span>168 <span style=''>    if (</span><span style='background: #F0ADAD'>ctx.settings.YprofileExternalTool.value.contains(phase.toString)</span><span style=''>) </span><span style='background: #F0ADAD'>{
+</span>169 <span style=''></span><span style='background: #F0ADAD'>      println(&quot;Profile hook stop&quot;)
+</span>170 <span style=''></span><span style='background: #F0ADAD'>      ExternalToolHook.after()
+</span>171 <span style=''></span><span style='background: #F0ADAD'>    }</span><span style=''>
+</span>172 <span style=''>    val finalSnap = if (</span><span style='background: #F0ADAD'>ctx.settings.YprofileRunGcBetweenPhases.value.contains(phase.toString)</span><span style=''>) </span><span style='background: #F0ADAD'>{
+</span>173 <span style=''></span><span style='background: #F0ADAD'>      doGC
+</span>174 <span style=''></span><span style='background: #F0ADAD'>      initialSnap.updateHeap(readHeapUsage())
+</span>175 <span style=''></span><span style='background: #F0ADAD'>    }</span><span style=''> else </span><span style='background: #F0ADAD'>initialSnap</span><span style=''>
+</span>176 <span style=''>
+</span>177 <span style=''>    </span><span style='background: #F0ADAD'>reporter.reportForeground(this, ProfileRange(snapBefore, finalSnap, phase, &quot;&quot;, 0, Thread.currentThread))</span><span style=''>
+</span>178 <span style=''>  }
+</span>179 <span style=''>
+</span>180 <span style=''>  override def beforePhase(phase: Phase): ProfileSnap = {
+</span>181 <span style=''>    </span><span style='background: #F0ADAD'>assert(mainThread eq Thread.currentThread())</span><span style=''>
+</span>182 <span style=''>    if (</span><span style='background: #F0ADAD'>ctx.settings.YprofileRunGcBetweenPhases.value.contains(phase.toString)</span><span style=''>)
+</span>183 <span style=''>      </span><span style='background: #F0ADAD'>doGC</span><span style=''>
+</span>184 <span style=''>    if (</span><span style='background: #F0ADAD'>ctx.settings.YprofileExternalTool.value.contains(phase.toString)</span><span style=''>) </span><span style='background: #F0ADAD'>{
+</span>185 <span style=''></span><span style='background: #F0ADAD'>      println(&quot;Profile hook start&quot;)
+</span>186 <span style=''></span><span style='background: #F0ADAD'>      ExternalToolHook.before()
+</span>187 <span style=''></span><span style='background: #F0ADAD'>    }</span><span style=''>
+</span>188 <span style=''>    </span><span style='background: #F0ADAD'>snapThread(0)</span><span style=''>
+</span>189 <span style=''>  }
+</span>190 <span style=''>
+</span>191 <span style=''>}
+</span>192 <span style=''>
+</span>193 <span style=''>case class EventType(name: String)
+</span>194 <span style=''>object EventType {
+</span>195 <span style=''>  //main thread with other tasks
+</span>196 <span style=''>  val MAIN = </span><span style='background: #F0ADAD'>EventType(&quot;main&quot;)</span><span style=''>
+</span>197 <span style=''>  //other task ( background thread)
+</span>198 <span style=''>  val BACKGROUND = </span><span style='background: #F0ADAD'>EventType(&quot;background&quot;)</span><span style=''>
+</span>199 <span style=''>  //total for compile
+</span>200 <span style=''>  val GC = </span><span style='background: #F0ADAD'>EventType(&quot;GC&quot;)</span><span style=''>
+</span>201 <span style=''>}
+</span>202 <span style=''>
+</span>203 <span style=''>sealed trait ProfileReporter {
+</span>204 <span style=''>  def reportBackground(profiler: RealProfiler, threadRange: ProfileRange): Unit
+</span>205 <span style=''>  def reportForeground(profiler: RealProfiler, threadRange: ProfileRange): Unit
+</span>206 <span style=''>
+</span>207 <span style=''>  def reportGc(data: GcEventData): Unit
+</span>208 <span style=''>
+</span>209 <span style=''>  def header(profiler: RealProfiler) :Unit
+</span>210 <span style=''>  def close(profiler: RealProfiler) :Unit
+</span>211 <span style=''>}
+</span>212 <span style=''>
+</span>213 <span style=''>object ConsoleProfileReporter extends ProfileReporter {
+</span>214 <span style=''>
+</span>215 <span style=''>
+</span>216 <span style=''>  override def reportBackground(profiler: RealProfiler, threadRange: ProfileRange): Unit =
+</span>217 <span style=''>  // TODO
+</span>218 <span style=''>    </span><span style='background: #F0ADAD'>???</span><span style=''>
+</span>219 <span style=''>  override def reportForeground(profiler: RealProfiler, threadRange: ProfileRange): Unit =
+</span>220 <span style=''>  // TODO
+</span>221 <span style=''>    </span><span style='background: #F0ADAD'>???</span><span style=''>
+</span>222 <span style=''>
+</span>223 <span style=''>  override def close(profiler: RealProfiler): Unit = </span><span style='background: #F0ADAD'>()</span><span style=''>
+</span>224 <span style=''>
+</span>225 <span style=''>  override def header(profiler: RealProfiler): Unit = {
+</span>226 <span style=''>    </span><span style='background: #F0ADAD'>println(s&quot;Profiler start (${profiler.id}) ${profiler.outDir}&quot;)</span><span style=''>
+</span>227 <span style=''>  }
+</span>228 <span style=''>
+</span>229 <span style=''>  override def reportGc(data: GcEventData): Unit = {
+</span>230 <span style=''>    </span><span style='background: #F0ADAD'>println(f&quot;Profiler GC reported ${data.gcEndMillis - data.gcStartMillis}ms&quot;)</span><span style=''>
+</span>231 <span style=''>  }
+</span>232 <span style=''>}
+</span>233 <span style=''>
+</span>234 <span style=''>class StreamProfileReporter(out:PrintWriter) extends ProfileReporter {
+</span>235 <span style=''>  override def header(profiler: RealProfiler): Unit = {
+</span>236 <span style=''>    </span><span style='background: #F0ADAD'>out.println(s&quot;info, ${profiler.id}, version, 2, output, ${profiler.outDir}&quot;)</span><span style=''>
+</span>237 <span style=''>    </span><span style='background: #F0ADAD'>out.println(s&quot;header(main/background),startNs,endNs,runId,phaseId,phaseName,purpose,task-count,threadId,threadName,runNs,idleNs,cpuTimeNs,userTimeNs,allocatedByte,heapSize&quot;)</span><span style=''>
+</span>238 <span style=''>    </span><span style='background: #F0ADAD'>out.println(s&quot;header(GC),startNs,endNs,startMs,endMs,name,action,cause,threads&quot;)</span><span style=''>
+</span>239 <span style=''>  }
+</span>240 <span style=''>
+</span>241 <span style=''>  override def reportBackground(profiler: RealProfiler, threadRange: ProfileRange): Unit = {
+</span>242 <span style=''>    </span><span style='background: #F0ADAD'>reportCommon(EventType.BACKGROUND, profiler, threadRange)</span><span style=''>
+</span>243 <span style=''>  }
+</span>244 <span style=''>  override def reportForeground(profiler: RealProfiler, threadRange: ProfileRange): Unit = {
+</span>245 <span style=''>    </span><span style='background: #F0ADAD'>reportCommon(EventType.MAIN, profiler, threadRange)</span><span style=''>
+</span>246 <span style=''>  }
+</span>247 <span style=''>  private def reportCommon(tpe:EventType, profiler: RealProfiler, threadRange: ProfileRange): Unit = {
+</span>248 <span style=''>    </span><span style='background: #F0ADAD'>out.println(s&quot;$tpe,${threadRange.start.snapTimeNanos},${threadRange.end.snapTimeNanos},${profiler.id},${threadRange.phase.id},${threadRange.phase.phaseName.replace(',', ' ')},${threadRange.purpose},${threadRange.taskCount},${threadRange.thread.getId},${threadRange.thread.getName},${threadRange.runNs},${threadRange.idleNs},${threadRange.cpuNs},${threadRange.userNs},${threadRange.allocatedBytes},${threadRange.end.heapBytes} &quot;)</span><span style=''>
+</span>249 <span style=''>  }
+</span>250 <span style=''>
+</span>251 <span style=''>  override def reportGc(data: GcEventData): Unit = {
+</span>252 <span style=''>    val duration = </span><span style='background: #F0ADAD'>TimeUnit.MILLISECONDS.toNanos(data.gcEndMillis - data.gcStartMillis + 1)</span><span style=''>
+</span>253 <span style=''>    val start = </span><span style='background: #F0ADAD'>data.reportTimeNs - duration</span><span style=''>
+</span>254 <span style=''>    </span><span style='background: #F0ADAD'>out.println(s&quot;${EventType.GC},$start,${data.reportTimeNs},${data.gcStartMillis}, ${data.gcEndMillis},${data.name},${data.action},${data.cause},${data.threads}&quot;)</span><span style=''>
+</span>255 <span style=''>  }
+</span>256 <span style=''>
+</span>257 <span style=''>
+</span>258 <span style=''>  override def close(profiler: RealProfiler): Unit = {
+</span>259 <span style=''>    </span><span style='background: #F0ADAD'>out.flush</span><span style=''>
+</span>260 <span style=''>    </span><span style='background: #F0ADAD'>out.close</span><span style=''>
+</span>261 <span style=''>  }
+</span>262 <span style=''>}
+</span></pre>
+          </div>
+          <div class="tab-pane" id="statementlist">
+            <table cellspacing="0" cellpadding="0" class="table statementlist">
+      <tr>
+        <th>Line</th>
+        <th>Stmt Id</th>
+        <th>Pos</th>
+        <th>Tree</th>
+        <th>Symbol</th>
+        <th>Code</th>
+      </tr><tr>
+        <td>
+          15
+        </td>
+        <td>
+          48653
+        </td>
+        <td>
+          503
+          -
+          531
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.config.ScalaSettings.YprofileEnabled
+        </td>
+        <td style="background: #AEF1AE">
+          Contexts.this.Context.toBase(ctx).settings.YprofileEnabled
+        </td>
+      </tr><tr>
+        <td>
+          15
+        </td>
+        <td>
+          48655
+        </td>
+        <td>
+          539
+          -
+          551
+        </td>
+        <td>
+          Ident
+        </td>
+        <td>
+          dotty.tools.dotc.profile.NoOpProfiler
+        </td>
+        <td style="background: #AEF1AE">
+          NoOpProfiler
+        </td>
+      </tr><tr>
+        <td>
+          15
+        </td>
+        <td>
+          48654
+        </td>
+        <td>
+          502
+          -
+          537
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.Boolean.unary_!
+        </td>
+        <td style="background: #AEF1AE">
+          Settings.this.Setting.SettingDecorator[Boolean](Contexts.this.Context.toBase(ctx).settings.YprofileEnabled).value(ctx).unary_!
+        </td>
+      </tr><tr>
+        <td>
+          16
+        </td>
+        <td>
+          48665
+        </td>
+        <td>
+          561
+          -
+          819
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          {
+  val reporter: dotty.tools.dotc.profile.ProfileReporter = if (Settings.this.Setting.SettingDecorator[String](Contexts.this.Context.toBase(ctx).settings.YprofileDestination).value(ctx).!=(&quot;&quot;))
+    new StreamProfileReporter(new java.io.PrintWriter(new java.io.FileWriter(Settings.this.Setting.SettingDecorator[String](Contexts.this.Context.toBase(ctx).settings.YprofileDestination).value(ctx), true)))
+  else
+    ConsoleProfileReporter;
+  new RealProfiler(reporter)(ctx)
+}
+        </td>
+      </tr><tr>
+        <td>
+          17
+        </td>
+        <td>
+          48656
+        </td>
+        <td>
+          588
+          -
+          632
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.Object.!=
+        </td>
+        <td style="background: #F0ADAD">
+          Settings.this.Setting.SettingDecorator[String](Contexts.this.Context.toBase(ctx).settings.YprofileDestination).value(ctx).!=(&quot;&quot;)
+        </td>
+      </tr><tr>
+        <td>
+          18
+        </td>
+        <td>
+          48657
+        </td>
+        <td>
+          699
+          -
+          737
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.config.Settings.Setting.SettingDecorator.value
+        </td>
+        <td style="background: #F0ADAD">
+          Settings.this.Setting.SettingDecorator[String](Contexts.this.Context.toBase(ctx).settings.YprofileDestination).value(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          18
+        </td>
+        <td>
+          48659
+        </td>
+        <td>
+          684
+          -
+          744
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.io.FileWriter.&lt;init&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          new java.io.FileWriter(Settings.this.Setting.SettingDecorator[String](Contexts.this.Context.toBase(ctx).settings.YprofileDestination).value(ctx), true)
+        </td>
+      </tr><tr>
+        <td>
+          18
+        </td>
+        <td>
+          48662
+        </td>
+        <td>
+          642
+          -
+          746
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          dotty.tools.dotc.profile.StreamProfileReporter.&lt;init&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          new StreamProfileReporter(new java.io.PrintWriter(new java.io.FileWriter(Settings.this.Setting.SettingDecorator[String](Contexts.this.Context.toBase(ctx).settings.YprofileDestination).value(ctx), true)))
+        </td>
+      </tr><tr>
+        <td>
+          18
+        </td>
+        <td>
+          48661
+        </td>
+        <td>
+          642
+          -
+          746
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.profile.StreamProfileReporter.&lt;init&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          new StreamProfileReporter(new java.io.PrintWriter(new java.io.FileWriter(Settings.this.Setting.SettingDecorator[String](Contexts.this.Context.toBase(ctx).settings.YprofileDestination).value(ctx), true)))
+        </td>
+      </tr><tr>
+        <td>
+          18
+        </td>
+        <td>
+          48658
+        </td>
+        <td>
+          739
+          -
+          743
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          true
+        </td>
+      </tr><tr>
+        <td>
+          18
+        </td>
+        <td>
+          48660
+        </td>
+        <td>
+          668
+          -
+          745
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.io.PrintWriter.&lt;init&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          new java.io.PrintWriter(new java.io.FileWriter(Settings.this.Setting.SettingDecorator[String](Contexts.this.Context.toBase(ctx).settings.YprofileDestination).value(ctx), true))
+        </td>
+      </tr><tr>
+        <td>
+          19
+        </td>
+        <td>
+          48663
+        </td>
+        <td>
+          758
+          -
+          780
+        </td>
+        <td>
+          Ident
+        </td>
+        <td>
+          dotty.tools.dotc.profile.ConsoleProfileReporter
+        </td>
+        <td style="background: #F0ADAD">
+          ConsoleProfileReporter
+        </td>
+      </tr><tr>
+        <td>
+          20
+        </td>
+        <td>
+          48664
+        </td>
+        <td>
+          787
+          -
+          813
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.profile.RealProfiler.&lt;init&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          new RealProfiler(reporter)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          23
+        </td>
+        <td>
+          48666
+        </td>
+        <td>
+          856
+          -
+          892
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.profile.ProfileSnap.apply
+        </td>
+        <td style="background: #AEF1AE">
+          ProfileSnap.apply(0L, &quot;&quot;, 0L, 0L, 0L, 0L, 0L, 0L)
+        </td>
+      </tr><tr>
+        <td>
+          32
+        </td>
+        <td>
+          48674
+        </td>
+        <td>
+          1315
+          -
+          1342
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.profile.ProfileSnap.copy
+        </td>
+        <td style="background: #F0ADAD">
+          ProfileSnap.this.copy(x$2, x$3, x$4, x$5, x$6, x$7, x$8, x$1)
+        </td>
+      </tr><tr>
+        <td>
+          32
+        </td>
+        <td>
+          48668
+        </td>
+        <td>
+          1315
+          -
+          1315
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.profile.ProfileSnap.copy$default$2
+        </td>
+        <td style="background: #F0ADAD">
+          ProfileSnap.this.copy$default$2
+        </td>
+      </tr><tr>
+        <td>
+          32
+        </td>
+        <td>
+          48671
+        </td>
+        <td>
+          1315
+          -
+          1315
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.profile.ProfileSnap.copy$default$5
+        </td>
+        <td style="background: #F0ADAD">
+          ProfileSnap.this.copy$default$5
+        </td>
+      </tr><tr>
+        <td>
+          32
+        </td>
+        <td>
+          48670
+        </td>
+        <td>
+          1315
+          -
+          1315
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.profile.ProfileSnap.copy$default$4
+        </td>
+        <td style="background: #F0ADAD">
+          ProfileSnap.this.copy$default$4
+        </td>
+      </tr><tr>
+        <td>
+          32
+        </td>
+        <td>
+          48673
+        </td>
+        <td>
+          1315
+          -
+          1315
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.profile.ProfileSnap.copy$default$7
+        </td>
+        <td style="background: #F0ADAD">
+          ProfileSnap.this.copy$default$7
+        </td>
+      </tr><tr>
+        <td>
+          32
+        </td>
+        <td>
+          48667
+        </td>
+        <td>
+          1315
+          -
+          1315
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.profile.ProfileSnap.copy$default$1
+        </td>
+        <td style="background: #F0ADAD">
+          ProfileSnap.this.copy$default$1
+        </td>
+      </tr><tr>
+        <td>
+          32
+        </td>
+        <td>
+          48669
+        </td>
+        <td>
+          1315
+          -
+          1315
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.profile.ProfileSnap.copy$default$3
+        </td>
+        <td style="background: #F0ADAD">
+          ProfileSnap.this.copy$default$3
+        </td>
+      </tr><tr>
+        <td>
+          32
+        </td>
+        <td>
+          48672
+        </td>
+        <td>
+          1315
+          -
+          1315
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.profile.ProfileSnap.copy$default$6
+        </td>
+        <td style="background: #F0ADAD">
+          ProfileSnap.this.copy$default$6
+        </td>
+      </tr><tr>
+        <td>
+          36
+        </td>
+        <td>
+          48675
+        </td>
+        <td>
+          1515
+          -
+          1535
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.profile.ProfileSnap.allocatedBytes
+        </td>
+        <td style="background: #F0ADAD">
+          ProfileRange.this.start.allocatedBytes
+        </td>
+      </tr><tr>
+        <td>
+          36
+        </td>
+        <td>
+          48676
+        </td>
+        <td>
+          1494
+          -
+          1535
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Long.-
+        </td>
+        <td style="background: #F0ADAD">
+          ProfileRange.this.end.allocatedBytes.-(ProfileRange.this.start.allocatedBytes)
+        </td>
+      </tr><tr>
+        <td>
+          38
+        </td>
+        <td>
+          48677
+        </td>
+        <td>
+          1572
+          -
+          1591
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.profile.ProfileSnap.userTimeNanos
+        </td>
+        <td style="background: #F0ADAD">
+          ProfileRange.this.start.userTimeNanos
+        </td>
+      </tr><tr>
+        <td>
+          38
+        </td>
+        <td>
+          48678
+        </td>
+        <td>
+          1552
+          -
+          1591
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Long.-
+        </td>
+        <td style="background: #F0ADAD">
+          ProfileRange.this.end.userTimeNanos.-(ProfileRange.this.start.userTimeNanos)
+        </td>
+      </tr><tr>
+        <td>
+          40
+        </td>
+        <td>
+          48680
+        </td>
+        <td>
+          1607
+          -
+          1644
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Long.-
+        </td>
+        <td style="background: #F0ADAD">
+          ProfileRange.this.end.cpuTimeNanos.-(ProfileRange.this.start.cpuTimeNanos)
+        </td>
+      </tr><tr>
+        <td>
+          40
+        </td>
+        <td>
+          48679
+        </td>
+        <td>
+          1626
+          -
+          1644
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.profile.ProfileSnap.cpuTimeNanos
+        </td>
+        <td style="background: #F0ADAD">
+          ProfileRange.this.start.cpuTimeNanos
+        </td>
+      </tr><tr>
+        <td>
+          42
+        </td>
+        <td>
+          48682
+        </td>
+        <td>
+          1661
+          -
+          1700
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Long.-
+        </td>
+        <td style="background: #F0ADAD">
+          ProfileRange.this.end.idleTimeNanos.-(ProfileRange.this.start.idleTimeNanos)
+        </td>
+      </tr><tr>
+        <td>
+          42
+        </td>
+        <td>
+          48681
+        </td>
+        <td>
+          1681
+          -
+          1700
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.profile.ProfileSnap.idleTimeNanos
+        </td>
+        <td style="background: #F0ADAD">
+          ProfileRange.this.start.idleTimeNanos
+        </td>
+      </tr><tr>
+        <td>
+          44
+        </td>
+        <td>
+          48683
+        </td>
+        <td>
+          1736
+          -
+          1755
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.profile.ProfileSnap.snapTimeNanos
+        </td>
+        <td style="background: #F0ADAD">
+          ProfileRange.this.start.snapTimeNanos
+        </td>
+      </tr><tr>
+        <td>
+          44
+        </td>
+        <td>
+          48684
+        </td>
+        <td>
+          1716
+          -
+          1755
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Long.-
+        </td>
+        <td style="background: #F0ADAD">
+          ProfileRange.this.end.snapTimeNanos.-(ProfileRange.this.start.snapTimeNanos)
+        </td>
+      </tr><tr>
+        <td>
+          47
+        </td>
+        <td>
+          48685
+        </td>
+        <td>
+          1793
+          -
+          1808
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Long./
+        </td>
+        <td style="background: #F0ADAD">
+          ns./(1000000.0)
+        </td>
+      </tr><tr>
+        <td>
+          49
+        </td>
+        <td>
+          48686
+        </td>
+        <td>
+          1851
+          -
+          1869
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Long./
+        </td>
+        <td style="background: #F0ADAD">
+          bytes./(1000000.0)
+        </td>
+      </tr><tr>
+        <td>
+          52
+        </td>
+        <td>
+          48689
+        </td>
+        <td>
+          1900
+          -
+          1949
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.profile.ProfileRange.toMillis
+        </td>
+        <td style="background: #F0ADAD">
+          ProfileRange.this.toMillis(ProfileRange.this.end.snapTimeNanos.-(ProfileRange.this.start.snapTimeNanos))
+        </td>
+      </tr><tr>
+        <td>
+          52
+        </td>
+        <td>
+          48688
+        </td>
+        <td>
+          1909
+          -
+          1948
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Long.-
+        </td>
+        <td style="background: #F0ADAD">
+          ProfileRange.this.end.snapTimeNanos.-(ProfileRange.this.start.snapTimeNanos)
+        </td>
+      </tr><tr>
+        <td>
+          52
+        </td>
+        <td>
+          48687
+        </td>
+        <td>
+          1929
+          -
+          1948
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.profile.ProfileSnap.snapTimeNanos
+        </td>
+        <td style="background: #F0ADAD">
+          ProfileRange.this.start.snapTimeNanos
+        </td>
+      </tr><tr>
+        <td>
+          54
+        </td>
+        <td>
+          48692
+        </td>
+        <td>
+          1974
+          -
+          2023
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.profile.ProfileRange.toMillis
+        </td>
+        <td style="background: #F0ADAD">
+          ProfileRange.this.toMillis(ProfileRange.this.end.idleTimeNanos.-(ProfileRange.this.start.idleTimeNanos))
+        </td>
+      </tr><tr>
+        <td>
+          54
+        </td>
+        <td>
+          48691
+        </td>
+        <td>
+          1983
+          -
+          2022
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Long.-
+        </td>
+        <td style="background: #F0ADAD">
+          ProfileRange.this.end.idleTimeNanos.-(ProfileRange.this.start.idleTimeNanos)
+        </td>
+      </tr><tr>
+        <td>
+          54
+        </td>
+        <td>
+          48690
+        </td>
+        <td>
+          2003
+          -
+          2022
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.profile.ProfileSnap.idleTimeNanos
+        </td>
+        <td style="background: #F0ADAD">
+          ProfileRange.this.start.idleTimeNanos
+        </td>
+      </tr><tr>
+        <td>
+          56
+        </td>
+        <td>
+          48695
+        </td>
+        <td>
+          2047
+          -
+          2094
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.profile.ProfileRange.toMillis
+        </td>
+        <td style="background: #F0ADAD">
+          ProfileRange.this.toMillis(ProfileRange.this.end.cpuTimeNanos.-(ProfileRange.this.start.cpuTimeNanos))
+        </td>
+      </tr><tr>
+        <td>
+          56
+        </td>
+        <td>
+          48694
+        </td>
+        <td>
+          2056
+          -
+          2093
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Long.-
+        </td>
+        <td style="background: #F0ADAD">
+          ProfileRange.this.end.cpuTimeNanos.-(ProfileRange.this.start.cpuTimeNanos)
+        </td>
+      </tr><tr>
+        <td>
+          56
+        </td>
+        <td>
+          48693
+        </td>
+        <td>
+          2075
+          -
+          2093
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.profile.ProfileSnap.cpuTimeNanos
+        </td>
+        <td style="background: #F0ADAD">
+          ProfileRange.this.start.cpuTimeNanos
+        </td>
+      </tr><tr>
+        <td>
+          58
+        </td>
+        <td>
+          48698
+        </td>
+        <td>
+          2119
+          -
+          2168
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.profile.ProfileRange.toMillis
+        </td>
+        <td style="background: #F0ADAD">
+          ProfileRange.this.toMillis(ProfileRange.this.end.userTimeNanos.-(ProfileRange.this.start.userTimeNanos))
+        </td>
+      </tr><tr>
+        <td>
+          58
+        </td>
+        <td>
+          48697
+        </td>
+        <td>
+          2128
+          -
+          2167
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Long.-
+        </td>
+        <td style="background: #F0ADAD">
+          ProfileRange.this.end.userTimeNanos.-(ProfileRange.this.start.userTimeNanos)
+        </td>
+      </tr><tr>
+        <td>
+          58
+        </td>
+        <td>
+          48696
+        </td>
+        <td>
+          2148
+          -
+          2167
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.profile.ProfileSnap.userTimeNanos
+        </td>
+        <td style="background: #F0ADAD">
+          ProfileRange.this.start.userTimeNanos
+        </td>
+      </tr><tr>
+        <td>
+          60
+        </td>
+        <td>
+          48701
+        </td>
+        <td>
+          2190
+          -
+          2244
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.profile.ProfileRange.toMegaBytes
+        </td>
+        <td style="background: #F0ADAD">
+          ProfileRange.this.toMegaBytes(ProfileRange.this.end.allocatedBytes.-(ProfileRange.this.start.allocatedBytes))
+        </td>
+      </tr><tr>
+        <td>
+          60
+        </td>
+        <td>
+          48700
+        </td>
+        <td>
+          2202
+          -
+          2243
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Long.-
+        </td>
+        <td style="background: #F0ADAD">
+          ProfileRange.this.end.allocatedBytes.-(ProfileRange.this.start.allocatedBytes)
+        </td>
+      </tr><tr>
+        <td>
+          60
+        </td>
+        <td>
+          48699
+        </td>
+        <td>
+          2223
+          -
+          2243
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.profile.ProfileSnap.allocatedBytes
+        </td>
+        <td style="background: #F0ADAD">
+          ProfileRange.this.start.allocatedBytes
+        </td>
+      </tr><tr>
+        <td>
+          62
+        </td>
+        <td>
+          48704
+        </td>
+        <td>
+          2269
+          -
+          2313
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.profile.ProfileRange.toMegaBytes
+        </td>
+        <td style="background: #F0ADAD">
+          ProfileRange.this.toMegaBytes(ProfileRange.this.end.heapBytes.-(ProfileRange.this.start.heapBytes))
+        </td>
+      </tr><tr>
+        <td>
+          62
+        </td>
+        <td>
+          48703
+        </td>
+        <td>
+          2281
+          -
+          2312
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Long.-
+        </td>
+        <td style="background: #F0ADAD">
+          ProfileRange.this.end.heapBytes.-(ProfileRange.this.start.heapBytes)
+        </td>
+      </tr><tr>
+        <td>
+          62
+        </td>
+        <td>
+          48702
+        </td>
+        <td>
+          2297
+          -
+          2312
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.profile.ProfileSnap.heapBytes
+        </td>
+        <td style="background: #F0ADAD">
+          ProfileRange.this.start.heapBytes
+        </td>
+      </tr><tr>
+        <td>
+          75
+        </td>
+        <td>
+          48705
+        </td>
+        <td>
+          2593
+          -
+          2611
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.profile.Profiler.emptySnap
+        </td>
+        <td style="background: #AEF1AE">
+          Profiler.emptySnap
+        </td>
+      </tr><tr>
+        <td>
+          77
+        </td>
+        <td>
+          48706
+        </td>
+        <td>
+          2689
+          -
+          2691
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          ()
+        </td>
+      </tr><tr>
+        <td>
+          79
+        </td>
+        <td>
+          48707
+        </td>
+        <td>
+          2727
+          -
+          2729
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          ()
+        </td>
+      </tr><tr>
+        <td>
+          83
+        </td>
+        <td>
+          48708
+        </td>
+        <td>
+          2833
+          -
+          2867
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.management.ManagementFactory.getRuntimeMXBean
+        </td>
+        <td style="background: #F0ADAD">
+          java.lang.management.ManagementFactory.getRuntimeMXBean()
+        </td>
+      </tr><tr>
+        <td>
+          84
+        </td>
+        <td>
+          48709
+        </td>
+        <td>
+          2885
+          -
+          2918
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.management.ManagementFactory.getMemoryMXBean
+        </td>
+        <td style="background: #F0ADAD">
+          java.lang.management.ManagementFactory.getMemoryMXBean()
+        </td>
+      </tr><tr>
+        <td>
+          85
+        </td>
+        <td>
+          48710
+        </td>
+        <td>
+          2932
+          -
+          2976
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.management.ManagementFactory.getGarbageCollectorMXBeans
+        </td>
+        <td style="background: #F0ADAD">
+          java.lang.management.ManagementFactory.getGarbageCollectorMXBeans()
+        </td>
+      </tr><tr>
+        <td>
+          85
+        </td>
+        <td>
+          48711
+        </td>
+        <td>
+          2932
+          -
+          2991
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.collection.TraversableOnce.toList
+        </td>
+        <td style="background: #F0ADAD">
+          scala.collection.JavaConverters.asScalaBufferConverter[java.lang.management.GarbageCollectorMXBean](java.lang.management.ManagementFactory.getGarbageCollectorMXBeans()).asScala.toList
+        </td>
+      </tr><tr>
+        <td>
+          86
+        </td>
+        <td>
+          48712
+        </td>
+        <td>
+          3014
+          -
+          3053
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.management.ManagementFactory.getClassLoadingMXBean
+        </td>
+        <td style="background: #F0ADAD">
+          java.lang.management.ManagementFactory.getClassLoadingMXBean()
+        </td>
+      </tr><tr>
+        <td>
+          87
+        </td>
+        <td>
+          48713
+        </td>
+        <td>
+          3072
+          -
+          3110
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.management.ManagementFactory.getCompilationMXBean
+        </td>
+        <td style="background: #F0ADAD">
+          java.lang.management.ManagementFactory.getCompilationMXBean()
+        </td>
+      </tr><tr>
+        <td>
+          88
+        </td>
+        <td>
+          48714
+        </td>
+        <td>
+          3128
+          -
+          3154
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.profile.ExtendedThreadMxBean.proxy
+        </td>
+        <td style="background: #F0ADAD">
+          ExtendedThreadMxBean.proxy
+        </td>
+      </tr><tr>
+        <td>
+          89
+        </td>
+        <td>
+          48716
+        </td>
+        <td>
+          3196
+          -
+          3234
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.profile.ExtendedThreadMxBean.setThreadCpuTimeEnabled
+        </td>
+        <td style="background: #F0ADAD">
+          RealProfiler.this.threadMx.setThreadCpuTimeEnabled(true)
+        </td>
+      </tr><tr>
+        <td>
+          89
+        </td>
+        <td>
+          48719
+        </td>
+        <td>
+          3157
+          -
+          3157
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          ()
+        </td>
+      </tr><tr>
+        <td>
+          89
+        </td>
+        <td>
+          48715
+        </td>
+        <td>
+          3161
+          -
+          3194
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.profile.ExtendedThreadMxBean.isThreadCpuTimeSupported
+        </td>
+        <td style="background: #F0ADAD">
+          RealProfiler.this.threadMx.isThreadCpuTimeSupported()
+        </td>
+      </tr><tr>
+        <td>
+          89
+        </td>
+        <td>
+          48718
+        </td>
+        <td>
+          3157
+          -
+          3157
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          ()
+        </td>
+      </tr><tr>
+        <td>
+          89
+        </td>
+        <td>
+          48717
+        </td>
+        <td>
+          3196
+          -
+          3234
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          dotty.tools.dotc.profile.ExtendedThreadMxBean.setThreadCpuTimeEnabled
+        </td>
+        <td style="background: #F0ADAD">
+          RealProfiler.this.threadMx.setThreadCpuTimeEnabled(true)
+        </td>
+      </tr><tr>
+        <td>
+          90
+        </td>
+        <td>
+          48720
+        </td>
+        <td>
+          3257
+          -
+          3276
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.util.concurrent.atomic.AtomicInteger.&lt;init&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          new java.util.concurrent.atomic.AtomicInteger()
+        </td>
+      </tr><tr>
+        <td>
+          95
+        </td>
+        <td>
+          48721
+        </td>
+        <td>
+          3479
+          -
+          3523
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.profile.ProfileReporter.reportBackground
+        </td>
+        <td style="background: #F0ADAD">
+          RealProfiler.this.reporter.reportBackground(this, threadRange)
+        </td>
+      </tr><tr>
+        <td>
+          98
+        </td>
+        <td>
+          48725
+        </td>
+        <td>
+          3544
+          -
+          3572
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.config.Settings.Setting.SettingDecorator.value
+        </td>
+        <td style="background: #F0ADAD">
+          Settings.this.Setting.SettingDecorator[String](Contexts.this.Context.toBase(RealProfiler.this.ctx).settings.outputDir).value(RealProfiler.this.ctx)
+        </td>
+      </tr><tr>
+        <td>
+          98
+        </td>
+        <td>
+          48722
+        </td>
+        <td>
+          3544
+          -
+          3547
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.profile.RealProfiler.ctx
+        </td>
+        <td style="background: #F0ADAD">
+          RealProfiler.this.ctx
+        </td>
+      </tr><tr>
+        <td>
+          98
+        </td>
+        <td>
+          48724
+        </td>
+        <td>
+          3567
+          -
+          3567
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.profile.RealProfiler.ctx
+        </td>
+        <td style="background: #F0ADAD">
+          RealProfiler.this.ctx
+        </td>
+      </tr><tr>
+        <td>
+          98
+        </td>
+        <td>
+          48723
+        </td>
+        <td>
+          3544
+          -
+          3566
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.config.ScalaSettings.outputDir
+        </td>
+        <td style="background: #F0ADAD">
+          Contexts.this.Context.toBase(RealProfiler.this.ctx).settings.outputDir
+        </td>
+      </tr><tr>
+        <td>
+          100
+        </td>
+        <td>
+          48726
+        </td>
+        <td>
+          3585
+          -
+          3621
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.util.concurrent.atomic.AtomicInteger.incrementAndGet
+        </td>
+        <td style="background: #F0ADAD">
+          RealProfiler.idGen.incrementAndGet()
+        </td>
+      </tr><tr>
+        <td>
+          101
+        </td>
+        <td>
+          48735
+        </td>
+        <td>
+          3624
+          -
+          3815
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.immutable.List.foreach
+        </td>
+        <td style="background: #F0ADAD">
+          RealProfiler.gcMx.foreach[Unit](((x0$1: java.lang.management.GarbageCollectorMXBean) =&gt; x0$1 match {
+  case (emitter @ (_: javax.management.NotificationEmitter)) =&gt; emitter.addNotificationListener(this, null, null)
+  case (gc @ _) =&gt; scala.Predef.println(scala.StringContext.apply(&quot;Cant connect gcListener to &quot;, &quot;&quot;).s(gc.getClass()))
+}))
+        </td>
+      </tr><tr>
+        <td>
+          102
+        </td>
+        <td>
+          48728
+        </td>
+        <td>
+          3737
+          -
+          3741
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          null
+        </td>
+      </tr><tr>
+        <td>
+          102
+        </td>
+        <td>
+          48727
+        </td>
+        <td>
+          3731
+          -
+          3735
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          null
+        </td>
+      </tr><tr>
+        <td>
+          102
+        </td>
+        <td>
+          48729
+        </td>
+        <td>
+          3693
+          -
+          3742
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          javax.management.NotificationBroadcaster.addNotificationListener
+        </td>
+        <td style="background: #F0ADAD">
+          emitter.addNotificationListener(this, null, null)
+        </td>
+      </tr><tr>
+        <td>
+          103
+        </td>
+        <td>
+          48734
+        </td>
+        <td>
+          3758
+          -
+          3811
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Predef.println
+        </td>
+        <td style="background: #F0ADAD">
+          scala.Predef.println(scala.StringContext.apply(&quot;Cant connect gcListener to &quot;, &quot;&quot;).s(gc.getClass()))
+        </td>
+      </tr><tr>
+        <td>
+          103
+        </td>
+        <td>
+          48731
+        </td>
+        <td>
+          3809
+          -
+          3810
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          &quot;&quot;
+        </td>
+      </tr><tr>
+        <td>
+          103
+        </td>
+        <td>
+          48730
+        </td>
+        <td>
+          3768
+          -
+          3796
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          &quot;Cant connect gcListener to &quot;
+        </td>
+      </tr><tr>
+        <td>
+          103
+        </td>
+        <td>
+          48733
+        </td>
+        <td>
+          3766
+          -
+          3810
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.StringContext.s
+        </td>
+        <td style="background: #F0ADAD">
+          scala.StringContext.apply(&quot;Cant connect gcListener to &quot;, &quot;&quot;).s(gc.getClass())
+        </td>
+      </tr><tr>
+        <td>
+          103
+        </td>
+        <td>
+          48732
+        </td>
+        <td>
+          3797
+          -
+          3808
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.Object.getClass
+        </td>
+        <td style="background: #F0ADAD">
+          gc.getClass()
+        </td>
+      </tr><tr>
+        <td>
+          106
+        </td>
+        <td>
+          48736
+        </td>
+        <td>
+          3844
+          -
+          3866
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.Thread.currentThread
+        </td>
+        <td style="background: #F0ADAD">
+          java.lang.Thread.currentThread()
+        </td>
+      </tr><tr>
+        <td>
+          110
+        </td>
+        <td>
+          48737
+        </td>
+        <td>
+          3984
+          -
+          4006
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.Thread.currentThread
+        </td>
+        <td style="background: #F0ADAD">
+          java.lang.Thread.currentThread()
+        </td>
+      </tr><tr>
+        <td>
+          112
+        </td>
+        <td>
+          48746
+        </td>
+        <td>
+          4012
+          -
+          4409
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.profile.ProfileSnap.apply
+        </td>
+        <td style="background: #F0ADAD">
+          ProfileSnap.apply(current.getId(), current.getName(), java.lang.System.nanoTime(), idleTimeNanos, RealProfiler.threadMx.getCurrentThreadCpuTime(), RealProfiler.threadMx.getCurrentThreadUserTime(), RealProfiler.threadMx.getThreadAllocatedBytes(java.lang.Thread.currentThread().getId()), RealProfiler.this.readHeapUsage())
+        </td>
+      </tr><tr>
+        <td>
+          113
+        </td>
+        <td>
+          48738
+        </td>
+        <td>
+          4042
+          -
+          4055
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.Thread.getId
+        </td>
+        <td style="background: #F0ADAD">
+          current.getId()
+        </td>
+      </tr><tr>
+        <td>
+          114
+        </td>
+        <td>
+          48739
+        </td>
+        <td>
+          4076
+          -
+          4091
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.Thread.getName
+        </td>
+        <td style="background: #F0ADAD">
+          current.getName()
+        </td>
+      </tr><tr>
+        <td>
+          115
+        </td>
+        <td>
+          48740
+        </td>
+        <td>
+          4115
+          -
+          4132
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.System.nanoTime
+        </td>
+        <td style="background: #F0ADAD">
+          java.lang.System.nanoTime()
+        </td>
+      </tr><tr>
+        <td>
+          117
+        </td>
+        <td>
+          48741
+        </td>
+        <td>
+          4192
+          -
+          4224
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.profile.ExtendedThreadMxBean.getCurrentThreadCpuTime
+        </td>
+        <td style="background: #F0ADAD">
+          RealProfiler.threadMx.getCurrentThreadCpuTime()
+        </td>
+      </tr><tr>
+        <td>
+          118
+        </td>
+        <td>
+          48742
+        </td>
+        <td>
+          4248
+          -
+          4281
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.profile.ExtendedThreadMxBean.getCurrentThreadUserTime
+        </td>
+        <td style="background: #F0ADAD">
+          RealProfiler.threadMx.getCurrentThreadUserTime()
+        </td>
+      </tr><tr>
+        <td>
+          119
+        </td>
+        <td>
+          48743
+        </td>
+        <td>
+          4339
+          -
+          4367
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.Thread.getId
+        </td>
+        <td style="background: #F0ADAD">
+          java.lang.Thread.currentThread().getId()
+        </td>
+      </tr><tr>
+        <td>
+          119
+        </td>
+        <td>
+          48744
+        </td>
+        <td>
+          4306
+          -
+          4368
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.profile.ExtendedThreadMxBean.getThreadAllocatedBytes
+        </td>
+        <td style="background: #F0ADAD">
+          RealProfiler.threadMx.getThreadAllocatedBytes(java.lang.Thread.currentThread().getId())
+        </td>
+      </tr><tr>
+        <td>
+          120
+        </td>
+        <td>
+          48745
+        </td>
+        <td>
+          4388
+          -
+          4403
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.profile.RealProfiler.readHeapUsage
+        </td>
+        <td style="background: #F0ADAD">
+          RealProfiler.this.readHeapUsage()
+        </td>
+      </tr><tr>
+        <td>
+          123
+        </td>
+        <td>
+          48747
+        </td>
+        <td>
+          4446
+          -
+          4494
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.management.MemoryUsage.getUsed
+        </td>
+        <td style="background: #F0ADAD">
+          RealProfiler.memoryMx.getHeapMemoryUsage().getUsed()
+        </td>
+      </tr><tr>
+        <td>
+          126
+        </td>
+        <td>
+          48748
+        </td>
+        <td>
+          4529
+          -
+          4540
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.System.gc
+        </td>
+        <td style="background: #F0ADAD">
+          java.lang.System.gc()
+        </td>
+      </tr><tr>
+        <td>
+          127
+        </td>
+        <td>
+          48749
+        </td>
+        <td>
+          4545
+          -
+          4569
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.System.runFinalization
+        </td>
+        <td style="background: #F0ADAD">
+          java.lang.System.runFinalization()
+        </td>
+      </tr><tr>
+        <td>
+          130
+        </td>
+        <td>
+          48750
+        </td>
+        <td>
+          4577
+          -
+          4598
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.profile.ProfileReporter.header
+        </td>
+        <td style="background: #F0ADAD">
+          RealProfiler.this.reporter.header(this)
+        </td>
+      </tr><tr>
+        <td>
+          134
+        </td>
+        <td>
+          48753
+        </td>
+        <td>
+          4704
+          -
+          4838
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.immutable.List.foreach
+        </td>
+        <td style="background: #F0ADAD">
+          RealProfiler.gcMx.foreach[Unit](((x0$2: java.lang.management.GarbageCollectorMXBean) =&gt; x0$2 match {
+  case (emitter @ (_: javax.management.NotificationEmitter)) =&gt; emitter.removeNotificationListener(this)
+  case (gc @ _) =&gt; ()
+}))
+        </td>
+      </tr><tr>
+        <td>
+          135
+        </td>
+        <td>
+          48751
+        </td>
+        <td>
+          4775
+          -
+          4815
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          javax.management.NotificationBroadcaster.removeNotificationListener
+        </td>
+        <td style="background: #F0ADAD">
+          emitter.removeNotificationListener(this)
+        </td>
+      </tr><tr>
+        <td>
+          136
+        </td>
+        <td>
+          48752
+        </td>
+        <td>
+          4830
+          -
+          4832
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          ()
+        </td>
+      </tr><tr>
+        <td>
+          138
+        </td>
+        <td>
+          48754
+        </td>
+        <td>
+          4843
+          -
+          4863
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.profile.ProfileReporter.close
+        </td>
+        <td style="background: #F0ADAD">
+          RealProfiler.this.reporter.close(this)
+        </td>
+      </tr><tr>
+        <td>
+          145
+        </td>
+        <td>
+          48755
+        </td>
+        <td>
+          5058
+          -
+          5075
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.System.nanoTime
+        </td>
+        <td style="background: #F0ADAD">
+          java.lang.System.nanoTime()
+        </td>
+      </tr><tr>
+        <td>
+          146
+        </td>
+        <td>
+          48756
+        </td>
+        <td>
+          5091
+          -
+          5115
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          javax.management.Notification.getUserData
+        </td>
+        <td style="background: #F0ADAD">
+          notification.getUserData()
+        </td>
+      </tr><tr>
+        <td>
+          147
+        </td>
+        <td>
+          48757
+        </td>
+        <td>
+          5130
+          -
+          5160
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          javax.management.Notification.getSequenceNumber
+        </td>
+        <td style="background: #F0ADAD">
+          notification.getSequenceNumber()
+        </td>
+      </tr><tr>
+        <td>
+          148
+        </td>
+        <td>
+          48758
+        </td>
+        <td>
+          5179
+          -
+          5202
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          javax.management.Notification.getMessage
+        </td>
+        <td style="background: #F0ADAD">
+          notification.getMessage()
+        </td>
+      </tr><tr>
+        <td>
+          149
+        </td>
+        <td>
+          48759
+        </td>
+        <td>
+          5217
+          -
+          5237
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          javax.management.Notification.getType
+        </td>
+        <td style="background: #F0ADAD">
+          notification.getType()
+        </td>
+      </tr><tr>
+        <td>
+          150
+        </td>
+        <td>
+          48760
+        </td>
+        <td>
+          5252
+          -
+          5277
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          javax.management.Notification.getTimeStamp
+        </td>
+        <td style="background: #F0ADAD">
+          notification.getTimeStamp()
+        </td>
+      </tr><tr>
+        <td>
+          152
+        </td>
+        <td>
+          48761
+        </td>
+        <td>
+          5327
+          -
+          5370
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.Object.==
+        </td>
+        <td style="background: #F0ADAD">
+          tpe.==(&quot;com.sun.management.gc.notification&quot;)
+        </td>
+      </tr><tr>
+        <td>
+          153
+        </td>
+        <td>
+          48762
+        </td>
+        <td>
+          5393
+          -
+          5418
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.Object.toString
+        </td>
+        <td style="background: #F0ADAD">
+          cd.get(&quot;gcName&quot;).toString()
+        </td>
+      </tr><tr>
+        <td>
+          154
+        </td>
+        <td>
+          48763
+        </td>
+        <td>
+          5440
+          -
+          5467
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.Object.toString
+        </td>
+        <td style="background: #F0ADAD">
+          cd.get(&quot;gcAction&quot;).toString()
+        </td>
+      </tr><tr>
+        <td>
+          155
+        </td>
+        <td>
+          48764
+        </td>
+        <td>
+          5488
+          -
+          5514
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.Object.toString
+        </td>
+        <td style="background: #F0ADAD">
+          cd.get(&quot;gcCause&quot;).toString()
+        </td>
+      </tr><tr>
+        <td>
+          156
+        </td>
+        <td>
+          48766
+        </td>
+        <td>
+          5534
+          -
+          5578
+        </td>
+        <td>
+          TypeApply
+        </td>
+        <td>
+          scala.Any.asInstanceOf
+        </td>
+        <td style="background: #F0ADAD">
+          cd.get(&quot;gcInfo&quot;).asInstanceOf[javax.management.openmbean.CompositeData]
+        </td>
+      </tr><tr>
+        <td>
+          156
+        </td>
+        <td>
+          48765
+        </td>
+        <td>
+          5541
+          -
+          5549
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          &quot;gcInfo&quot;
+        </td>
+      </tr><tr>
+        <td>
+          157
+        </td>
+        <td>
+          48767
+        </td>
+        <td>
+          5602
+          -
+          5654
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.Long.longValue
+        </td>
+        <td style="background: #F0ADAD">
+          info.get(&quot;duration&quot;).asInstanceOf[Long].longValue()
+        </td>
+      </tr><tr>
+        <td>
+          158
+        </td>
+        <td>
+          48768
+        </td>
+        <td>
+          5679
+          -
+          5732
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.Long.longValue
+        </td>
+        <td style="background: #F0ADAD">
+          info.get(&quot;startTime&quot;).asInstanceOf[Long].longValue()
+        </td>
+      </tr><tr>
+        <td>
+          159
+        </td>
+        <td>
+          48769
+        </td>
+        <td>
+          5755
+          -
+          5806
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.Long.longValue
+        </td>
+        <td style="background: #F0ADAD">
+          info.get(&quot;endTime&quot;).asInstanceOf[Long].longValue()
+        </td>
+      </tr><tr>
+        <td>
+          160
+        </td>
+        <td>
+          48770
+        </td>
+        <td>
+          5829
+          -
+          5885
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.Integer.longValue
+        </td>
+        <td style="background: #F0ADAD">
+          info.get(&quot;GcThreadCount&quot;).asInstanceOf[Integer].longValue()
+        </td>
+      </tr><tr>
+        <td>
+          161
+        </td>
+        <td>
+          48772
+        </td>
+        <td>
+          5894
+          -
+          5988
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.profile.ProfileReporter.reportGc
+        </td>
+        <td style="background: #F0ADAD">
+          RealProfiler.this.reporter.reportGc(GcEventData.apply(&quot;&quot;, reportNs, startTime, endTime, name, action, cause, threads))
+        </td>
+      </tr><tr>
+        <td>
+          161
+        </td>
+        <td>
+          48771
+        </td>
+        <td>
+          5912
+          -
+          5987
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.profile.GcEventData.apply
+        </td>
+        <td style="background: #F0ADAD">
+          GcEventData.apply(&quot;&quot;, reportNs, startTime, endTime, name, action, cause, threads)
+        </td>
+      </tr><tr>
+        <td>
+          166
+        </td>
+        <td>
+          48773
+        </td>
+        <td>
+          6100
+          -
+          6122
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.Thread.currentThread
+        </td>
+        <td style="background: #F0ADAD">
+          java.lang.Thread.currentThread()
+        </td>
+      </tr><tr>
+        <td>
+          166
+        </td>
+        <td>
+          48775
+        </td>
+        <td>
+          6079
+          -
+          6123
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Predef.assert
+        </td>
+        <td style="background: #F0ADAD">
+          scala.Predef.assert(RealProfiler.this.mainThread.eq(java.lang.Thread.currentThread()))
+        </td>
+      </tr><tr>
+        <td>
+          166
+        </td>
+        <td>
+          48774
+        </td>
+        <td>
+          6086
+          -
+          6122
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.Object.eq
+        </td>
+        <td style="background: #F0ADAD">
+          RealProfiler.this.mainThread.eq(java.lang.Thread.currentThread())
+        </td>
+      </tr><tr>
+        <td>
+          167
+        </td>
+        <td>
+          48776
+        </td>
+        <td>
+          6146
+          -
+          6159
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.profile.RealProfiler.snapThread
+        </td>
+        <td style="background: #F0ADAD">
+          RealProfiler.this.snapThread(0L)
+        </td>
+      </tr><tr>
+        <td>
+          168
+        </td>
+        <td>
+          48785
+        </td>
+        <td>
+          6164
+          -
+          6164
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          ()
+        </td>
+      </tr><tr>
+        <td>
+          168
+        </td>
+        <td>
+          48779
+        </td>
+        <td>
+          6202
+          -
+          6202
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.profile.RealProfiler.ctx
+        </td>
+        <td style="background: #F0ADAD">
+          RealProfiler.this.ctx
+        </td>
+      </tr><tr>
+        <td>
+          168
+        </td>
+        <td>
+          48781
+        </td>
+        <td>
+          6168
+          -
+          6232
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.LinearSeqOptimized.contains
+        </td>
+        <td style="background: #F0ADAD">
+          Settings.this.Setting.SettingDecorator[List[String]](Contexts.this.Context.toBase(RealProfiler.this.ctx).settings.YprofileExternalTool).value(RealProfiler.this.ctx).contains[String](phase.toString())
+        </td>
+      </tr><tr>
+        <td>
+          168
+        </td>
+        <td>
+          48784
+        </td>
+        <td>
+          6234
+          -
+          6307
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          {
+  scala.Predef.println(&quot;Profile hook stop&quot;);
+  ExternalToolHook.after()
+}
+        </td>
+      </tr><tr>
+        <td>
+          168
+        </td>
+        <td>
+          48778
+        </td>
+        <td>
+          6168
+          -
+          6201
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.config.ScalaSettings.YprofileExternalTool
+        </td>
+        <td style="background: #F0ADAD">
+          Contexts.this.Context.toBase(RealProfiler.this.ctx).settings.YprofileExternalTool
+        </td>
+      </tr><tr>
+        <td>
+          168
+        </td>
+        <td>
+          48780
+        </td>
+        <td>
+          6217
+          -
+          6231
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.core.Phases.Phase.toString
+        </td>
+        <td style="background: #F0ADAD">
+          phase.toString()
+        </td>
+      </tr><tr>
+        <td>
+          168
+        </td>
+        <td>
+          48777
+        </td>
+        <td>
+          6168
+          -
+          6171
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.profile.RealProfiler.ctx
+        </td>
+        <td style="background: #F0ADAD">
+          RealProfiler.this.ctx
+        </td>
+      </tr><tr>
+        <td>
+          168
+        </td>
+        <td>
+          48786
+        </td>
+        <td>
+          6164
+          -
+          6164
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          ()
+        </td>
+      </tr><tr>
+        <td>
+          169
+        </td>
+        <td>
+          48782
+        </td>
+        <td>
+          6242
+          -
+          6270
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Predef.println
+        </td>
+        <td style="background: #F0ADAD">
+          scala.Predef.println(&quot;Profile hook stop&quot;)
+        </td>
+      </tr><tr>
+        <td>
+          170
+        </td>
+        <td>
+          48783
+        </td>
+        <td>
+          6277
+          -
+          6301
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.profile.ExternalToolHook.after
+        </td>
+        <td style="background: #F0ADAD">
+          ExternalToolHook.after()
+        </td>
+      </tr><tr>
+        <td>
+          172
+        </td>
+        <td>
+          48788
+        </td>
+        <td>
+          6332
+          -
+          6371
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.config.ScalaSettings.YprofileRunGcBetweenPhases
+        </td>
+        <td style="background: #F0ADAD">
+          Contexts.this.Context.toBase(RealProfiler.this.ctx).settings.YprofileRunGcBetweenPhases
+        </td>
+      </tr><tr>
+        <td>
+          172
+        </td>
+        <td>
+          48791
+        </td>
+        <td>
+          6332
+          -
+          6402
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.LinearSeqOptimized.contains
+        </td>
+        <td style="background: #F0ADAD">
+          Settings.this.Setting.SettingDecorator[List[String]](Contexts.this.Context.toBase(RealProfiler.this.ctx).settings.YprofileRunGcBetweenPhases).value(RealProfiler.this.ctx).contains[String](phase.toString())
+        </td>
+      </tr><tr>
+        <td>
+          172
+        </td>
+        <td>
+          48790
+        </td>
+        <td>
+          6387
+          -
+          6401
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.core.Phases.Phase.toString
+        </td>
+        <td style="background: #F0ADAD">
+          phase.toString()
+        </td>
+      </tr><tr>
+        <td>
+          172
+        </td>
+        <td>
+          48787
+        </td>
+        <td>
+          6332
+          -
+          6335
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.profile.RealProfiler.ctx
+        </td>
+        <td style="background: #F0ADAD">
+          RealProfiler.this.ctx
+        </td>
+      </tr><tr>
+        <td>
+          172
+        </td>
+        <td>
+          48789
+        </td>
+        <td>
+          6372
+          -
+          6372
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.profile.RealProfiler.ctx
+        </td>
+        <td style="background: #F0ADAD">
+          RealProfiler.this.ctx
+        </td>
+      </tr><tr>
+        <td>
+          172
+        </td>
+        <td>
+          48795
+        </td>
+        <td>
+          6404
+          -
+          6468
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          {
+  RealProfiler.this.doGC;
+  initialSnap.updateHeap(RealProfiler.this.readHeapUsage())
+}
+        </td>
+      </tr><tr>
+        <td>
+          173
+        </td>
+        <td>
+          48792
+        </td>
+        <td>
+          6412
+          -
+          6416
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.profile.RealProfiler.doGC
+        </td>
+        <td style="background: #F0ADAD">
+          RealProfiler.this.doGC
+        </td>
+      </tr><tr>
+        <td>
+          174
+        </td>
+        <td>
+          48794
+        </td>
+        <td>
+          6423
+          -
+          6462
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.profile.ProfileSnap.updateHeap
+        </td>
+        <td style="background: #F0ADAD">
+          initialSnap.updateHeap(RealProfiler.this.readHeapUsage())
+        </td>
+      </tr><tr>
+        <td>
+          174
+        </td>
+        <td>
+          48793
+        </td>
+        <td>
+          6446
+          -
+          6461
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.profile.RealProfiler.readHeapUsage
+        </td>
+        <td style="background: #F0ADAD">
+          RealProfiler.this.readHeapUsage()
+        </td>
+      </tr><tr>
+        <td>
+          175
+        </td>
+        <td>
+          48796
+        </td>
+        <td>
+          6474
+          -
+          6485
+        </td>
+        <td>
+          Ident
+        </td>
+        <td>
+          dotty.tools.dotc.profile.RealProfiler.initialSnap
+        </td>
+        <td style="background: #F0ADAD">
+          initialSnap
+        </td>
+      </tr><tr>
+        <td>
+          177
+        </td>
+        <td>
+          48797
+        </td>
+        <td>
+          6566
+          -
+          6568
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          &quot;&quot;
+        </td>
+      </tr><tr>
+        <td>
+          177
+        </td>
+        <td>
+          48800
+        </td>
+        <td>
+          6523
+          -
+          6594
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.profile.ProfileRange.apply
+        </td>
+        <td style="background: #F0ADAD">
+          ProfileRange.apply(snapBefore, finalSnap, phase, &quot;&quot;, 0, java.lang.Thread.currentThread())
+        </td>
+      </tr><tr>
+        <td>
+          177
+        </td>
+        <td>
+          48799
+        </td>
+        <td>
+          6573
+          -
+          6593
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.Thread.currentThread
+        </td>
+        <td style="background: #F0ADAD">
+          java.lang.Thread.currentThread()
+        </td>
+      </tr><tr>
+        <td>
+          177
+        </td>
+        <td>
+          48798
+        </td>
+        <td>
+          6570
+          -
+          6571
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          0
+        </td>
+      </tr><tr>
+        <td>
+          177
+        </td>
+        <td>
+          48801
+        </td>
+        <td>
+          6491
+          -
+          6595
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.profile.ProfileReporter.reportForeground
+        </td>
+        <td style="background: #F0ADAD">
+          RealProfiler.this.reporter.reportForeground(this, ProfileRange.apply(snapBefore, finalSnap, phase, &quot;&quot;, 0, java.lang.Thread.currentThread()))
+        </td>
+      </tr><tr>
+        <td>
+          181
+        </td>
+        <td>
+          48803
+        </td>
+        <td>
+          6670
+          -
+          6706
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.Object.eq
+        </td>
+        <td style="background: #F0ADAD">
+          RealProfiler.this.mainThread.eq(java.lang.Thread.currentThread())
+        </td>
+      </tr><tr>
+        <td>
+          181
+        </td>
+        <td>
+          48802
+        </td>
+        <td>
+          6684
+          -
+          6706
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.Thread.currentThread
+        </td>
+        <td style="background: #F0ADAD">
+          java.lang.Thread.currentThread()
+        </td>
+      </tr><tr>
+        <td>
+          181
+        </td>
+        <td>
+          48804
+        </td>
+        <td>
+          6663
+          -
+          6707
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Predef.assert
+        </td>
+        <td style="background: #F0ADAD">
+          scala.Predef.assert(RealProfiler.this.mainThread.eq(java.lang.Thread.currentThread()))
+        </td>
+      </tr><tr>
+        <td>
+          182
+        </td>
+        <td>
+          48812
+        </td>
+        <td>
+          6712
+          -
+          6712
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          ()
+        </td>
+      </tr><tr>
+        <td>
+          182
+        </td>
+        <td>
+          48806
+        </td>
+        <td>
+          6716
+          -
+          6755
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.config.ScalaSettings.YprofileRunGcBetweenPhases
+        </td>
+        <td style="background: #F0ADAD">
+          Contexts.this.Context.toBase(RealProfiler.this.ctx).settings.YprofileRunGcBetweenPhases
+        </td>
+      </tr><tr>
+        <td>
+          182
+        </td>
+        <td>
+          48809
+        </td>
+        <td>
+          6716
+          -
+          6786
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.LinearSeqOptimized.contains
+        </td>
+        <td style="background: #F0ADAD">
+          Settings.this.Setting.SettingDecorator[List[String]](Contexts.this.Context.toBase(RealProfiler.this.ctx).settings.YprofileRunGcBetweenPhases).value(RealProfiler.this.ctx).contains[String](phase.toString())
+        </td>
+      </tr><tr>
+        <td>
+          182
+        </td>
+        <td>
+          48808
+        </td>
+        <td>
+          6771
+          -
+          6785
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.core.Phases.Phase.toString
+        </td>
+        <td style="background: #F0ADAD">
+          phase.toString()
+        </td>
+      </tr><tr>
+        <td>
+          182
+        </td>
+        <td>
+          48805
+        </td>
+        <td>
+          6716
+          -
+          6719
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.profile.RealProfiler.ctx
+        </td>
+        <td style="background: #F0ADAD">
+          RealProfiler.this.ctx
+        </td>
+      </tr><tr>
+        <td>
+          182
+        </td>
+        <td>
+          48813
+        </td>
+        <td>
+          6712
+          -
+          6712
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          ()
+        </td>
+      </tr><tr>
+        <td>
+          182
+        </td>
+        <td>
+          48807
+        </td>
+        <td>
+          6756
+          -
+          6756
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.profile.RealProfiler.ctx
+        </td>
+        <td style="background: #F0ADAD">
+          RealProfiler.this.ctx
+        </td>
+      </tr><tr>
+        <td>
+          183
+        </td>
+        <td>
+          48811
+        </td>
+        <td>
+          6794
+          -
+          6798
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          dotty.tools.dotc.profile.RealProfiler.doGC
+        </td>
+        <td style="background: #F0ADAD">
+          RealProfiler.this.doGC
+        </td>
+      </tr><tr>
+        <td>
+          183
+        </td>
+        <td>
+          48810
+        </td>
+        <td>
+          6794
+          -
+          6798
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.profile.RealProfiler.doGC
+        </td>
+        <td style="background: #F0ADAD">
+          RealProfiler.this.doGC
+        </td>
+      </tr><tr>
+        <td>
+          184
+        </td>
+        <td>
+          48818
+        </td>
+        <td>
+          6807
+          -
+          6871
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.LinearSeqOptimized.contains
+        </td>
+        <td style="background: #F0ADAD">
+          Settings.this.Setting.SettingDecorator[List[String]](Contexts.this.Context.toBase(RealProfiler.this.ctx).settings.YprofileExternalTool).value(RealProfiler.this.ctx).contains[String](phase.toString())
+        </td>
+      </tr><tr>
+        <td>
+          184
+        </td>
+        <td>
+          48821
+        </td>
+        <td>
+          6873
+          -
+          6948
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          {
+  scala.Predef.println(&quot;Profile hook start&quot;);
+  ExternalToolHook.before()
+}
+        </td>
+      </tr><tr>
+        <td>
+          184
+        </td>
+        <td>
+          48815
+        </td>
+        <td>
+          6807
+          -
+          6840
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.config.ScalaSettings.YprofileExternalTool
+        </td>
+        <td style="background: #F0ADAD">
+          Contexts.this.Context.toBase(RealProfiler.this.ctx).settings.YprofileExternalTool
+        </td>
+      </tr><tr>
+        <td>
+          184
+        </td>
+        <td>
+          48817
+        </td>
+        <td>
+          6856
+          -
+          6870
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.core.Phases.Phase.toString
+        </td>
+        <td style="background: #F0ADAD">
+          phase.toString()
+        </td>
+      </tr><tr>
+        <td>
+          184
+        </td>
+        <td>
+          48814
+        </td>
+        <td>
+          6807
+          -
+          6810
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.profile.RealProfiler.ctx
+        </td>
+        <td style="background: #F0ADAD">
+          RealProfiler.this.ctx
+        </td>
+      </tr><tr>
+        <td>
+          184
+        </td>
+        <td>
+          48823
+        </td>
+        <td>
+          6803
+          -
+          6803
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          ()
+        </td>
+      </tr><tr>
+        <td>
+          184
+        </td>
+        <td>
+          48822
+        </td>
+        <td>
+          6803
+          -
+          6803
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          ()
+        </td>
+      </tr><tr>
+        <td>
+          184
+        </td>
+        <td>
+          48816
+        </td>
+        <td>
+          6841
+          -
+          6841
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.profile.RealProfiler.ctx
+        </td>
+        <td style="background: #F0ADAD">
+          RealProfiler.this.ctx
+        </td>
+      </tr><tr>
+        <td>
+          185
+        </td>
+        <td>
+          48819
+        </td>
+        <td>
+          6881
+          -
+          6910
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Predef.println
+        </td>
+        <td style="background: #F0ADAD">
+          scala.Predef.println(&quot;Profile hook start&quot;)
+        </td>
+      </tr><tr>
+        <td>
+          186
+        </td>
+        <td>
+          48820
+        </td>
+        <td>
+          6917
+          -
+          6942
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.profile.ExternalToolHook.before
+        </td>
+        <td style="background: #F0ADAD">
+          ExternalToolHook.before()
+        </td>
+      </tr><tr>
+        <td>
+          188
+        </td>
+        <td>
+          48824
+        </td>
+        <td>
+          6953
+          -
+          6966
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.profile.RealProfiler.snapThread
+        </td>
+        <td style="background: #F0ADAD">
+          RealProfiler.this.snapThread(0L)
+        </td>
+      </tr><tr>
+        <td>
+          196
+        </td>
+        <td>
+          48825
+        </td>
+        <td>
+          7075
+          -
+          7092
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.profile.EventType.apply
+        </td>
+        <td style="background: #F0ADAD">
+          EventType.apply(&quot;main&quot;)
+        </td>
+      </tr><tr>
+        <td>
+          198
+        </td>
+        <td>
+          48826
+        </td>
+        <td>
+          7148
+          -
+          7171
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.profile.EventType.apply
+        </td>
+        <td style="background: #F0ADAD">
+          EventType.apply(&quot;background&quot;)
+        </td>
+      </tr><tr>
+        <td>
+          200
+        </td>
+        <td>
+          48827
+        </td>
+        <td>
+          7205
+          -
+          7220
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.profile.EventType.apply
+        </td>
+        <td style="background: #F0ADAD">
+          EventType.apply(&quot;GC&quot;)
+        </td>
+      </tr><tr>
+        <td>
+          218
+        </td>
+        <td>
+          48828
+        </td>
+        <td>
+          7708
+          -
+          7711
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.Predef.???
+        </td>
+        <td style="background: #F0ADAD">
+          scala.Predef.???
+        </td>
+      </tr><tr>
+        <td>
+          221
+        </td>
+        <td>
+          48829
+        </td>
+        <td>
+          7817
+          -
+          7820
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.Predef.???
+        </td>
+        <td style="background: #F0ADAD">
+          scala.Predef.???
+        </td>
+      </tr><tr>
+        <td>
+          223
+        </td>
+        <td>
+          48830
+        </td>
+        <td>
+          7875
+          -
+          7877
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          ()
+        </td>
+      </tr><tr>
+        <td>
+          226
+        </td>
+        <td>
+          48836
+        </td>
+        <td>
+          7947
+          -
+          8000
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.StringContext.s
+        </td>
+        <td style="background: #F0ADAD">
+          scala.StringContext.apply(&quot;Profiler start (&quot;, &quot;) &quot;, &quot;&quot;).s(profiler.id, profiler.outDir)
+        </td>
+      </tr><tr>
+        <td>
+          226
+        </td>
+        <td>
+          48833
+        </td>
+        <td>
+          7999
+          -
+          8000
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          &quot;&quot;
+        </td>
+      </tr><tr>
+        <td>
+          226
+        </td>
+        <td>
+          48835
+        </td>
+        <td>
+          7983
+          -
+          7998
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.profile.RealProfiler.outDir
+        </td>
+        <td style="background: #F0ADAD">
+          profiler.outDir
+        </td>
+      </tr><tr>
+        <td>
+          226
+        </td>
+        <td>
+          48832
+        </td>
+        <td>
+          7979
+          -
+          7982
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          &quot;) &quot;
+        </td>
+      </tr><tr>
+        <td>
+          226
+        </td>
+        <td>
+          48831
+        </td>
+        <td>
+          7949
+          -
+          7966
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          &quot;Profiler start (&quot;
+        </td>
+      </tr><tr>
+        <td>
+          226
+        </td>
+        <td>
+          48834
+        </td>
+        <td>
+          7967
+          -
+          7978
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.profile.RealProfiler.id
+        </td>
+        <td style="background: #F0ADAD">
+          profiler.id
+        </td>
+      </tr><tr>
+        <td>
+          226
+        </td>
+        <td>
+          48837
+        </td>
+        <td>
+          7939
+          -
+          8001
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Predef.println
+        </td>
+        <td style="background: #F0ADAD">
+          scala.Predef.println(scala.StringContext.apply(&quot;Profiler start (&quot;, &quot;) &quot;, &quot;&quot;).s(profiler.id, profiler.outDir))
+        </td>
+      </tr><tr>
+        <td>
+          230
+        </td>
+        <td>
+          48838
+        </td>
+        <td>
+          8064
+          -
+          8139
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Predef.println
+        </td>
+        <td style="background: #F0ADAD">
+          scala.Predef.println(({
+  val arg$macro$1: Any = data.gcEndMillis.-(data.gcStartMillis);
+  new scala.collection.immutable.StringOps(&quot;Profiler GC reported %sms&quot;).format(arg$macro$1)
+}: String))
+        </td>
+      </tr><tr>
+        <td>
+          236
+        </td>
+        <td>
+          48845
+        </td>
+        <td>
+          8278
+          -
+          8354
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.io.PrintWriter.println
+        </td>
+        <td style="background: #F0ADAD">
+          StreamProfileReporter.this.out.println(scala.StringContext.apply(&quot;info, &quot;, &quot;, version, 2, output, &quot;, &quot;&quot;).s(profiler.id, profiler.outDir))
+        </td>
+      </tr><tr>
+        <td>
+          236
+        </td>
+        <td>
+          48839
+        </td>
+        <td>
+          8292
+          -
+          8299
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          &quot;info, &quot;
+        </td>
+      </tr><tr>
+        <td>
+          236
+        </td>
+        <td>
+          48842
+        </td>
+        <td>
+          8300
+          -
+          8311
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.profile.RealProfiler.id
+        </td>
+        <td style="background: #F0ADAD">
+          profiler.id
+        </td>
+      </tr><tr>
+        <td>
+          236
+        </td>
+        <td>
+          48841
+        </td>
+        <td>
+          8352
+          -
+          8353
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          &quot;&quot;
+        </td>
+      </tr><tr>
+        <td>
+          236
+        </td>
+        <td>
+          48844
+        </td>
+        <td>
+          8290
+          -
+          8353
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.StringContext.s
+        </td>
+        <td style="background: #F0ADAD">
+          scala.StringContext.apply(&quot;info, &quot;, &quot;, version, 2, output, &quot;, &quot;&quot;).s(profiler.id, profiler.outDir)
+        </td>
+      </tr><tr>
+        <td>
+          236
+        </td>
+        <td>
+          48840
+        </td>
+        <td>
+          8312
+          -
+          8335
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          &quot;, version, 2, output, &quot;
+        </td>
+      </tr><tr>
+        <td>
+          236
+        </td>
+        <td>
+          48843
+        </td>
+        <td>
+          8336
+          -
+          8351
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.profile.RealProfiler.outDir
+        </td>
+        <td style="background: #F0ADAD">
+          profiler.outDir
+        </td>
+      </tr><tr>
+        <td>
+          237
+        </td>
+        <td>
+          48847
+        </td>
+        <td>
+          8359
+          -
+          8532
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.io.PrintWriter.println
+        </td>
+        <td style="background: #F0ADAD">
+          StreamProfileReporter.this.out.println(scala.StringContext.apply(&quot;header(main/background),startNs,endNs,runId,phaseId,phaseName,purpose,task-count,threadId,threadName,runNs,idleNs,cpuTimeNs,userTimeNs,allocatedByte,heapSize&quot;).s())
+        </td>
+      </tr><tr>
+        <td>
+          237
+        </td>
+        <td>
+          48846
+        </td>
+        <td>
+          8371
+          -
+          8531
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.StringContext.s
+        </td>
+        <td style="background: #F0ADAD">
+          scala.StringContext.apply(&quot;header(main/background),startNs,endNs,runId,phaseId,phaseName,purpose,task-count,threadId,threadName,runNs,idleNs,cpuTimeNs,userTimeNs,allocatedByte,heapSize&quot;).s()
+        </td>
+      </tr><tr>
+        <td>
+          238
+        </td>
+        <td>
+          48848
+        </td>
+        <td>
+          8549
+          -
+          8616
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.StringContext.s
+        </td>
+        <td style="background: #F0ADAD">
+          scala.StringContext.apply(&quot;header(GC),startNs,endNs,startMs,endMs,name,action,cause,threads&quot;).s()
+        </td>
+      </tr><tr>
+        <td>
+          238
+        </td>
+        <td>
+          48849
+        </td>
+        <td>
+          8537
+          -
+          8617
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.io.PrintWriter.println
+        </td>
+        <td style="background: #F0ADAD">
+          StreamProfileReporter.this.out.println(scala.StringContext.apply(&quot;header(GC),startNs,endNs,startMs,endMs,name,action,cause,threads&quot;).s())
+        </td>
+      </tr><tr>
+        <td>
+          242
+        </td>
+        <td>
+          48851
+        </td>
+        <td>
+          8720
+          -
+          8777
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.profile.StreamProfileReporter.reportCommon
+        </td>
+        <td style="background: #F0ADAD">
+          StreamProfileReporter.this.reportCommon(EventType.BACKGROUND, profiler, threadRange)
+        </td>
+      </tr><tr>
+        <td>
+          242
+        </td>
+        <td>
+          48850
+        </td>
+        <td>
+          8733
+          -
+          8753
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.profile.EventType.BACKGROUND
+        </td>
+        <td style="background: #F0ADAD">
+          EventType.BACKGROUND
+        </td>
+      </tr><tr>
+        <td>
+          245
+        </td>
+        <td>
+          48853
+        </td>
+        <td>
+          8879
+          -
+          8930
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.profile.StreamProfileReporter.reportCommon
+        </td>
+        <td style="background: #F0ADAD">
+          StreamProfileReporter.this.reportCommon(EventType.MAIN, profiler, threadRange)
+        </td>
+      </tr><tr>
+        <td>
+          245
+        </td>
+        <td>
+          48852
+        </td>
+        <td>
+          8892
+          -
+          8906
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.profile.EventType.MAIN
+        </td>
+        <td style="background: #F0ADAD">
+          EventType.MAIN
+        </td>
+      </tr><tr>
+        <td>
+          248
+        </td>
+        <td>
+          48881
+        </td>
+        <td>
+          9346
+          -
+          9364
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.profile.ProfileRange.idleNs
+        </td>
+        <td style="background: #F0ADAD">
+          threadRange.idleNs
+        </td>
+      </tr><tr>
+        <td>
+          248
+        </td>
+        <td>
+          48863
+        </td>
+        <td>
+          9292
+          -
+          9294
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          &quot;,&quot;
+        </td>
+      </tr><tr>
+        <td>
+          248
+        </td>
+        <td>
+          48872
+        </td>
+        <td>
+          9098
+          -
+          9127
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.profile.ProfileSnap.snapTimeNanos
+        </td>
+        <td style="background: #F0ADAD">
+          threadRange.end.snapTimeNanos
+        </td>
+      </tr><tr>
+        <td>
+          248
+        </td>
+        <td>
+          48854
+        </td>
+        <td>
+          9056
+          -
+          9057
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          &quot;&quot;
+        </td>
+      </tr><tr>
+        <td>
+          248
+        </td>
+        <td>
+          48866
+        </td>
+        <td>
+          9365
+          -
+          9367
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          &quot;,&quot;
+        </td>
+      </tr><tr>
+        <td>
+          248
+        </td>
+        <td>
+          48857
+        </td>
+        <td>
+          9128
+          -
+          9130
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          &quot;,&quot;
+        </td>
+      </tr><tr>
+        <td>
+          248
+        </td>
+        <td>
+          48884
+        </td>
+        <td>
+          9411
+          -
+          9437
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.profile.ProfileRange.allocatedBytes
+        </td>
+        <td style="background: #F0ADAD">
+          threadRange.allocatedBytes
+        </td>
+      </tr><tr>
+        <td>
+          248
+        </td>
+        <td>
+          48875
+        </td>
+        <td>
+          9170
+          -
+          9215
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.String.replace
+        </td>
+        <td style="background: #F0ADAD">
+          threadRange.phase.phaseName.replace(',', ' ')
+        </td>
+      </tr><tr>
+        <td>
+          248
+        </td>
+        <td>
+          48869
+        </td>
+        <td>
+          9438
+          -
+          9440
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          &quot;,&quot;
+        </td>
+      </tr><tr>
+        <td>
+          248
+        </td>
+        <td>
+          48860
+        </td>
+        <td>
+          9216
+          -
+          9218
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          &quot;,&quot;
+        </td>
+      </tr><tr>
+        <td>
+          248
+        </td>
+        <td>
+          48877
+        </td>
+        <td>
+          9242
+          -
+          9263
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.profile.ProfileRange.taskCount
+        </td>
+        <td style="background: #F0ADAD">
+          threadRange.taskCount
+        </td>
+      </tr><tr>
+        <td>
+          248
+        </td>
+        <td>
+          48886
+        </td>
+        <td>
+          9054
+          -
+          9469
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.StringContext.s
+        </td>
+        <td style="background: #F0ADAD">
+          scala.StringContext.apply(&quot;&quot;, &quot;,&quot;, &quot;,&quot;, &quot;,&quot;, &quot;,&quot;, &quot;,&quot;, &quot;,&quot;, &quot;,&quot;, &quot;,&quot;, &quot;,&quot;, &quot;,&quot;, &quot;,&quot;, &quot;,&quot;, &quot;,&quot;, &quot;,&quot;, &quot;,&quot;, &quot; &quot;).s(tpe, threadRange.start.snapTimeNanos, threadRange.end.snapTimeNanos, profiler.id, threadRange.phase.id, threadRange.phase.phaseName.replace(',', ' '), threadRange.purpose, threadRange.taskCount, threadRange.thread.getId(), threadRange.thread.getName(), threadRange.runNs, threadRange.idleNs, threadRange.cpuNs, threadRange.userNs, threadRange.allocatedBytes, threadRange.end.heapBytes)
+        </td>
+      </tr><tr>
+        <td>
+          248
+        </td>
+        <td>
+          48868
+        </td>
+        <td>
+          9408
+          -
+          9410
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          &quot;,&quot;
+        </td>
+      </tr><tr>
+        <td>
+          248
+        </td>
+        <td>
+          48859
+        </td>
+        <td>
+          9167
+          -
+          9169
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          &quot;,&quot;
+        </td>
+      </tr><tr>
+        <td>
+          248
+        </td>
+        <td>
+          48871
+        </td>
+        <td>
+          9063
+          -
+          9094
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.profile.ProfileSnap.snapTimeNanos
+        </td>
+        <td style="background: #F0ADAD">
+          threadRange.start.snapTimeNanos
+        </td>
+      </tr><tr>
+        <td>
+          248
+        </td>
+        <td>
+          48862
+        </td>
+        <td>
+          9264
+          -
+          9266
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          &quot;,&quot;
+        </td>
+      </tr><tr>
+        <td>
+          248
+        </td>
+        <td>
+          48880
+        </td>
+        <td>
+          9325
+          -
+          9342
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.profile.ProfileRange.runNs
+        </td>
+        <td style="background: #F0ADAD">
+          threadRange.runNs
+        </td>
+      </tr><tr>
+        <td>
+          248
+        </td>
+        <td>
+          48874
+        </td>
+        <td>
+          9146
+          -
+          9166
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Phases.Phase.id
+        </td>
+        <td style="background: #F0ADAD">
+          threadRange.phase.id
+        </td>
+      </tr><tr>
+        <td>
+          248
+        </td>
+        <td>
+          48883
+        </td>
+        <td>
+          9389
+          -
+          9407
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.profile.ProfileRange.userNs
+        </td>
+        <td style="background: #F0ADAD">
+          threadRange.userNs
+        </td>
+      </tr><tr>
+        <td>
+          248
+        </td>
+        <td>
+          48865
+        </td>
+        <td>
+          9343
+          -
+          9345
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          &quot;,&quot;
+        </td>
+      </tr><tr>
+        <td>
+          248
+        </td>
+        <td>
+          48856
+        </td>
+        <td>
+          9095
+          -
+          9097
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          &quot;,&quot;
+        </td>
+      </tr><tr>
+        <td>
+          248
+        </td>
+        <td>
+          48882
+        </td>
+        <td>
+          9368
+          -
+          9385
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.profile.ProfileRange.cpuNs
+        </td>
+        <td style="background: #F0ADAD">
+          threadRange.cpuNs
+        </td>
+      </tr><tr>
+        <td>
+          248
+        </td>
+        <td>
+          48864
+        </td>
+        <td>
+          9322
+          -
+          9324
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          &quot;,&quot;
+        </td>
+      </tr><tr>
+        <td>
+          248
+        </td>
+        <td>
+          48873
+        </td>
+        <td>
+          9131
+          -
+          9142
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.profile.RealProfiler.id
+        </td>
+        <td style="background: #F0ADAD">
+          profiler.id
+        </td>
+      </tr><tr>
+        <td>
+          248
+        </td>
+        <td>
+          48858
+        </td>
+        <td>
+          9143
+          -
+          9145
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          &quot;,&quot;
+        </td>
+      </tr><tr>
+        <td>
+          248
+        </td>
+        <td>
+          48867
+        </td>
+        <td>
+          9386
+          -
+          9388
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          &quot;,&quot;
+        </td>
+      </tr><tr>
+        <td>
+          248
+        </td>
+        <td>
+          48876
+        </td>
+        <td>
+          9219
+          -
+          9238
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.profile.ProfileRange.purpose
+        </td>
+        <td style="background: #F0ADAD">
+          threadRange.purpose
+        </td>
+      </tr><tr>
+        <td>
+          248
+        </td>
+        <td>
+          48885
+        </td>
+        <td>
+          9441
+          -
+          9466
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.profile.ProfileSnap.heapBytes
+        </td>
+        <td style="background: #F0ADAD">
+          threadRange.end.heapBytes
+        </td>
+      </tr><tr>
+        <td>
+          248
+        </td>
+        <td>
+          48870
+        </td>
+        <td>
+          9467
+          -
+          9469
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          &quot; &quot;
+        </td>
+      </tr><tr>
+        <td>
+          248
+        </td>
+        <td>
+          48879
+        </td>
+        <td>
+          9295
+          -
+          9321
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.Thread.getName
+        </td>
+        <td style="background: #F0ADAD">
+          threadRange.thread.getName()
+        </td>
+      </tr><tr>
+        <td>
+          248
+        </td>
+        <td>
+          48861
+        </td>
+        <td>
+          9239
+          -
+          9241
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          &quot;,&quot;
+        </td>
+      </tr><tr>
+        <td>
+          248
+        </td>
+        <td>
+          48855
+        </td>
+        <td>
+          9060
+          -
+          9062
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          &quot;,&quot;
+        </td>
+      </tr><tr>
+        <td>
+          248
+        </td>
+        <td>
+          48887
+        </td>
+        <td>
+          9042
+          -
+          9470
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.io.PrintWriter.println
+        </td>
+        <td style="background: #F0ADAD">
+          StreamProfileReporter.this.out.println(scala.StringContext.apply(&quot;&quot;, &quot;,&quot;, &quot;,&quot;, &quot;,&quot;, &quot;,&quot;, &quot;,&quot;, &quot;,&quot;, &quot;,&quot;, &quot;,&quot;, &quot;,&quot;, &quot;,&quot;, &quot;,&quot;, &quot;,&quot;, &quot;,&quot;, &quot;,&quot;, &quot;,&quot;, &quot; &quot;).s(tpe, threadRange.start.snapTimeNanos, threadRange.end.snapTimeNanos, profiler.id, threadRange.phase.id, threadRange.phase.phaseName.replace(',', ' '), threadRange.purpose, threadRange.taskCount, threadRange.thread.getId(), threadRange.thread.getName(), threadRange.runNs, threadRange.idleNs, threadRange.cpuNs, threadRange.userNs, threadRange.allocatedBytes, threadRange.end.heapBytes))
+        </td>
+      </tr><tr>
+        <td>
+          248
+        </td>
+        <td>
+          48878
+        </td>
+        <td>
+          9267
+          -
+          9291
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.Thread.getId
+        </td>
+        <td style="background: #F0ADAD">
+          threadRange.thread.getId()
+        </td>
+      </tr><tr>
+        <td>
+          252
+        </td>
+        <td>
+          48890
+        </td>
+        <td>
+          9548
+          -
+          9620
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.util.concurrent.TimeUnit.toNanos
+        </td>
+        <td style="background: #F0ADAD">
+          MILLISECONDS.toNanos(data.gcEndMillis.-(data.gcStartMillis).+(1))
+        </td>
+      </tr><tr>
+        <td>
+          252
+        </td>
+        <td>
+          48889
+        </td>
+        <td>
+          9578
+          -
+          9619
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Long.+
+        </td>
+        <td style="background: #F0ADAD">
+          data.gcEndMillis.-(data.gcStartMillis).+(1)
+        </td>
+      </tr><tr>
+        <td>
+          252
+        </td>
+        <td>
+          48888
+        </td>
+        <td>
+          9548
+          -
+          9569
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          MILLISECONDS
+        </td>
+      </tr><tr>
+        <td>
+          253
+        </td>
+        <td>
+          48891
+        </td>
+        <td>
+          9637
+          -
+          9665
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Long.-
+        </td>
+        <td style="background: #F0ADAD">
+          data.reportTimeNs.-(duration)
+        </td>
+      </tr><tr>
+        <td>
+          254
+        </td>
+        <td>
+          48908
+        </td>
+        <td>
+          9801
+          -
+          9811
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.profile.GcEventData.cause
+        </td>
+        <td style="background: #F0ADAD">
+          data.cause
+        </td>
+      </tr><tr>
+        <td>
+          254
+        </td>
+        <td>
+          48899
+        </td>
+        <td>
+          9798
+          -
+          9800
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          &quot;,&quot;
+        </td>
+      </tr><tr>
+        <td>
+          254
+        </td>
+        <td>
+          48911
+        </td>
+        <td>
+          9670
+          -
+          9830
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.io.PrintWriter.println
+        </td>
+        <td style="background: #F0ADAD">
+          StreamProfileReporter.this.out.println(scala.StringContext.apply(&quot;&quot;, &quot;,&quot;, &quot;,&quot;, &quot;,&quot;, &quot;, &quot;, &quot;,&quot;, &quot;,&quot;, &quot;,&quot;, &quot;,&quot;, &quot;&quot;).s(EventType.GC, start, data.reportTimeNs, data.gcStartMillis, data.gcEndMillis, data.name, data.action, data.cause, data.threads))
+        </td>
+      </tr><tr>
+        <td>
+          254
+        </td>
+        <td>
+          48893
+        </td>
+        <td>
+          9699
+          -
+          9701
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          &quot;,&quot;
+        </td>
+      </tr><tr>
+        <td>
+          254
+        </td>
+        <td>
+          48902
+        </td>
+        <td>
+          9686
+          -
+          9698
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.profile.EventType.GC
+        </td>
+        <td style="background: #F0ADAD">
+          EventType.GC
+        </td>
+      </tr><tr>
+        <td>
+          254
+        </td>
+        <td>
+          48901
+        </td>
+        <td>
+          9828
+          -
+          9829
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          &quot;&quot;
+        </td>
+      </tr><tr>
+        <td>
+          254
+        </td>
+        <td>
+          48910
+        </td>
+        <td>
+          9682
+          -
+          9829
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.StringContext.s
+        </td>
+        <td style="background: #F0ADAD">
+          scala.StringContext.apply(&quot;&quot;, &quot;,&quot;, &quot;,&quot;, &quot;,&quot;, &quot;, &quot;, &quot;,&quot;, &quot;,&quot;, &quot;,&quot;, &quot;,&quot;, &quot;&quot;).s(EventType.GC, start, data.reportTimeNs, data.gcStartMillis, data.gcEndMillis, data.name, data.action, data.cause, data.threads)
+        </td>
+      </tr><tr>
+        <td>
+          254
+        </td>
+        <td>
+          48895
+        </td>
+        <td>
+          9727
+          -
+          9729
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          &quot;,&quot;
+        </td>
+      </tr><tr>
+        <td>
+          254
+        </td>
+        <td>
+          48904
+        </td>
+        <td>
+          9730
+          -
+          9748
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.profile.GcEventData.gcStartMillis
+        </td>
+        <td style="background: #F0ADAD">
+          data.gcStartMillis
+        </td>
+      </tr><tr>
+        <td>
+          254
+        </td>
+        <td>
+          48907
+        </td>
+        <td>
+          9786
+          -
+          9797
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.profile.GcEventData.action
+        </td>
+        <td style="background: #F0ADAD">
+          data.action
+        </td>
+      </tr><tr>
+        <td>
+          254
+        </td>
+        <td>
+          48898
+        </td>
+        <td>
+          9783
+          -
+          9785
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          &quot;,&quot;
+        </td>
+      </tr><tr>
+        <td>
+          254
+        </td>
+        <td>
+          48892
+        </td>
+        <td>
+          9684
+          -
+          9685
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          &quot;&quot;
+        </td>
+      </tr><tr>
+        <td>
+          254
+        </td>
+        <td>
+          48900
+        </td>
+        <td>
+          9812
+          -
+          9814
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          &quot;,&quot;
+        </td>
+      </tr><tr>
+        <td>
+          254
+        </td>
+        <td>
+          48909
+        </td>
+        <td>
+          9815
+          -
+          9827
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.profile.GcEventData.threads
+        </td>
+        <td style="background: #F0ADAD">
+          data.threads
+        </td>
+      </tr><tr>
+        <td>
+          254
+        </td>
+        <td>
+          48903
+        </td>
+        <td>
+          9709
+          -
+          9726
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.profile.GcEventData.reportTimeNs
+        </td>
+        <td style="background: #F0ADAD">
+          data.reportTimeNs
+        </td>
+      </tr><tr>
+        <td>
+          254
+        </td>
+        <td>
+          48894
+        </td>
+        <td>
+          9706
+          -
+          9708
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          &quot;,&quot;
+        </td>
+      </tr><tr>
+        <td>
+          254
+        </td>
+        <td>
+          48906
+        </td>
+        <td>
+          9773
+          -
+          9782
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.profile.GcEventData.name
+        </td>
+        <td style="background: #F0ADAD">
+          data.name
+        </td>
+      </tr><tr>
+        <td>
+          254
+        </td>
+        <td>
+          48897
+        </td>
+        <td>
+          9770
+          -
+          9772
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          &quot;,&quot;
+        </td>
+      </tr><tr>
+        <td>
+          254
+        </td>
+        <td>
+          48905
+        </td>
+        <td>
+          9753
+          -
+          9769
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.profile.GcEventData.gcEndMillis
+        </td>
+        <td style="background: #F0ADAD">
+          data.gcEndMillis
+        </td>
+      </tr><tr>
+        <td>
+          254
+        </td>
+        <td>
+          48896
+        </td>
+        <td>
+          9749
+          -
+          9752
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          &quot;, &quot;
+        </td>
+      </tr><tr>
+        <td>
+          259
+        </td>
+        <td>
+          48912
+        </td>
+        <td>
+          9896
+          -
+          9905
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.io.PrintWriter.flush
+        </td>
+        <td style="background: #F0ADAD">
+          StreamProfileReporter.this.out.flush()
+        </td>
+      </tr><tr>
+        <td>
+          260
+        </td>
+        <td>
+          48913
+        </td>
+        <td>
+          9910
+          -
+          9919
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.io.PrintWriter.close
+        </td>
+        <td style="background: #F0ADAD">
+          StreamProfileReporter.this.out.close()
+        </td>
+      </tr>
+    </table>
+          </div>
+        </div>
+      </body>
+    </html>

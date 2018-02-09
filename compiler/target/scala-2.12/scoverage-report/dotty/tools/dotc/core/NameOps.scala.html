@@ -1,0 +1,5871 @@
+<html>
+      <head>
+        <meta http-equiv="Content-Type" content="text/html; charset=utf-8"/>
+        <title id="title">
+          dotty/tools/dotc/core/NameOps.scala.html
+        </title>
+        <script src="https://ajax.googleapis.com/ajax/libs/jquery/1.10.2/jquery.min.js"></script><link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/jquery.tablesorter/2.20.1/css/theme.default.min.css" type="text/css"/><script src="https://cdnjs.cloudflare.com/ajax/libs/jquery.tablesorter/2.20.1/js/jquery.tablesorter.min.js"></script><link rel="stylesheet" href="https://netdna.bootstrapcdn.com/bootstrap/3.0.3/css/bootstrap.min.css" type="text/css"/><script src="https://netdna.bootstrapcdn.com/bootstrap/3.0.3/js/bootstrap.min.js"></script><script type="text/javascript">
+        $(document).ready(function() {$(".tablesorter").tablesorter();});
+      </script>
+        <style>
+          table.codegrid { font-family: monospace; font-size: 12px; width: auto!important; }table.statementlist { width: auto!important; font-size: 13px; } table.codegrid td { padding: 0!important; border: 0!important } table td.linenumber { width: 40px!important; } 
+        </style>
+      </head>
+      <body style="font-family: monospace;">
+        <ul class="nav nav-tabs">
+          <li>
+            <a href="#codegrid" data-toggle="tab">Codegrid</a>
+          </li>
+          <li>
+            <a href="#statementlist" data-toggle="tab">Statement List</a>
+          </li>
+        </ul>
+        <div class="tab-content">
+          <div class="tab-pane active" id="codegrid">
+            <pre style='font-size: 12pt; font-family: courier;'>1 <span style=''>package dotty.tools.dotc
+</span>2 <span style=''>package core
+</span>3 <span style=''>
+</span>4 <span style=''>import java.security.MessageDigest
+</span>5 <span style=''>import scala.annotation.switch
+</span>6 <span style=''>import scala.io.Codec
+</span>7 <span style=''>import Names._, StdNames._, Contexts._, Symbols._, Flags._, NameKinds._
+</span>8 <span style=''>import Decorators.PreNamedString
+</span>9 <span style=''>import util.{Chars, NameTransformer}
+</span>10 <span style=''>import Chars.isOperatorPart
+</span>11 <span style=''>import Definitions._
+</span>12 <span style=''>import config.Config
+</span>13 <span style=''>
+</span>14 <span style=''>object NameOps {
+</span>15 <span style=''>
+</span>16 <span style=''>  final object compactify {
+</span>17 <span style=''>    lazy val md5 = MessageDigest.getInstance(&quot;MD5&quot;)
+</span>18 <span style=''>
+</span>19 <span style=''>    /** COMPACTIFY
+</span>20 <span style=''>     *
+</span>21 <span style=''>     *  The hashed name has the form (prefix + marker + md5 + marker + suffix), where
+</span>22 <span style=''>     *   - prefix/suffix.length = MaxNameLength / 4
+</span>23 <span style=''>     *   - md5.length = 32
+</span>24 <span style=''>     *
+</span>25 <span style=''>     *  We obtain the formula:
+</span>26 <span style=''>     *
+</span>27 <span style=''>     *   FileNameLength = 2*(MaxNameLength / 4) + 2.marker.length + 32 + 6
+</span>28 <span style=''>     *
+</span>29 <span style=''>     *  (+6 for &quot;.class&quot;). MaxNameLength can therefore be computed as follows:
+</span>30 <span style=''>     */
+</span>31 <span style=''>    def apply(s: String)(implicit ctx: Context): String = {
+</span>32 <span style=''>      val marker = </span><span style='background: #F0ADAD'>&quot;$$$$&quot;</span><span style=''>
+</span>33 <span style=''>      val limit: Int = </span><span style='background: #F0ADAD'>ctx.settings.XmaxClassfileName.value</span><span style=''>
+</span>34 <span style=''>      val MaxNameLength = </span><span style='background: #F0ADAD'>(limit - 6) min 2 * (limit - 6 - 2 * marker.length - 32)</span><span style=''>
+</span>35 <span style=''>
+</span>36 <span style=''>      def toMD5(s: String, edge: Int): String = {
+</span>37 <span style=''>        val prefix = </span><span style='background: #F0ADAD'>s take edge</span><span style=''>
+</span>38 <span style=''>        val suffix = </span><span style='background: #F0ADAD'>s takeRight edge</span><span style=''>
+</span>39 <span style=''>
+</span>40 <span style=''>        val cs = </span><span style='background: #F0ADAD'>s.toArray</span><span style=''>
+</span>41 <span style=''>        val bytes = </span><span style='background: #F0ADAD'>Codec toUTF8 cs</span><span style=''>
+</span>42 <span style=''>        </span><span style='background: #F0ADAD'>md5 update bytes</span><span style=''>
+</span>43 <span style=''>        val md5chars = (</span><span style='background: #F0ADAD'>md5.digest() map (b =&gt; (b &amp; 0xFF).toHexString)).mkString</span><span style=''>
+</span>44 <span style=''>
+</span>45 <span style=''>        </span><span style='background: #F0ADAD'>prefix + marker + md5chars + marker + suffix</span><span style=''>
+</span>46 <span style=''>      }
+</span>47 <span style=''>
+</span>48 <span style=''>      if (</span><span style='background: #F0ADAD'>s.length &lt;= MaxNameLength</span><span style=''>) </span><span style='background: #F0ADAD'>s</span><span style=''> else </span><span style='background: #F0ADAD'>toMD5(s, MaxNameLength / 4)</span><span style=''>
+</span>49 <span style=''>    }
+</span>50 <span style=''>  }
+</span>51 <span style=''>
+</span>52 <span style=''>  implicit class NameDecorator[N &lt;: Name](val name: N) extends AnyVal {
+</span>53 <span style=''>    import nme._
+</span>54 <span style=''>
+</span>55 <span style=''>    def testSimple(f: SimpleName =&gt; Boolean): Boolean = </span><span style='background: #AEF1AE'>name</span><span style=''> match {
+</span>56 <span style=''>      case name: SimpleName =&gt; </span><span style='background: #AEF1AE'>f(name)</span><span style=''>
+</span>57 <span style=''>      case name: TypeName =&gt; </span><span style='background: #AEF1AE'>name.toTermName.testSimple(f)</span><span style=''>
+</span>58 <span style=''>      case _ =&gt; </span><span style='background: #AEF1AE'>false</span><span style=''>
+</span>59 <span style=''>    }
+</span>60 <span style=''>
+</span>61 <span style=''>    def likeSpaced(n: PreName): N =
+</span>62 <span style=''>      (</span><span style='background: #AEF1AE'>if (name.isTermName) n.toTermName else n.toTypeName).asInstanceOf[N]</span><span style=''>
+</span>63 <span style=''>
+</span>64 <span style=''>    def isConstructorName = </span><span style='background: #AEF1AE'>name == CONSTRUCTOR || name == TRAIT_CONSTRUCTOR</span><span style=''>
+</span>65 <span style=''>    def isStaticConstructorName = </span><span style='background: #AEF1AE'>name == STATIC_CONSTRUCTOR</span><span style=''>
+</span>66 <span style=''>    def isLocalDummyName = </span><span style='background: #AEF1AE'>name startsWith str.LOCALDUMMY_PREFIX</span><span style=''>
+</span>67 <span style=''>    def isReplWrapperName = </span><span style='background: #AEF1AE'>name.toString contains str.REPL_SESSION_LINE</span><span style=''>
+</span>68 <span style=''>    def isReplAssignName = </span><span style='background: #AEF1AE'>name.toString contains str.REPL_ASSIGN_SUFFIX</span><span style=''>
+</span>69 <span style=''>    def isSetterName = </span><span style='background: #AEF1AE'>name endsWith str.SETTER_SUFFIX</span><span style=''>
+</span>70 <span style=''>    def isScala2LocalSuffix = </span><span style='background: #AEF1AE'>testSimple(_.endsWith(&quot; &quot;))</span><span style=''>
+</span>71 <span style=''>    def isSelectorName = </span><span style='background: #AEF1AE'>testSimple(n =&gt; n.startsWith(&quot;_&quot;) &amp;&amp; n.drop(1).forall(_.isDigit))</span><span style=''>
+</span>72 <span style=''>
+</span>73 <span style=''>    /** Is name a variable name? */
+</span>74 <span style=''>    def isVariableName: Boolean = </span><span style='background: #AEF1AE'>testSimple { n =&gt;
+</span>75 <span style=''></span><span style='background: #AEF1AE'>      n.length &gt; 0 &amp;&amp; {
+</span>76 <span style=''></span><span style='background: #AEF1AE'>        val first = n.head
+</span>77 <span style=''></span><span style='background: #AEF1AE'>        (((first.isLower &amp;&amp; first.isLetter) || first == '_')
+</span>78 <span style=''></span><span style='background: #AEF1AE'>          &amp;&amp; (n != false_)
+</span>79 <span style=''></span><span style='background: #AEF1AE'>          &amp;&amp; (n != true_)
+</span>80 <span style=''></span><span style='background: #AEF1AE'>          &amp;&amp; (n != null_))
+</span>81 <span style=''></span><span style='background: #AEF1AE'>      }
+</span>82 <span style=''></span><span style='background: #AEF1AE'>    }</span><span style=''>
+</span>83 <span style=''>
+</span>84 <span style=''>    def isOpAssignmentName: Boolean = </span><span style='background: #AEF1AE'>name</span><span style=''> match {
+</span>85 <span style=''>      case raw.NE | raw.LE | raw.GE | EMPTY =&gt;
+</span>86 <span style=''>        </span><span style='background: #AEF1AE'>false</span><span style=''>
+</span>87 <span style=''>      case name: SimpleName =&gt;
+</span>88 <span style=''>        </span><span style='background: #AEF1AE'>name.length &gt; 0 &amp;&amp; name.last == '=' &amp;&amp; name.head != '=' &amp;&amp; isOperatorPart(name.head)</span><span style=''>
+</span>89 <span style=''>      case _ =&gt;
+</span>90 <span style=''>        </span><span style='background: #AEF1AE'>false</span><span style=''>
+</span>91 <span style=''>    }
+</span>92 <span style=''>
+</span>93 <span style=''>    /** Convert this module name to corresponding module class name */
+</span>94 <span style=''>    def moduleClassName: TypeName = </span><span style='background: #AEF1AE'>name.derived(ModuleClassName).toTypeName</span><span style=''>
+</span>95 <span style=''>
+</span>96 <span style=''>    /** Convert this module class name to corresponding source module name */
+</span>97 <span style=''>    def sourceModuleName: TermName = </span><span style='background: #AEF1AE'>name.toTermName.exclude(ModuleClassName)</span><span style=''>
+</span>98 <span style=''>
+</span>99 <span style=''>    /** If name ends in module class suffix, drop it. This
+</span>100 <span style=''>     *  method needs to work on mangled as well as unmangled names because
+</span>101 <span style=''>     *  it is also called from the backend.
+</span>102 <span style=''>     */
+</span>103 <span style=''>    def stripModuleClassSuffix: N = </span><span style='background: #AEF1AE'>likeSpaced {
+</span>104 <span style=''></span><span style='background: #AEF1AE'>      val semName = name.toTermName match {
+</span>105 <span style=''></span><span style='background: #AEF1AE'>        case name: SimpleName if name.endsWith(&quot;$&quot;) =&gt; name.unmangleClassName
+</span>106 <span style=''></span><span style='background: #AEF1AE'>        case _ =&gt; name
+</span>107 <span style=''></span><span style='background: #AEF1AE'>      }
+</span>108 <span style=''></span><span style='background: #AEF1AE'>      semName.exclude(ModuleClassName)
+</span>109 <span style=''></span><span style='background: #AEF1AE'>    }</span><span style=''>
+</span>110 <span style=''>
+</span>111 <span style=''>    /** If flags is a ModuleClass but not a Package, add module class suffix */
+</span>112 <span style=''>    def adjustIfModuleClass(flags: Flags.FlagSet): N = </span><span style='background: #AEF1AE'>likeSpaced {
+</span>113 <span style=''></span><span style='background: #AEF1AE'>      if (flags is (ModuleClass, butNot = Package)) name.asTypeName.moduleClassName
+</span>114 <span style=''></span><span style='background: #AEF1AE'>      else name.toTermName.exclude(AvoidClashName)
+</span>115 <span style=''></span><span style='background: #AEF1AE'>    }</span><span style=''>
+</span>116 <span style=''>
+</span>117 <span style=''>    /** The expanded name.
+</span>118 <span style=''>     *  This is the fully qualified name of `base` with `ExpandPrefixName` as separator,
+</span>119 <span style=''>     *  followed by `kind` and the name.
+</span>120 <span style=''>     */
+</span>121 <span style=''>    def expandedName(base: Symbol, kind: QualifiedNameKind = ExpandedName)(implicit ctx: Context): N =
+</span>122 <span style=''>      </span><span style='background: #AEF1AE'>likeSpaced { base.fullNameSeparated(ExpandPrefixName, kind, name) }</span><span style=''>
+</span>123 <span style=''>
+</span>124 <span style=''>    /** Revert the expanded name. */
+</span>125 <span style=''>    def unexpandedName: N = </span><span style='background: #AEF1AE'>likeSpaced {
+</span>126 <span style=''></span><span style='background: #AEF1AE'>      name.rewrite { case ExpandedName(_, unexp) =&gt; unexp }
+</span>127 <span style=''></span><span style='background: #AEF1AE'>    }</span><span style=''>
+</span>128 <span style=''>
+</span>129 <span style=''>    /** Remove the variance from the name. */
+</span>130 <span style=''>    def invariantName: N = </span><span style='background: #AEF1AE'>likeSpaced {
+</span>131 <span style=''></span><span style='background: #AEF1AE'>      name.rewrite { case VariantName(invariant, _) =&gt; invariant }
+</span>132 <span style=''></span><span style='background: #AEF1AE'>    }</span><span style=''>
+</span>133 <span style=''>
+</span>134 <span style=''>    def implClassName: N = </span><span style='background: #AEF1AE'>likeSpaced(name ++ tpnme.IMPL_CLASS_SUFFIX)</span><span style=''>
+</span>135 <span style=''>
+</span>136 <span style=''>    def traitOfImplClassName: N = {
+</span>137 <span style=''>      val suffix = </span><span style='background: #AEF1AE'>tpnme.IMPL_CLASS_SUFFIX.toString</span><span style=''>
+</span>138 <span style=''>      </span><span style='background: #AEF1AE'>assert(name.endsWith(suffix), </span><span style='background: #F0ADAD'>name</span><span style='background: #AEF1AE'>)</span><span style=''>
+</span>139 <span style=''>      </span><span style='background: #AEF1AE'>likeSpaced(name.mapLast(_.dropRight(suffix.length)))</span><span style=''>
+</span>140 <span style=''>    }
+</span>141 <span style=''>
+</span>142 <span style=''>    def errorName: N = </span><span style='background: #AEF1AE'>likeSpaced(name ++ nme.ERROR)</span><span style=''>
+</span>143 <span style=''>
+</span>144 <span style=''>    /** Map variance value -1, +1 to 0, 1 */
+</span>145 <span style=''>    private def varianceToNat(v: Int) = </span><span style='background: #AEF1AE'>(v + 1) / 2</span><span style=''>
+</span>146 <span style=''>
+</span>147 <span style=''>    /** Map 0, 1 to variance value -1, +1 */
+</span>148 <span style=''>    private def natToVariance(n: Int) = </span><span style='background: #AEF1AE'>n * 2 - 1</span><span style=''>
+</span>149 <span style=''>
+</span>150 <span style=''>    /** Name with variance prefix: `+` for covariant, `-` for contravariant */
+</span>151 <span style=''>    def withVariance(v: Int): N = {
+</span>152 <span style=''>      val underlying = </span><span style='background: #AEF1AE'>name.exclude(VariantName)</span><span style=''>
+</span>153 <span style=''>      </span><span style='background: #AEF1AE'>likeSpaced(
+</span>154 <span style=''></span><span style='background: #AEF1AE'>          if (v == 0) underlying
+</span>155 <span style=''></span><span style='background: #AEF1AE'>          else VariantName(underlying.toTermName, varianceToNat(v)))</span><span style=''>
+</span>156 <span style=''>    }
+</span>157 <span style=''>
+</span>158 <span style=''>    /** The variance as implied by the variance prefix, or 0 if there is
+</span>159 <span style=''>     *  no variance prefix.
+</span>160 <span style=''>     */
+</span>161 <span style=''>    def variance = </span><span style='background: #AEF1AE'>name.collect { case VariantName(_, n) =&gt; natToVariance(n) }.getOrElse(0)</span><span style=''>
+</span>162 <span style=''>
+</span>163 <span style=''>    def freshened(implicit ctx: Context): N = </span><span style='background: #AEF1AE'>likeSpaced {
+</span>164 <span style=''></span><span style='background: #AEF1AE'>      name.toTermName match {
+</span>165 <span style=''></span><span style='background: #AEF1AE'>        case ModuleClassName(original) =&gt; ModuleClassName(original.freshened)
+</span>166 <span style=''></span><span style='background: #AEF1AE'>        case name =&gt; UniqueName.fresh(name)
+</span>167 <span style=''></span><span style='background: #AEF1AE'>      }
+</span>168 <span style=''></span><span style='background: #AEF1AE'>    }</span><span style=''>
+</span>169 <span style=''>
+</span>170 <span style=''>    /** Is a synthetic function name
+</span>171 <span style=''>     *    - N for FunctionN
+</span>172 <span style=''>     *    - N for ImplicitFunctionN (N &gt;= 1)
+</span>173 <span style=''>      *   - (-1) otherwise
+</span>174 <span style=''>     */
+</span>175 <span style=''>    def functionArity: Int =
+</span>176 <span style=''>      </span><span style='background: #AEF1AE'>functionArityFor(str.Function) max {
+</span>177 <span style=''></span><span style='background: #AEF1AE'>        val n = functionArityFor(str.ImplicitFunction)
+</span>178 <span style=''></span><span style='background: #AEF1AE'>        if (n == 0) </span><span style='background: #F0ADAD'>-1</span><span style='background: #AEF1AE'> else n
+</span>179 <span style=''></span><span style='background: #AEF1AE'>      }</span><span style=''>
+</span>180 <span style=''>
+</span>181 <span style=''>    /** Is a function name
+</span>182 <span style=''>     *    - FunctionN for N &gt;= 0
+</span>183 <span style=''>     *    - ImplicitFunctionN for N &gt;= 1
+</span>184 <span style=''>     *    - false otherwise
+</span>185 <span style=''>     */
+</span>186 <span style=''>    def isFunction: Boolean = </span><span style='background: #AEF1AE'>functionArity &gt;= 0</span><span style=''>
+</span>187 <span style=''>
+</span>188 <span style=''>    /** Is a implicit function name
+</span>189 <span style=''>     *    - ImplicitFunctionN for N &gt;= 1
+</span>190 <span style=''>     *    - false otherwise
+</span>191 <span style=''>     */
+</span>192 <span style=''>    def isImplicitFunction: Boolean = </span><span style='background: #AEF1AE'>functionArityFor(str.ImplicitFunction) &gt;= 1</span><span style=''>
+</span>193 <span style=''>
+</span>194 <span style=''>    /** Is a synthetic function name
+</span>195 <span style=''>     *    - FunctionN for N &gt; 22
+</span>196 <span style=''>     *    - ImplicitFunctionN for N &gt;= 1
+</span>197 <span style=''>     *    - false otherwise
+</span>198 <span style=''>     */
+</span>199 <span style=''>    def isSyntheticFunction: Boolean = {
+</span>200 <span style=''>      </span><span style='background: #AEF1AE'>functionArityFor(str.Function) &gt; MaxImplementedFunctionArity ||
+</span>201 <span style=''></span><span style='background: #AEF1AE'>        functionArityFor(str.ImplicitFunction) &gt;= 1</span><span style=''>
+</span>202 <span style=''>    }
+</span>203 <span style=''>
+</span>204 <span style=''>    /** Parsed function arity for function with some specific prefix */
+</span>205 <span style=''>    private def functionArityFor(prefix: String): Int = {
+</span>206 <span style=''>      if (</span><span style='background: #AEF1AE'>name.startsWith(prefix)</span><span style=''>) </span><span style='background: #AEF1AE'>{
+</span>207 <span style=''></span><span style='background: #AEF1AE'>        val suffix = name.toString.substring(prefix.length)
+</span>208 <span style=''></span><span style='background: #AEF1AE'>        if (suffix.matches(&quot;\\d+&quot;))
+</span>209 <span style=''></span><span style='background: #AEF1AE'>          suffix.toInt
+</span>210 <span style=''></span><span style='background: #AEF1AE'>        else
+</span>211 <span style=''></span><span style='background: #AEF1AE'>          -1
+</span>212 <span style=''></span><span style='background: #AEF1AE'>      }</span><span style=''> else </span><span style='background: #AEF1AE'>-1</span><span style=''>
+</span>213 <span style=''>    }
+</span>214 <span style=''>
+</span>215 <span style=''>    /** The name of the generic runtime operation corresponding to an array operation */
+</span>216 <span style=''>    def genericArrayOp: TermName = </span><span style='background: #AEF1AE'>name</span><span style=''> match {
+</span>217 <span style=''>      case nme.apply =&gt; </span><span style='background: #AEF1AE'>nme.array_apply</span><span style=''>
+</span>218 <span style=''>      case nme.length =&gt; </span><span style='background: #AEF1AE'>nme.array_length</span><span style=''>
+</span>219 <span style=''>      case nme.update =&gt; </span><span style='background: #AEF1AE'>nme.array_update</span><span style=''>
+</span>220 <span style=''>      case nme.clone_ =&gt; </span><span style='background: #AEF1AE'>nme.array_clone</span><span style=''>
+</span>221 <span style=''>    }
+</span>222 <span style=''>
+</span>223 <span style=''>    /** The name of the primitive runtime operation corresponding to an array operation */
+</span>224 <span style=''>    def primitiveArrayOp: TermName = </span><span style='background: #AEF1AE'>name</span><span style=''> match {
+</span>225 <span style=''>      case nme.apply =&gt; </span><span style='background: #AEF1AE'>nme.primitive.arrayApply</span><span style=''>
+</span>226 <span style=''>      case nme.length =&gt; </span><span style='background: #AEF1AE'>nme.primitive.arrayLength</span><span style=''>
+</span>227 <span style=''>      case nme.update =&gt; </span><span style='background: #AEF1AE'>nme.primitive.arrayUpdate</span><span style=''>
+</span>228 <span style=''>      case nme.clone_ =&gt; </span><span style='background: #AEF1AE'>nme.clone_</span><span style=''>
+</span>229 <span style=''>    }
+</span>230 <span style=''>
+</span>231 <span style=''>    def specializedFor(classTargs: List[Types.Type], classTargsNames: List[Name], methodTargs: List[Types.Type], methodTarsNames: List[Name])(implicit ctx: Context): name.ThisName = {
+</span>232 <span style=''>
+</span>233 <span style=''>      val methodTags: Seq[Name] = (</span><span style='background: #AEF1AE'>methodTargs zip methodTarsNames).sortBy(</span><span style='background: #F0ADAD'>_._2</span><span style='background: #AEF1AE'>).map(x =&gt; </span><span style='background: #F0ADAD'>defn.typeTag(x._1)</span><span style='background: #AEF1AE'>)</span><span style=''>
+</span>234 <span style=''>      val classTags: Seq[Name] = (</span><span style='background: #AEF1AE'>classTargs zip classTargsNames).sortBy(_._2).map(x =&gt; defn.typeTag(x._1))</span><span style=''>
+</span>235 <span style=''>
+</span>236 <span style=''>      </span><span style='background: #AEF1AE'>name.likeSpaced(name ++ nme.specializedTypeNames.prefix ++
+</span>237 <span style=''></span><span style='background: #AEF1AE'>        methodTags.fold(nme.EMPTY)(</span><span style='background: #F0ADAD'>_ ++ _</span><span style='background: #AEF1AE'>) ++ nme.specializedTypeNames.separator ++
+</span>238 <span style=''></span><span style='background: #AEF1AE'>        classTags.fold(nme.EMPTY)(_ ++ _) ++ nme.specializedTypeNames.suffix)</span><span style=''>
+</span>239 <span style=''>    }
+</span>240 <span style=''>
+</span>241 <span style=''>    /** If name length exceeds allowable limit, replace part of it by hash */
+</span>242 <span style=''>    def compactified(implicit ctx: Context): TermName = </span><span style='background: #F0ADAD'>termName(compactify(name.toString))</span><span style=''>
+</span>243 <span style=''>
+</span>244 <span style=''>    def unmangleClassName: N = </span><span style='background: #AEF1AE'>name.toTermName</span><span style=''> match {
+</span>245 <span style=''>      case name: SimpleName
+</span>246 <span style=''>      if </span><span style='background: #AEF1AE'>name.endsWith(str.MODULE_SUFFIX) &amp;&amp; !nme.falseModuleClassNames.contains(name)</span><span style=''> =&gt;
+</span>247 <span style=''>        </span><span style='background: #AEF1AE'>likeSpaced(name.dropRight(str.MODULE_SUFFIX.length).moduleClassName)</span><span style=''>
+</span>248 <span style=''>      case _ =&gt; </span><span style='background: #AEF1AE'>name</span><span style=''>
+</span>249 <span style=''>    }
+</span>250 <span style=''>
+</span>251 <span style=''>    def unmangle(kind: NameKind): N = </span><span style='background: #AEF1AE'>likeSpaced {
+</span>252 <span style=''></span><span style='background: #AEF1AE'>      name rewrite {
+</span>253 <span style=''></span><span style='background: #AEF1AE'>        case unmangled: SimpleName =&gt;
+</span>254 <span style=''></span><span style='background: #AEF1AE'>          kind.unmangle(unmangled)
+</span>255 <span style=''></span><span style='background: #AEF1AE'>        case ExpandedName(prefix, last) =&gt;
+</span>256 <span style=''></span><span style='background: #AEF1AE'>          </span><span style='background: #F0ADAD'>kind.unmangle(last) rewrite {
+</span>257 <span style=''></span><span style='background: #F0ADAD'>            case kernel: SimpleName =&gt;
+</span>258 <span style=''></span><span style='background: #F0ADAD'>              ExpandedName(prefix, kernel)
+</span>259 <span style=''></span><span style='background: #F0ADAD'>          }</span><span style='background: #AEF1AE'>
+</span>260 <span style=''></span><span style='background: #AEF1AE'>      }
+</span>261 <span style=''></span><span style='background: #AEF1AE'>    }</span><span style=''>
+</span>262 <span style=''>
+</span>263 <span style=''>    def unmangle(kinds: List[NameKind]): N = {
+</span>264 <span style=''>      val unmangled = </span><span style='background: #AEF1AE'>(name /: kinds)(_.unmangle(_))</span><span style=''>
+</span>265 <span style=''>      if (</span><span style='background: #AEF1AE'>unmangled eq name</span><span style=''>) </span><span style='background: #AEF1AE'>name</span><span style=''> else </span><span style='background: #AEF1AE'>unmangled.unmangle(kinds)</span><span style=''>
+</span>266 <span style=''>    }
+</span>267 <span style=''>  }
+</span>268 <span style=''>
+</span>269 <span style=''>  implicit class TermNameDecorator(val name: TermName) extends AnyVal {
+</span>270 <span style=''>    import nme._
+</span>271 <span style=''>
+</span>272 <span style=''>    def setterName: TermName = </span><span style='background: #AEF1AE'>name.exclude(FieldName) ++ str.SETTER_SUFFIX</span><span style=''>
+</span>273 <span style=''>
+</span>274 <span style=''>    def getterName: TermName =
+</span>275 <span style=''>      </span><span style='background: #AEF1AE'>name.exclude(FieldName).mapLast(n =&gt;
+</span>276 <span style=''></span><span style='background: #AEF1AE'>        if (n.endsWith(str.SETTER_SUFFIX)) n.take(n.length - str.SETTER_SUFFIX.length).asSimpleName
+</span>277 <span style=''></span><span style='background: #AEF1AE'>        else </span><span style='background: #F0ADAD'>n</span><span style='background: #AEF1AE'>)</span><span style=''>
+</span>278 <span style=''>
+</span>279 <span style=''>    def fieldName: TermName =
+</span>280 <span style=''>      if (</span><span style='background: #AEF1AE'>name.isSetterName</span><span style=''>) {
+</span>281 <span style=''>        </span><span style='background: #AEF1AE'>if (name.is(TraitSetterName)) {
+</span>282 <span style=''></span><span style='background: #AEF1AE'>          val TraitSetterName(_, original) = name
+</span>283 <span style=''></span><span style='background: #AEF1AE'>          original.fieldName
+</span>284 <span style=''></span><span style='background: #AEF1AE'>        }
+</span>285 <span style=''></span><span style='background: #AEF1AE'>        else getterName.fieldName</span><span style=''>
+</span>286 <span style=''>      }
+</span>287 <span style=''>      else </span><span style='background: #AEF1AE'>FieldName(name)</span><span style=''>
+</span>288 <span style=''>
+</span>289 <span style=''>    def stripScala2LocalSuffix: TermName =
+</span>290 <span style=''>      if (</span><span style='background: #AEF1AE'>name.isScala2LocalSuffix</span><span style=''>) </span><span style='background: #F0ADAD'>name.asSimpleName.dropRight(1)</span><span style=''> else </span><span style='background: #AEF1AE'>name</span><span style=''>
+</span>291 <span style=''>
+</span>292 <span style=''>    /** The name unary_x for a prefix operator x */
+</span>293 <span style=''>    def toUnaryName: TermName = </span><span style='background: #F0ADAD'>name</span><span style=''> match {
+</span>294 <span style=''>      case raw.MINUS =&gt; </span><span style='background: #F0ADAD'>UNARY_-</span><span style=''>
+</span>295 <span style=''>      case raw.PLUS  =&gt; </span><span style='background: #F0ADAD'>UNARY_+</span><span style=''>
+</span>296 <span style=''>      case raw.TILDE =&gt; </span><span style='background: #F0ADAD'>UNARY_~</span><span style=''>
+</span>297 <span style=''>      case raw.BANG  =&gt; </span><span style='background: #F0ADAD'>UNARY_!</span><span style=''>
+</span>298 <span style=''>      case _ =&gt; </span><span style='background: #F0ADAD'>name</span><span style=''>
+</span>299 <span style=''>    }
+</span>300 <span style=''>  }
+</span>301 <span style=''>}
+</span></pre>
+          </div>
+          <div class="tab-pane" id="statementlist">
+            <table cellspacing="0" cellpadding="0" class="table statementlist">
+      <tr>
+        <th>Line</th>
+        <th>Stmt Id</th>
+        <th>Pos</th>
+        <th>Tree</th>
+        <th>Symbol</th>
+        <th>Code</th>
+      </tr><tr>
+        <td>
+          32
+        </td>
+        <td>
+          17281
+        </td>
+        <td>
+          923
+          -
+          929
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          &quot;$$$$&quot;
+        </td>
+      </tr><tr>
+        <td>
+          33
+        </td>
+        <td>
+          17282
+        </td>
+        <td>
+          953
+          -
+          989
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.config.Settings.Setting.SettingDecorator.value
+        </td>
+        <td style="background: #F0ADAD">
+          Settings.this.Setting.SettingDecorator[Int](Contexts.this.Context.toBase(ctx).settings.XmaxClassfileName).value(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          34
+        </td>
+        <td>
+          17285
+        </td>
+        <td>
+          1037
+          -
+          1071
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Int.-
+        </td>
+        <td style="background: #F0ADAD">
+          limit.-(6).-(2.*(marker.length())).-(32)
+        </td>
+      </tr><tr>
+        <td>
+          34
+        </td>
+        <td>
+          17284
+        </td>
+        <td>
+          1032
+          -
+          1033
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          2
+        </td>
+      </tr><tr>
+        <td>
+          34
+        </td>
+        <td>
+          17287
+        </td>
+        <td>
+          1016
+          -
+          1072
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.runtime.RichInt.min
+        </td>
+        <td style="background: #F0ADAD">
+          scala.Predef.intWrapper(limit.-(6)).min(2.*(limit.-(6).-(2.*(marker.length())).-(32)))
+        </td>
+      </tr><tr>
+        <td>
+          34
+        </td>
+        <td>
+          17286
+        </td>
+        <td>
+          1032
+          -
+          1072
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Int.*
+        </td>
+        <td style="background: #F0ADAD">
+          2.*(limit.-(6).-(2.*(marker.length())).-(32))
+        </td>
+      </tr><tr>
+        <td>
+          34
+        </td>
+        <td>
+          17283
+        </td>
+        <td>
+          1017
+          -
+          1026
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Int.-
+        </td>
+        <td style="background: #F0ADAD">
+          limit.-(6)
+        </td>
+      </tr><tr>
+        <td>
+          37
+        </td>
+        <td>
+          17288
+        </td>
+        <td>
+          1145
+          -
+          1156
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.IndexedSeqOptimized.take
+        </td>
+        <td style="background: #F0ADAD">
+          scala.Predef.augmentString(s).take(edge)
+        </td>
+      </tr><tr>
+        <td>
+          38
+        </td>
+        <td>
+          17289
+        </td>
+        <td>
+          1178
+          -
+          1194
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.IndexedSeqOptimized.takeRight
+        </td>
+        <td style="background: #F0ADAD">
+          scala.Predef.augmentString(s).takeRight(edge)
+        </td>
+      </tr><tr>
+        <td>
+          40
+        </td>
+        <td>
+          17290
+        </td>
+        <td>
+          1213
+          -
+          1222
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          scala.collection.immutable.StringLike.toArray
+        </td>
+        <td style="background: #F0ADAD">
+          scala.Predef.augmentString(s).toArray[Char]((ClassTag.Char: scala.reflect.ClassTag[Char]))
+        </td>
+      </tr><tr>
+        <td>
+          41
+        </td>
+        <td>
+          17291
+        </td>
+        <td>
+          1256
+          -
+          1258
+        </td>
+        <td>
+          ApplyImplicitView
+        </td>
+        <td>
+          scala.Predef.ArrayCharSequence
+        </td>
+        <td style="background: #F0ADAD">
+          scala.Predef.ArrayCharSequence(cs)
+        </td>
+      </tr><tr>
+        <td>
+          41
+        </td>
+        <td>
+          17292
+        </td>
+        <td>
+          1243
+          -
+          1258
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.io.Codec.toUTF8
+        </td>
+        <td style="background: #F0ADAD">
+          scala.io.Codec.toUTF8(scala.Predef.ArrayCharSequence(cs))
+        </td>
+      </tr><tr>
+        <td>
+          42
+        </td>
+        <td>
+          17293
+        </td>
+        <td>
+          1267
+          -
+          1283
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.security.MessageDigest.update
+        </td>
+        <td style="background: #F0ADAD">
+          compactify.this.md5.update(bytes)
+        </td>
+      </tr><tr>
+        <td>
+          43
+        </td>
+        <td>
+          17294
+        </td>
+        <td>
+          1308
+          -
+          1320
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.security.MessageDigest.digest
+        </td>
+        <td style="background: #F0ADAD">
+          compactify.this.md5.digest()
+        </td>
+      </tr><tr>
+        <td>
+          43
+        </td>
+        <td>
+          17297
+        </td>
+        <td>
+          1321
+          -
+          1321
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          scala.Array.canBuildFrom
+        </td>
+        <td style="background: #F0ADAD">
+          scala.this.Array.canBuildFrom[String]((ClassTag.apply[String](classOf[java.lang.String]): scala.reflect.ClassTag[String]))
+        </td>
+      </tr><tr>
+        <td>
+          43
+        </td>
+        <td>
+          17299
+        </td>
+        <td>
+          1308
+          -
+          1364
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.collection.TraversableOnce.mkString
+        </td>
+        <td style="background: #F0ADAD">
+          scala.Predef.refArrayOps[String](scala.Predef.byteArrayOps(compactify.this.md5.digest()).map[String, Array[String]](((b: Byte) =&gt; scala.Predef.intWrapper(b.&amp;(255)).toHexString))(scala.this.Array.canBuildFrom[String]((ClassTag.apply[String](classOf[java.lang.String]): scala.reflect.ClassTag[String])))).mkString
+        </td>
+      </tr><tr>
+        <td>
+          43
+        </td>
+        <td>
+          17296
+        </td>
+        <td>
+          1332
+          -
+          1353
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.runtime.RichInt.toHexString
+        </td>
+        <td style="background: #F0ADAD">
+          scala.Predef.intWrapper(b.&amp;(255)).toHexString
+        </td>
+      </tr><tr>
+        <td>
+          43
+        </td>
+        <td>
+          17295
+        </td>
+        <td>
+          1332
+          -
+          1340
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Byte.&amp;
+        </td>
+        <td style="background: #F0ADAD">
+          b.&amp;(255)
+        </td>
+      </tr><tr>
+        <td>
+          43
+        </td>
+        <td>
+          17298
+        </td>
+        <td>
+          1308
+          -
+          1354
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          scala.collection.TraversableLike.map
+        </td>
+        <td style="background: #F0ADAD">
+          scala.Predef.byteArrayOps(compactify.this.md5.digest()).map[String, Array[String]](((b: Byte) =&gt; scala.Predef.intWrapper(b.&amp;(255)).toHexString))(scala.this.Array.canBuildFrom[String]((ClassTag.apply[String](classOf[java.lang.String]): scala.reflect.ClassTag[String])))
+        </td>
+      </tr><tr>
+        <td>
+          45
+        </td>
+        <td>
+          17300
+        </td>
+        <td>
+          1374
+          -
+          1418
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.String.+
+        </td>
+        <td style="background: #F0ADAD">
+          prefix.+(marker).+(md5chars).+(marker).+(suffix)
+        </td>
+      </tr><tr>
+        <td>
+          48
+        </td>
+        <td>
+          17303
+        </td>
+        <td>
+          1481
+          -
+          1498
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Int./
+        </td>
+        <td style="background: #F0ADAD">
+          MaxNameLength./(4)
+        </td>
+      </tr><tr>
+        <td>
+          48
+        </td>
+        <td>
+          17305
+        </td>
+        <td>
+          1472
+          -
+          1499
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          dotty.tools.dotc.core.NameOps.compactify.toMD5
+        </td>
+        <td style="background: #F0ADAD">
+          toMD5(s, MaxNameLength./(4))
+        </td>
+      </tr><tr>
+        <td>
+          48
+        </td>
+        <td>
+          17302
+        </td>
+        <td>
+          1465
+          -
+          1466
+        </td>
+        <td>
+          Ident
+        </td>
+        <td>
+          dotty.tools.dotc.core.NameOps.compactify.s
+        </td>
+        <td style="background: #F0ADAD">
+          s
+        </td>
+      </tr><tr>
+        <td>
+          48
+        </td>
+        <td>
+          17304
+        </td>
+        <td>
+          1472
+          -
+          1499
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.core.NameOps.compactify.toMD5
+        </td>
+        <td style="background: #F0ADAD">
+          toMD5(s, MaxNameLength./(4))
+        </td>
+      </tr><tr>
+        <td>
+          48
+        </td>
+        <td>
+          17301
+        </td>
+        <td>
+          1438
+          -
+          1463
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Int.&lt;=
+        </td>
+        <td style="background: #F0ADAD">
+          s.length().&lt;=(MaxNameLength)
+        </td>
+      </tr><tr>
+        <td>
+          55
+        </td>
+        <td>
+          17306
+        </td>
+        <td>
+          1657
+          -
+          1661
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.NameOps.NameDecorator.name
+        </td>
+        <td style="background: #AEF1AE">
+          NameDecorator.this.name
+        </td>
+      </tr><tr>
+        <td>
+          56
+        </td>
+        <td>
+          17307
+        </td>
+        <td>
+          1701
+          -
+          1708
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Function1.apply
+        </td>
+        <td style="background: #AEF1AE">
+          f.apply(name)
+        </td>
+      </tr><tr>
+        <td>
+          57
+        </td>
+        <td>
+          17308
+        </td>
+        <td>
+          1738
+          -
+          1767
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.core.NameOps.NameDecorator.testSimple
+        </td>
+        <td style="background: #AEF1AE">
+          NameOps.this.NameDecorator[dotty.tools.dotc.core.Names.TermName](name.toTermName).testSimple(f)
+        </td>
+      </tr><tr>
+        <td>
+          58
+        </td>
+        <td>
+          17309
+        </td>
+        <td>
+          1784
+          -
+          1789
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          false
+        </td>
+      </tr><tr>
+        <td>
+          62
+        </td>
+        <td>
+          17312
+        </td>
+        <td>
+          1861
+          -
+          1873
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          dotty.tools.dotc.core.Names.PreName.toTermName
+        </td>
+        <td style="background: #AEF1AE">
+          n.toTermName
+        </td>
+      </tr><tr>
+        <td>
+          62
+        </td>
+        <td>
+          17315
+        </td>
+        <td>
+          1840
+          -
+          1908
+        </td>
+        <td>
+          TypeApply
+        </td>
+        <td>
+          scala.Any.asInstanceOf
+        </td>
+        <td style="background: #AEF1AE">
+          if (NameDecorator.this.name.isTermName)
+  n.toTermName
+else
+  n.toTypeName.asInstanceOf[N]
+        </td>
+      </tr><tr>
+        <td>
+          62
+        </td>
+        <td>
+          17314
+        </td>
+        <td>
+          1879
+          -
+          1891
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          dotty.tools.dotc.core.Names.PreName.toTypeName
+        </td>
+        <td style="background: #AEF1AE">
+          n.toTypeName
+        </td>
+      </tr><tr>
+        <td>
+          62
+        </td>
+        <td>
+          17311
+        </td>
+        <td>
+          1861
+          -
+          1873
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Names.PreName.toTermName
+        </td>
+        <td style="background: #AEF1AE">
+          n.toTermName
+        </td>
+      </tr><tr>
+        <td>
+          62
+        </td>
+        <td>
+          17313
+        </td>
+        <td>
+          1879
+          -
+          1891
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Names.PreName.toTypeName
+        </td>
+        <td style="background: #AEF1AE">
+          n.toTypeName
+        </td>
+      </tr><tr>
+        <td>
+          62
+        </td>
+        <td>
+          17310
+        </td>
+        <td>
+          1844
+          -
+          1859
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Names.Name.isTermName
+        </td>
+        <td style="background: #AEF1AE">
+          NameDecorator.this.name.isTermName
+        </td>
+      </tr><tr>
+        <td>
+          64
+        </td>
+        <td>
+          17318
+        </td>
+        <td>
+          1961
+          -
+          1986
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.Object.==
+        </td>
+        <td style="background: #AEF1AE">
+          NameDecorator.this.name.==(StdNames.nme.TRAIT_CONSTRUCTOR)
+        </td>
+      </tr><tr>
+        <td>
+          64
+        </td>
+        <td>
+          17317
+        </td>
+        <td>
+          1969
+          -
+          1986
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.StdNames.ScalaNames.TRAIT_CONSTRUCTOR
+        </td>
+        <td style="background: #AEF1AE">
+          StdNames.nme.TRAIT_CONSTRUCTOR
+        </td>
+      </tr><tr>
+        <td>
+          64
+        </td>
+        <td>
+          17316
+        </td>
+        <td>
+          1946
+          -
+          1957
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.StdNames.ScalaNames.CONSTRUCTOR
+        </td>
+        <td style="background: #AEF1AE">
+          StdNames.nme.CONSTRUCTOR
+        </td>
+      </tr><tr>
+        <td>
+          64
+        </td>
+        <td>
+          17319
+        </td>
+        <td>
+          1938
+          -
+          1986
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Boolean.||
+        </td>
+        <td style="background: #AEF1AE">
+          NameDecorator.this.name.==(StdNames.nme.CONSTRUCTOR).||(NameDecorator.this.name.==(StdNames.nme.TRAIT_CONSTRUCTOR))
+        </td>
+      </tr><tr>
+        <td>
+          65
+        </td>
+        <td>
+          17321
+        </td>
+        <td>
+          2021
+          -
+          2047
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.Object.==
+        </td>
+        <td style="background: #AEF1AE">
+          NameDecorator.this.name.==(StdNames.nme.STATIC_CONSTRUCTOR)
+        </td>
+      </tr><tr>
+        <td>
+          65
+        </td>
+        <td>
+          17320
+        </td>
+        <td>
+          2029
+          -
+          2047
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.StdNames.ScalaNames.STATIC_CONSTRUCTOR
+        </td>
+        <td style="background: #AEF1AE">
+          StdNames.nme.STATIC_CONSTRUCTOR
+        </td>
+      </tr><tr>
+        <td>
+          66
+        </td>
+        <td>
+          17322
+        </td>
+        <td>
+          2075
+          -
+          2112
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.core.Names.Name.startsWith
+        </td>
+        <td style="background: #AEF1AE">
+          NameDecorator.this.name.startsWith(&quot;&lt;local &quot;)
+        </td>
+      </tr><tr>
+        <td>
+          67
+        </td>
+        <td>
+          17323
+        </td>
+        <td>
+          2141
+          -
+          2185
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.String.contains
+        </td>
+        <td style="background: #AEF1AE">
+          NameDecorator.this.name.toString().contains(&quot;rs$line$&quot;)
+        </td>
+      </tr><tr>
+        <td>
+          68
+        </td>
+        <td>
+          17324
+        </td>
+        <td>
+          2213
+          -
+          2258
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.String.contains
+        </td>
+        <td style="background: #AEF1AE">
+          NameDecorator.this.name.toString().contains(&quot;$assign&quot;)
+        </td>
+      </tr><tr>
+        <td>
+          69
+        </td>
+        <td>
+          17325
+        </td>
+        <td>
+          2282
+          -
+          2313
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.core.Names.Name.endsWith
+        </td>
+        <td style="background: #AEF1AE">
+          NameDecorator.this.name.endsWith(&quot;_=&quot;)
+        </td>
+      </tr><tr>
+        <td>
+          70
+        </td>
+        <td>
+          17327
+        </td>
+        <td>
+          2344
+          -
+          2371
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.core.NameOps.NameDecorator.testSimple
+        </td>
+        <td style="background: #AEF1AE">
+          NameDecorator.this.testSimple(((x$1: dotty.tools.dotc.core.Names.SimpleName) =&gt; x$1.endsWith(&quot; &quot;)))
+        </td>
+      </tr><tr>
+        <td>
+          70
+        </td>
+        <td>
+          17326
+        </td>
+        <td>
+          2355
+          -
+          2370
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.core.Names.SimpleName.endsWith
+        </td>
+        <td style="background: #AEF1AE">
+          x$1.endsWith(&quot; &quot;)
+        </td>
+      </tr><tr>
+        <td>
+          71
+        </td>
+        <td>
+          17330
+        </td>
+        <td>
+          2451
+          -
+          2460
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.runtime.RichChar.isDigit
+        </td>
+        <td style="background: #AEF1AE">
+          scala.Predef.charWrapper(x$2).isDigit
+        </td>
+      </tr><tr>
+        <td>
+          71
+        </td>
+        <td>
+          17333
+        </td>
+        <td>
+          2397
+          -
+          2462
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.core.NameOps.NameDecorator.testSimple
+        </td>
+        <td style="background: #AEF1AE">
+          NameDecorator.this.testSimple(((n: dotty.tools.dotc.core.Names.SimpleName) =&gt; n.startsWith(&quot;_&quot;).&amp;&amp;(n.drop(1).forall(((x$2: Char) =&gt; scala.Predef.charWrapper(x$2).isDigit)))))
+        </td>
+      </tr><tr>
+        <td>
+          71
+        </td>
+        <td>
+          17332
+        </td>
+        <td>
+          2413
+          -
+          2461
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Boolean.&amp;&amp;
+        </td>
+        <td style="background: #AEF1AE">
+          n.startsWith(&quot;_&quot;).&amp;&amp;(n.drop(1).forall(((x$2: Char) =&gt; scala.Predef.charWrapper(x$2).isDigit)))
+        </td>
+      </tr><tr>
+        <td>
+          71
+        </td>
+        <td>
+          17329
+        </td>
+        <td>
+          2441
+          -
+          2442
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          1
+        </td>
+      </tr><tr>
+        <td>
+          71
+        </td>
+        <td>
+          17328
+        </td>
+        <td>
+          2426
+          -
+          2429
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          &quot;_&quot;
+        </td>
+      </tr><tr>
+        <td>
+          71
+        </td>
+        <td>
+          17331
+        </td>
+        <td>
+          2434
+          -
+          2461
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.core.Names.SimpleName.forall
+        </td>
+        <td style="background: #AEF1AE">
+          n.drop(1).forall(((x$2: Char) =&gt; scala.Predef.charWrapper(x$2).isDigit))
+        </td>
+      </tr><tr>
+        <td>
+          74
+        </td>
+        <td>
+          17346
+        </td>
+        <td>
+          2534
+          -
+          2757
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.core.NameOps.NameDecorator.testSimple
+        </td>
+        <td style="background: #AEF1AE">
+          NameDecorator.this.testSimple(((n: dotty.tools.dotc.core.Names.SimpleName) =&gt; n.length.&gt;(0).&amp;&amp;({
+  val first: Char = n.head;
+  scala.Predef.charWrapper(first).isLower.&amp;&amp;(scala.Predef.charWrapper(first).isLetter).||(first.==('_')).&amp;&amp;(n.!=(StdNames.nme.false_)).&amp;&amp;(n.!=(StdNames.nme.true_)).&amp;&amp;(n.!=(StdNames.nme.null_))
+})))
+        </td>
+      </tr><tr>
+        <td>
+          75
+        </td>
+        <td>
+          17345
+        </td>
+        <td>
+          2558
+          -
+          2751
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Boolean.&amp;&amp;
+        </td>
+        <td style="background: #AEF1AE">
+          n.length.&gt;(0).&amp;&amp;({
+  val first: Char = n.head;
+  scala.Predef.charWrapper(first).isLower.&amp;&amp;(scala.Predef.charWrapper(first).isLetter).||(first.==('_')).&amp;&amp;(n.!=(StdNames.nme.false_)).&amp;&amp;(n.!=(StdNames.nme.true_)).&amp;&amp;(n.!=(StdNames.nme.null_))
+})
+        </td>
+      </tr><tr>
+        <td>
+          75
+        </td>
+        <td>
+          17334
+        </td>
+        <td>
+          2569
+          -
+          2570
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          0
+        </td>
+      </tr><tr>
+        <td>
+          76
+        </td>
+        <td>
+          17335
+        </td>
+        <td>
+          2596
+          -
+          2602
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Names.SimpleName.head
+        </td>
+        <td style="background: #AEF1AE">
+          n.head
+        </td>
+      </tr><tr>
+        <td>
+          77
+        </td>
+        <td>
+          17336
+        </td>
+        <td>
+          2631
+          -
+          2645
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.runtime.RichChar.isLetter
+        </td>
+        <td style="background: #AEF1AE">
+          scala.Predef.charWrapper(first).isLetter
+        </td>
+      </tr><tr>
+        <td>
+          77
+        </td>
+        <td>
+          17337
+        </td>
+        <td>
+          2650
+          -
+          2662
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Char.==
+        </td>
+        <td style="background: #AEF1AE">
+          first.==('_')
+        </td>
+      </tr><tr>
+        <td>
+          78
+        </td>
+        <td>
+          17339
+        </td>
+        <td>
+          2678
+          -
+          2689
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.Object.!=
+        </td>
+        <td style="background: #AEF1AE">
+          n.!=(StdNames.nme.false_)
+        </td>
+      </tr><tr>
+        <td>
+          78
+        </td>
+        <td>
+          17338
+        </td>
+        <td>
+          2683
+          -
+          2689
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.StdNames.ScalaNames.false_
+        </td>
+        <td style="background: #AEF1AE">
+          StdNames.nme.false_
+        </td>
+      </tr><tr>
+        <td>
+          79
+        </td>
+        <td>
+          17341
+        </td>
+        <td>
+          2705
+          -
+          2715
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.Object.!=
+        </td>
+        <td style="background: #AEF1AE">
+          n.!=(StdNames.nme.true_)
+        </td>
+      </tr><tr>
+        <td>
+          79
+        </td>
+        <td>
+          17340
+        </td>
+        <td>
+          2710
+          -
+          2715
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.StdNames.ScalaNames.true_
+        </td>
+        <td style="background: #AEF1AE">
+          StdNames.nme.true_
+        </td>
+      </tr><tr>
+        <td>
+          80
+        </td>
+        <td>
+          17344
+        </td>
+        <td>
+          2612
+          -
+          2742
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Boolean.&amp;&amp;
+        </td>
+        <td style="background: #AEF1AE">
+          scala.Predef.charWrapper(first).isLower.&amp;&amp;(scala.Predef.charWrapper(first).isLetter).||(first.==('_')).&amp;&amp;(n.!=(StdNames.nme.false_)).&amp;&amp;(n.!=(StdNames.nme.true_)).&amp;&amp;(n.!=(StdNames.nme.null_))
+        </td>
+      </tr><tr>
+        <td>
+          80
+        </td>
+        <td>
+          17343
+        </td>
+        <td>
+          2731
+          -
+          2741
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.Object.!=
+        </td>
+        <td style="background: #AEF1AE">
+          n.!=(StdNames.nme.null_)
+        </td>
+      </tr><tr>
+        <td>
+          80
+        </td>
+        <td>
+          17342
+        </td>
+        <td>
+          2736
+          -
+          2741
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.StdNames.ScalaNames.null_
+        </td>
+        <td style="background: #AEF1AE">
+          StdNames.nme.null_
+        </td>
+      </tr><tr>
+        <td>
+          84
+        </td>
+        <td>
+          17347
+        </td>
+        <td>
+          2797
+          -
+          2801
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.NameOps.NameDecorator.name
+        </td>
+        <td style="background: #AEF1AE">
+          NameDecorator.this.name
+        </td>
+      </tr><tr>
+        <td>
+          86
+        </td>
+        <td>
+          17348
+        </td>
+        <td>
+          2865
+          -
+          2870
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          false
+        </td>
+      </tr><tr>
+        <td>
+          88
+        </td>
+        <td>
+          17354
+        </td>
+        <td>
+          2910
+          -
+          2994
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Boolean.&amp;&amp;
+        </td>
+        <td style="background: #AEF1AE">
+          name.length.&gt;(0).&amp;&amp;(name.last.==('=')).&amp;&amp;(name.head.!=('=')).&amp;&amp;(util.Chars.isOperatorPart(name.head))
+        </td>
+      </tr><tr>
+        <td>
+          88
+        </td>
+        <td>
+          17350
+        </td>
+        <td>
+          2929
+          -
+          2945
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Char.==
+        </td>
+        <td style="background: #AEF1AE">
+          name.last.==('=')
+        </td>
+      </tr><tr>
+        <td>
+          88
+        </td>
+        <td>
+          17353
+        </td>
+        <td>
+          2969
+          -
+          2994
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.util.Chars.isOperatorPart
+        </td>
+        <td style="background: #AEF1AE">
+          util.Chars.isOperatorPart(name.head)
+        </td>
+      </tr><tr>
+        <td>
+          88
+        </td>
+        <td>
+          17349
+        </td>
+        <td>
+          2924
+          -
+          2925
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          0
+        </td>
+      </tr><tr>
+        <td>
+          88
+        </td>
+        <td>
+          17352
+        </td>
+        <td>
+          2984
+          -
+          2993
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Names.SimpleName.head
+        </td>
+        <td style="background: #AEF1AE">
+          name.head
+        </td>
+      </tr><tr>
+        <td>
+          88
+        </td>
+        <td>
+          17351
+        </td>
+        <td>
+          2949
+          -
+          2965
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Char.!=
+        </td>
+        <td style="background: #AEF1AE">
+          name.head.!=('=')
+        </td>
+      </tr><tr>
+        <td>
+          90
+        </td>
+        <td>
+          17355
+        </td>
+        <td>
+          3019
+          -
+          3024
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          false
+        </td>
+      </tr><tr>
+        <td>
+          94
+        </td>
+        <td>
+          17357
+        </td>
+        <td>
+          3139
+          -
+          3179
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Names.Name.toTypeName
+        </td>
+        <td style="background: #AEF1AE">
+          NameDecorator.this.name.derived(NameKinds.ModuleClassName).toTypeName
+        </td>
+      </tr><tr>
+        <td>
+          94
+        </td>
+        <td>
+          17356
+        </td>
+        <td>
+          3152
+          -
+          3167
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.NameKinds.ModuleClassName
+        </td>
+        <td style="background: #AEF1AE">
+          NameKinds.ModuleClassName
+        </td>
+      </tr><tr>
+        <td>
+          97
+        </td>
+        <td>
+          17359
+        </td>
+        <td>
+          3296
+          -
+          3336
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.core.Names.TermName.exclude
+        </td>
+        <td style="background: #AEF1AE">
+          NameDecorator.this.name.toTermName.exclude(NameKinds.ModuleClassName)
+        </td>
+      </tr><tr>
+        <td>
+          97
+        </td>
+        <td>
+          17358
+        </td>
+        <td>
+          3320
+          -
+          3335
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.NameKinds.ModuleClassName
+        </td>
+        <td style="background: #AEF1AE">
+          NameKinds.ModuleClassName
+        </td>
+      </tr><tr>
+        <td>
+          103
+        </td>
+        <td>
+          17366
+        </td>
+        <td>
+          3560
+          -
+          3770
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.core.NameOps.NameDecorator.likeSpaced
+        </td>
+        <td style="background: #AEF1AE">
+          NameDecorator.this.likeSpaced({
+  val semName: dotty.tools.dotc.core.Names.Name = NameDecorator.this.name.toTermName match {
+    case (name @ (_: dotty.tools.dotc.core.Names.SimpleName)) if name.endsWith(&quot;$&quot;) =&gt; NameOps.this.NameDecorator[dotty.tools.dotc.core.Names.SimpleName](name).unmangleClassName
+    case _ =&gt; NameDecorator.this.name
+  };
+  semName.exclude(NameKinds.ModuleClassName)
+})
+        </td>
+      </tr><tr>
+        <td>
+          104
+        </td>
+        <td>
+          17360
+        </td>
+        <td>
+          3593
+          -
+          3608
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Names.Name.toTermName
+        </td>
+        <td style="background: #AEF1AE">
+          NameDecorator.this.name.toTermName
+        </td>
+      </tr><tr>
+        <td>
+          105
+        </td>
+        <td>
+          17362
+        </td>
+        <td>
+          3672
+          -
+          3694
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.NameOps.NameDecorator.unmangleClassName
+        </td>
+        <td style="background: #AEF1AE">
+          NameOps.this.NameDecorator[dotty.tools.dotc.core.Names.SimpleName](name).unmangleClassName
+        </td>
+      </tr><tr>
+        <td>
+          105
+        </td>
+        <td>
+          17361
+        </td>
+        <td>
+          3650
+          -
+          3668
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.core.Names.SimpleName.endsWith
+        </td>
+        <td style="background: #AEF1AE">
+          name.endsWith(&quot;$&quot;)
+        </td>
+      </tr><tr>
+        <td>
+          106
+        </td>
+        <td>
+          17363
+        </td>
+        <td>
+          3713
+          -
+          3717
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.NameOps.NameDecorator.name
+        </td>
+        <td style="background: #AEF1AE">
+          NameDecorator.this.name
+        </td>
+      </tr><tr>
+        <td>
+          108
+        </td>
+        <td>
+          17365
+        </td>
+        <td>
+          3732
+          -
+          3764
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.core.Names.Name.exclude
+        </td>
+        <td style="background: #AEF1AE">
+          semName.exclude(NameKinds.ModuleClassName)
+        </td>
+      </tr><tr>
+        <td>
+          108
+        </td>
+        <td>
+          17364
+        </td>
+        <td>
+          3748
+          -
+          3763
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.NameKinds.ModuleClassName
+        </td>
+        <td style="background: #AEF1AE">
+          NameKinds.ModuleClassName
+        </td>
+      </tr><tr>
+        <td>
+          112
+        </td>
+        <td>
+          17376
+        </td>
+        <td>
+          3907
+          -
+          4060
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.core.NameOps.NameDecorator.likeSpaced
+        </td>
+        <td style="background: #AEF1AE">
+          NameDecorator.this.likeSpaced(if (flags.is(Flags.ModuleClass, Flags.Package))
+  NameOps.this.NameDecorator[dotty.tools.dotc.core.Names.TypeName](NameDecorator.this.name.asTypeName).moduleClassName
+else
+  NameDecorator.this.name.toTermName.exclude(NameKinds.AvoidClashName))
+        </td>
+      </tr><tr>
+        <td>
+          113
+        </td>
+        <td>
+          17372
+        </td>
+        <td>
+          3972
+          -
+          4003
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          dotty.tools.dotc.core.NameOps.NameDecorator.moduleClassName
+        </td>
+        <td style="background: #AEF1AE">
+          NameOps.this.NameDecorator[dotty.tools.dotc.core.Names.TypeName](NameDecorator.this.name.asTypeName).moduleClassName
+        </td>
+      </tr><tr>
+        <td>
+          113
+        </td>
+        <td>
+          17368
+        </td>
+        <td>
+          3962
+          -
+          3969
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Flags.Package
+        </td>
+        <td style="background: #AEF1AE">
+          Flags.Package
+        </td>
+      </tr><tr>
+        <td>
+          113
+        </td>
+        <td>
+          17371
+        </td>
+        <td>
+          3972
+          -
+          4003
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.NameOps.NameDecorator.moduleClassName
+        </td>
+        <td style="background: #AEF1AE">
+          NameOps.this.NameDecorator[dotty.tools.dotc.core.Names.TypeName](NameDecorator.this.name.asTypeName).moduleClassName
+        </td>
+      </tr><tr>
+        <td>
+          113
+        </td>
+        <td>
+          17367
+        </td>
+        <td>
+          3940
+          -
+          3951
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Flags.ModuleClass
+        </td>
+        <td style="background: #AEF1AE">
+          Flags.ModuleClass
+        </td>
+      </tr><tr>
+        <td>
+          113
+        </td>
+        <td>
+          17370
+        </td>
+        <td>
+          3972
+          -
+          3987
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Names.Name.asTypeName
+        </td>
+        <td style="background: #AEF1AE">
+          NameDecorator.this.name.asTypeName
+        </td>
+      </tr><tr>
+        <td>
+          113
+        </td>
+        <td>
+          17369
+        </td>
+        <td>
+          3930
+          -
+          3970
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.core.Flags.FlagSet.is
+        </td>
+        <td style="background: #AEF1AE">
+          flags.is(Flags.ModuleClass, Flags.Package)
+        </td>
+      </tr><tr>
+        <td>
+          114
+        </td>
+        <td>
+          17375
+        </td>
+        <td>
+          4015
+          -
+          4054
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          dotty.tools.dotc.core.Names.TermName.exclude
+        </td>
+        <td style="background: #AEF1AE">
+          NameDecorator.this.name.toTermName.exclude(NameKinds.AvoidClashName)
+        </td>
+      </tr><tr>
+        <td>
+          114
+        </td>
+        <td>
+          17374
+        </td>
+        <td>
+          4015
+          -
+          4054
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.core.Names.TermName.exclude
+        </td>
+        <td style="background: #AEF1AE">
+          NameDecorator.this.name.toTermName.exclude(NameKinds.AvoidClashName)
+        </td>
+      </tr><tr>
+        <td>
+          114
+        </td>
+        <td>
+          17373
+        </td>
+        <td>
+          4039
+          -
+          4053
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.NameKinds.AvoidClashName
+        </td>
+        <td style="background: #AEF1AE">
+          NameKinds.AvoidClashName
+        </td>
+      </tr><tr>
+        <td>
+          122
+        </td>
+        <td>
+          17377
+        </td>
+        <td>
+          4349
+          -
+          4401
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.SymDenotations.SymDenotation.fullNameSeparated
+        </td>
+        <td style="background: #AEF1AE">
+          Symbols.toDenot(base)(ctx).fullNameSeparated(NameKinds.ExpandPrefixName, kind, NameDecorator.this.name)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          122
+        </td>
+        <td>
+          17378
+        </td>
+        <td>
+          4336
+          -
+          4403
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.core.NameOps.NameDecorator.likeSpaced
+        </td>
+        <td style="background: #AEF1AE">
+          NameDecorator.this.likeSpaced(Symbols.toDenot(base)(ctx).fullNameSeparated(NameKinds.ExpandPrefixName, kind, NameDecorator.this.name)(ctx))
+        </td>
+      </tr><tr>
+        <td>
+          125
+        </td>
+        <td>
+          17381
+        </td>
+        <td>
+          4470
+          -
+          4548
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.core.NameOps.NameDecorator.likeSpaced
+        </td>
+        <td style="background: #AEF1AE">
+          NameDecorator.this.likeSpaced(NameDecorator.this.name.rewrite(({
+  @SerialVersionUID(value = 0) final &lt;synthetic&gt; class $anonfun extends scala.runtime.AbstractPartialFunction[dotty.tools.dotc.core.Names.Name,dotty.tools.dotc.core.Names.Name] with Serializable {
+    def &lt;init&gt;(): &lt;$anon: dotty.tools.dotc.core.Names.Name =&gt; dotty.tools.dotc.core.Names.Name&gt; = {
+      $anonfun.super.&lt;init&gt;();
+      ()
+    };
+    final override def applyOrElse[A1 &lt;: dotty.tools.dotc.core.Names.Name, B1 &gt;: dotty.tools.dotc.core.Names.Name](x1: A1, default: A1 =&gt; B1): B1 = ((x1.asInstanceOf[dotty.tools.dotc.core.Names.Name]: dotty.tools.dotc.core.Names.Name): dotty.tools.dotc.core.Names.Name @unchecked) match {
+      case NameKinds.ExpandedName.unapply(&lt;unapply-selector&gt;) &lt;unapply&gt; (_, (unexp @ _)) =&gt; unexp
+      case (defaultCase$ @ _) =&gt; default.apply(x1)
+    };
+    final def isDefinedAt(x1: dotty.tools.dotc.core.Names.Name): Boolean = ((x1.asInstanceOf[dotty.tools.dotc.core.Names.Name]: dotty.tools.dotc.core.Names.Name): dotty.tools.dotc.core.Names.Name @unchecked) match {
+      case NameKinds.ExpandedName.unapply(&lt;unapply-selector&gt;) &lt;unapply&gt; (_, (unexp @ _)) =&gt; true
+      case (defaultCase$ @ _) =&gt; false
+    }
+  };
+  new $anonfun()
+}: PartialFunction[dotty.tools.dotc.core.Names.Name,dotty.tools.dotc.core.Names.Name])))
+        </td>
+      </tr><tr>
+        <td>
+          126
+        </td>
+        <td>
+          17380
+        </td>
+        <td>
+          4489
+          -
+          4542
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.core.Names.Name.rewrite
+        </td>
+        <td style="background: #AEF1AE">
+          NameDecorator.this.name.rewrite(({
+  @SerialVersionUID(value = 0) final &lt;synthetic&gt; class $anonfun extends scala.runtime.AbstractPartialFunction[dotty.tools.dotc.core.Names.Name,dotty.tools.dotc.core.Names.Name] with Serializable {
+    def &lt;init&gt;(): &lt;$anon: dotty.tools.dotc.core.Names.Name =&gt; dotty.tools.dotc.core.Names.Name&gt; = {
+      $anonfun.super.&lt;init&gt;();
+      ()
+    };
+    final override def applyOrElse[A1 &lt;: dotty.tools.dotc.core.Names.Name, B1 &gt;: dotty.tools.dotc.core.Names.Name](x1: A1, default: A1 =&gt; B1): B1 = ((x1.asInstanceOf[dotty.tools.dotc.core.Names.Name]: dotty.tools.dotc.core.Names.Name): dotty.tools.dotc.core.Names.Name @unchecked) match {
+      case NameKinds.ExpandedName.unapply(&lt;unapply-selector&gt;) &lt;unapply&gt; (_, (unexp @ _)) =&gt; unexp
+      case (defaultCase$ @ _) =&gt; default.apply(x1)
+    };
+    final def isDefinedAt(x1: dotty.tools.dotc.core.Names.Name): Boolean = ((x1.asInstanceOf[dotty.tools.dotc.core.Names.Name]: dotty.tools.dotc.core.Names.Name): dotty.tools.dotc.core.Names.Name @unchecked) match {
+      case NameKinds.ExpandedName.unapply(&lt;unapply-selector&gt;) &lt;unapply&gt; (_, (unexp @ _)) =&gt; true
+      case (defaultCase$ @ _) =&gt; false
+    }
+  };
+  new $anonfun()
+}: PartialFunction[dotty.tools.dotc.core.Names.Name,dotty.tools.dotc.core.Names.Name]))
+        </td>
+      </tr><tr>
+        <td>
+          126
+        </td>
+        <td>
+          17379
+        </td>
+        <td>
+          4502
+          -
+          4502
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.core.NameOps.NameDecorator.$anonfun.&lt;init&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          new $anonfun()
+        </td>
+      </tr><tr>
+        <td>
+          130
+        </td>
+        <td>
+          17384
+        </td>
+        <td>
+          4623
+          -
+          4708
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.core.NameOps.NameDecorator.likeSpaced
+        </td>
+        <td style="background: #AEF1AE">
+          NameDecorator.this.likeSpaced(NameDecorator.this.name.rewrite(({
+  @SerialVersionUID(value = 0) final &lt;synthetic&gt; class $anonfun extends scala.runtime.AbstractPartialFunction[dotty.tools.dotc.core.Names.Name,dotty.tools.dotc.core.Names.Name] with Serializable {
+    def &lt;init&gt;(): &lt;$anon: dotty.tools.dotc.core.Names.Name =&gt; dotty.tools.dotc.core.Names.Name&gt; = {
+      $anonfun.super.&lt;init&gt;();
+      ()
+    };
+    final override def applyOrElse[A1 &lt;: dotty.tools.dotc.core.Names.Name, B1 &gt;: dotty.tools.dotc.core.Names.Name](x2: A1, default: A1 =&gt; B1): B1 = ((x2.asInstanceOf[dotty.tools.dotc.core.Names.Name]: dotty.tools.dotc.core.Names.Name): dotty.tools.dotc.core.Names.Name @unchecked) match {
+      case NameKinds.VariantName.unapply(&lt;unapply-selector&gt;) &lt;unapply&gt; ((invariant @ _), _) =&gt; invariant
+      case (defaultCase$ @ _) =&gt; default.apply(x2)
+    };
+    final def isDefinedAt(x2: dotty.tools.dotc.core.Names.Name): Boolean = ((x2.asInstanceOf[dotty.tools.dotc.core.Names.Name]: dotty.tools.dotc.core.Names.Name): dotty.tools.dotc.core.Names.Name @unchecked) match {
+      case NameKinds.VariantName.unapply(&lt;unapply-selector&gt;) &lt;unapply&gt; ((invariant @ _), _) =&gt; true
+      case (defaultCase$ @ _) =&gt; false
+    }
+  };
+  new $anonfun()
+}: PartialFunction[dotty.tools.dotc.core.Names.Name,dotty.tools.dotc.core.Names.Name])))
+        </td>
+      </tr><tr>
+        <td>
+          131
+        </td>
+        <td>
+          17383
+        </td>
+        <td>
+          4642
+          -
+          4702
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.core.Names.Name.rewrite
+        </td>
+        <td style="background: #AEF1AE">
+          NameDecorator.this.name.rewrite(({
+  @SerialVersionUID(value = 0) final &lt;synthetic&gt; class $anonfun extends scala.runtime.AbstractPartialFunction[dotty.tools.dotc.core.Names.Name,dotty.tools.dotc.core.Names.Name] with Serializable {
+    def &lt;init&gt;(): &lt;$anon: dotty.tools.dotc.core.Names.Name =&gt; dotty.tools.dotc.core.Names.Name&gt; = {
+      $anonfun.super.&lt;init&gt;();
+      ()
+    };
+    final override def applyOrElse[A1 &lt;: dotty.tools.dotc.core.Names.Name, B1 &gt;: dotty.tools.dotc.core.Names.Name](x2: A1, default: A1 =&gt; B1): B1 = ((x2.asInstanceOf[dotty.tools.dotc.core.Names.Name]: dotty.tools.dotc.core.Names.Name): dotty.tools.dotc.core.Names.Name @unchecked) match {
+      case NameKinds.VariantName.unapply(&lt;unapply-selector&gt;) &lt;unapply&gt; ((invariant @ _), _) =&gt; invariant
+      case (defaultCase$ @ _) =&gt; default.apply(x2)
+    };
+    final def isDefinedAt(x2: dotty.tools.dotc.core.Names.Name): Boolean = ((x2.asInstanceOf[dotty.tools.dotc.core.Names.Name]: dotty.tools.dotc.core.Names.Name): dotty.tools.dotc.core.Names.Name @unchecked) match {
+      case NameKinds.VariantName.unapply(&lt;unapply-selector&gt;) &lt;unapply&gt; ((invariant @ _), _) =&gt; true
+      case (defaultCase$ @ _) =&gt; false
+    }
+  };
+  new $anonfun()
+}: PartialFunction[dotty.tools.dotc.core.Names.Name,dotty.tools.dotc.core.Names.Name]))
+        </td>
+      </tr><tr>
+        <td>
+          131
+        </td>
+        <td>
+          17382
+        </td>
+        <td>
+          4655
+          -
+          4655
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.core.NameOps.NameDecorator.$anonfun.&lt;init&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          new $anonfun()
+        </td>
+      </tr><tr>
+        <td>
+          134
+        </td>
+        <td>
+          17386
+        </td>
+        <td>
+          4748
+          -
+          4779
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.core.Names.Name.++
+        </td>
+        <td style="background: #AEF1AE">
+          NameDecorator.this.name.++(StdNames.tpnme.IMPL_CLASS_SUFFIX)
+        </td>
+      </tr><tr>
+        <td>
+          134
+        </td>
+        <td>
+          17385
+        </td>
+        <td>
+          4756
+          -
+          4779
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.StdNames.ScalaNames.IMPL_CLASS_SUFFIX
+        </td>
+        <td style="background: #AEF1AE">
+          StdNames.tpnme.IMPL_CLASS_SUFFIX
+        </td>
+      </tr><tr>
+        <td>
+          134
+        </td>
+        <td>
+          17387
+        </td>
+        <td>
+          4737
+          -
+          4780
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.core.NameOps.NameDecorator.likeSpaced
+        </td>
+        <td style="background: #AEF1AE">
+          NameDecorator.this.likeSpaced(NameDecorator.this.name.++(StdNames.tpnme.IMPL_CLASS_SUFFIX))
+        </td>
+      </tr><tr>
+        <td>
+          137
+        </td>
+        <td>
+          17388
+        </td>
+        <td>
+          4837
+          -
+          4869
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.core.Names.TypeName.toString
+        </td>
+        <td style="background: #AEF1AE">
+          StdNames.tpnme.IMPL_CLASS_SUFFIX.toString()
+        </td>
+      </tr><tr>
+        <td>
+          138
+        </td>
+        <td>
+          17390
+        </td>
+        <td>
+          4906
+          -
+          4910
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.NameOps.NameDecorator.name
+        </td>
+        <td style="background: #F0ADAD">
+          NameDecorator.this.name
+        </td>
+      </tr><tr>
+        <td>
+          138
+        </td>
+        <td>
+          17389
+        </td>
+        <td>
+          4883
+          -
+          4904
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.core.Names.Name.endsWith
+        </td>
+        <td style="background: #AEF1AE">
+          NameDecorator.this.name.endsWith(suffix)
+        </td>
+      </tr><tr>
+        <td>
+          138
+        </td>
+        <td>
+          17391
+        </td>
+        <td>
+          4876
+          -
+          4911
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Predef.assert
+        </td>
+        <td style="background: #AEF1AE">
+          scala.Predef.assert(NameDecorator.this.name.endsWith(suffix), NameDecorator.this.name)
+        </td>
+      </tr><tr>
+        <td>
+          139
+        </td>
+        <td>
+          17393
+        </td>
+        <td>
+          4942
+          -
+          4968
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.core.Names.SimpleName.dropRight
+        </td>
+        <td style="background: #AEF1AE">
+          x$3.dropRight(suffix.length())
+        </td>
+      </tr><tr>
+        <td>
+          139
+        </td>
+        <td>
+          17392
+        </td>
+        <td>
+          4954
+          -
+          4967
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.String.length
+        </td>
+        <td style="background: #AEF1AE">
+          suffix.length()
+        </td>
+      </tr><tr>
+        <td>
+          139
+        </td>
+        <td>
+          17395
+        </td>
+        <td>
+          4918
+          -
+          4970
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.core.NameOps.NameDecorator.likeSpaced
+        </td>
+        <td style="background: #AEF1AE">
+          NameDecorator.this.likeSpaced(NameDecorator.this.name.mapLast(((x$3: dotty.tools.dotc.core.Names.SimpleName) =&gt; x$3.dropRight(suffix.length()))))
+        </td>
+      </tr><tr>
+        <td>
+          139
+        </td>
+        <td>
+          17394
+        </td>
+        <td>
+          4929
+          -
+          4969
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.core.Names.Name.mapLast
+        </td>
+        <td style="background: #AEF1AE">
+          NameDecorator.this.name.mapLast(((x$3: dotty.tools.dotc.core.Names.SimpleName) =&gt; x$3.dropRight(suffix.length())))
+        </td>
+      </tr><tr>
+        <td>
+          142
+        </td>
+        <td>
+          17398
+        </td>
+        <td>
+          5001
+          -
+          5030
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.core.NameOps.NameDecorator.likeSpaced
+        </td>
+        <td style="background: #AEF1AE">
+          NameDecorator.this.likeSpaced(NameDecorator.this.name.++(StdNames.nme.ERROR))
+        </td>
+      </tr><tr>
+        <td>
+          142
+        </td>
+        <td>
+          17397
+        </td>
+        <td>
+          5012
+          -
+          5029
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.core.Names.Name.++
+        </td>
+        <td style="background: #AEF1AE">
+          NameDecorator.this.name.++(StdNames.nme.ERROR)
+        </td>
+      </tr><tr>
+        <td>
+          142
+        </td>
+        <td>
+          17396
+        </td>
+        <td>
+          5020
+          -
+          5029
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.StdNames.ScalaNames.ERROR
+        </td>
+        <td style="background: #AEF1AE">
+          StdNames.nme.ERROR
+        </td>
+      </tr><tr>
+        <td>
+          145
+        </td>
+        <td>
+          17399
+        </td>
+        <td>
+          5117
+          -
+          5128
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Int./
+        </td>
+        <td style="background: #AEF1AE">
+          v.+(1)./(2)
+        </td>
+      </tr><tr>
+        <td>
+          148
+        </td>
+        <td>
+          17400
+        </td>
+        <td>
+          5215
+          -
+          5224
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Int.-
+        </td>
+        <td style="background: #AEF1AE">
+          n.*(2).-(1)
+        </td>
+      </tr><tr>
+        <td>
+          152
+        </td>
+        <td>
+          17401
+        </td>
+        <td>
+          5377
+          -
+          5388
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.NameKinds.VariantName
+        </td>
+        <td style="background: #AEF1AE">
+          NameKinds.VariantName
+        </td>
+      </tr><tr>
+        <td>
+          152
+        </td>
+        <td>
+          17402
+        </td>
+        <td>
+          5364
+          -
+          5389
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.core.Names.Name.exclude
+        </td>
+        <td style="background: #AEF1AE">
+          NameDecorator.this.name.exclude(NameKinds.VariantName)
+        </td>
+      </tr><tr>
+        <td>
+          153
+        </td>
+        <td>
+          17409
+        </td>
+        <td>
+          5396
+          -
+          5509
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.core.NameOps.NameDecorator.likeSpaced
+        </td>
+        <td style="background: #AEF1AE">
+          NameDecorator.this.likeSpaced(if (v.==(0))
+  underlying
+else
+  NameKinds.VariantName.apply(underlying.toTermName, NameDecorator.this.varianceToNat(v)))
+        </td>
+      </tr><tr>
+        <td>
+          154
+        </td>
+        <td>
+          17404
+        </td>
+        <td>
+          5430
+          -
+          5440
+        </td>
+        <td>
+          Ident
+        </td>
+        <td>
+          dotty.tools.dotc.core.NameOps.NameDecorator.underlying
+        </td>
+        <td style="background: #AEF1AE">
+          underlying
+        </td>
+      </tr><tr>
+        <td>
+          154
+        </td>
+        <td>
+          17403
+        </td>
+        <td>
+          5422
+          -
+          5428
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Int.==
+        </td>
+        <td style="background: #AEF1AE">
+          v.==(0)
+        </td>
+      </tr><tr>
+        <td>
+          155
+        </td>
+        <td>
+          17408
+        </td>
+        <td>
+          5456
+          -
+          5508
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          dotty.tools.dotc.core.NameKinds.NumberedNameKind.apply
+        </td>
+        <td style="background: #AEF1AE">
+          NameKinds.VariantName.apply(underlying.toTermName, NameDecorator.this.varianceToNat(v))
+        </td>
+      </tr><tr>
+        <td>
+          155
+        </td>
+        <td>
+          17407
+        </td>
+        <td>
+          5456
+          -
+          5508
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.core.NameKinds.NumberedNameKind.apply
+        </td>
+        <td style="background: #AEF1AE">
+          NameKinds.VariantName.apply(underlying.toTermName, NameDecorator.this.varianceToNat(v))
+        </td>
+      </tr><tr>
+        <td>
+          155
+        </td>
+        <td>
+          17406
+        </td>
+        <td>
+          5491
+          -
+          5507
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.core.NameOps.NameDecorator.varianceToNat
+        </td>
+        <td style="background: #AEF1AE">
+          NameDecorator.this.varianceToNat(v)
+        </td>
+      </tr><tr>
+        <td>
+          155
+        </td>
+        <td>
+          17405
+        </td>
+        <td>
+          5468
+          -
+          5489
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Names.Name.toTermName
+        </td>
+        <td style="background: #AEF1AE">
+          underlying.toTermName
+        </td>
+      </tr><tr>
+        <td>
+          161
+        </td>
+        <td>
+          17410
+        </td>
+        <td>
+          5645
+          -
+          5717
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Option.getOrElse
+        </td>
+        <td style="background: #AEF1AE">
+          NameDecorator.this.name.collect[Int](({
+  @SerialVersionUID(value = 0) final &lt;synthetic&gt; class $anonfun extends scala.runtime.AbstractPartialFunction[dotty.tools.dotc.core.Names.Name,Int] with Serializable {
+    def &lt;init&gt;(): &lt;$anon: dotty.tools.dotc.core.Names.Name =&gt; Int&gt; = {
+      $anonfun.super.&lt;init&gt;();
+      ()
+    };
+    final override def applyOrElse[A1 &lt;: dotty.tools.dotc.core.Names.Name, B1 &gt;: Int](x3: A1, default: A1 =&gt; B1): B1 = ((x3.asInstanceOf[dotty.tools.dotc.core.Names.Name]: dotty.tools.dotc.core.Names.Name): dotty.tools.dotc.core.Names.Name @unchecked) match {
+      case NameKinds.VariantName.unapply(&lt;unapply-selector&gt;) &lt;unapply&gt; (_, (n @ _)) =&gt; NameDecorator.this.natToVariance(n)
+      case (defaultCase$ @ _) =&gt; default.apply(x3)
+    };
+    final def isDefinedAt(x3: dotty.tools.dotc.core.Names.Name): Boolean = ((x3.asInstanceOf[dotty.tools.dotc.core.Names.Name]: dotty.tools.dotc.core.Names.Name): dotty.tools.dotc.core.Names.Name @unchecked) match {
+      case NameKinds.VariantName.unapply(&lt;unapply-selector&gt;) &lt;unapply&gt; (_, (n @ _)) =&gt; true
+      case (defaultCase$ @ _) =&gt; false
+    }
+  };
+  new $anonfun()
+}: PartialFunction[dotty.tools.dotc.core.Names.Name,Int])).getOrElse[Int](0)
+        </td>
+      </tr><tr>
+        <td>
+          163
+        </td>
+        <td>
+          17415
+        </td>
+        <td>
+          5765
+          -
+          5943
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.core.NameOps.NameDecorator.likeSpaced
+        </td>
+        <td style="background: #AEF1AE">
+          NameDecorator.this.likeSpaced(NameDecorator.this.name.toTermName match {
+  case NameKinds.ModuleClassName.unapply(&lt;unapply-selector&gt;) &lt;unapply&gt; ((original @ _)) =&gt; NameKinds.ModuleClassName.apply(NameOps.this.NameDecorator[dotty.tools.dotc.core.Names.TermName](original).freshened(ctx))
+  case (name @ _) =&gt; NameKinds.UniqueName.fresh(name)(ctx)
+})
+        </td>
+      </tr><tr>
+        <td>
+          164
+        </td>
+        <td>
+          17411
+        </td>
+        <td>
+          5784
+          -
+          5799
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Names.Name.toTermName
+        </td>
+        <td style="background: #AEF1AE">
+          NameDecorator.this.name.toTermName
+        </td>
+      </tr><tr>
+        <td>
+          165
+        </td>
+        <td>
+          17413
+        </td>
+        <td>
+          5850
+          -
+          5885
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.core.NameKinds.ClassifiedNameKind.apply
+        </td>
+        <td style="background: #AEF1AE">
+          NameKinds.ModuleClassName.apply(NameOps.this.NameDecorator[dotty.tools.dotc.core.Names.TermName](original).freshened(ctx))
+        </td>
+      </tr><tr>
+        <td>
+          165
+        </td>
+        <td>
+          17412
+        </td>
+        <td>
+          5866
+          -
+          5884
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.NameOps.NameDecorator.freshened
+        </td>
+        <td style="background: #AEF1AE">
+          NameOps.this.NameDecorator[dotty.tools.dotc.core.Names.TermName](original).freshened(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          166
+        </td>
+        <td>
+          17414
+        </td>
+        <td>
+          5907
+          -
+          5929
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.NameKinds.UniqueNameKind.fresh
+        </td>
+        <td style="background: #AEF1AE">
+          NameKinds.UniqueName.fresh(name)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          176
+        </td>
+        <td>
+          17422
+        </td>
+        <td>
+          6125
+          -
+          6254
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.runtime.RichInt.max
+        </td>
+        <td style="background: #AEF1AE">
+          scala.Predef.intWrapper(NameDecorator.this.functionArityFor(&quot;Function&quot;)).max({
+  val n: Int = NameDecorator.this.functionArityFor(&quot;ImplicitFunction&quot;);
+  if (n.==(0))
+    -1
+  else
+    n
+})
+        </td>
+      </tr><tr>
+        <td>
+          176
+        </td>
+        <td>
+          17416
+        </td>
+        <td>
+          6125
+          -
+          6155
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.core.NameOps.NameDecorator.functionArityFor
+        </td>
+        <td style="background: #AEF1AE">
+          NameDecorator.this.functionArityFor(&quot;Function&quot;)
+        </td>
+      </tr><tr>
+        <td>
+          177
+        </td>
+        <td>
+          17417
+        </td>
+        <td>
+          6178
+          -
+          6216
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.core.NameOps.NameDecorator.functionArityFor
+        </td>
+        <td style="background: #AEF1AE">
+          NameDecorator.this.functionArityFor(&quot;ImplicitFunction&quot;)
+        </td>
+      </tr><tr>
+        <td>
+          178
+        </td>
+        <td>
+          17419
+        </td>
+        <td>
+          6237
+          -
+          6239
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          -1
+        </td>
+      </tr><tr>
+        <td>
+          178
+        </td>
+        <td>
+          17418
+        </td>
+        <td>
+          6229
+          -
+          6235
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Int.==
+        </td>
+        <td style="background: #AEF1AE">
+          n.==(0)
+        </td>
+      </tr><tr>
+        <td>
+          178
+        </td>
+        <td>
+          17421
+        </td>
+        <td>
+          6245
+          -
+          6246
+        </td>
+        <td>
+          Ident
+        </td>
+        <td>
+          dotty.tools.dotc.core.NameOps.NameDecorator.n
+        </td>
+        <td style="background: #AEF1AE">
+          n
+        </td>
+      </tr><tr>
+        <td>
+          178
+        </td>
+        <td>
+          17420
+        </td>
+        <td>
+          6237
+          -
+          6239
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          -1
+        </td>
+      </tr><tr>
+        <td>
+          186
+        </td>
+        <td>
+          17423
+        </td>
+        <td>
+          6423
+          -
+          6441
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Int.&gt;=
+        </td>
+        <td style="background: #AEF1AE">
+          NameDecorator.this.functionArity.&gt;=(0)
+        </td>
+      </tr><tr>
+        <td>
+          192
+        </td>
+        <td>
+          17424
+        </td>
+        <td>
+          6594
+          -
+          6637
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Int.&gt;=
+        </td>
+        <td style="background: #AEF1AE">
+          NameDecorator.this.functionArityFor(&quot;ImplicitFunction&quot;).&gt;=(1)
+        </td>
+      </tr><tr>
+        <td>
+          200
+        </td>
+        <td>
+          17426
+        </td>
+        <td>
+          6866
+          -
+          6893
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Definitions.MaxImplementedFunctionArity
+        </td>
+        <td style="background: #AEF1AE">
+          Definitions.MaxImplementedFunctionArity
+        </td>
+      </tr><tr>
+        <td>
+          200
+        </td>
+        <td>
+          17425
+        </td>
+        <td>
+          6850
+          -
+          6862
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          &quot;Function&quot;
+        </td>
+      </tr><tr>
+        <td>
+          200
+        </td>
+        <td>
+          17428
+        </td>
+        <td>
+          6833
+          -
+          6948
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Boolean.||
+        </td>
+        <td style="background: #AEF1AE">
+          NameDecorator.this.functionArityFor(&quot;Function&quot;).&gt;(Definitions.MaxImplementedFunctionArity).||(NameDecorator.this.functionArityFor(&quot;ImplicitFunction&quot;).&gt;=(1))
+        </td>
+      </tr><tr>
+        <td>
+          201
+        </td>
+        <td>
+          17427
+        </td>
+        <td>
+          6905
+          -
+          6948
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Int.&gt;=
+        </td>
+        <td style="background: #AEF1AE">
+          NameDecorator.this.functionArityFor(&quot;ImplicitFunction&quot;).&gt;=(1)
+        </td>
+      </tr><tr>
+        <td>
+          206
+        </td>
+        <td>
+          17437
+        </td>
+        <td>
+          7121
+          -
+          7275
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          {
+  val suffix: String = NameDecorator.this.name.toString().substring(prefix.length());
+  if (suffix.matches(&quot;\\d+&quot;))
+    scala.Predef.augmentString(suffix).toInt
+  else
+    -1
+}
+        </td>
+      </tr><tr>
+        <td>
+          206
+        </td>
+        <td>
+          17429
+        </td>
+        <td>
+          7096
+          -
+          7119
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.core.Names.Name.startsWith
+        </td>
+        <td style="background: #AEF1AE">
+          NameDecorator.this.name.startsWith(prefix)
+        </td>
+      </tr><tr>
+        <td>
+          207
+        </td>
+        <td>
+          17431
+        </td>
+        <td>
+          7144
+          -
+          7182
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.String.substring
+        </td>
+        <td style="background: #AEF1AE">
+          NameDecorator.this.name.toString().substring(prefix.length())
+        </td>
+      </tr><tr>
+        <td>
+          207
+        </td>
+        <td>
+          17430
+        </td>
+        <td>
+          7168
+          -
+          7181
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.String.length
+        </td>
+        <td style="background: #AEF1AE">
+          prefix.length()
+        </td>
+      </tr><tr>
+        <td>
+          208
+        </td>
+        <td>
+          17432
+        </td>
+        <td>
+          7195
+          -
+          7217
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.String.matches
+        </td>
+        <td style="background: #AEF1AE">
+          suffix.matches(&quot;\\d+&quot;)
+        </td>
+      </tr><tr>
+        <td>
+          209
+        </td>
+        <td>
+          17434
+        </td>
+        <td>
+          7229
+          -
+          7241
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          scala.collection.immutable.StringLike.toInt
+        </td>
+        <td style="background: #AEF1AE">
+          scala.Predef.augmentString(suffix).toInt
+        </td>
+      </tr><tr>
+        <td>
+          209
+        </td>
+        <td>
+          17433
+        </td>
+        <td>
+          7229
+          -
+          7241
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.collection.immutable.StringLike.toInt
+        </td>
+        <td style="background: #AEF1AE">
+          scala.Predef.augmentString(suffix).toInt
+        </td>
+      </tr><tr>
+        <td>
+          211
+        </td>
+        <td>
+          17435
+        </td>
+        <td>
+          7265
+          -
+          7267
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          -1
+        </td>
+      </tr><tr>
+        <td>
+          211
+        </td>
+        <td>
+          17436
+        </td>
+        <td>
+          7265
+          -
+          7267
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          -1
+        </td>
+      </tr><tr>
+        <td>
+          212
+        </td>
+        <td>
+          17439
+        </td>
+        <td>
+          7281
+          -
+          7283
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          -1
+        </td>
+      </tr><tr>
+        <td>
+          212
+        </td>
+        <td>
+          17438
+        </td>
+        <td>
+          7281
+          -
+          7283
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          -1
+        </td>
+      </tr><tr>
+        <td>
+          216
+        </td>
+        <td>
+          17440
+        </td>
+        <td>
+          7415
+          -
+          7419
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.NameOps.NameDecorator.name
+        </td>
+        <td style="background: #AEF1AE">
+          NameDecorator.this.name
+        </td>
+      </tr><tr>
+        <td>
+          217
+        </td>
+        <td>
+          17441
+        </td>
+        <td>
+          7452
+          -
+          7467
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.StdNames.ScalaNames.array_apply
+        </td>
+        <td style="background: #AEF1AE">
+          StdNames.nme.array_apply
+        </td>
+      </tr><tr>
+        <td>
+          218
+        </td>
+        <td>
+          17442
+        </td>
+        <td>
+          7493
+          -
+          7509
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.StdNames.ScalaNames.array_length
+        </td>
+        <td style="background: #AEF1AE">
+          StdNames.nme.array_length
+        </td>
+      </tr><tr>
+        <td>
+          219
+        </td>
+        <td>
+          17443
+        </td>
+        <td>
+          7535
+          -
+          7551
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.StdNames.ScalaNames.array_update
+        </td>
+        <td style="background: #AEF1AE">
+          StdNames.nme.array_update
+        </td>
+      </tr><tr>
+        <td>
+          220
+        </td>
+        <td>
+          17444
+        </td>
+        <td>
+          7577
+          -
+          7592
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.StdNames.ScalaNames.array_clone
+        </td>
+        <td style="background: #AEF1AE">
+          StdNames.nme.array_clone
+        </td>
+      </tr><tr>
+        <td>
+          224
+        </td>
+        <td>
+          17445
+        </td>
+        <td>
+          7728
+          -
+          7732
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.NameOps.NameDecorator.name
+        </td>
+        <td style="background: #AEF1AE">
+          NameDecorator.this.name
+        </td>
+      </tr><tr>
+        <td>
+          225
+        </td>
+        <td>
+          17446
+        </td>
+        <td>
+          7765
+          -
+          7789
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.StdNames.ScalaTermNames.primitive.arrayApply
+        </td>
+        <td style="background: #AEF1AE">
+          StdNames.nme.primitive.arrayApply
+        </td>
+      </tr><tr>
+        <td>
+          226
+        </td>
+        <td>
+          17447
+        </td>
+        <td>
+          7815
+          -
+          7840
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.StdNames.ScalaTermNames.primitive.arrayLength
+        </td>
+        <td style="background: #AEF1AE">
+          StdNames.nme.primitive.arrayLength
+        </td>
+      </tr><tr>
+        <td>
+          227
+        </td>
+        <td>
+          17448
+        </td>
+        <td>
+          7866
+          -
+          7891
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.StdNames.ScalaTermNames.primitive.arrayUpdate
+        </td>
+        <td style="background: #AEF1AE">
+          StdNames.nme.primitive.arrayUpdate
+        </td>
+      </tr><tr>
+        <td>
+          228
+        </td>
+        <td>
+          17449
+        </td>
+        <td>
+          7917
+          -
+          7927
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.StdNames.ScalaNames.clone_
+        </td>
+        <td style="background: #AEF1AE">
+          StdNames.nme.clone_
+        </td>
+      </tr><tr>
+        <td>
+          233
+        </td>
+        <td>
+          17453
+        </td>
+        <td>
+          8210
+          -
+          8228
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.Definitions.typeTag
+        </td>
+        <td style="background: #F0ADAD">
+          Symbols.defn(ctx).typeTag(x._1)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          233
+        </td>
+        <td>
+          17452
+        </td>
+        <td>
+          8194
+          -
+          8194
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Names.NameOrdering
+        </td>
+        <td style="background: #AEF1AE">
+          Names.NameOrdering
+        </td>
+      </tr><tr>
+        <td>
+          233
+        </td>
+        <td>
+          17455
+        </td>
+        <td>
+          8155
+          -
+          8229
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          scala.collection.immutable.List.map
+        </td>
+        <td style="background: #AEF1AE">
+          methodTargs.zip[dotty.tools.dotc.core.Types.Type, dotty.tools.dotc.core.Names.Name, List[(dotty.tools.dotc.core.Types.Type, dotty.tools.dotc.core.Names.Name)]](methodTarsNames)(immutable.this.List.canBuildFrom[(dotty.tools.dotc.core.Types.Type, dotty.tools.dotc.core.Names.Name)]).sortBy[dotty.tools.dotc.core.Names.Name](((x$4: (dotty.tools.dotc.core.Types.Type, dotty.tools.dotc.core.Names.Name)) =&gt; x$4._2))(Names.NameOrdering).map[dotty.tools.dotc.core.Names.Name, Seq[dotty.tools.dotc.core.Names.Name]](((x: (dotty.tools.dotc.core.Types.Type, dotty.tools.dotc.core.Names.Name)) =&gt; Symbols.defn(ctx).typeTag(x._1)(ctx)))(immutable.this.List.canBuildFrom[dotty.tools.dotc.core.Names.Name])
+        </td>
+      </tr><tr>
+        <td>
+          233
+        </td>
+        <td>
+          17451
+        </td>
+        <td>
+          8195
+          -
+          8199
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.Tuple2._2
+        </td>
+        <td style="background: #F0ADAD">
+          x$4._2
+        </td>
+      </tr><tr>
+        <td>
+          233
+        </td>
+        <td>
+          17454
+        </td>
+        <td>
+          8204
+          -
+          8204
+        </td>
+        <td>
+          TypeApply
+        </td>
+        <td>
+          scala.collection.immutable.List.canBuildFrom
+        </td>
+        <td style="background: #AEF1AE">
+          immutable.this.List.canBuildFrom[dotty.tools.dotc.core.Names.Name]
+        </td>
+      </tr><tr>
+        <td>
+          233
+        </td>
+        <td>
+          17450
+        </td>
+        <td>
+          8167
+          -
+          8167
+        </td>
+        <td>
+          TypeApply
+        </td>
+        <td>
+          scala.collection.immutable.List.canBuildFrom
+        </td>
+        <td style="background: #AEF1AE">
+          immutable.this.List.canBuildFrom[(dotty.tools.dotc.core.Types.Type, dotty.tools.dotc.core.Names.Name)]
+        </td>
+      </tr><tr>
+        <td>
+          234
+        </td>
+        <td>
+          17461
+        </td>
+        <td>
+          8264
+          -
+          8337
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          scala.collection.immutable.List.map
+        </td>
+        <td style="background: #AEF1AE">
+          classTargs.zip[dotty.tools.dotc.core.Types.Type, dotty.tools.dotc.core.Names.Name, List[(dotty.tools.dotc.core.Types.Type, dotty.tools.dotc.core.Names.Name)]](classTargsNames)(immutable.this.List.canBuildFrom[(dotty.tools.dotc.core.Types.Type, dotty.tools.dotc.core.Names.Name)]).sortBy[dotty.tools.dotc.core.Names.Name](((x$5: (dotty.tools.dotc.core.Types.Type, dotty.tools.dotc.core.Names.Name)) =&gt; x$5._2))(Names.NameOrdering).map[dotty.tools.dotc.core.Names.Name, Seq[dotty.tools.dotc.core.Names.Name]](((x: (dotty.tools.dotc.core.Types.Type, dotty.tools.dotc.core.Names.Name)) =&gt; Symbols.defn(ctx).typeTag(x._1)(ctx)))(immutable.this.List.canBuildFrom[dotty.tools.dotc.core.Names.Name])
+        </td>
+      </tr><tr>
+        <td>
+          234
+        </td>
+        <td>
+          17458
+        </td>
+        <td>
+          8302
+          -
+          8302
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Names.NameOrdering
+        </td>
+        <td style="background: #AEF1AE">
+          Names.NameOrdering
+        </td>
+      </tr><tr>
+        <td>
+          234
+        </td>
+        <td>
+          17457
+        </td>
+        <td>
+          8303
+          -
+          8307
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.Tuple2._2
+        </td>
+        <td style="background: #AEF1AE">
+          x$5._2
+        </td>
+      </tr><tr>
+        <td>
+          234
+        </td>
+        <td>
+          17460
+        </td>
+        <td>
+          8312
+          -
+          8312
+        </td>
+        <td>
+          TypeApply
+        </td>
+        <td>
+          scala.collection.immutable.List.canBuildFrom
+        </td>
+        <td style="background: #AEF1AE">
+          immutable.this.List.canBuildFrom[dotty.tools.dotc.core.Names.Name]
+        </td>
+      </tr><tr>
+        <td>
+          234
+        </td>
+        <td>
+          17456
+        </td>
+        <td>
+          8275
+          -
+          8275
+        </td>
+        <td>
+          TypeApply
+        </td>
+        <td>
+          scala.collection.immutable.List.canBuildFrom
+        </td>
+        <td style="background: #AEF1AE">
+          immutable.this.List.canBuildFrom[(dotty.tools.dotc.core.Types.Type, dotty.tools.dotc.core.Names.Name)]
+        </td>
+      </tr><tr>
+        <td>
+          234
+        </td>
+        <td>
+          17459
+        </td>
+        <td>
+          8318
+          -
+          8336
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.Definitions.typeTag
+        </td>
+        <td style="background: #AEF1AE">
+          Symbols.defn(ctx).typeTag(x._1)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          236
+        </td>
+        <td>
+          17472
+        </td>
+        <td>
+          8345
+          -
+          8565
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.core.Names.Name.likeSpaced
+        </td>
+        <td style="background: #AEF1AE">
+          NameDecorator.this.name.likeSpaced(NameDecorator.this.name.++(StdNames.nme.specializedTypeNames.prefix).++(methodTags.fold[dotty.tools.dotc.core.Names.Name](StdNames.nme.EMPTY)(((x$6: dotty.tools.dotc.core.Names.Name, x$7: dotty.tools.dotc.core.Names.Name) =&gt; x$6.++(x$7)))).++(StdNames.nme.specializedTypeNames.separator).++(classTags.fold[dotty.tools.dotc.core.Names.Name](StdNames.nme.EMPTY)(((x$8: dotty.tools.dotc.core.Names.Name, x$9: dotty.tools.dotc.core.Names.Name) =&gt; x$8.++(x$9)))).++(StdNames.nme.specializedTypeNames.suffix))
+        </td>
+      </tr><tr>
+        <td>
+          236
+        </td>
+        <td>
+          17462
+        </td>
+        <td>
+          8369
+          -
+          8400
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.StdNames.ScalaNames.specializedTypeNames.prefix
+        </td>
+        <td style="background: #AEF1AE">
+          StdNames.nme.specializedTypeNames.prefix
+        </td>
+      </tr><tr>
+        <td>
+          237
+        </td>
+        <td>
+          17464
+        </td>
+        <td>
+          8439
+          -
+          8445
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.core.Names.Name.++
+        </td>
+        <td style="background: #F0ADAD">
+          x$6.++(x$7)
+        </td>
+      </tr><tr>
+        <td>
+          237
+        </td>
+        <td>
+          17466
+        </td>
+        <td>
+          8450
+          -
+          8484
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.StdNames.ScalaNames.specializedTypeNames.separator
+        </td>
+        <td style="background: #AEF1AE">
+          StdNames.nme.specializedTypeNames.separator
+        </td>
+      </tr><tr>
+        <td>
+          237
+        </td>
+        <td>
+          17463
+        </td>
+        <td>
+          8428
+          -
+          8437
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.StdNames.ScalaNames.EMPTY
+        </td>
+        <td style="background: #AEF1AE">
+          StdNames.nme.EMPTY
+        </td>
+      </tr><tr>
+        <td>
+          237
+        </td>
+        <td>
+          17465
+        </td>
+        <td>
+          8412
+          -
+          8446
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.TraversableOnce.fold
+        </td>
+        <td style="background: #AEF1AE">
+          methodTags.fold[dotty.tools.dotc.core.Names.Name](StdNames.nme.EMPTY)(((x$6: dotty.tools.dotc.core.Names.Name, x$7: dotty.tools.dotc.core.Names.Name) =&gt; x$6.++(x$7)))
+        </td>
+      </tr><tr>
+        <td>
+          238
+        </td>
+        <td>
+          17470
+        </td>
+        <td>
+          8533
+          -
+          8564
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.StdNames.ScalaNames.specializedTypeNames.suffix
+        </td>
+        <td style="background: #AEF1AE">
+          StdNames.nme.specializedTypeNames.suffix
+        </td>
+      </tr><tr>
+        <td>
+          238
+        </td>
+        <td>
+          17467
+        </td>
+        <td>
+          8511
+          -
+          8520
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.StdNames.ScalaNames.EMPTY
+        </td>
+        <td style="background: #AEF1AE">
+          StdNames.nme.EMPTY
+        </td>
+      </tr><tr>
+        <td>
+          238
+        </td>
+        <td>
+          17469
+        </td>
+        <td>
+          8496
+          -
+          8529
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.TraversableOnce.fold
+        </td>
+        <td style="background: #AEF1AE">
+          classTags.fold[dotty.tools.dotc.core.Names.Name](StdNames.nme.EMPTY)(((x$8: dotty.tools.dotc.core.Names.Name, x$9: dotty.tools.dotc.core.Names.Name) =&gt; x$8.++(x$9)))
+        </td>
+      </tr><tr>
+        <td>
+          238
+        </td>
+        <td>
+          17471
+        </td>
+        <td>
+          8361
+          -
+          8564
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.core.Names.Name.++
+        </td>
+        <td style="background: #AEF1AE">
+          NameDecorator.this.name.++(StdNames.nme.specializedTypeNames.prefix).++(methodTags.fold[dotty.tools.dotc.core.Names.Name](StdNames.nme.EMPTY)(((x$6: dotty.tools.dotc.core.Names.Name, x$7: dotty.tools.dotc.core.Names.Name) =&gt; x$6.++(x$7)))).++(StdNames.nme.specializedTypeNames.separator).++(classTags.fold[dotty.tools.dotc.core.Names.Name](StdNames.nme.EMPTY)(((x$8: dotty.tools.dotc.core.Names.Name, x$9: dotty.tools.dotc.core.Names.Name) =&gt; x$8.++(x$9)))).++(StdNames.nme.specializedTypeNames.suffix)
+        </td>
+      </tr><tr>
+        <td>
+          238
+        </td>
+        <td>
+          17468
+        </td>
+        <td>
+          8522
+          -
+          8528
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.core.Names.Name.++
+        </td>
+        <td style="background: #AEF1AE">
+          x$8.++(x$9)
+        </td>
+      </tr><tr>
+        <td>
+          242
+        </td>
+        <td>
+          17473
+        </td>
+        <td>
+          8716
+          -
+          8741
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.NameOps.compactify.apply
+        </td>
+        <td style="background: #F0ADAD">
+          NameOps.this.compactify.apply(NameDecorator.this.name.toString())(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          242
+        </td>
+        <td>
+          17474
+        </td>
+        <td>
+          8707
+          -
+          8742
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.core.Names.termName
+        </td>
+        <td style="background: #F0ADAD">
+          Names.termName(NameOps.this.compactify.apply(NameDecorator.this.name.toString())(ctx))
+        </td>
+      </tr><tr>
+        <td>
+          244
+        </td>
+        <td>
+          17475
+        </td>
+        <td>
+          8775
+          -
+          8790
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Names.Name.toTermName
+        </td>
+        <td style="background: #AEF1AE">
+          NameDecorator.this.name.toTermName
+        </td>
+      </tr><tr>
+        <td>
+          246
+        </td>
+        <td>
+          17476
+        </td>
+        <td>
+          8850
+          -
+          8867
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          &quot;$&quot;
+        </td>
+      </tr><tr>
+        <td>
+          246
+        </td>
+        <td>
+          17478
+        </td>
+        <td>
+          8836
+          -
+          8913
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Boolean.&amp;&amp;
+        </td>
+        <td style="background: #AEF1AE">
+          name.endsWith(&quot;$&quot;).&amp;&amp;(StdNames.nme.falseModuleClassNames.contains(name).unary_!)
+        </td>
+      </tr><tr>
+        <td>
+          246
+        </td>
+        <td>
+          17477
+        </td>
+        <td>
+          8872
+          -
+          8913
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.Boolean.unary_!
+        </td>
+        <td style="background: #AEF1AE">
+          StdNames.nme.falseModuleClassNames.contains(name).unary_!
+        </td>
+      </tr><tr>
+        <td>
+          247
+        </td>
+        <td>
+          17479
+        </td>
+        <td>
+          8951
+          -
+          8975
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.String.length
+        </td>
+        <td style="background: #AEF1AE">
+          &quot;$&quot;.length()
+        </td>
+      </tr><tr>
+        <td>
+          247
+        </td>
+        <td>
+          17482
+        </td>
+        <td>
+          8925
+          -
+          8993
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.core.NameOps.NameDecorator.likeSpaced
+        </td>
+        <td style="background: #AEF1AE">
+          NameDecorator.this.likeSpaced(NameOps.this.NameDecorator[dotty.tools.dotc.core.Names.SimpleName](name.dropRight(&quot;$&quot;.length())).moduleClassName)
+        </td>
+      </tr><tr>
+        <td>
+          247
+        </td>
+        <td>
+          17481
+        </td>
+        <td>
+          8936
+          -
+          8992
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.NameOps.NameDecorator.moduleClassName
+        </td>
+        <td style="background: #AEF1AE">
+          NameOps.this.NameDecorator[dotty.tools.dotc.core.Names.SimpleName](name.dropRight(&quot;$&quot;.length())).moduleClassName
+        </td>
+      </tr><tr>
+        <td>
+          247
+        </td>
+        <td>
+          17480
+        </td>
+        <td>
+          8936
+          -
+          8976
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.core.Names.SimpleName.dropRight
+        </td>
+        <td style="background: #AEF1AE">
+          name.dropRight(&quot;$&quot;.length())
+        </td>
+      </tr><tr>
+        <td>
+          248
+        </td>
+        <td>
+          17483
+        </td>
+        <td>
+          9010
+          -
+          9014
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.NameOps.NameDecorator.name
+        </td>
+        <td style="background: #AEF1AE">
+          NameDecorator.this.name
+        </td>
+      </tr><tr>
+        <td>
+          251
+        </td>
+        <td>
+          17490
+        </td>
+        <td>
+          9060
+          -
+          9357
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.core.NameOps.NameDecorator.likeSpaced
+        </td>
+        <td style="background: #AEF1AE">
+          NameDecorator.this.likeSpaced(NameDecorator.this.name.rewrite(({
+  @SerialVersionUID(value = 0) final &lt;synthetic&gt; class $anonfun extends scala.runtime.AbstractPartialFunction[dotty.tools.dotc.core.Names.Name,dotty.tools.dotc.core.Names.Name] with Serializable {
+    def &lt;init&gt;(): &lt;$anon: dotty.tools.dotc.core.Names.Name =&gt; dotty.tools.dotc.core.Names.Name&gt; = {
+      $anonfun.super.&lt;init&gt;();
+      ()
+    };
+    final override def applyOrElse[A1 &lt;: dotty.tools.dotc.core.Names.Name, B1 &gt;: dotty.tools.dotc.core.Names.Name](x4: A1, default: A1 =&gt; B1): B1 = ((x4.asInstanceOf[dotty.tools.dotc.core.Names.Name]: dotty.tools.dotc.core.Names.Name): dotty.tools.dotc.core.Names.Name @unchecked) match {
+      case (unmangled @ (_: dotty.tools.dotc.core.Names.SimpleName)) =&gt; kind.unmangle(unmangled)
+      case NameKinds.ExpandedName.unapply(&lt;unapply-selector&gt;) &lt;unapply&gt; ((prefix @ _), (last @ _)) =&gt; kind.unmangle(last).rewrite(({
+        @SerialVersionUID(value = 0) final &lt;synthetic&gt; class $anonfun extends scala.runtime.AbstractPartialFunction[dotty.tools.dotc.core.Names.Name,dotty.tools.dotc.core.Names.Name] with Serializable {
+          def &lt;init&gt;(): &lt;$anon: dotty.tools.dotc.core.Names.Name =&gt; dotty.tools.dotc.core.Names.Name&gt; = {
+            $anonfun.super.&lt;init&gt;();
+            ()
+          };
+          final override def applyOrElse[A1 &lt;: dotty.tools.dotc.core.Names.Name, B1 &gt;: dotty.tools.dotc.core.Names.Name](x5: A1, default: A1 =&gt; B1): B1 = ((x5.asInstanceOf[dotty.tools.dotc.core.Names.Name]: dotty.tools.dotc.core.Names.Name): dotty.tools.dotc.core.Names.Name @unchecked) match {
+            case (kernel @ (_: dotty.tools.dotc.core.Names.SimpleName)) =&gt; NameKinds.ExpandedName.apply(prefix, kernel)
+            case (defaultCase$ @ _) =&gt; default.apply(x5)
+          };
+          final def isDefinedAt(x5: dotty.tools.dotc.core.Names.Name): Boolean = ((x5.asInstanceOf[dotty.tools.dotc.core.Names.Name]: dotty.tools.dotc.core.Names.Name): dotty.tools.dotc.core.Names.Name @unchecked) match {
+            case (kernel @ (_: dotty.tools.dotc.core.Names.SimpleName)) =&gt; true
+            case (defaultCase$ @ _) =&gt; false
+          }
+        };
+        new $anonfun()
+      }: PartialFunction[dotty.tools.dotc.core.Names.Name,dotty.tools.dotc.core.Names.Name]))
+      case (defaultCase$ @ _) =&gt; default.apply(x4)
+    };
+    final def isDefinedAt(x4: dotty.tools.dotc.core.Names.Name): Boolean = ((x4.asInstanceOf[dotty.tools.dotc.core.Names.Name]: dotty.tools.dotc.core.Names.Name): dotty.tools.dotc.core.Names.Name @unchecked) match {
+      case (unmangled @ (_: dotty.tools.dotc.core.Names.SimpleName)) =&gt; true
+      case NameKinds.ExpandedName.unapply(&lt;unapply-selector&gt;) &lt;unapply&gt; ((prefix @ _), (last @ _)) =&gt; true
+      case (defaultCase$ @ _) =&gt; false
+    }
+  };
+  new $anonfun()
+}: PartialFunction[dotty.tools.dotc.core.Names.Name,dotty.tools.dotc.core.Names.Name])))
+        </td>
+      </tr><tr>
+        <td>
+          252
+        </td>
+        <td>
+          17488
+        </td>
+        <td>
+          9092
+          -
+          9092
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.core.NameOps.NameDecorator.$anonfun.&lt;init&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          new $anonfun()
+        </td>
+      </tr><tr>
+        <td>
+          252
+        </td>
+        <td>
+          17489
+        </td>
+        <td>
+          9079
+          -
+          9351
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.core.Names.Name.rewrite
+        </td>
+        <td style="background: #AEF1AE">
+          NameDecorator.this.name.rewrite(({
+  @SerialVersionUID(value = 0) final &lt;synthetic&gt; class $anonfun extends scala.runtime.AbstractPartialFunction[dotty.tools.dotc.core.Names.Name,dotty.tools.dotc.core.Names.Name] with Serializable {
+    def &lt;init&gt;(): &lt;$anon: dotty.tools.dotc.core.Names.Name =&gt; dotty.tools.dotc.core.Names.Name&gt; = {
+      $anonfun.super.&lt;init&gt;();
+      ()
+    };
+    final override def applyOrElse[A1 &lt;: dotty.tools.dotc.core.Names.Name, B1 &gt;: dotty.tools.dotc.core.Names.Name](x4: A1, default: A1 =&gt; B1): B1 = ((x4.asInstanceOf[dotty.tools.dotc.core.Names.Name]: dotty.tools.dotc.core.Names.Name): dotty.tools.dotc.core.Names.Name @unchecked) match {
+      case (unmangled @ (_: dotty.tools.dotc.core.Names.SimpleName)) =&gt; kind.unmangle(unmangled)
+      case NameKinds.ExpandedName.unapply(&lt;unapply-selector&gt;) &lt;unapply&gt; ((prefix @ _), (last @ _)) =&gt; kind.unmangle(last).rewrite(({
+        @SerialVersionUID(value = 0) final &lt;synthetic&gt; class $anonfun extends scala.runtime.AbstractPartialFunction[dotty.tools.dotc.core.Names.Name,dotty.tools.dotc.core.Names.Name] with Serializable {
+          def &lt;init&gt;(): &lt;$anon: dotty.tools.dotc.core.Names.Name =&gt; dotty.tools.dotc.core.Names.Name&gt; = {
+            $anonfun.super.&lt;init&gt;();
+            ()
+          };
+          final override def applyOrElse[A1 &lt;: dotty.tools.dotc.core.Names.Name, B1 &gt;: dotty.tools.dotc.core.Names.Name](x5: A1, default: A1 =&gt; B1): B1 = ((x5.asInstanceOf[dotty.tools.dotc.core.Names.Name]: dotty.tools.dotc.core.Names.Name): dotty.tools.dotc.core.Names.Name @unchecked) match {
+            case (kernel @ (_: dotty.tools.dotc.core.Names.SimpleName)) =&gt; NameKinds.ExpandedName.apply(prefix, kernel)
+            case (defaultCase$ @ _) =&gt; default.apply(x5)
+          };
+          final def isDefinedAt(x5: dotty.tools.dotc.core.Names.Name): Boolean = ((x5.asInstanceOf[dotty.tools.dotc.core.Names.Name]: dotty.tools.dotc.core.Names.Name): dotty.tools.dotc.core.Names.Name @unchecked) match {
+            case (kernel @ (_: dotty.tools.dotc.core.Names.SimpleName)) =&gt; true
+            case (defaultCase$ @ _) =&gt; false
+          }
+        };
+        new $anonfun()
+      }: PartialFunction[dotty.tools.dotc.core.Names.Name,dotty.tools.dotc.core.Names.Name]))
+      case (defaultCase$ @ _) =&gt; default.apply(x4)
+    };
+    final def isDefinedAt(x4: dotty.tools.dotc.core.Names.Name): Boolean = ((x4.asInstanceOf[dotty.tools.dotc.core.Names.Name]: dotty.tools.dotc.core.Names.Name): dotty.tools.dotc.core.Names.Name @unchecked) match {
+      case (unmangled @ (_: dotty.tools.dotc.core.Names.SimpleName)) =&gt; true
+      case NameKinds.ExpandedName.unapply(&lt;unapply-selector&gt;) &lt;unapply&gt; ((prefix @ _), (last @ _)) =&gt; true
+      case (defaultCase$ @ _) =&gt; false
+    }
+  };
+  new $anonfun()
+}: PartialFunction[dotty.tools.dotc.core.Names.Name,dotty.tools.dotc.core.Names.Name]))
+        </td>
+      </tr><tr>
+        <td>
+          254
+        </td>
+        <td>
+          17484
+        </td>
+        <td>
+          9142
+          -
+          9166
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.core.NameKinds.NameKind.unmangle
+        </td>
+        <td style="background: #AEF1AE">
+          kind.unmangle(unmangled)
+        </td>
+      </tr><tr>
+        <td>
+          256
+        </td>
+        <td>
+          17487
+        </td>
+        <td>
+          9220
+          -
+          9343
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.core.Names.Name.rewrite
+        </td>
+        <td style="background: #F0ADAD">
+          kind.unmangle(last).rewrite(({
+  @SerialVersionUID(value = 0) final &lt;synthetic&gt; class $anonfun extends scala.runtime.AbstractPartialFunction[dotty.tools.dotc.core.Names.Name,dotty.tools.dotc.core.Names.Name] with Serializable {
+    def &lt;init&gt;(): &lt;$anon: dotty.tools.dotc.core.Names.Name =&gt; dotty.tools.dotc.core.Names.Name&gt; = {
+      $anonfun.super.&lt;init&gt;();
+      ()
+    };
+    final override def applyOrElse[A1 &lt;: dotty.tools.dotc.core.Names.Name, B1 &gt;: dotty.tools.dotc.core.Names.Name](x5: A1, default: A1 =&gt; B1): B1 = ((x5.asInstanceOf[dotty.tools.dotc.core.Names.Name]: dotty.tools.dotc.core.Names.Name): dotty.tools.dotc.core.Names.Name @unchecked) match {
+      case (kernel @ (_: dotty.tools.dotc.core.Names.SimpleName)) =&gt; NameKinds.ExpandedName.apply(prefix, kernel)
+      case (defaultCase$ @ _) =&gt; default.apply(x5)
+    };
+    final def isDefinedAt(x5: dotty.tools.dotc.core.Names.Name): Boolean = ((x5.asInstanceOf[dotty.tools.dotc.core.Names.Name]: dotty.tools.dotc.core.Names.Name): dotty.tools.dotc.core.Names.Name @unchecked) match {
+      case (kernel @ (_: dotty.tools.dotc.core.Names.SimpleName)) =&gt; true
+      case (defaultCase$ @ _) =&gt; false
+    }
+  };
+  new $anonfun()
+}: PartialFunction[dotty.tools.dotc.core.Names.Name,dotty.tools.dotc.core.Names.Name]))
+        </td>
+      </tr><tr>
+        <td>
+          256
+        </td>
+        <td>
+          17486
+        </td>
+        <td>
+          9248
+          -
+          9248
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.core.NameOps.NameDecorator.$anonfun.$anonfun.&lt;init&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          new $anonfun()
+        </td>
+      </tr><tr>
+        <td>
+          258
+        </td>
+        <td>
+          17485
+        </td>
+        <td>
+          9303
+          -
+          9331
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.core.NameKinds.QualifiedNameKind.apply
+        </td>
+        <td style="background: #F0ADAD">
+          NameKinds.ExpandedName.apply(prefix, kernel)
+        </td>
+      </tr><tr>
+        <td>
+          264
+        </td>
+        <td>
+          17491
+        </td>
+        <td>
+          9444
+          -
+          9457
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.core.NameOps.NameDecorator.unmangle
+        </td>
+        <td style="background: #AEF1AE">
+          NameOps.this.NameDecorator[N](x$11).unmangle(x$12)
+        </td>
+      </tr><tr>
+        <td>
+          264
+        </td>
+        <td>
+          17492
+        </td>
+        <td>
+          9428
+          -
+          9458
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.TraversableOnce./:
+        </td>
+        <td style="background: #AEF1AE">
+          kinds./:[N](x$10)(((x$11: N, x$12: dotty.tools.dotc.core.NameKinds.NameKind) =&gt; NameOps.this.NameDecorator[N](x$11).unmangle(x$12)))
+        </td>
+      </tr><tr>
+        <td>
+          265
+        </td>
+        <td>
+          17494
+        </td>
+        <td>
+          9469
+          -
+          9486
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.Object.eq
+        </td>
+        <td style="background: #AEF1AE">
+          unmangled.eq(NameDecorator.this.name)
+        </td>
+      </tr><tr>
+        <td>
+          265
+        </td>
+        <td>
+          17497
+        </td>
+        <td>
+          9498
+          -
+          9523
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.core.NameOps.NameDecorator.unmangle
+        </td>
+        <td style="background: #AEF1AE">
+          NameOps.this.NameDecorator[N](unmangled).unmangle(kinds)
+        </td>
+      </tr><tr>
+        <td>
+          265
+        </td>
+        <td>
+          17493
+        </td>
+        <td>
+          9482
+          -
+          9486
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.NameOps.NameDecorator.name
+        </td>
+        <td style="background: #AEF1AE">
+          NameDecorator.this.name
+        </td>
+      </tr><tr>
+        <td>
+          265
+        </td>
+        <td>
+          17496
+        </td>
+        <td>
+          9488
+          -
+          9492
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          dotty.tools.dotc.core.NameOps.NameDecorator.name
+        </td>
+        <td style="background: #AEF1AE">
+          NameDecorator.this.name
+        </td>
+      </tr><tr>
+        <td>
+          265
+        </td>
+        <td>
+          17498
+        </td>
+        <td>
+          9498
+          -
+          9523
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          dotty.tools.dotc.core.NameOps.NameDecorator.unmangle
+        </td>
+        <td style="background: #AEF1AE">
+          NameOps.this.NameDecorator[N](unmangled).unmangle(kinds)
+        </td>
+      </tr><tr>
+        <td>
+          265
+        </td>
+        <td>
+          17495
+        </td>
+        <td>
+          9488
+          -
+          9492
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.NameOps.NameDecorator.name
+        </td>
+        <td style="background: #AEF1AE">
+          NameDecorator.this.name
+        </td>
+      </tr><tr>
+        <td>
+          272
+        </td>
+        <td>
+          17499
+        </td>
+        <td>
+          9656
+          -
+          9700
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.core.Names.Name.++
+        </td>
+        <td style="background: #AEF1AE">
+          TermNameDecorator.this.name.exclude(NameKinds.FieldName).++(&quot;_=&quot;)
+        </td>
+      </tr><tr>
+        <td>
+          275
+        </td>
+        <td>
+          17500
+        </td>
+        <td>
+          9752
+          -
+          9761
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.NameKinds.FieldName
+        </td>
+        <td style="background: #AEF1AE">
+          NameKinds.FieldName
+        </td>
+      </tr><tr>
+        <td>
+          275
+        </td>
+        <td>
+          17507
+        </td>
+        <td>
+          9739
+          -
+          9891
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.core.Names.Name.mapLast
+        </td>
+        <td style="background: #AEF1AE">
+          TermNameDecorator.this.name.exclude(NameKinds.FieldName).mapLast(((n: dotty.tools.dotc.core.Names.SimpleName) =&gt; if (n.endsWith(&quot;_=&quot;))
+  n.take(n.length.-(&quot;_=&quot;.length())).asSimpleName
+else
+  n))
+        </td>
+      </tr><tr>
+        <td>
+          276
+        </td>
+        <td>
+          17503
+        </td>
+        <td>
+          9826
+          -
+          9861
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Int.-
+        </td>
+        <td style="background: #AEF1AE">
+          n.length.-(&quot;_=&quot;.length())
+        </td>
+      </tr><tr>
+        <td>
+          276
+        </td>
+        <td>
+          17502
+        </td>
+        <td>
+          9837
+          -
+          9861
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.String.length
+        </td>
+        <td style="background: #AEF1AE">
+          &quot;_=&quot;.length()
+        </td>
+      </tr><tr>
+        <td>
+          276
+        </td>
+        <td>
+          17505
+        </td>
+        <td>
+          9819
+          -
+          9875
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          dotty.tools.dotc.core.Names.SimpleName.asSimpleName
+        </td>
+        <td style="background: #AEF1AE">
+          n.take(n.length.-(&quot;_=&quot;.length())).asSimpleName
+        </td>
+      </tr><tr>
+        <td>
+          276
+        </td>
+        <td>
+          17501
+        </td>
+        <td>
+          9788
+          -
+          9817
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.core.Names.SimpleName.endsWith
+        </td>
+        <td style="background: #AEF1AE">
+          n.endsWith(&quot;_=&quot;)
+        </td>
+      </tr><tr>
+        <td>
+          276
+        </td>
+        <td>
+          17504
+        </td>
+        <td>
+          9819
+          -
+          9875
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Names.SimpleName.asSimpleName
+        </td>
+        <td style="background: #AEF1AE">
+          n.take(n.length.-(&quot;_=&quot;.length())).asSimpleName
+        </td>
+      </tr><tr>
+        <td>
+          277
+        </td>
+        <td>
+          17506
+        </td>
+        <td>
+          9889
+          -
+          9890
+        </td>
+        <td>
+          Ident
+        </td>
+        <td>
+          dotty.tools.dotc.core.NameOps.TermNameDecorator.n
+        </td>
+        <td style="background: #F0ADAD">
+          n
+        </td>
+      </tr><tr>
+        <td>
+          280
+        </td>
+        <td>
+          17509
+        </td>
+        <td>
+          9933
+          -
+          9950
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.NameOps.NameDecorator.isSetterName
+        </td>
+        <td style="background: #AEF1AE">
+          NameOps.this.NameDecorator[dotty.tools.dotc.core.Names.TermName](TermNameDecorator.this.name).isSetterName
+        </td>
+      </tr><tr>
+        <td>
+          280
+        </td>
+        <td>
+          17508
+        </td>
+        <td>
+          9933
+          -
+          9937
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.NameOps.TermNameDecorator.name
+        </td>
+        <td style="background: #AEF1AE">
+          TermNameDecorator.this.name
+        </td>
+      </tr><tr>
+        <td>
+          281
+        </td>
+        <td>
+          17518
+        </td>
+        <td>
+          9962
+          -
+          10116
+        </td>
+        <td>
+          If
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          if (TermNameDecorator.this.name.is(NameKinds.TraitSetterName))
+  {
+    val original: dotty.tools.dotc.core.Names.SimpleName = (TermNameDecorator.this.name: dotty.tools.dotc.core.Names.TermName @unchecked) match {
+      case NameKinds.TraitSetterName.unapply(&lt;unapply-selector&gt;) &lt;unapply&gt; (_, (original @ _)) =&gt; original
+    };
+    NameOps.this.TermNameDecorator(original).fieldName
+  }
+else
+  NameOps.this.TermNameDecorator(TermNameDecorator.this.getterName).fieldName
+        </td>
+      </tr><tr>
+        <td>
+          281
+        </td>
+        <td>
+          17511
+        </td>
+        <td>
+          9966
+          -
+          9990
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.core.Names.TermName.is
+        </td>
+        <td style="background: #AEF1AE">
+          TermNameDecorator.this.name.is(NameKinds.TraitSetterName)
+        </td>
+      </tr><tr>
+        <td>
+          281
+        </td>
+        <td>
+          17514
+        </td>
+        <td>
+          9992
+          -
+          10082
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          {
+  val original: dotty.tools.dotc.core.Names.SimpleName = (TermNameDecorator.this.name: dotty.tools.dotc.core.Names.TermName @unchecked) match {
+    case NameKinds.TraitSetterName.unapply(&lt;unapply-selector&gt;) &lt;unapply&gt; (_, (original @ _)) =&gt; original
+  };
+  NameOps.this.TermNameDecorator(original).fieldName
+}
+        </td>
+      </tr><tr>
+        <td>
+          281
+        </td>
+        <td>
+          17510
+        </td>
+        <td>
+          9974
+          -
+          9989
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.NameKinds.TraitSetterName
+        </td>
+        <td style="background: #AEF1AE">
+          NameKinds.TraitSetterName
+        </td>
+      </tr><tr>
+        <td>
+          282
+        </td>
+        <td>
+          17512
+        </td>
+        <td>
+          10039
+          -
+          10043
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.NameOps.TermNameDecorator.name
+        </td>
+        <td style="background: #AEF1AE">
+          TermNameDecorator.this.name
+        </td>
+      </tr><tr>
+        <td>
+          283
+        </td>
+        <td>
+          17513
+        </td>
+        <td>
+          10054
+          -
+          10072
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.NameOps.TermNameDecorator.fieldName
+        </td>
+        <td style="background: #AEF1AE">
+          NameOps.this.TermNameDecorator(original).fieldName
+        </td>
+      </tr><tr>
+        <td>
+          285
+        </td>
+        <td>
+          17515
+        </td>
+        <td>
+          10096
+          -
+          10106
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.NameOps.TermNameDecorator.getterName
+        </td>
+        <td style="background: #AEF1AE">
+          TermNameDecorator.this.getterName
+        </td>
+      </tr><tr>
+        <td>
+          285
+        </td>
+        <td>
+          17517
+        </td>
+        <td>
+          10096
+          -
+          10116
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          dotty.tools.dotc.core.NameOps.TermNameDecorator.fieldName
+        </td>
+        <td style="background: #AEF1AE">
+          NameOps.this.TermNameDecorator(TermNameDecorator.this.getterName).fieldName
+        </td>
+      </tr><tr>
+        <td>
+          285
+        </td>
+        <td>
+          17516
+        </td>
+        <td>
+          10096
+          -
+          10116
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.NameOps.TermNameDecorator.fieldName
+        </td>
+        <td style="background: #AEF1AE">
+          NameOps.this.TermNameDecorator(TermNameDecorator.this.getterName).fieldName
+        </td>
+      </tr><tr>
+        <td>
+          287
+        </td>
+        <td>
+          17521
+        </td>
+        <td>
+          10136
+          -
+          10151
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          dotty.tools.dotc.core.NameKinds.ClassifiedNameKind.apply
+        </td>
+        <td style="background: #AEF1AE">
+          NameKinds.FieldName.apply(TermNameDecorator.this.name)
+        </td>
+      </tr><tr>
+        <td>
+          287
+        </td>
+        <td>
+          17520
+        </td>
+        <td>
+          10136
+          -
+          10151
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.core.NameKinds.ClassifiedNameKind.apply
+        </td>
+        <td style="background: #AEF1AE">
+          NameKinds.FieldName.apply(TermNameDecorator.this.name)
+        </td>
+      </tr><tr>
+        <td>
+          287
+        </td>
+        <td>
+          17519
+        </td>
+        <td>
+          10146
+          -
+          10150
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.NameOps.TermNameDecorator.name
+        </td>
+        <td style="background: #AEF1AE">
+          TermNameDecorator.this.name
+        </td>
+      </tr><tr>
+        <td>
+          290
+        </td>
+        <td>
+          17524
+        </td>
+        <td>
+          10232
+          -
+          10262
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.core.Names.SimpleName.dropRight
+        </td>
+        <td style="background: #F0ADAD">
+          TermNameDecorator.this.name.asSimpleName.dropRight(1)
+        </td>
+      </tr><tr>
+        <td>
+          290
+        </td>
+        <td>
+          17527
+        </td>
+        <td>
+          10268
+          -
+          10272
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          dotty.tools.dotc.core.NameOps.TermNameDecorator.name
+        </td>
+        <td style="background: #AEF1AE">
+          TermNameDecorator.this.name
+        </td>
+      </tr><tr>
+        <td>
+          290
+        </td>
+        <td>
+          17526
+        </td>
+        <td>
+          10268
+          -
+          10272
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.NameOps.TermNameDecorator.name
+        </td>
+        <td style="background: #AEF1AE">
+          TermNameDecorator.this.name
+        </td>
+      </tr><tr>
+        <td>
+          290
+        </td>
+        <td>
+          17523
+        </td>
+        <td>
+          10206
+          -
+          10230
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.NameOps.NameDecorator.isScala2LocalSuffix
+        </td>
+        <td style="background: #AEF1AE">
+          NameOps.this.NameDecorator[dotty.tools.dotc.core.Names.TermName](TermNameDecorator.this.name).isScala2LocalSuffix
+        </td>
+      </tr><tr>
+        <td>
+          290
+        </td>
+        <td>
+          17522
+        </td>
+        <td>
+          10206
+          -
+          10210
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.NameOps.TermNameDecorator.name
+        </td>
+        <td style="background: #AEF1AE">
+          TermNameDecorator.this.name
+        </td>
+      </tr><tr>
+        <td>
+          290
+        </td>
+        <td>
+          17525
+        </td>
+        <td>
+          10232
+          -
+          10262
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          dotty.tools.dotc.core.Names.SimpleName.dropRight
+        </td>
+        <td style="background: #F0ADAD">
+          TermNameDecorator.this.name.asSimpleName.dropRight(1)
+        </td>
+      </tr><tr>
+        <td>
+          293
+        </td>
+        <td>
+          17528
+        </td>
+        <td>
+          10358
+          -
+          10362
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.NameOps.TermNameDecorator.name
+        </td>
+        <td style="background: #F0ADAD">
+          TermNameDecorator.this.name
+        </td>
+      </tr><tr>
+        <td>
+          294
+        </td>
+        <td>
+          17529
+        </td>
+        <td>
+          10395
+          -
+          10402
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.StdNames.ScalaNames.UNARY_-
+        </td>
+        <td style="background: #F0ADAD">
+          StdNames.nme.UNARY_-
+        </td>
+      </tr><tr>
+        <td>
+          295
+        </td>
+        <td>
+          17530
+        </td>
+        <td>
+          10427
+          -
+          10434
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.StdNames.ScalaNames.UNARY_+
+        </td>
+        <td style="background: #F0ADAD">
+          StdNames.nme.UNARY_+
+        </td>
+      </tr><tr>
+        <td>
+          296
+        </td>
+        <td>
+          17531
+        </td>
+        <td>
+          10459
+          -
+          10466
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.StdNames.ScalaNames.UNARY_~
+        </td>
+        <td style="background: #F0ADAD">
+          StdNames.nme.UNARY_~
+        </td>
+      </tr><tr>
+        <td>
+          297
+        </td>
+        <td>
+          17532
+        </td>
+        <td>
+          10491
+          -
+          10498
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.StdNames.ScalaNames.UNARY_!
+        </td>
+        <td style="background: #F0ADAD">
+          StdNames.nme.UNARY_!
+        </td>
+      </tr><tr>
+        <td>
+          298
+        </td>
+        <td>
+          17533
+        </td>
+        <td>
+          10515
+          -
+          10519
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.NameOps.TermNameDecorator.name
+        </td>
+        <td style="background: #F0ADAD">
+          TermNameDecorator.this.name
+        </td>
+      </tr>
+    </table>
+          </div>
+        </div>
+      </body>
+    </html>

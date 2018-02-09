@@ -1,0 +1,4013 @@
+<html>
+      <head>
+        <meta http-equiv="Content-Type" content="text/html; charset=utf-8"/>
+        <title id="title">
+          dotty/tools/repl/terminal/Terminal.scala.html
+        </title>
+        <script src="https://ajax.googleapis.com/ajax/libs/jquery/1.10.2/jquery.min.js"></script><link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/jquery.tablesorter/2.20.1/css/theme.default.min.css" type="text/css"/><script src="https://cdnjs.cloudflare.com/ajax/libs/jquery.tablesorter/2.20.1/js/jquery.tablesorter.min.js"></script><link rel="stylesheet" href="https://netdna.bootstrapcdn.com/bootstrap/3.0.3/css/bootstrap.min.css" type="text/css"/><script src="https://netdna.bootstrapcdn.com/bootstrap/3.0.3/js/bootstrap.min.js"></script><script type="text/javascript">
+        $(document).ready(function() {$(".tablesorter").tablesorter();});
+      </script>
+        <style>
+          table.codegrid { font-family: monospace; font-size: 12px; width: auto!important; }table.statementlist { width: auto!important; font-size: 13px; } table.codegrid td { padding: 0!important; border: 0!important } table td.linenumber { width: 40px!important; } 
+        </style>
+      </head>
+      <body style="font-family: monospace;">
+        <ul class="nav nav-tabs">
+          <li>
+            <a href="#codegrid" data-toggle="tab">Codegrid</a>
+          </li>
+          <li>
+            <a href="#statementlist" data-toggle="tab">Statement List</a>
+          </li>
+        </ul>
+        <div class="tab-content">
+          <div class="tab-pane active" id="codegrid">
+            <pre style='font-size: 12pt; font-family: courier;'>1 <span style=''>package dotty.tools
+</span>2 <span style=''>package repl
+</span>3 <span style=''>package terminal
+</span>4 <span style=''>
+</span>5 <span style=''>import scala.annotation.tailrec
+</span>6 <span style=''>import scala.collection.mutable
+</span>7 <span style=''>
+</span>8 <span style=''>/**
+</span>9 <span style=''> * The core logic around a terminal; it defines the base `filters` API
+</span>10 <span style=''> * through which anything (including basic cursor-navigation and typing)
+</span>11 <span style=''> * interacts with the terminal.
+</span>12 <span style=''> *
+</span>13 <span style=''> * Maintains basic invariants, such as &quot;cursor should always be within
+</span>14 <span style=''> * the buffer&quot;, and &quot;ansi terminal should reflect most up to date TermState&quot;
+</span>15 <span style=''> */
+</span>16 <span style=''>object Terminal {
+</span>17 <span style=''>
+</span>18 <span style=''>  /**
+</span>19 <span style=''>   * Computes how tall a line of text is when wrapped at `width`.
+</span>20 <span style=''>   *
+</span>21 <span style=''>   * Even 0-character lines still take up one row!
+</span>22 <span style=''>   *
+</span>23 <span style=''>   * width = 2
+</span>24 <span style=''>   * 0 -&gt; 1
+</span>25 <span style=''>   * 1 -&gt; 1
+</span>26 <span style=''>   * 2 -&gt; 1
+</span>27 <span style=''>   * 3 -&gt; 2
+</span>28 <span style=''>   * 4 -&gt; 2
+</span>29 <span style=''>   * 5 -&gt; 3
+</span>30 <span style=''>   */
+</span>31 <span style=''>  def fragHeight(length: Int, width: Int) = </span><span style='background: #F0ADAD'>math.max(1, (length - 1) / width + 1)</span><span style=''>
+</span>32 <span style=''>
+</span>33 <span style=''>  def splitBuffer(buffer: Vector[Char]) = {
+</span>34 <span style=''>    val frags = </span><span style='background: #F0ADAD'>mutable.Buffer.empty[Int]</span><span style=''>
+</span>35 <span style=''>    </span><span style='background: #F0ADAD'>frags.append(0)</span><span style=''>
+</span>36 <span style=''>    </span><span style='background: #F0ADAD'>for(c &lt;- buffer){
+</span>37 <span style=''></span><span style='background: #F0ADAD'>      if (c == '\n') frags.append(0)
+</span>38 <span style=''></span><span style='background: #F0ADAD'>      else frags(frags.length - 1) = frags.last + 1</span><span style=''>
+</span>39 <span style=''>    }
+</span>40 <span style=''>    frags
+</span>41 <span style=''>  }
+</span>42 <span style=''>  def calculateHeight(buffer: Vector[Char],
+</span>43 <span style=''>                      width: Int,
+</span>44 <span style=''>                      prompt: String): Seq[Int] = {
+</span>45 <span style=''>    val rowLengths = </span><span style='background: #F0ADAD'>splitBuffer(buffer)</span><span style=''>
+</span>46 <span style=''>
+</span>47 <span style=''>    </span><span style='background: #F0ADAD'>calculateHeight0(rowLengths, width - prompt.length)</span><span style=''>
+</span>48 <span style=''>  }
+</span>49 <span style=''>
+</span>50 <span style=''>  /**
+</span>51 <span style=''>   * Given a buffer with characters and newlines, calculates how high
+</span>52 <span style=''>   * the buffer is and where the cursor goes inside of it.
+</span>53 <span style=''>   */
+</span>54 <span style=''>  def calculateHeight0(rowLengths: Seq[Int],
+</span>55 <span style=''>                       width: Int): Seq[Int] = {
+</span>56 <span style=''>    val fragHeights =
+</span>57 <span style=''>      </span><span style='background: #F0ADAD'>rowLengths
+</span>58 <span style=''></span><span style='background: #F0ADAD'>        .inits
+</span>59 <span style=''></span><span style='background: #F0ADAD'>        .toVector
+</span>60 <span style=''></span><span style='background: #F0ADAD'>        .reverse // We want shortest-to-longest, inits gives longest-to-shortest
+</span>61 <span style=''></span><span style='background: #F0ADAD'>        .filter(_.nonEmpty) // Without the first empty prefix
+</span>62 <span style=''></span><span style='background: #F0ADAD'>        .map{ x =&gt;
+</span>63 <span style=''></span><span style='background: #F0ADAD'>          fragHeight(
+</span>64 <span style=''></span><span style='background: #F0ADAD'>            // If the frag barely fits on one line, give it
+</span>65 <span style=''></span><span style='background: #F0ADAD'>            // an extra spot for the cursor on the next line
+</span>66 <span style=''></span><span style='background: #F0ADAD'>            x.last + 1,
+</span>67 <span style=''></span><span style='background: #F0ADAD'>            width
+</span>68 <span style=''></span><span style='background: #F0ADAD'>          )
+</span>69 <span style=''></span><span style='background: #F0ADAD'>        }</span><span style=''>
+</span>70 <span style=''>//    Debug(&quot;fragHeights &quot; + fragHeights)
+</span>71 <span style=''>    fragHeights
+</span>72 <span style=''>  }
+</span>73 <span style=''>
+</span>74 <span style=''>  def positionCursor(cursor: Int,
+</span>75 <span style=''>                     rowLengths: Seq[Int],
+</span>76 <span style=''>                     fragHeights: Seq[Int],
+</span>77 <span style=''>                     width: Int) = {
+</span>78 <span style=''>    var leftoverCursor = cursor
+</span>79 <span style=''>    //    Debug(&quot;leftoverCursor &quot; + leftoverCursor)
+</span>80 <span style=''>    var totalPreHeight = </span><span style='background: #F0ADAD'>0</span><span style=''>
+</span>81 <span style=''>    var done = </span><span style='background: #F0ADAD'>false</span><span style=''>
+</span>82 <span style=''>    // Don't check if the cursor exceeds the last chunk, because
+</span>83 <span style=''>    // even if it does there's nowhere else for it to go
+</span>84 <span style=''>    </span><span style='background: #F0ADAD'>for(i &lt;- 0 until rowLengths.length -1 if !done) {
+</span>85 <span style=''></span><span style='background: #F0ADAD'>      // length of frag and the '\n' after it
+</span>86 <span style=''></span><span style='background: #F0ADAD'>      val delta = rowLengths(i) + 1
+</span>87 <span style=''></span><span style='background: #F0ADAD'>      //      Debug(&quot;delta &quot; + delta)
+</span>88 <span style=''></span><span style='background: #F0ADAD'>      val nextCursor = leftoverCursor - delta
+</span>89 <span style=''></span><span style='background: #F0ADAD'>      if (nextCursor &gt;= 0) {
+</span>90 <span style=''></span><span style='background: #F0ADAD'>        //        Debug(&quot;nextCursor &quot; + nextCursor)
+</span>91 <span style=''></span><span style='background: #F0ADAD'>        leftoverCursor = nextCursor
+</span>92 <span style=''></span><span style='background: #F0ADAD'>        totalPreHeight += fragHeights(i)
+</span>93 <span style=''></span><span style='background: #F0ADAD'>      }else done = true
+</span>94 <span style=''></span><span style='background: #F0ADAD'>    }</span><span style=''>
+</span>95 <span style=''>
+</span>96 <span style=''>    val cursorY = </span><span style='background: #F0ADAD'>totalPreHeight + leftoverCursor / width</span><span style=''>
+</span>97 <span style=''>    val cursorX = </span><span style='background: #F0ADAD'>leftoverCursor % width</span><span style=''>
+</span>98 <span style=''>
+</span>99 <span style=''>    </span><span style='background: #F0ADAD'>(cursorY, cursorX)</span><span style=''>
+</span>100 <span style=''>  }
+</span>101 <span style=''>
+</span>102 <span style=''>
+</span>103 <span style=''>  type Action    = (Vector[Char], Int) =&gt; (Vector[Char], Int)
+</span>104 <span style=''>  type MsgAction = (Vector[Char], Int) =&gt; (Vector[Char], Int, String)
+</span>105 <span style=''>
+</span>106 <span style=''>  def noTransform(x: Vector[Char], i: Int) = </span><span style='background: #F0ADAD'>(Ansi.Str.parse(x), i)</span><span style=''>
+</span>107 <span style=''>  /**
+</span>108 <span style=''>   * Blockingly reads a line from the given input stream and returns it.
+</span>109 <span style=''>   *
+</span>110 <span style=''>   * @param prompt The prompt to display when requesting input
+</span>111 <span style=''>   * @param reader The input-stream where characters come in, e.g. System.in
+</span>112 <span style=''>   * @param writer The output-stream where print-outs go, e.g. System.out
+</span>113 <span style=''>   * @param filters A set of actions that can be taken depending on the input,
+</span>114 <span style=''>   * @param displayTransform code to manipulate the display of the buffer and
+</span>115 <span style=''>   *                         cursor, without actually changing the logical
+</span>116 <span style=''>   *                         values inside them.
+</span>117 <span style=''>   */
+</span>118 <span style=''>  def readLine(prompt: Prompt,
+</span>119 <span style=''>               reader: java.io.Reader,
+</span>120 <span style=''>               writer: java.io.Writer,
+</span>121 <span style=''>               filters: Filter,
+</span>122 <span style=''>               displayTransform: (Vector[Char], Int) =&gt; (Ansi.Str, Int) = noTransform)
+</span>123 <span style=''>               : Option[TermAction] = {
+</span>124 <span style=''>
+</span>125 <span style=''>    /**
+</span>126 <span style=''>      * Erases the previous line and re-draws it with the new buffer and
+</span>127 <span style=''>      * cursor.
+</span>128 <span style=''>      *
+</span>129 <span style=''>      * Relies on `ups` to know how &quot;tall&quot; the previous line was, to go up
+</span>130 <span style=''>      * and erase that many rows in the console. Performs a lot of horrific
+</span>131 <span style=''>      * math all over the place, incredibly prone to off-by-ones, in order
+</span>132 <span style=''>      * to at the end of the day position the cursor in the right spot.
+</span>133 <span style=''>      */
+</span>134 <span style=''>    def redrawLine(buffer: Ansi.Str,
+</span>135 <span style=''>                   cursor: Int,
+</span>136 <span style=''>                   ups: Int,
+</span>137 <span style=''>                   rowLengths: Seq[Int],
+</span>138 <span style=''>                   fullPrompt: Boolean = true,
+</span>139 <span style=''>                   newlinePrompt: Boolean = false) = {
+</span>140 <span style=''>
+</span>141 <span style=''>
+</span>142 <span style=''>      // Enable this in certain cases (e.g. cursor near the value you are
+</span>143 <span style=''>      // interested into) see what's going on with all the ansi screen-cursor
+</span>144 <span style=''>      // movement
+</span>145 <span style=''>      def debugDelay() = if (</span><span style='background: #F0ADAD'>false</span><span style=''>)</span><span style='background: #F0ADAD'>{
+</span>146 <span style=''></span><span style='background: #F0ADAD'>        Thread.sleep(200)
+</span>147 <span style=''></span><span style='background: #F0ADAD'>        writer.flush()
+</span>148 <span style=''></span><span style='background: #F0ADAD'>      }</span><span style=''>
+</span>149 <span style=''>
+</span>150 <span style=''>
+</span>151 <span style=''>      val promptLine =
+</span>152 <span style=''>        if (fullPrompt) </span><span style='background: #F0ADAD'>prompt.full</span><span style=''>
+</span>153 <span style=''>        else </span><span style='background: #F0ADAD'>prompt.lastLine</span><span style=''>
+</span>154 <span style=''>
+</span>155 <span style=''>      val promptWidth = if(newlinePrompt) </span><span style='background: #F0ADAD'>0</span><span style=''> else </span><span style='background: #F0ADAD'>prompt.lastLine.length</span><span style=''>
+</span>156 <span style=''>      val actualWidth = </span><span style='background: #F0ADAD'>width - promptWidth</span><span style=''>
+</span>157 <span style=''>
+</span>158 <span style=''>      </span><span style='background: #F0ADAD'>ansi.up(ups)</span><span style=''>
+</span>159 <span style=''>      </span><span style='background: #F0ADAD'>ansi.left(9999)</span><span style=''>
+</span>160 <span style=''>      </span><span style='background: #F0ADAD'>ansi.clearScreen(0)</span><span style=''>
+</span>161 <span style=''>      </span><span style='background: #F0ADAD'>writer.write(promptLine.toString)</span><span style=''>
+</span>162 <span style=''>      if (newlinePrompt) </span><span style='background: #F0ADAD'>writer.write(&quot;\n&quot;)</span><span style=''>
+</span>163 <span style=''>
+</span>164 <span style=''>      // I'm not sure why this is necessary, but it seems that without it, a
+</span>165 <span style=''>      // cursor that &quot;barely&quot; overshoots the end of a line, at the end of the
+</span>166 <span style=''>      // buffer, does not properly wrap and ends up dangling off the
+</span>167 <span style=''>      // right-edge of the terminal window!
+</span>168 <span style=''>      //
+</span>169 <span style=''>      // This causes problems later since the cursor is at the wrong X/Y,
+</span>170 <span style=''>      // confusing the rest of the math and ending up over-shooting on the
+</span>171 <span style=''>      // `ansi.up` calls, over-writing earlier lines. This prints a single
+</span>172 <span style=''>      // space such that instead of dangling it forces the cursor onto the
+</span>173 <span style=''>      // next line for-realz. If it isn't dangling the extra space is a no-op
+</span>174 <span style=''>      val lineStuffer = </span><span style='background: #F0ADAD'>' '</span><span style=''>
+</span>175 <span style=''>      // Under `newlinePrompt`, we print the thing almost-verbatim, since we
+</span>176 <span style=''>      // want to avoid breaking code by adding random indentation. If not, we
+</span>177 <span style=''>      // are guaranteed that the lines are short, so we can indent the newlines
+</span>178 <span style=''>      // without fear of wrapping
+</span>179 <span style=''>      val newlineReplacement =
+</span>180 <span style=''>        if (newlinePrompt) {
+</span>181 <span style=''>
+</span>182 <span style=''>          </span><span style='background: #F0ADAD'>Array(lineStuffer, '\n')</span><span style=''>
+</span>183 <span style=''>        } else </span><span style='background: #F0ADAD'>{
+</span>184 <span style=''></span><span style='background: #F0ADAD'>          val indent = &quot; &quot; * prompt.lastLine.length
+</span>185 <span style=''></span><span style='background: #F0ADAD'>          Array('\n', indent:_*)
+</span>186 <span style=''></span><span style='background: #F0ADAD'>        }</span><span style=''>
+</span>187 <span style=''>
+</span>188 <span style=''>      </span><span style='background: #F0ADAD'>writer.write(
+</span>189 <span style=''></span><span style='background: #F0ADAD'>        buffer.render.flatMap{
+</span>190 <span style=''></span><span style='background: #F0ADAD'>          case '\n' =&gt; newlineReplacement
+</span>191 <span style=''></span><span style='background: #F0ADAD'>          case x =&gt; Array(x)
+</span>192 <span style=''></span><span style='background: #F0ADAD'>        }.toArray
+</span>193 <span style=''></span><span style='background: #F0ADAD'>      )</span><span style=''>
+</span>194 <span style=''>      </span><span style='background: #F0ADAD'>writer.write(lineStuffer)</span><span style=''>
+</span>195 <span style=''>
+</span>196 <span style=''>      val fragHeights = </span><span style='background: #F0ADAD'>calculateHeight0(rowLengths, actualWidth)</span><span style=''>
+</span>197 <span style=''>      val (cursorY, cursorX) = positionCursor(
+</span>198 <span style=''>        cursor,
+</span>199 <span style=''>        rowLengths,
+</span>200 <span style=''>        fragHeights,
+</span>201 <span style=''>        actualWidth
+</span>202 <span style=''>      )
+</span>203 <span style=''>      </span><span style='background: #F0ADAD'>ansi.up(fragHeights.sum - 1)</span><span style=''>
+</span>204 <span style=''>      </span><span style='background: #F0ADAD'>ansi.left(9999)</span><span style=''>
+</span>205 <span style=''>      </span><span style='background: #F0ADAD'>ansi.down(cursorY)</span><span style=''>
+</span>206 <span style=''>      </span><span style='background: #F0ADAD'>ansi.right(cursorX)</span><span style=''>
+</span>207 <span style=''>      if (</span><span style='background: #F0ADAD'>!newlinePrompt</span><span style=''>) </span><span style='background: #F0ADAD'>ansi.right(prompt.lastLine.length)</span><span style=''>
+</span>208 <span style=''>
+</span>209 <span style=''>      </span><span style='background: #F0ADAD'>writer.flush()</span><span style=''>
+</span>210 <span style=''>    }
+</span>211 <span style=''>
+</span>212 <span style=''>    @tailrec
+</span>213 <span style=''>    def readChar(lastState: TermState, ups: Int, fullPrompt: Boolean = true): Option[TermAction] = {
+</span>214 <span style=''>      val moreInputComing = </span><span style='background: #F0ADAD'>reader.ready()</span><span style=''>
+</span>215 <span style=''>
+</span>216 <span style=''>      lazy val (transformedBuffer0, cursorOffset) = displayTransform(
+</span>217 <span style=''>        lastState.buffer,
+</span>218 <span style=''>        lastState.cursor
+</span>219 <span style=''>      )
+</span>220 <span style=''>
+</span>221 <span style=''>      lazy val transformedBuffer = transformedBuffer0 ++ lastState.msg
+</span>222 <span style=''>      lazy val lastOffsetCursor = lastState.cursor + cursorOffset
+</span>223 <span style=''>      lazy val rowLengths = splitBuffer(
+</span>224 <span style=''>        lastState.buffer ++ lastState.msg.plainText
+</span>225 <span style=''>      )
+</span>226 <span style=''>      val narrowWidth = </span><span style='background: #F0ADAD'>width - prompt.lastLine.length</span><span style=''>
+</span>227 <span style=''>      val newlinePrompt = </span><span style='background: #F0ADAD'>rowLengths.exists(_ &gt;= narrowWidth)</span><span style=''>
+</span>228 <span style=''>      val promptWidth = if(newlinePrompt) </span><span style='background: #F0ADAD'>0</span><span style=''> else </span><span style='background: #F0ADAD'>prompt.lastLine.length</span><span style=''>
+</span>229 <span style=''>      val actualWidth = </span><span style='background: #F0ADAD'>width - promptWidth</span><span style=''>
+</span>230 <span style=''>      val newlineUp = if (newlinePrompt) </span><span style='background: #F0ADAD'>1</span><span style=''> else </span><span style='background: #F0ADAD'>0</span><span style=''>
+</span>231 <span style=''>      if (</span><span style='background: #F0ADAD'>!moreInputComing</span><span style=''>) </span><span style='background: #F0ADAD'>redrawLine(
+</span>232 <span style=''></span><span style='background: #F0ADAD'>        transformedBuffer,
+</span>233 <span style=''></span><span style='background: #F0ADAD'>        lastOffsetCursor,
+</span>234 <span style=''></span><span style='background: #F0ADAD'>        ups,
+</span>235 <span style=''></span><span style='background: #F0ADAD'>        rowLengths,
+</span>236 <span style=''></span><span style='background: #F0ADAD'>        fullPrompt,
+</span>237 <span style=''></span><span style='background: #F0ADAD'>        newlinePrompt
+</span>238 <span style=''></span><span style='background: #F0ADAD'>      )</span><span style=''>
+</span>239 <span style=''>
+</span>240 <span style=''>      lazy val (oldCursorY, _) = positionCursor(
+</span>241 <span style=''>        lastOffsetCursor,
+</span>242 <span style=''>        rowLengths,
+</span>243 <span style=''>        calculateHeight0(rowLengths, actualWidth),
+</span>244 <span style=''>        actualWidth
+</span>245 <span style=''>      )
+</span>246 <span style=''>
+</span>247 <span style=''>      def updateState(s: LazyList[Int],
+</span>248 <span style=''>                      b: Vector[Char],
+</span>249 <span style=''>                      c: Int,
+</span>250 <span style=''>                      msg: Ansi.Str): (Int, TermState) = {
+</span>251 <span style=''>
+</span>252 <span style=''>        val newCursor = </span><span style='background: #F0ADAD'>math.max(math.min(c, b.length), 0)</span><span style=''>
+</span>253 <span style=''>        val nextUps =
+</span>254 <span style=''>          if (moreInputComing) </span><span style='background: #F0ADAD'>ups</span><span style=''>
+</span>255 <span style=''>          else </span><span style='background: #F0ADAD'>oldCursorY + newlineUp</span><span style=''>
+</span>256 <span style=''>
+</span>257 <span style=''>        val newState = </span><span style='background: #F0ADAD'>TermState(s, b, newCursor, msg)</span><span style=''>
+</span>258 <span style=''>
+</span>259 <span style=''>        </span><span style='background: #F0ADAD'>(nextUps, newState)</span><span style=''>
+</span>260 <span style=''>      }
+</span>261 <span style=''>      // `.get` because we assume that *some* filter is going to match each
+</span>262 <span style=''>      // character, even if only to dump the character to the screen. If nobody
+</span>263 <span style=''>      // matches the character then we can feel free to blow up
+</span>264 <span style=''>      def redrawAndNewline() = {
+</span>265 <span style=''>        </span><span style='background: #F0ADAD'>redrawLine(
+</span>266 <span style=''></span><span style='background: #F0ADAD'>          transformedBuffer, lastState.buffer.length,
+</span>267 <span style=''></span><span style='background: #F0ADAD'>          oldCursorY + newlineUp, rowLengths, false, newlinePrompt
+</span>268 <span style=''></span><span style='background: #F0ADAD'>        )</span><span style=''>
+</span>269 <span style=''>        </span><span style='background: #F0ADAD'>writer.write(10)</span><span style=''>
+</span>270 <span style=''>        </span><span style='background: #F0ADAD'>writer.write(13)</span><span style=''>
+</span>271 <span style=''>        </span><span style='background: #F0ADAD'>writer.flush()</span><span style=''>
+</span>272 <span style=''>      }
+</span>273 <span style=''>      </span><span style='background: #F0ADAD'>filters.op(TermInfo(lastState, actualWidth)).get</span><span style=''> match {
+</span>274 <span style=''>        case Printing(TermState(s, b, c, msg), stdout) =&gt;
+</span>275 <span style=''>          </span><span style='background: #F0ADAD'>writer.write(stdout)</span><span style=''>
+</span>276 <span style=''>          val (nextUps, newState) = updateState(s, b, c, msg)
+</span>277 <span style=''>          </span><span style='background: #F0ADAD'>readChar(newState, nextUps)</span><span style=''>
+</span>278 <span style=''>
+</span>279 <span style=''>        case TermState(s, b, c, msg) =&gt;
+</span>280 <span style=''>          val (nextUps, newState) = updateState(s, b, c, msg)
+</span>281 <span style=''>          </span><span style='background: #F0ADAD'>readChar(newState, nextUps, false)</span><span style=''>
+</span>282 <span style=''>
+</span>283 <span style=''>        case res: Result =&gt;
+</span>284 <span style=''>          </span><span style='background: #F0ADAD'>redrawAndNewline()</span><span style=''>
+</span>285 <span style=''>          </span><span style='background: #F0ADAD'>Some(res)</span><span style=''>
+</span>286 <span style=''>
+</span>287 <span style=''>        case Interrupt =&gt;
+</span>288 <span style=''>          </span><span style='background: #F0ADAD'>redrawAndNewline()</span><span style=''>
+</span>289 <span style=''>          </span><span style='background: #F0ADAD'>Some(Interrupt)</span><span style=''>
+</span>290 <span style=''>
+</span>291 <span style=''>        case ClearScreen(ts) =&gt;
+</span>292 <span style=''>          </span><span style='background: #F0ADAD'>ansi.clearScreen(2)</span><span style=''>
+</span>293 <span style=''>          </span><span style='background: #F0ADAD'>ansi.up(9999)</span><span style=''>
+</span>294 <span style=''>          </span><span style='background: #F0ADAD'>ansi.left(9999)</span><span style=''>
+</span>295 <span style=''>          </span><span style='background: #F0ADAD'>readChar(ts, ups)</span><span style=''>
+</span>296 <span style=''>        case Exit =&gt;
+</span>297 <span style=''>          </span><span style='background: #F0ADAD'>None</span><span style=''>
+</span>298 <span style=''>      }
+</span>299 <span style=''>    }
+</span>300 <span style=''>
+</span>301 <span style=''>    lazy val ansi = new AnsiNav(writer)
+</span>302 <span style=''>    lazy val (width, _, initialConfig) = TTY.init()
+</span>303 <span style=''>    try {
+</span>304 <span style=''>      </span><span style='background: #F0ADAD'>readChar(TermState(LazyList.continually(reader.read()), Vector.empty, 0, &quot;&quot;), 0)</span><span style=''>
+</span>305 <span style=''>    }
+</span>306 <span style=''>    finally {
+</span>307 <span style=''>
+</span>308 <span style=''>      // Don't close these! Closing these closes stdin/stdout,
+</span>309 <span style=''>      // which seems to kill the entire program
+</span>310 <span style=''>
+</span>311 <span style=''>      // reader.close()
+</span>312 <span style=''>      // writer.close()
+</span>313 <span style=''>      </span><span style='background: #F0ADAD'>TTY.stty(initialConfig)</span><span style=''>
+</span>314 <span style=''>    }
+</span>315 <span style=''>  }
+</span>316 <span style=''>}
+</span>317 <span style=''>object Prompt {
+</span>318 <span style=''>  implicit def construct(prompt: String): Prompt = {
+</span>319 <span style=''>    val parsedPrompt = </span><span style='background: #F0ADAD'>Ansi.Str.parse(prompt)</span><span style=''>
+</span>320 <span style=''>    val index = </span><span style='background: #F0ADAD'>parsedPrompt.plainText.lastIndexOf('\n')</span><span style=''>
+</span>321 <span style=''>    val (_, last) = </span><span style='background: #F0ADAD'>parsedPrompt.splitAt(index+1)</span><span style=''>
+</span>322 <span style=''>    </span><span style='background: #F0ADAD'>Prompt(parsedPrompt, last)</span><span style=''>
+</span>323 <span style=''>  }
+</span>324 <span style=''>}
+</span>325 <span style=''>
+</span>326 <span style=''>case class Prompt(full: Ansi.Str, lastLine: Ansi.Str)
+</span></pre>
+          </div>
+          <div class="tab-pane" id="statementlist">
+            <table cellspacing="0" cellpadding="0" class="table statementlist">
+      <tr>
+        <th>Line</th>
+        <th>Stmt Id</th>
+        <th>Pos</th>
+        <th>Tree</th>
+        <th>Symbol</th>
+        <th>Code</th>
+      </tr><tr>
+        <td>
+          31
+        </td>
+        <td>
+          81547
+        </td>
+        <td>
+          740
+          -
+          777
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.math.max
+        </td>
+        <td style="background: #F0ADAD">
+          scala.math.`package`.max(1, length.-(1)./(width).+(1))
+        </td>
+      </tr><tr>
+        <td>
+          31
+        </td>
+        <td>
+          81546
+        </td>
+        <td>
+          752
+          -
+          776
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Int.+
+        </td>
+        <td style="background: #F0ADAD">
+          length.-(1)./(width).+(1)
+        </td>
+      </tr><tr>
+        <td>
+          31
+        </td>
+        <td>
+          81545
+        </td>
+        <td>
+          749
+          -
+          750
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          1
+        </td>
+      </tr><tr>
+        <td>
+          34
+        </td>
+        <td>
+          81548
+        </td>
+        <td>
+          839
+          -
+          864
+        </td>
+        <td>
+          TypeApply
+        </td>
+        <td>
+          scala.collection.generic.GenericCompanion.empty
+        </td>
+        <td style="background: #F0ADAD">
+          scala.collection.mutable.Buffer.empty[Int]
+        </td>
+      </tr><tr>
+        <td>
+          35
+        </td>
+        <td>
+          81549
+        </td>
+        <td>
+          869
+          -
+          884
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.mutable.BufferLike.append
+        </td>
+        <td style="background: #F0ADAD">
+          frags.append(0)
+        </td>
+      </tr><tr>
+        <td>
+          36
+        </td>
+        <td>
+          81557
+        </td>
+        <td>
+          889
+          -
+          995
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.IterableLike.foreach
+        </td>
+        <td style="background: #F0ADAD">
+          buffer.foreach[Unit](((c: Char) =&gt; if (c.==('\n'))
+  frags.append(0)
+else
+  frags.update(frags.length.-(1), frags.last.+(1))))
+        </td>
+      </tr><tr>
+        <td>
+          37
+        </td>
+        <td>
+          81550
+        </td>
+        <td>
+          917
+          -
+          926
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Char.==
+        </td>
+        <td style="background: #F0ADAD">
+          c.==('\n')
+        </td>
+      </tr><tr>
+        <td>
+          37
+        </td>
+        <td>
+          81552
+        </td>
+        <td>
+          928
+          -
+          943
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          scala.collection.mutable.BufferLike.append
+        </td>
+        <td style="background: #F0ADAD">
+          frags.append(0)
+        </td>
+      </tr><tr>
+        <td>
+          37
+        </td>
+        <td>
+          81551
+        </td>
+        <td>
+          928
+          -
+          943
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.mutable.BufferLike.append
+        </td>
+        <td style="background: #F0ADAD">
+          frags.append(0)
+        </td>
+      </tr><tr>
+        <td>
+          38
+        </td>
+        <td>
+          81553
+        </td>
+        <td>
+          961
+          -
+          977
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Int.-
+        </td>
+        <td style="background: #F0ADAD">
+          frags.length.-(1)
+        </td>
+      </tr><tr>
+        <td>
+          38
+        </td>
+        <td>
+          81556
+        </td>
+        <td>
+          955
+          -
+          995
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          scala.collection.mutable.BufferLike.update
+        </td>
+        <td style="background: #F0ADAD">
+          frags.update(frags.length.-(1), frags.last.+(1))
+        </td>
+      </tr><tr>
+        <td>
+          38
+        </td>
+        <td>
+          81555
+        </td>
+        <td>
+          955
+          -
+          995
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.mutable.BufferLike.update
+        </td>
+        <td style="background: #F0ADAD">
+          frags.update(frags.length.-(1), frags.last.+(1))
+        </td>
+      </tr><tr>
+        <td>
+          38
+        </td>
+        <td>
+          81554
+        </td>
+        <td>
+          981
+          -
+          995
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Int.+
+        </td>
+        <td style="background: #F0ADAD">
+          frags.last.+(1)
+        </td>
+      </tr><tr>
+        <td>
+          45
+        </td>
+        <td>
+          81558
+        </td>
+        <td>
+          1167
+          -
+          1186
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.repl.terminal.Terminal.splitBuffer
+        </td>
+        <td style="background: #F0ADAD">
+          Terminal.this.splitBuffer(buffer)
+        </td>
+      </tr><tr>
+        <td>
+          47
+        </td>
+        <td>
+          81559
+        </td>
+        <td>
+          1229
+          -
+          1242
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.String.length
+        </td>
+        <td style="background: #F0ADAD">
+          prompt.length()
+        </td>
+      </tr><tr>
+        <td>
+          47
+        </td>
+        <td>
+          81561
+        </td>
+        <td>
+          1192
+          -
+          1243
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.repl.terminal.Terminal.calculateHeight0
+        </td>
+        <td style="background: #F0ADAD">
+          Terminal.this.calculateHeight0(rowLengths, width.-(prompt.length()))
+        </td>
+      </tr><tr>
+        <td>
+          47
+        </td>
+        <td>
+          81560
+        </td>
+        <td>
+          1221
+          -
+          1242
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Int.-
+        </td>
+        <td style="background: #F0ADAD">
+          width.-(prompt.length())
+        </td>
+      </tr><tr>
+        <td>
+          61
+        </td>
+        <td>
+          81562
+        </td>
+        <td>
+          1653
+          -
+          1663
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.collection.TraversableOnce.nonEmpty
+        </td>
+        <td style="background: #F0ADAD">
+          x$1.nonEmpty
+        </td>
+      </tr><tr>
+        <td>
+          62
+        </td>
+        <td>
+          81565
+        </td>
+        <td>
+          1711
+          -
+          1711
+        </td>
+        <td>
+          TypeApply
+        </td>
+        <td>
+          scala.collection.immutable.Vector.canBuildFrom
+        </td>
+        <td style="background: #F0ADAD">
+          immutable.this.Vector.canBuildFrom[Int]
+        </td>
+      </tr><tr>
+        <td>
+          62
+        </td>
+        <td>
+          81566
+        </td>
+        <td>
+          1512
+          -
+          1924
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          scala.collection.TraversableLike.map
+        </td>
+        <td style="background: #F0ADAD">
+          rowLengths.inits.toVector.reverse.filter(((x$1: Seq[Int]) =&gt; x$1.nonEmpty)).map[Int, scala.collection.immutable.Vector[Int]](((x: Seq[Int]) =&gt; Terminal.this.fragHeight(x.last.+(1), width)))(immutable.this.Vector.canBuildFrom[Int])
+        </td>
+      </tr><tr>
+        <td>
+          63
+        </td>
+        <td>
+          81564
+        </td>
+        <td>
+          1728
+          -
+          1914
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.repl.terminal.Terminal.fragHeight
+        </td>
+        <td style="background: #F0ADAD">
+          Terminal.this.fragHeight(x.last.+(1), width)
+        </td>
+      </tr><tr>
+        <td>
+          66
+        </td>
+        <td>
+          81563
+        </td>
+        <td>
+          1873
+          -
+          1883
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Int.+
+        </td>
+        <td style="background: #F0ADAD">
+          x.last.+(1)
+        </td>
+      </tr><tr>
+        <td>
+          80
+        </td>
+        <td>
+          81567
+        </td>
+        <td>
+          2255
+          -
+          2256
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          0
+        </td>
+      </tr><tr>
+        <td>
+          81
+        </td>
+        <td>
+          81568
+        </td>
+        <td>
+          2272
+          -
+          2277
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          false
+        </td>
+      </tr><tr>
+        <td>
+          84
+        </td>
+        <td>
+          81571
+        </td>
+        <td>
+          2445
+          -
+          2450
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.Boolean.unary_!
+        </td>
+        <td style="background: #F0ADAD">
+          done.unary_!
+        </td>
+      </tr><tr>
+        <td>
+          84
+        </td>
+        <td>
+          81580
+        </td>
+        <td>
+          2404
+          -
+          2807
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.generic.FilterMonadic.foreach
+        </td>
+        <td style="background: #F0ADAD">
+          scala.Predef.intWrapper(0).until(rowLengths.length.-(1)).withFilter(((i: Int) =&gt; done.unary_!)).foreach[Unit](((i: Int) =&gt; {
+  val delta: Int = rowLengths.apply(i).+(1);
+  val nextCursor: Int = leftoverCursor.-(delta);
+  if (nextCursor.&gt;=(0))
+    {
+      leftoverCursor = nextCursor;
+      totalPreHeight = totalPreHeight.+(fragHeights.apply(i))
+    }
+  else
+    done = true
+}))
+        </td>
+      </tr><tr>
+        <td>
+          84
+        </td>
+        <td>
+          81570
+        </td>
+        <td>
+          2421
+          -
+          2441
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Int.-
+        </td>
+        <td style="background: #F0ADAD">
+          rowLengths.length.-(1)
+        </td>
+      </tr><tr>
+        <td>
+          84
+        </td>
+        <td>
+          81569
+        </td>
+        <td>
+          2413
+          -
+          2414
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          0
+        </td>
+      </tr><tr>
+        <td>
+          86
+        </td>
+        <td>
+          81572
+        </td>
+        <td>
+          2518
+          -
+          2535
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Int.+
+        </td>
+        <td style="background: #F0ADAD">
+          rowLengths.apply(i).+(1)
+        </td>
+      </tr><tr>
+        <td>
+          88
+        </td>
+        <td>
+          81573
+        </td>
+        <td>
+          2597
+          -
+          2619
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Int.-
+        </td>
+        <td style="background: #F0ADAD">
+          leftoverCursor.-(delta)
+        </td>
+      </tr><tr>
+        <td>
+          89
+        </td>
+        <td>
+          81577
+        </td>
+        <td>
+          2647
+          -
+          2785
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          {
+  leftoverCursor = nextCursor;
+  totalPreHeight = totalPreHeight.+(fragHeights.apply(i))
+}
+        </td>
+      </tr><tr>
+        <td>
+          89
+        </td>
+        <td>
+          81574
+        </td>
+        <td>
+          2630
+          -
+          2645
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Int.&gt;=
+        </td>
+        <td style="background: #F0ADAD">
+          nextCursor.&gt;=(0)
+        </td>
+      </tr><tr>
+        <td>
+          92
+        </td>
+        <td>
+          81576
+        </td>
+        <td>
+          2745
+          -
+          2777
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Int.+
+        </td>
+        <td style="background: #F0ADAD">
+          totalPreHeight.+(fragHeights.apply(i))
+        </td>
+      </tr><tr>
+        <td>
+          92
+        </td>
+        <td>
+          81575
+        </td>
+        <td>
+          2763
+          -
+          2777
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.SeqLike.apply
+        </td>
+        <td style="background: #F0ADAD">
+          fragHeights.apply(i)
+        </td>
+      </tr><tr>
+        <td>
+          93
+        </td>
+        <td>
+          81579
+        </td>
+        <td>
+          2790
+          -
+          2801
+        </td>
+        <td>
+          Assign
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          done = true
+        </td>
+      </tr><tr>
+        <td>
+          93
+        </td>
+        <td>
+          81578
+        </td>
+        <td>
+          2797
+          -
+          2801
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          true
+        </td>
+      </tr><tr>
+        <td>
+          96
+        </td>
+        <td>
+          81582
+        </td>
+        <td>
+          2827
+          -
+          2866
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Int.+
+        </td>
+        <td style="background: #F0ADAD">
+          totalPreHeight.+(leftoverCursor./(width))
+        </td>
+      </tr><tr>
+        <td>
+          96
+        </td>
+        <td>
+          81581
+        </td>
+        <td>
+          2844
+          -
+          2866
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Int./
+        </td>
+        <td style="background: #F0ADAD">
+          leftoverCursor./(width)
+        </td>
+      </tr><tr>
+        <td>
+          97
+        </td>
+        <td>
+          81583
+        </td>
+        <td>
+          2885
+          -
+          2907
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Int.%
+        </td>
+        <td style="background: #F0ADAD">
+          leftoverCursor.%(width)
+        </td>
+      </tr><tr>
+        <td>
+          99
+        </td>
+        <td>
+          81584
+        </td>
+        <td>
+          2913
+          -
+          2931
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Tuple2.apply
+        </td>
+        <td style="background: #F0ADAD">
+          scala.Tuple2.apply[Int, Int](cursorY, cursorX)
+        </td>
+      </tr><tr>
+        <td>
+          106
+        </td>
+        <td>
+          81586
+        </td>
+        <td>
+          3117
+          -
+          3134
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.repl.terminal.Ansi.Str.parse
+        </td>
+        <td style="background: #F0ADAD">
+          Ansi.Str.parse(scala.Predef.SeqCharSequence(x))
+        </td>
+      </tr><tr>
+        <td>
+          106
+        </td>
+        <td>
+          81585
+        </td>
+        <td>
+          3132
+          -
+          3133
+        </td>
+        <td>
+          ApplyImplicitView
+        </td>
+        <td>
+          scala.Predef.SeqCharSequence
+        </td>
+        <td style="background: #F0ADAD">
+          scala.Predef.SeqCharSequence(x)
+        </td>
+      </tr><tr>
+        <td>
+          106
+        </td>
+        <td>
+          81587
+        </td>
+        <td>
+          3116
+          -
+          3138
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Tuple2.apply
+        </td>
+        <td style="background: #F0ADAD">
+          scala.Tuple2.apply[dotty.tools.repl.terminal.Ansi.Str, Int](Ansi.Str.parse(scala.Predef.SeqCharSequence(x)), i)
+        </td>
+      </tr><tr>
+        <td>
+          145
+        </td>
+        <td>
+          81592
+        </td>
+        <td>
+          4843
+          -
+          4843
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          ()
+        </td>
+      </tr><tr>
+        <td>
+          145
+        </td>
+        <td>
+          81591
+        </td>
+        <td>
+          4853
+          -
+          4911
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          {
+  java.lang.Thread.sleep(200L);
+  writer.flush()
+}
+        </td>
+      </tr><tr>
+        <td>
+          145
+        </td>
+        <td>
+          81588
+        </td>
+        <td>
+          4847
+          -
+          4852
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          false
+        </td>
+      </tr><tr>
+        <td>
+          145
+        </td>
+        <td>
+          81593
+        </td>
+        <td>
+          4843
+          -
+          4843
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          ()
+        </td>
+      </tr><tr>
+        <td>
+          146
+        </td>
+        <td>
+          81589
+        </td>
+        <td>
+          4863
+          -
+          4880
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.Thread.sleep
+        </td>
+        <td style="background: #F0ADAD">
+          java.lang.Thread.sleep(200L)
+        </td>
+      </tr><tr>
+        <td>
+          147
+        </td>
+        <td>
+          81590
+        </td>
+        <td>
+          4889
+          -
+          4903
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.io.Writer.flush
+        </td>
+        <td style="background: #F0ADAD">
+          writer.flush()
+        </td>
+      </tr><tr>
+        <td>
+          152
+        </td>
+        <td>
+          81595
+        </td>
+        <td>
+          4961
+          -
+          4972
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          dotty.tools.repl.terminal.Prompt.full
+        </td>
+        <td style="background: #F0ADAD">
+          prompt.full
+        </td>
+      </tr><tr>
+        <td>
+          152
+        </td>
+        <td>
+          81594
+        </td>
+        <td>
+          4961
+          -
+          4972
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.repl.terminal.Prompt.full
+        </td>
+        <td style="background: #F0ADAD">
+          prompt.full
+        </td>
+      </tr><tr>
+        <td>
+          153
+        </td>
+        <td>
+          81597
+        </td>
+        <td>
+          4986
+          -
+          5001
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          dotty.tools.repl.terminal.Prompt.lastLine
+        </td>
+        <td style="background: #F0ADAD">
+          prompt.lastLine
+        </td>
+      </tr><tr>
+        <td>
+          153
+        </td>
+        <td>
+          81596
+        </td>
+        <td>
+          4986
+          -
+          5001
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.repl.terminal.Prompt.lastLine
+        </td>
+        <td style="background: #F0ADAD">
+          prompt.lastLine
+        </td>
+      </tr><tr>
+        <td>
+          155
+        </td>
+        <td>
+          81598
+        </td>
+        <td>
+          5045
+          -
+          5046
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          0
+        </td>
+      </tr><tr>
+        <td>
+          155
+        </td>
+        <td>
+          81601
+        </td>
+        <td>
+          5052
+          -
+          5074
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          dotty.tools.repl.terminal.Ansi.Str.length
+        </td>
+        <td style="background: #F0ADAD">
+          prompt.lastLine.length
+        </td>
+      </tr><tr>
+        <td>
+          155
+        </td>
+        <td>
+          81600
+        </td>
+        <td>
+          5052
+          -
+          5074
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.repl.terminal.Ansi.Str.length
+        </td>
+        <td style="background: #F0ADAD">
+          prompt.lastLine.length
+        </td>
+      </tr><tr>
+        <td>
+          155
+        </td>
+        <td>
+          81599
+        </td>
+        <td>
+          5045
+          -
+          5046
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          0
+        </td>
+      </tr><tr>
+        <td>
+          156
+        </td>
+        <td>
+          81602
+        </td>
+        <td>
+          5099
+          -
+          5118
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Int.-
+        </td>
+        <td style="background: #F0ADAD">
+          width.-(promptWidth)
+        </td>
+      </tr><tr>
+        <td>
+          158
+        </td>
+        <td>
+          81603
+        </td>
+        <td>
+          5126
+          -
+          5138
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.repl.terminal.AnsiNav.up
+        </td>
+        <td style="background: #F0ADAD">
+          ansi.up(ups)
+        </td>
+      </tr><tr>
+        <td>
+          159
+        </td>
+        <td>
+          81604
+        </td>
+        <td>
+          5145
+          -
+          5160
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.repl.terminal.AnsiNav.left
+        </td>
+        <td style="background: #F0ADAD">
+          ansi.left(9999)
+        </td>
+      </tr><tr>
+        <td>
+          160
+        </td>
+        <td>
+          81605
+        </td>
+        <td>
+          5167
+          -
+          5186
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.repl.terminal.AnsiNav.clearScreen
+        </td>
+        <td style="background: #F0ADAD">
+          ansi.clearScreen(0)
+        </td>
+      </tr><tr>
+        <td>
+          161
+        </td>
+        <td>
+          81607
+        </td>
+        <td>
+          5193
+          -
+          5226
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.io.Writer.write
+        </td>
+        <td style="background: #F0ADAD">
+          writer.write(promptLine.toString())
+        </td>
+      </tr><tr>
+        <td>
+          161
+        </td>
+        <td>
+          81606
+        </td>
+        <td>
+          5206
+          -
+          5225
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.repl.terminal.Ansi.Str.toString
+        </td>
+        <td style="background: #F0ADAD">
+          promptLine.toString()
+        </td>
+      </tr><tr>
+        <td>
+          162
+        </td>
+        <td>
+          81610
+        </td>
+        <td>
+          5233
+          -
+          5233
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          ()
+        </td>
+      </tr><tr>
+        <td>
+          162
+        </td>
+        <td>
+          81609
+        </td>
+        <td>
+          5252
+          -
+          5270
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          java.io.Writer.write
+        </td>
+        <td style="background: #F0ADAD">
+          writer.write(&quot;\n&quot;)
+        </td>
+      </tr><tr>
+        <td>
+          162
+        </td>
+        <td>
+          81608
+        </td>
+        <td>
+          5252
+          -
+          5270
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.io.Writer.write
+        </td>
+        <td style="background: #F0ADAD">
+          writer.write(&quot;\n&quot;)
+        </td>
+      </tr><tr>
+        <td>
+          162
+        </td>
+        <td>
+          81611
+        </td>
+        <td>
+          5233
+          -
+          5233
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          ()
+        </td>
+      </tr><tr>
+        <td>
+          174
+        </td>
+        <td>
+          81612
+        </td>
+        <td>
+          5950
+          -
+          5953
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          ' '
+        </td>
+      </tr><tr>
+        <td>
+          182
+        </td>
+        <td>
+          81613
+        </td>
+        <td>
+          6294
+          -
+          6318
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Array.apply
+        </td>
+        <td style="background: #F0ADAD">
+          scala.Array.apply(lineStuffer, '\n')
+        </td>
+      </tr><tr>
+        <td>
+          182
+        </td>
+        <td>
+          81614
+        </td>
+        <td>
+          6294
+          -
+          6318
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          scala.Array.apply
+        </td>
+        <td style="background: #F0ADAD">
+          scala.Array.apply(lineStuffer, '\n')
+        </td>
+      </tr><tr>
+        <td>
+          183
+        </td>
+        <td>
+          81621
+        </td>
+        <td>
+          6334
+          -
+          6430
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          {
+  val indent: String = scala.Predef.augmentString(&quot; &quot;).*(prompt.lastLine.length);
+  scala.Array.apply('\n', (scala.Predef.wrapString(indent): _*))
+}
+        </td>
+      </tr><tr>
+        <td>
+          184
+        </td>
+        <td>
+          81616
+        </td>
+        <td>
+          6365
+          -
+          6387
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.repl.terminal.Ansi.Str.length
+        </td>
+        <td style="background: #F0ADAD">
+          prompt.lastLine.length
+        </td>
+      </tr><tr>
+        <td>
+          184
+        </td>
+        <td>
+          81615
+        </td>
+        <td>
+          6359
+          -
+          6362
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          &quot; &quot;
+        </td>
+      </tr><tr>
+        <td>
+          184
+        </td>
+        <td>
+          81617
+        </td>
+        <td>
+          6359
+          -
+          6387
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.immutable.StringLike.*
+        </td>
+        <td style="background: #F0ADAD">
+          scala.Predef.augmentString(&quot; &quot;).*(prompt.lastLine.length)
+        </td>
+      </tr><tr>
+        <td>
+          185
+        </td>
+        <td>
+          81619
+        </td>
+        <td>
+          6410
+          -
+          6416
+        </td>
+        <td>
+          ApplyImplicitView
+        </td>
+        <td>
+          scala.LowPriorityImplicits.wrapString
+        </td>
+        <td style="background: #F0ADAD">
+          scala.Predef.wrapString(indent)
+        </td>
+      </tr><tr>
+        <td>
+          185
+        </td>
+        <td>
+          81618
+        </td>
+        <td>
+          6404
+          -
+          6408
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          '\n'
+        </td>
+      </tr><tr>
+        <td>
+          185
+        </td>
+        <td>
+          81620
+        </td>
+        <td>
+          6398
+          -
+          6420
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Array.apply
+        </td>
+        <td style="background: #F0ADAD">
+          scala.Array.apply('\n', (scala.Predef.wrapString(indent): _*))
+        </td>
+      </tr><tr>
+        <td>
+          188
+        </td>
+        <td>
+          81629
+        </td>
+        <td>
+          6438
+          -
+          6579
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.io.Writer.write
+        </td>
+        <td style="background: #F0ADAD">
+          writer.write(scala.Predef.augmentString(scala.Predef.augmentString(buffer.render).flatMap[Char, String](((x0$1: Char) =&gt; x0$1 match {
+  case '\n' =&gt; scala.Predef.charArrayOps(newlineReplacement)
+  case (x @ _) =&gt; scala.Predef.charArrayOps(scala.Array.apply(x))
+}))(scala.Predef.StringCanBuildFrom)).toArray[Char]((ClassTag.Char: scala.reflect.ClassTag[Char])))
+        </td>
+      </tr><tr>
+        <td>
+          189
+        </td>
+        <td>
+          81622
+        </td>
+        <td>
+          6460
+          -
+          6473
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.repl.terminal.Ansi.Str.render
+        </td>
+        <td style="background: #F0ADAD">
+          buffer.render
+        </td>
+      </tr><tr>
+        <td>
+          189
+        </td>
+        <td>
+          81627
+        </td>
+        <td>
+          6460
+          -
+          6563
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          scala.collection.TraversableLike.flatMap
+        </td>
+        <td style="background: #F0ADAD">
+          scala.Predef.augmentString(buffer.render).flatMap[Char, String](((x0$1: Char) =&gt; x0$1 match {
+  case '\n' =&gt; scala.Predef.charArrayOps(newlineReplacement)
+  case (x @ _) =&gt; scala.Predef.charArrayOps(scala.Array.apply(x))
+}))(scala.Predef.StringCanBuildFrom)
+        </td>
+      </tr><tr>
+        <td>
+          189
+        </td>
+        <td>
+          81626
+        </td>
+        <td>
+          6481
+          -
+          6481
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.Predef.StringCanBuildFrom
+        </td>
+        <td style="background: #F0ADAD">
+          scala.Predef.StringCanBuildFrom
+        </td>
+      </tr><tr>
+        <td>
+          190
+        </td>
+        <td>
+          81623
+        </td>
+        <td>
+          6506
+          -
+          6524
+        </td>
+        <td>
+          ApplyImplicitView
+        </td>
+        <td>
+          scala.Predef.charArrayOps
+        </td>
+        <td style="background: #F0ADAD">
+          scala.Predef.charArrayOps(newlineReplacement)
+        </td>
+      </tr><tr>
+        <td>
+          191
+        </td>
+        <td>
+          81625
+        </td>
+        <td>
+          6545
+          -
+          6553
+        </td>
+        <td>
+          ApplyImplicitView
+        </td>
+        <td>
+          scala.Predef.charArrayOps
+        </td>
+        <td style="background: #F0ADAD">
+          scala.Predef.charArrayOps(scala.Array.apply(x))
+        </td>
+      </tr><tr>
+        <td>
+          191
+        </td>
+        <td>
+          81624
+        </td>
+        <td>
+          6545
+          -
+          6553
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Array.apply
+        </td>
+        <td style="background: #F0ADAD">
+          scala.Array.apply(x)
+        </td>
+      </tr><tr>
+        <td>
+          192
+        </td>
+        <td>
+          81628
+        </td>
+        <td>
+          6460
+          -
+          6571
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          scala.collection.immutable.StringLike.toArray
+        </td>
+        <td style="background: #F0ADAD">
+          scala.Predef.augmentString(scala.Predef.augmentString(buffer.render).flatMap[Char, String](((x0$1: Char) =&gt; x0$1 match {
+  case '\n' =&gt; scala.Predef.charArrayOps(newlineReplacement)
+  case (x @ _) =&gt; scala.Predef.charArrayOps(scala.Array.apply(x))
+}))(scala.Predef.StringCanBuildFrom)).toArray[Char]((ClassTag.Char: scala.reflect.ClassTag[Char]))
+        </td>
+      </tr><tr>
+        <td>
+          194
+        </td>
+        <td>
+          81631
+        </td>
+        <td>
+          6586
+          -
+          6611
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.io.Writer.write
+        </td>
+        <td style="background: #F0ADAD">
+          writer.write(lineStuffer.toInt)
+        </td>
+      </tr><tr>
+        <td>
+          194
+        </td>
+        <td>
+          81630
+        </td>
+        <td>
+          6599
+          -
+          6610
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.Char.toInt
+        </td>
+        <td style="background: #F0ADAD">
+          lineStuffer.toInt
+        </td>
+      </tr><tr>
+        <td>
+          196
+        </td>
+        <td>
+          81632
+        </td>
+        <td>
+          6637
+          -
+          6678
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.repl.terminal.Terminal.calculateHeight0
+        </td>
+        <td style="background: #F0ADAD">
+          Terminal.this.calculateHeight0(rowLengths, actualWidth)
+        </td>
+      </tr><tr>
+        <td>
+          197
+        </td>
+        <td>
+          81634
+        </td>
+        <td>
+          6699
+          -
+          6699
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.Tuple2._2
+        </td>
+        <td style="background: #F0ADAD">
+          x$2._2
+        </td>
+      </tr><tr>
+        <td>
+          197
+        </td>
+        <td>
+          81633
+        </td>
+        <td>
+          6690
+          -
+          6690
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.Tuple2._1
+        </td>
+        <td style="background: #F0ADAD">
+          x$2._1
+        </td>
+      </tr><tr>
+        <td>
+          203
+        </td>
+        <td>
+          81636
+        </td>
+        <td>
+          6817
+          -
+          6845
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.repl.terminal.AnsiNav.up
+        </td>
+        <td style="background: #F0ADAD">
+          ansi.up(fragHeights.sum[Int](math.this.Numeric.IntIsIntegral).-(1))
+        </td>
+      </tr><tr>
+        <td>
+          203
+        </td>
+        <td>
+          81635
+        </td>
+        <td>
+          6825
+          -
+          6844
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Int.-
+        </td>
+        <td style="background: #F0ADAD">
+          fragHeights.sum[Int](math.this.Numeric.IntIsIntegral).-(1)
+        </td>
+      </tr><tr>
+        <td>
+          204
+        </td>
+        <td>
+          81637
+        </td>
+        <td>
+          6852
+          -
+          6867
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.repl.terminal.AnsiNav.left
+        </td>
+        <td style="background: #F0ADAD">
+          ansi.left(9999)
+        </td>
+      </tr><tr>
+        <td>
+          205
+        </td>
+        <td>
+          81638
+        </td>
+        <td>
+          6874
+          -
+          6892
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.repl.terminal.AnsiNav.down
+        </td>
+        <td style="background: #F0ADAD">
+          ansi.down(cursorY)
+        </td>
+      </tr><tr>
+        <td>
+          206
+        </td>
+        <td>
+          81639
+        </td>
+        <td>
+          6899
+          -
+          6918
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.repl.terminal.AnsiNav.right
+        </td>
+        <td style="background: #F0ADAD">
+          ansi.right(cursorX)
+        </td>
+      </tr><tr>
+        <td>
+          207
+        </td>
+        <td>
+          81640
+        </td>
+        <td>
+          6929
+          -
+          6943
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.Boolean.unary_!
+        </td>
+        <td style="background: #F0ADAD">
+          newlinePrompt.unary_!
+        </td>
+      </tr><tr>
+        <td>
+          207
+        </td>
+        <td>
+          81643
+        </td>
+        <td>
+          6945
+          -
+          6979
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          dotty.tools.repl.terminal.AnsiNav.right
+        </td>
+        <td style="background: #F0ADAD">
+          ansi.right(prompt.lastLine.length)
+        </td>
+      </tr><tr>
+        <td>
+          207
+        </td>
+        <td>
+          81645
+        </td>
+        <td>
+          6925
+          -
+          6925
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          ()
+        </td>
+      </tr><tr>
+        <td>
+          207
+        </td>
+        <td>
+          81642
+        </td>
+        <td>
+          6945
+          -
+          6979
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.repl.terminal.AnsiNav.right
+        </td>
+        <td style="background: #F0ADAD">
+          ansi.right(prompt.lastLine.length)
+        </td>
+      </tr><tr>
+        <td>
+          207
+        </td>
+        <td>
+          81641
+        </td>
+        <td>
+          6956
+          -
+          6978
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.repl.terminal.Ansi.Str.length
+        </td>
+        <td style="background: #F0ADAD">
+          prompt.lastLine.length
+        </td>
+      </tr><tr>
+        <td>
+          207
+        </td>
+        <td>
+          81644
+        </td>
+        <td>
+          6925
+          -
+          6925
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          ()
+        </td>
+      </tr><tr>
+        <td>
+          209
+        </td>
+        <td>
+          81646
+        </td>
+        <td>
+          6987
+          -
+          7001
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.io.Writer.flush
+        </td>
+        <td style="background: #F0ADAD">
+          writer.flush()
+        </td>
+      </tr><tr>
+        <td>
+          214
+        </td>
+        <td>
+          81647
+        </td>
+        <td>
+          7151
+          -
+          7165
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.io.Reader.ready
+        </td>
+        <td style="background: #F0ADAD">
+          reader.ready()
+        </td>
+      </tr><tr>
+        <td>
+          226
+        </td>
+        <td>
+          81649
+        </td>
+        <td>
+          7559
+          -
+          7589
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Int.-
+        </td>
+        <td style="background: #F0ADAD">
+          width.-(prompt.lastLine.length)
+        </td>
+      </tr><tr>
+        <td>
+          226
+        </td>
+        <td>
+          81648
+        </td>
+        <td>
+          7567
+          -
+          7589
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.repl.terminal.Ansi.Str.length
+        </td>
+        <td style="background: #F0ADAD">
+          prompt.lastLine.length
+        </td>
+      </tr><tr>
+        <td>
+          227
+        </td>
+        <td>
+          81651
+        </td>
+        <td>
+          7616
+          -
+          7651
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.IterableLike.exists
+        </td>
+        <td style="background: #F0ADAD">
+          rowLengths.exists(((x$4: Int) =&gt; x$4.&gt;=(narrowWidth)))
+        </td>
+      </tr><tr>
+        <td>
+          227
+        </td>
+        <td>
+          81650
+        </td>
+        <td>
+          7634
+          -
+          7650
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Int.&gt;=
+        </td>
+        <td style="background: #F0ADAD">
+          x$4.&gt;=(narrowWidth)
+        </td>
+      </tr><tr>
+        <td>
+          228
+        </td>
+        <td>
+          81655
+        </td>
+        <td>
+          7701
+          -
+          7723
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          dotty.tools.repl.terminal.Ansi.Str.length
+        </td>
+        <td style="background: #F0ADAD">
+          prompt.lastLine.length
+        </td>
+      </tr><tr>
+        <td>
+          228
+        </td>
+        <td>
+          81652
+        </td>
+        <td>
+          7694
+          -
+          7695
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          0
+        </td>
+      </tr><tr>
+        <td>
+          228
+        </td>
+        <td>
+          81654
+        </td>
+        <td>
+          7701
+          -
+          7723
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.repl.terminal.Ansi.Str.length
+        </td>
+        <td style="background: #F0ADAD">
+          prompt.lastLine.length
+        </td>
+      </tr><tr>
+        <td>
+          228
+        </td>
+        <td>
+          81653
+        </td>
+        <td>
+          7694
+          -
+          7695
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          0
+        </td>
+      </tr><tr>
+        <td>
+          229
+        </td>
+        <td>
+          81656
+        </td>
+        <td>
+          7748
+          -
+          7767
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Int.-
+        </td>
+        <td style="background: #F0ADAD">
+          width.-(promptWidth)
+        </td>
+      </tr><tr>
+        <td>
+          230
+        </td>
+        <td>
+          81658
+        </td>
+        <td>
+          7809
+          -
+          7810
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          1
+        </td>
+      </tr><tr>
+        <td>
+          230
+        </td>
+        <td>
+          81660
+        </td>
+        <td>
+          7816
+          -
+          7817
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          0
+        </td>
+      </tr><tr>
+        <td>
+          230
+        </td>
+        <td>
+          81657
+        </td>
+        <td>
+          7809
+          -
+          7810
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          1
+        </td>
+      </tr><tr>
+        <td>
+          230
+        </td>
+        <td>
+          81659
+        </td>
+        <td>
+          7816
+          -
+          7817
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          0
+        </td>
+      </tr><tr>
+        <td>
+          231
+        </td>
+        <td>
+          81664
+        </td>
+        <td>
+          7824
+          -
+          7824
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          ()
+        </td>
+      </tr><tr>
+        <td>
+          231
+        </td>
+        <td>
+          81661
+        </td>
+        <td>
+          7828
+          -
+          7844
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.Boolean.unary_!
+        </td>
+        <td style="background: #F0ADAD">
+          moreInputComing.unary_!
+        </td>
+      </tr><tr>
+        <td>
+          231
+        </td>
+        <td>
+          81663
+        </td>
+        <td>
+          7846
+          -
+          7993
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          dotty.tools.repl.terminal.Terminal.redrawLine
+        </td>
+        <td style="background: #F0ADAD">
+          redrawLine(transformedBuffer, lastOffsetCursor, ups, rowLengths, fullPrompt, newlinePrompt)
+        </td>
+      </tr><tr>
+        <td>
+          231
+        </td>
+        <td>
+          81662
+        </td>
+        <td>
+          7846
+          -
+          7993
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.repl.terminal.Terminal.redrawLine
+        </td>
+        <td style="background: #F0ADAD">
+          redrawLine(transformedBuffer, lastOffsetCursor, ups, rowLengths, fullPrompt, newlinePrompt)
+        </td>
+      </tr><tr>
+        <td>
+          231
+        </td>
+        <td>
+          81665
+        </td>
+        <td>
+          7824
+          -
+          7824
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          ()
+        </td>
+      </tr><tr>
+        <td>
+          252
+        </td>
+        <td>
+          81667
+        </td>
+        <td>
+          8372
+          -
+          8393
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.math.min
+        </td>
+        <td style="background: #F0ADAD">
+          scala.math.`package`.min(c, b.length)
+        </td>
+      </tr><tr>
+        <td>
+          252
+        </td>
+        <td>
+          81669
+        </td>
+        <td>
+          8363
+          -
+          8397
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.math.max
+        </td>
+        <td style="background: #F0ADAD">
+          scala.math.`package`.max(scala.math.`package`.min(c, b.length), 0)
+        </td>
+      </tr><tr>
+        <td>
+          252
+        </td>
+        <td>
+          81666
+        </td>
+        <td>
+          8384
+          -
+          8392
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.collection.immutable.Vector.length
+        </td>
+        <td style="background: #F0ADAD">
+          b.length
+        </td>
+      </tr><tr>
+        <td>
+          252
+        </td>
+        <td>
+          81668
+        </td>
+        <td>
+          8395
+          -
+          8396
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          0
+        </td>
+      </tr><tr>
+        <td>
+          254
+        </td>
+        <td>
+          81670
+        </td>
+        <td>
+          8451
+          -
+          8454
+        </td>
+        <td>
+          Ident
+        </td>
+        <td>
+          dotty.tools.repl.terminal.Terminal.ups
+        </td>
+        <td style="background: #F0ADAD">
+          ups
+        </td>
+      </tr><tr>
+        <td>
+          255
+        </td>
+        <td>
+          81672
+        </td>
+        <td>
+          8470
+          -
+          8492
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          scala.Int.+
+        </td>
+        <td style="background: #F0ADAD">
+          oldCursorY.+(newlineUp)
+        </td>
+      </tr><tr>
+        <td>
+          255
+        </td>
+        <td>
+          81671
+        </td>
+        <td>
+          8470
+          -
+          8492
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Int.+
+        </td>
+        <td style="background: #F0ADAD">
+          oldCursorY.+(newlineUp)
+        </td>
+      </tr><tr>
+        <td>
+          257
+        </td>
+        <td>
+          81673
+        </td>
+        <td>
+          8517
+          -
+          8548
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.repl.terminal.TermState.apply
+        </td>
+        <td style="background: #F0ADAD">
+          TermState.apply(s, b, newCursor, msg)
+        </td>
+      </tr><tr>
+        <td>
+          259
+        </td>
+        <td>
+          81674
+        </td>
+        <td>
+          8558
+          -
+          8577
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Tuple2.apply
+        </td>
+        <td style="background: #F0ADAD">
+          scala.Tuple2.apply[Int, dotty.tools.repl.terminal.TermState](nextUps, newState)
+        </td>
+      </tr><tr>
+        <td>
+          265
+        </td>
+        <td>
+          81678
+        </td>
+        <td>
+          8847
+          -
+          8989
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.repl.terminal.Terminal.redrawLine
+        </td>
+        <td style="background: #F0ADAD">
+          redrawLine(transformedBuffer, lastState.buffer.length, oldCursorY.+(newlineUp), rowLengths, false, newlinePrompt)
+        </td>
+      </tr><tr>
+        <td>
+          266
+        </td>
+        <td>
+          81675
+        </td>
+        <td>
+          8888
+          -
+          8911
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.collection.immutable.Vector.length
+        </td>
+        <td style="background: #F0ADAD">
+          lastState.buffer.length
+        </td>
+      </tr><tr>
+        <td>
+          267
+        </td>
+        <td>
+          81676
+        </td>
+        <td>
+          8923
+          -
+          8945
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Int.+
+        </td>
+        <td style="background: #F0ADAD">
+          oldCursorY.+(newlineUp)
+        </td>
+      </tr><tr>
+        <td>
+          267
+        </td>
+        <td>
+          81677
+        </td>
+        <td>
+          8959
+          -
+          8964
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          false
+        </td>
+      </tr><tr>
+        <td>
+          269
+        </td>
+        <td>
+          81679
+        </td>
+        <td>
+          8998
+          -
+          9014
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.io.Writer.write
+        </td>
+        <td style="background: #F0ADAD">
+          writer.write(10)
+        </td>
+      </tr><tr>
+        <td>
+          270
+        </td>
+        <td>
+          81680
+        </td>
+        <td>
+          9023
+          -
+          9039
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.io.Writer.write
+        </td>
+        <td style="background: #F0ADAD">
+          writer.write(13)
+        </td>
+      </tr><tr>
+        <td>
+          271
+        </td>
+        <td>
+          81681
+        </td>
+        <td>
+          9048
+          -
+          9062
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.io.Writer.flush
+        </td>
+        <td style="background: #F0ADAD">
+          writer.flush()
+        </td>
+      </tr><tr>
+        <td>
+          273
+        </td>
+        <td>
+          81682
+        </td>
+        <td>
+          9088
+          -
+          9120
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.repl.terminal.TermInfo.apply
+        </td>
+        <td style="background: #F0ADAD">
+          TermInfo.apply(lastState, actualWidth)
+        </td>
+      </tr><tr>
+        <td>
+          273
+        </td>
+        <td>
+          81683
+        </td>
+        <td>
+          9077
+          -
+          9125
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.Option.get
+        </td>
+        <td style="background: #F0ADAD">
+          filters.op(TermInfo.apply(lastState, actualWidth)).get
+        </td>
+      </tr><tr>
+        <td>
+          275
+        </td>
+        <td>
+          81684
+        </td>
+        <td>
+          9202
+          -
+          9222
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.io.Writer.write
+        </td>
+        <td style="background: #F0ADAD">
+          writer.write(stdout)
+        </td>
+      </tr><tr>
+        <td>
+          276
+        </td>
+        <td>
+          81685
+        </td>
+        <td>
+          9238
+          -
+          9238
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.Tuple2._1
+        </td>
+        <td style="background: #F0ADAD">
+          x$5._1
+        </td>
+      </tr><tr>
+        <td>
+          276
+        </td>
+        <td>
+          81686
+        </td>
+        <td>
+          9247
+          -
+          9247
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.Tuple2._2
+        </td>
+        <td style="background: #F0ADAD">
+          x$5._2
+        </td>
+      </tr><tr>
+        <td>
+          277
+        </td>
+        <td>
+          81687
+        </td>
+        <td>
+          9295
+          -
+          9322
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.repl.terminal.Terminal.readChar
+        </td>
+        <td style="background: #F0ADAD">
+          readChar(newState, nextUps, readChar$default$3)
+        </td>
+      </tr><tr>
+        <td>
+          280
+        </td>
+        <td>
+          81689
+        </td>
+        <td>
+          9388
+          -
+          9388
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.Tuple2._2
+        </td>
+        <td style="background: #F0ADAD">
+          x$6._2
+        </td>
+      </tr><tr>
+        <td>
+          280
+        </td>
+        <td>
+          81688
+        </td>
+        <td>
+          9379
+          -
+          9379
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.Tuple2._1
+        </td>
+        <td style="background: #F0ADAD">
+          x$6._1
+        </td>
+      </tr><tr>
+        <td>
+          281
+        </td>
+        <td>
+          81690
+        </td>
+        <td>
+          9436
+          -
+          9470
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.repl.terminal.Terminal.readChar
+        </td>
+        <td style="background: #F0ADAD">
+          readChar(newState, nextUps, false)
+        </td>
+      </tr><tr>
+        <td>
+          284
+        </td>
+        <td>
+          81691
+        </td>
+        <td>
+          9510
+          -
+          9528
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.repl.terminal.Terminal.redrawAndNewline
+        </td>
+        <td style="background: #F0ADAD">
+          redrawAndNewline()
+        </td>
+      </tr><tr>
+        <td>
+          285
+        </td>
+        <td>
+          81692
+        </td>
+        <td>
+          9539
+          -
+          9548
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Some.apply
+        </td>
+        <td style="background: #F0ADAD">
+          scala.Some.apply[dotty.tools.repl.terminal.Result](res)
+        </td>
+      </tr><tr>
+        <td>
+          288
+        </td>
+        <td>
+          81693
+        </td>
+        <td>
+          9586
+          -
+          9604
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.repl.terminal.Terminal.redrawAndNewline
+        </td>
+        <td style="background: #F0ADAD">
+          redrawAndNewline()
+        </td>
+      </tr><tr>
+        <td>
+          289
+        </td>
+        <td>
+          81694
+        </td>
+        <td>
+          9615
+          -
+          9630
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Some.apply
+        </td>
+        <td style="background: #F0ADAD">
+          scala.Some.apply[dotty.tools.repl.terminal.Interrupt.type](Interrupt)
+        </td>
+      </tr><tr>
+        <td>
+          292
+        </td>
+        <td>
+          81695
+        </td>
+        <td>
+          9674
+          -
+          9693
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.repl.terminal.AnsiNav.clearScreen
+        </td>
+        <td style="background: #F0ADAD">
+          ansi.clearScreen(2)
+        </td>
+      </tr><tr>
+        <td>
+          293
+        </td>
+        <td>
+          81696
+        </td>
+        <td>
+          9704
+          -
+          9717
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.repl.terminal.AnsiNav.up
+        </td>
+        <td style="background: #F0ADAD">
+          ansi.up(9999)
+        </td>
+      </tr><tr>
+        <td>
+          294
+        </td>
+        <td>
+          81697
+        </td>
+        <td>
+          9728
+          -
+          9743
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.repl.terminal.AnsiNav.left
+        </td>
+        <td style="background: #F0ADAD">
+          ansi.left(9999)
+        </td>
+      </tr><tr>
+        <td>
+          295
+        </td>
+        <td>
+          81698
+        </td>
+        <td>
+          9754
+          -
+          9771
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.repl.terminal.Terminal.readChar
+        </td>
+        <td style="background: #F0ADAD">
+          readChar(ts, ups, readChar$default$3)
+        </td>
+      </tr><tr>
+        <td>
+          297
+        </td>
+        <td>
+          81699
+        </td>
+        <td>
+          9803
+          -
+          9807
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.None
+        </td>
+        <td style="background: #F0ADAD">
+          scala.None
+        </td>
+      </tr><tr>
+        <td>
+          304
+        </td>
+        <td>
+          81700
+        </td>
+        <td>
+          9971
+          -
+          9984
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.io.Reader.read
+        </td>
+        <td style="background: #F0ADAD">
+          reader.read()
+        </td>
+      </tr><tr>
+        <td>
+          304
+        </td>
+        <td>
+          81703
+        </td>
+        <td>
+          10001
+          -
+          10002
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          0
+        </td>
+      </tr><tr>
+        <td>
+          304
+        </td>
+        <td>
+          81705
+        </td>
+        <td>
+          9940
+          -
+          10007
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.repl.terminal.TermState.apply
+        </td>
+        <td style="background: #F0ADAD">
+          TermState.apply(LazyList.continually[Int](reader.read()), scala.`package`.Vector.empty[Nothing], 0, Ansi.this.Str.parse(&quot;&quot;))
+        </td>
+      </tr><tr>
+        <td>
+          304
+        </td>
+        <td>
+          81708
+        </td>
+        <td>
+          9931
+          -
+          10011
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          dotty.tools.repl.terminal.Terminal.readChar
+        </td>
+        <td style="background: #F0ADAD">
+          readChar(TermState.apply(LazyList.continually[Int](reader.read()), scala.`package`.Vector.empty[Nothing], 0, Ansi.this.Str.parse(&quot;&quot;)), 0, readChar$default$3)
+        </td>
+      </tr><tr>
+        <td>
+          304
+        </td>
+        <td>
+          81702
+        </td>
+        <td>
+          9987
+          -
+          9999
+        </td>
+        <td>
+          TypeApply
+        </td>
+        <td>
+          scala.collection.immutable.Vector.empty
+        </td>
+        <td style="background: #F0ADAD">
+          scala.`package`.Vector.empty[Nothing]
+        </td>
+      </tr><tr>
+        <td>
+          304
+        </td>
+        <td>
+          81701
+        </td>
+        <td>
+          9950
+          -
+          9985
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.repl.terminal.LazyList.continually
+        </td>
+        <td style="background: #F0ADAD">
+          LazyList.continually[Int](reader.read())
+        </td>
+      </tr><tr>
+        <td>
+          304
+        </td>
+        <td>
+          81704
+        </td>
+        <td>
+          10004
+          -
+          10006
+        </td>
+        <td>
+          ApplyImplicitView
+        </td>
+        <td>
+          dotty.tools.repl.terminal.Ansi.Str.parse
+        </td>
+        <td style="background: #F0ADAD">
+          Ansi.this.Str.parse(&quot;&quot;)
+        </td>
+      </tr><tr>
+        <td>
+          304
+        </td>
+        <td>
+          81707
+        </td>
+        <td>
+          9931
+          -
+          10011
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.repl.terminal.Terminal.readChar
+        </td>
+        <td style="background: #F0ADAD">
+          readChar(TermState.apply(LazyList.continually[Int](reader.read()), scala.`package`.Vector.empty[Nothing], 0, Ansi.this.Str.parse(&quot;&quot;)), 0, readChar$default$3)
+        </td>
+      </tr><tr>
+        <td>
+          304
+        </td>
+        <td>
+          81706
+        </td>
+        <td>
+          10009
+          -
+          10010
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          0
+        </td>
+      </tr><tr>
+        <td>
+          313
+        </td>
+        <td>
+          81709
+        </td>
+        <td>
+          10199
+          -
+          10222
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.repl.terminal.TTY.stty
+        </td>
+        <td style="background: #F0ADAD">
+          TTY.stty(initialConfig)
+        </td>
+      </tr><tr>
+        <td>
+          313
+        </td>
+        <td>
+          81711
+        </td>
+        <td>
+          10199
+          -
+          10222
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          {
+  TTY.stty(initialConfig);
+  ()
+}
+        </td>
+      </tr><tr>
+        <td>
+          313
+        </td>
+        <td>
+          81710
+        </td>
+        <td>
+          10207
+          -
+          10207
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          ()
+        </td>
+      </tr><tr>
+        <td>
+          319
+        </td>
+        <td>
+          81712
+        </td>
+        <td>
+          10327
+          -
+          10349
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.repl.terminal.Ansi.Str.parse
+        </td>
+        <td style="background: #F0ADAD">
+          Ansi.Str.parse(prompt)
+        </td>
+      </tr><tr>
+        <td>
+          320
+        </td>
+        <td>
+          81713
+        </td>
+        <td>
+          10366
+          -
+          10406
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.String.lastIndexOf
+        </td>
+        <td style="background: #F0ADAD">
+          parsedPrompt.plainText.lastIndexOf(10)
+        </td>
+      </tr><tr>
+        <td>
+          321
+        </td>
+        <td>
+          81714
+        </td>
+        <td>
+          10448
+          -
+          10455
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Int.+
+        </td>
+        <td style="background: #F0ADAD">
+          index.+(1)
+        </td>
+      </tr><tr>
+        <td>
+          321
+        </td>
+        <td>
+          81715
+        </td>
+        <td>
+          10427
+          -
+          10456
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.repl.terminal.Ansi.Str.splitAt
+        </td>
+        <td style="background: #F0ADAD">
+          parsedPrompt.splitAt(index.+(1))
+        </td>
+      </tr><tr>
+        <td>
+          322
+        </td>
+        <td>
+          81716
+        </td>
+        <td>
+          10461
+          -
+          10487
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.repl.terminal.Prompt.apply
+        </td>
+        <td style="background: #F0ADAD">
+          Prompt.apply(parsedPrompt, last)
+        </td>
+      </tr>
+    </table>
+          </div>
+        </div>
+      </body>
+    </html>

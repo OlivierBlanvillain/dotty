@@ -1,0 +1,2223 @@
+<html>
+      <head>
+        <meta http-equiv="Content-Type" content="text/html; charset=utf-8"/>
+        <title id="title">
+          dotty/tools/dotc/typer/Dynamic.scala.html
+        </title>
+        <script src="https://ajax.googleapis.com/ajax/libs/jquery/1.10.2/jquery.min.js"></script><link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/jquery.tablesorter/2.20.1/css/theme.default.min.css" type="text/css"/><script src="https://cdnjs.cloudflare.com/ajax/libs/jquery.tablesorter/2.20.1/js/jquery.tablesorter.min.js"></script><link rel="stylesheet" href="https://netdna.bootstrapcdn.com/bootstrap/3.0.3/css/bootstrap.min.css" type="text/css"/><script src="https://netdna.bootstrapcdn.com/bootstrap/3.0.3/js/bootstrap.min.js"></script><script type="text/javascript">
+        $(document).ready(function() {$(".tablesorter").tablesorter();});
+      </script>
+        <style>
+          table.codegrid { font-family: monospace; font-size: 12px; width: auto!important; }table.statementlist { width: auto!important; font-size: 13px; } table.codegrid td { padding: 0!important; border: 0!important } table td.linenumber { width: 40px!important; } 
+        </style>
+      </head>
+      <body style="font-family: monospace;">
+        <ul class="nav nav-tabs">
+          <li>
+            <a href="#codegrid" data-toggle="tab">Codegrid</a>
+          </li>
+          <li>
+            <a href="#statementlist" data-toggle="tab">Statement List</a>
+          </li>
+        </ul>
+        <div class="tab-content">
+          <div class="tab-pane active" id="codegrid">
+            <pre style='font-size: 12pt; font-family: courier;'>1 <span style=''>package dotty.tools
+</span>2 <span style=''>package dotc
+</span>3 <span style=''>package typer
+</span>4 <span style=''>
+</span>5 <span style=''>import dotty.tools.dotc.ast.Trees._
+</span>6 <span style=''>import dotty.tools.dotc.ast.tpd
+</span>7 <span style=''>import dotty.tools.dotc.ast.untpd
+</span>8 <span style=''>import dotty.tools.dotc.core.Constants.Constant
+</span>9 <span style=''>import dotty.tools.dotc.core.Contexts.Context
+</span>10 <span style=''>import dotty.tools.dotc.core.Names.{Name, TermName}
+</span>11 <span style=''>import dotty.tools.dotc.core.StdNames._
+</span>12 <span style=''>import dotty.tools.dotc.core.Types._
+</span>13 <span style=''>import dotty.tools.dotc.core.Decorators._
+</span>14 <span style=''>import core.Symbols._
+</span>15 <span style=''>import core.Definitions
+</span>16 <span style=''>import Inferencing._
+</span>17 <span style=''>import ErrorReporting._
+</span>18 <span style=''>import dotty.tools.dotc.reporting.diagnostic.messages.ReassignmentToVal
+</span>19 <span style=''>
+</span>20 <span style=''>object Dynamic {
+</span>21 <span style=''>  def isDynamicMethod(name: Name): Boolean =
+</span>22 <span style=''>    </span><span style='background: #AEF1AE'>name == nme.applyDynamic || name == nme.selectDynamic || name == nme.updateDynamic || name == nme.applyDynamicNamed</span><span style=''>
+</span>23 <span style=''>}
+</span>24 <span style=''>
+</span>25 <span style=''>/** Handles programmable member selections of `Dynamic` instances and values
+</span>26 <span style=''> *  with structural types. Two functionalities:
+</span>27 <span style=''> *
+</span>28 <span style=''> * 1. Translates selection that does not typecheck according to the scala.Dynamic rules:
+</span>29 <span style=''> *    foo.bar(baz) = quux                   ~~&gt; foo.selectDynamic(bar).update(baz, quux)
+</span>30 <span style=''> *    foo.bar = baz                         ~~&gt; foo.updateDynamic(&quot;bar&quot;)(baz)
+</span>31 <span style=''> *    foo.bar(x = bazX, y = bazY, baz, ...) ~~&gt; foo.applyDynamicNamed(&quot;bar&quot;)((&quot;x&quot;, bazX), (&quot;y&quot;, bazY), (&quot;&quot;, baz), ...)
+</span>32 <span style=''> *    foo.bar(baz0, baz1, ...)              ~~&gt; foo.applyDynamic(bar)(baz0, baz1, ...)
+</span>33 <span style=''> *    foo.bar                               ~~&gt; foo.selectDynamic(bar)
+</span>34 <span style=''> *
+</span>35 <span style=''> *  The first matching rule of is applied.
+</span>36 <span style=''> *
+</span>37 <span style=''> * 2. Translates member selections on structural types to calls of `selectDynamic`
+</span>38 <span style=''> *    or `selectDynamicMethod` on a `Selectable` instance. @See handleStructural.
+</span>39 <span style=''> *
+</span>40 <span style=''> */
+</span>41 <span style=''>trait Dynamic { self: Typer with Applications =&gt;
+</span>42 <span style=''>  import Dynamic._
+</span>43 <span style=''>  import tpd._
+</span>44 <span style=''>
+</span>45 <span style=''>  /** Translate selection that does not typecheck according to the normal rules into a applyDynamic/applyDynamicNamed.
+</span>46 <span style=''>   *    foo.bar(baz0, baz1, ...)                       ~~&gt; foo.applyDynamic(bar)(baz0, baz1, ...)
+</span>47 <span style=''>   *    foo.bar[T0, ...](baz0, baz1, ...)              ~~&gt; foo.applyDynamic[T0, ...](bar)(baz0, baz1, ...)
+</span>48 <span style=''>   *    foo.bar(x = bazX, y = bazY, baz, ...)          ~~&gt; foo.applyDynamicNamed(&quot;bar&quot;)((&quot;x&quot;, bazX), (&quot;y&quot;, bazY), (&quot;&quot;, baz), ...)
+</span>49 <span style=''>   *    foo.bar[T0, ...](x = bazX, y = bazY, baz, ...) ~~&gt; foo.applyDynamicNamed[T0, ...](&quot;bar&quot;)((&quot;x&quot;, bazX), (&quot;y&quot;, bazY), (&quot;&quot;, baz), ...)
+</span>50 <span style=''>   */
+</span>51 <span style=''>  def typedDynamicApply(tree: untpd.Apply, pt: Type)(implicit ctx: Context): Tree = {
+</span>52 <span style=''>    def typedDynamicApply(qual: untpd.Tree, name: Name, targs: List[untpd.Tree]): Tree = {
+</span>53 <span style=''>      def isNamedArg(arg: untpd.Tree): Boolean = arg match { case NamedArg(_, _) =&gt; </span><span style='background: #AEF1AE'>true</span><span style=''>; case _ =&gt; </span><span style='background: #AEF1AE'>false</span><span style=''> }
+</span>54 <span style=''>      val args = </span><span style='background: #AEF1AE'>tree.args</span><span style=''>
+</span>55 <span style=''>      val dynName = if (</span><span style='background: #AEF1AE'>args.exists(isNamedArg)</span><span style=''>) </span><span style='background: #AEF1AE'>nme.applyDynamicNamed</span><span style=''> else </span><span style='background: #AEF1AE'>nme.applyDynamic</span><span style=''>
+</span>56 <span style=''>      if (</span><span style='background: #AEF1AE'>dynName == nme.applyDynamicNamed &amp;&amp; untpd.isWildcardStarArgList(args)</span><span style=''>)
+</span>57 <span style=''>        </span><span style='background: #AEF1AE'>errorTree(tree, &quot;applyDynamicNamed does not support passing a vararg parameter&quot;)</span><span style=''>
+</span>58 <span style=''>      else </span><span style='background: #AEF1AE'>{
+</span>59 <span style=''></span><span style='background: #AEF1AE'>        def namedArgTuple(name: String, arg: untpd.Tree) = untpd.Tuple(List(Literal(Constant(name)), arg))
+</span>60 <span style=''></span><span style='background: #AEF1AE'>        def namedArgs = args.map {
+</span>61 <span style=''></span><span style='background: #AEF1AE'>          case NamedArg(argName, arg) =&gt; namedArgTuple(argName.toString, arg)
+</span>62 <span style=''></span><span style='background: #AEF1AE'>          case arg =&gt; namedArgTuple(&quot;&quot;, arg)
+</span>63 <span style=''></span><span style='background: #AEF1AE'>        }
+</span>64 <span style=''></span><span style='background: #AEF1AE'>        val args1 = if (dynName == nme.applyDynamic) args else namedArgs
+</span>65 <span style=''></span><span style='background: #AEF1AE'>        typedApply(untpd.Apply(coreDynamic(qual, dynName, name, targs), args1), pt)
+</span>66 <span style=''></span><span style='background: #AEF1AE'>      }</span><span style=''>
+</span>67 <span style=''>    }
+</span>68 <span style=''>
+</span>69 <span style=''>     </span><span style='background: #AEF1AE'>tree.fun</span><span style=''> match {
+</span>70 <span style=''>      case Select(qual, name) if </span><span style='background: #AEF1AE'>!isDynamicMethod(name)</span><span style=''> =&gt;
+</span>71 <span style=''>        </span><span style='background: #AEF1AE'>typedDynamicApply(qual, name, Nil)</span><span style=''>
+</span>72 <span style=''>      case TypeApply(Select(qual, name), targs) if </span><span style='background: #AEF1AE'>!isDynamicMethod(name)</span><span style=''> =&gt;
+</span>73 <span style=''>        </span><span style='background: #AEF1AE'>typedDynamicApply(qual, name, targs)</span><span style=''>
+</span>74 <span style=''>      case TypeApply(fun, targs) =&gt;
+</span>75 <span style=''>        </span><span style='background: #AEF1AE'>typedDynamicApply(fun, nme.apply, targs)</span><span style=''>
+</span>76 <span style=''>      case fun =&gt;
+</span>77 <span style=''>        </span><span style='background: #AEF1AE'>typedDynamicApply(fun, nme.apply, Nil)</span><span style=''>
+</span>78 <span style=''>    }
+</span>79 <span style=''>  }
+</span>80 <span style=''>
+</span>81 <span style=''>  /** Translate selection that does not typecheck according to the normal rules into a selectDynamic.
+</span>82 <span style=''>   *    foo.bar          ~~&gt; foo.selectDynamic(bar)
+</span>83 <span style=''>   *    foo.bar[T0, ...] ~~&gt; foo.selectDynamic[T0, ...](bar)
+</span>84 <span style=''>   *
+</span>85 <span style=''>   *  Note: inner part of translation foo.bar(baz) = quux ~~&gt; foo.selectDynamic(bar).update(baz, quux) is achieved
+</span>86 <span style=''>   *  through an existing transformation of in typedAssign [foo.bar(baz) = quux ~~&gt; foo.bar.update(baz, quux)].
+</span>87 <span style=''>   */
+</span>88 <span style=''>  def typedDynamicSelect(tree: untpd.Select, targs: List[Tree], pt: Type)(implicit ctx: Context): Tree =
+</span>89 <span style=''>    </span><span style='background: #AEF1AE'>typedApply(coreDynamic(tree.qualifier, nme.selectDynamic, tree.name, targs), pt)</span><span style=''>
+</span>90 <span style=''>
+</span>91 <span style=''>  /** Translate selection that does not typecheck according to the normal rules into a updateDynamic.
+</span>92 <span style=''>   *    foo.bar = baz ~~&gt; foo.updateDynamic(bar)(baz)
+</span>93 <span style=''>   */
+</span>94 <span style=''>  def typedDynamicAssign(tree: untpd.Assign, pt: Type)(implicit ctx: Context): Tree = {
+</span>95 <span style=''>    def typedDynamicAssign(qual: untpd.Tree, name: Name, targs: List[untpd.Tree]): Tree =
+</span>96 <span style=''>      </span><span style='background: #AEF1AE'>typedApply(untpd.Apply(coreDynamic(qual, nme.updateDynamic, name, targs), tree.rhs), pt)</span><span style=''>
+</span>97 <span style=''>    </span><span style='background: #AEF1AE'>tree.lhs</span><span style=''> match {
+</span>98 <span style=''>      case Select(qual, name) if </span><span style='background: #AEF1AE'>!isDynamicMethod(name)</span><span style=''> =&gt;
+</span>99 <span style=''>        </span><span style='background: #AEF1AE'>typedDynamicAssign(qual, name, Nil)</span><span style=''>
+</span>100 <span style=''>      case TypeApply(Select(qual, name), targs) if </span><span style='background: #F0ADAD'>!isDynamicMethod(name)</span><span style=''> =&gt;
+</span>101 <span style=''>        </span><span style='background: #F0ADAD'>typedDynamicAssign(qual, name, targs)</span><span style=''>
+</span>102 <span style=''>      case _ =&gt;
+</span>103 <span style=''>        </span><span style='background: #F0ADAD'>errorTree(tree, ReassignmentToVal(tree.lhs.symbol.name))</span><span style=''>
+</span>104 <span style=''>    }
+</span>105 <span style=''>  }
+</span>106 <span style=''>
+</span>107 <span style=''>  private def coreDynamic(qual: untpd.Tree, dynName: Name, name: Name, targs: List[untpd.Tree])(implicit ctx: Context): untpd.Apply = {
+</span>108 <span style=''>    val select = </span><span style='background: #AEF1AE'>untpd.Select(qual, dynName)</span><span style=''>
+</span>109 <span style=''>    val selectWithTypes =
+</span>110 <span style=''>      if (</span><span style='background: #AEF1AE'>targs.isEmpty</span><span style=''>) </span><span style='background: #AEF1AE'>select</span><span style=''>
+</span>111 <span style=''>      else </span><span style='background: #AEF1AE'>untpd.TypeApply(select, targs)</span><span style=''>
+</span>112 <span style=''>    </span><span style='background: #AEF1AE'>untpd.Apply(selectWithTypes, Literal(Constant(name.toString)))</span><span style=''>
+</span>113 <span style=''>  }
+</span>114 <span style=''>
+</span>115 <span style=''>  /** Handle reflection-based dispatch for members of structural types.
+</span>116 <span style=''>   *  Given `x.a`, where `x` is of (widened) type `T` and `x.a` is of type `U`:
+</span>117 <span style=''>   *
+</span>118 <span style=''>   *  If `U` is a value type, map `x.a` to the equivalent of:
+</span>119 <span style=''>   *
+</span>120 <span style=''>   *     (x: Selectable).selectDynamic(x, &quot;a&quot;).asInstanceOf[U]
+</span>121 <span style=''>   *
+</span>122 <span style=''>   *  If `U` is a method type (T1,...,Tn)R, map `x.a` to the equivalent of:
+</span>123 <span style=''>   *
+</span>124 <span style=''>   *     (x: Selectable).selectDynamicMethod(&quot;a&quot;, CT1, ..., CTn).asInstanceOf[(T1,...,Tn) =&gt; R]
+</span>125 <span style=''>   *
+</span>126 <span style=''>   *  where CT1,...,CTn are the class tags representing the erasure of T1,...,Tn.
+</span>127 <span style=''>   *
+</span>128 <span style=''>   *  It's an error if U is neither a value nor a method type, or a dependent method
+</span>129 <span style=''>   *  type, or of too large arity (limit is Definitions.MaxStructuralMethodArity).
+</span>130 <span style=''>   */
+</span>131 <span style=''>  def handleStructural(tree: Tree)(implicit ctx: Context): Tree = {
+</span>132 <span style=''>    val Select(qual, name) = tree
+</span>133 <span style=''>
+</span>134 <span style=''>    def structuralCall(selectorName: TermName, formals: List[Tree]) = {
+</span>135 <span style=''>      val selectable = </span><span style='background: #AEF1AE'>adapt(qual, defn.SelectableType)</span><span style=''>
+</span>136 <span style=''>      val scall = </span><span style='background: #AEF1AE'>untpd.Apply(
+</span>137 <span style=''></span><span style='background: #AEF1AE'>        untpd.TypedSplice(selectable.select(selectorName)),
+</span>138 <span style=''></span><span style='background: #AEF1AE'>        (Literal(Constant(name.toString)) :: formals).map(untpd.TypedSplice(_)))</span><span style=''>
+</span>139 <span style=''>      </span><span style='background: #AEF1AE'>typed(scall)</span><span style=''>
+</span>140 <span style=''>    }
+</span>141 <span style=''>
+</span>142 <span style=''>    def fail(reason: String) =
+</span>143 <span style=''>      </span><span style='background: #F0ADAD'>errorTree(tree, em&quot;Structural access not allowed on method $name because it $reason&quot;)</span><span style=''>
+</span>144 <span style=''>
+</span>145 <span style=''>    </span><span style='background: #AEF1AE'>tree.tpe.widen</span><span style=''> match {
+</span>146 <span style=''>      case tpe: MethodType =&gt;
+</span>147 <span style=''>        if (</span><span style='background: #AEF1AE'>tpe.isParamDependent</span><span style=''>)
+</span>148 <span style=''>          </span><span style='background: #F0ADAD'>fail(i&quot;has a method type with inter-parameter dependencies&quot;)</span><span style=''>
+</span>149 <span style=''>        else </span><span style='background: #AEF1AE'>if (tpe.paramNames.length &gt; Definitions.MaxStructuralMethodArity)
+</span>150 <span style=''></span><span style='background: #AEF1AE'>          </span><span style='background: #F0ADAD'>fail(i&quot;&quot;&quot;takes too many parameters.
+</span>151 <span style=''></span><span style='background: #F0ADAD'>                  |Structural types only support methods taking up to ${Definitions.MaxStructuralMethodArity} arguments&quot;&quot;&quot;)</span><span style='background: #AEF1AE'>
+</span>152 <span style=''></span><span style='background: #AEF1AE'>        else {
+</span>153 <span style=''></span><span style='background: #AEF1AE'>          val ctags = tpe.paramInfos.map(pt =&gt;
+</span>154 <span style=''></span><span style='background: #AEF1AE'>            implicitArgTree(defn.ClassTagType.appliedTo(pt :: Nil), tree.pos.endPos))
+</span>155 <span style=''></span><span style='background: #AEF1AE'>          structuralCall(nme.selectDynamicMethod, ctags).asInstance(tpe.toFunctionType())
+</span>156 <span style=''></span><span style='background: #AEF1AE'>        }</span><span style=''>
+</span>157 <span style=''>      case tpe: ValueType =&gt;
+</span>158 <span style=''>        </span><span style='background: #AEF1AE'>structuralCall(nme.selectDynamic, Nil).asInstance(tpe)</span><span style=''>
+</span>159 <span style=''>      case tpe: PolyType =&gt;
+</span>160 <span style=''>        </span><span style='background: #F0ADAD'>fail(&quot;is polymorphic&quot;)</span><span style=''>
+</span>161 <span style=''>      case tpe =&gt;
+</span>162 <span style=''>        </span><span style='background: #F0ADAD'>fail(i&quot;has an unsupported type: $tpe&quot;)</span><span style=''>
+</span>163 <span style=''>    }
+</span>164 <span style=''>  }
+</span>165 <span style=''>}
+</span></pre>
+          </div>
+          <div class="tab-pane" id="statementlist">
+            <table cellspacing="0" cellpadding="0" class="table statementlist">
+      <tr>
+        <th>Line</th>
+        <th>Stmt Id</th>
+        <th>Pos</th>
+        <th>Tree</th>
+        <th>Symbol</th>
+        <th>Code</th>
+      </tr><tr>
+        <td>
+          22
+        </td>
+        <td>
+          68882
+        </td>
+        <td>
+          710
+          -
+          727
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.StdNames.ScalaNames.updateDynamic
+        </td>
+        <td style="background: #AEF1AE">
+          dotty.tools.dotc.core.StdNames.nme.updateDynamic
+        </td>
+      </tr><tr>
+        <td>
+          22
+        </td>
+        <td>
+          68885
+        </td>
+        <td>
+          731
+          -
+          760
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.Object.==
+        </td>
+        <td style="background: #AEF1AE">
+          name.==(dotty.tools.dotc.core.StdNames.nme.applyDynamicNamed)
+        </td>
+      </tr><tr>
+        <td>
+          22
+        </td>
+        <td>
+          68879
+        </td>
+        <td>
+          653
+          -
+          669
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.StdNames.ScalaNames.applyDynamic
+        </td>
+        <td style="background: #AEF1AE">
+          dotty.tools.dotc.core.StdNames.nme.applyDynamic
+        </td>
+      </tr><tr>
+        <td>
+          22
+        </td>
+        <td>
+          68881
+        </td>
+        <td>
+          673
+          -
+          698
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.Object.==
+        </td>
+        <td style="background: #AEF1AE">
+          name.==(dotty.tools.dotc.core.StdNames.nme.selectDynamic)
+        </td>
+      </tr><tr>
+        <td>
+          22
+        </td>
+        <td>
+          68884
+        </td>
+        <td>
+          739
+          -
+          760
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.StdNames.ScalaNames.applyDynamicNamed
+        </td>
+        <td style="background: #AEF1AE">
+          dotty.tools.dotc.core.StdNames.nme.applyDynamicNamed
+        </td>
+      </tr><tr>
+        <td>
+          22
+        </td>
+        <td>
+          68883
+        </td>
+        <td>
+          702
+          -
+          727
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.Object.==
+        </td>
+        <td style="background: #AEF1AE">
+          name.==(dotty.tools.dotc.core.StdNames.nme.updateDynamic)
+        </td>
+      </tr><tr>
+        <td>
+          22
+        </td>
+        <td>
+          68886
+        </td>
+        <td>
+          645
+          -
+          760
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Boolean.||
+        </td>
+        <td style="background: #AEF1AE">
+          name.==(dotty.tools.dotc.core.StdNames.nme.applyDynamic).||(name.==(dotty.tools.dotc.core.StdNames.nme.selectDynamic)).||(name.==(dotty.tools.dotc.core.StdNames.nme.updateDynamic)).||(name.==(dotty.tools.dotc.core.StdNames.nme.applyDynamicNamed))
+        </td>
+      </tr><tr>
+        <td>
+          22
+        </td>
+        <td>
+          68880
+        </td>
+        <td>
+          681
+          -
+          698
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.StdNames.ScalaNames.selectDynamic
+        </td>
+        <td style="background: #AEF1AE">
+          dotty.tools.dotc.core.StdNames.nme.selectDynamic
+        </td>
+      </tr><tr>
+        <td>
+          53
+        </td>
+        <td>
+          68888
+        </td>
+        <td>
+          2606
+          -
+          2611
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          false
+        </td>
+      </tr><tr>
+        <td>
+          53
+        </td>
+        <td>
+          68887
+        </td>
+        <td>
+          2590
+          -
+          2594
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          true
+        </td>
+      </tr><tr>
+        <td>
+          54
+        </td>
+        <td>
+          68889
+        </td>
+        <td>
+          2631
+          -
+          2640
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Trees.Apply.args
+        </td>
+        <td style="background: #AEF1AE">
+          tree.args
+        </td>
+      </tr><tr>
+        <td>
+          55
+        </td>
+        <td>
+          68891
+        </td>
+        <td>
+          2665
+          -
+          2688
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.LinearSeqOptimized.exists
+        </td>
+        <td style="background: #AEF1AE">
+          args.exists({
+  ((arg: dotty.tools.dotc.ast.untpd.Tree) =&gt; isNamedArg(arg))
+})
+        </td>
+      </tr><tr>
+        <td>
+          55
+        </td>
+        <td>
+          68894
+        </td>
+        <td>
+          2717
+          -
+          2733
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.StdNames.ScalaNames.applyDynamic
+        </td>
+        <td style="background: #AEF1AE">
+          dotty.tools.dotc.core.StdNames.nme.applyDynamic
+        </td>
+      </tr><tr>
+        <td>
+          55
+        </td>
+        <td>
+          68890
+        </td>
+        <td>
+          2677
+          -
+          2687
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.typer.Dynamic.isNamedArg
+        </td>
+        <td style="background: #AEF1AE">
+          isNamedArg(arg)
+        </td>
+      </tr><tr>
+        <td>
+          55
+        </td>
+        <td>
+          68893
+        </td>
+        <td>
+          2690
+          -
+          2711
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          dotty.tools.dotc.core.StdNames.ScalaNames.applyDynamicNamed
+        </td>
+        <td style="background: #AEF1AE">
+          dotty.tools.dotc.core.StdNames.nme.applyDynamicNamed
+        </td>
+      </tr><tr>
+        <td>
+          55
+        </td>
+        <td>
+          68892
+        </td>
+        <td>
+          2690
+          -
+          2711
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.StdNames.ScalaNames.applyDynamicNamed
+        </td>
+        <td style="background: #AEF1AE">
+          dotty.tools.dotc.core.StdNames.nme.applyDynamicNamed
+        </td>
+      </tr><tr>
+        <td>
+          55
+        </td>
+        <td>
+          68895
+        </td>
+        <td>
+          2717
+          -
+          2733
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          dotty.tools.dotc.core.StdNames.ScalaNames.applyDynamic
+        </td>
+        <td style="background: #AEF1AE">
+          dotty.tools.dotc.core.StdNames.nme.applyDynamic
+        </td>
+      </tr><tr>
+        <td>
+          56
+        </td>
+        <td>
+          68897
+        </td>
+        <td>
+          2780
+          -
+          2813
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.TreeInfo.isWildcardStarArgList
+        </td>
+        <td style="background: #AEF1AE">
+          dotty.tools.dotc.ast.untpd.isWildcardStarArgList(args)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          56
+        </td>
+        <td>
+          68896
+        </td>
+        <td>
+          2755
+          -
+          2776
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.StdNames.ScalaNames.applyDynamicNamed
+        </td>
+        <td style="background: #AEF1AE">
+          dotty.tools.dotc.core.StdNames.nme.applyDynamicNamed
+        </td>
+      </tr><tr>
+        <td>
+          56
+        </td>
+        <td>
+          68898
+        </td>
+        <td>
+          2744
+          -
+          2813
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Boolean.&amp;&amp;
+        </td>
+        <td style="background: #AEF1AE">
+          dynName.==(dotty.tools.dotc.core.StdNames.nme.applyDynamicNamed).&amp;&amp;(dotty.tools.dotc.ast.untpd.isWildcardStarArgList(args)(ctx))
+        </td>
+      </tr><tr>
+        <td>
+          57
+        </td>
+        <td>
+          68900
+        </td>
+        <td>
+          2823
+          -
+          2903
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          dotty.tools.dotc.typer.ErrorReporting.errorTree
+        </td>
+        <td style="background: #AEF1AE">
+          ErrorReporting.errorTree(tree, diagnostic.this.Message.toNoExplanation(&quot;applyDynamicNamed does not support passing a vararg parameter&quot;))(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          57
+        </td>
+        <td>
+          68899
+        </td>
+        <td>
+          2823
+          -
+          2903
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.typer.ErrorReporting.errorTree
+        </td>
+        <td style="background: #AEF1AE">
+          ErrorReporting.errorTree(tree, diagnostic.this.Message.toNoExplanation(&quot;applyDynamicNamed does not support passing a vararg parameter&quot;))(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          58
+        </td>
+        <td>
+          68914
+        </td>
+        <td>
+          2915
+          -
+          3356
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          {
+  def namedArgTuple(name: String, arg: dotty.tools.dotc.ast.untpd.Tree): dotty.tools.dotc.ast.untpd.Tuple = dotty.tools.dotc.ast.untpd.Tuple.apply(scala.collection.immutable.List.apply[dotty.tools.dotc.ast.untpd.Tree](dotty.tools.dotc.ast.tpd.Literal(dotty.tools.dotc.core.Constants.Constant.apply(name))(ctx), arg));
+  def namedArgs: List[dotty.tools.dotc.ast.untpd.Tuple] = args.map[dotty.tools.dotc.ast.untpd.Tuple, List[dotty.tools.dotc.ast.untpd.Tuple]](((x0$1: dotty.tools.dotc.ast.Trees.Tree[dotty.tools.dotc.ast.Trees.Untyped]) =&gt; x0$1 match {
+    case (name: dotty.tools.dotc.core.Names.Name, arg: dotty.tools.dotc.ast.Trees.Tree[dotty.tools.dotc.ast.Trees.Untyped])dotty.tools.dotc.ast.Trees.NamedArg[dotty.tools.dotc.ast.Trees.Untyped]((argName @ _), (arg @ _)) =&gt; namedArgTuple(argName.toString(), arg)
+    case (arg @ _) =&gt; namedArgTuple(&quot;&quot;, arg)
+  }))(immutable.this.List.canBuildFrom[dotty.tools.dotc.ast.untpd.Tuple]);
+  val args1: List[dotty.tools.dotc.ast.Trees.Tree[dotty.tools.dotc.ast.Trees.Untyped]] = if (dynName.==(dotty.tools.dotc.core.StdNames.nme.applyDynamic))
+    args
+  else
+    namedArgs;
+  Dynamic.this.typedApply(dotty.tools.dotc.ast.untpd.Apply(Dynamic.this.coreDynamic(qual, dynName, name, targs)(ctx), args1), pt)(ctx)
+}
+        </td>
+      </tr><tr>
+        <td>
+          59
+        </td>
+        <td>
+          68903
+        </td>
+        <td>
+          2976
+          -
+          3023
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.ast.untpd.Tuple.apply
+        </td>
+        <td style="background: #AEF1AE">
+          dotty.tools.dotc.ast.untpd.Tuple.apply(scala.collection.immutable.List.apply[dotty.tools.dotc.ast.untpd.Tree](dotty.tools.dotc.ast.tpd.Literal(dotty.tools.dotc.core.Constants.Constant.apply(name))(ctx), arg))
+        </td>
+      </tr><tr>
+        <td>
+          59
+        </td>
+        <td>
+          68902
+        </td>
+        <td>
+          2988
+          -
+          3022
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.immutable.List.apply
+        </td>
+        <td style="background: #AEF1AE">
+          scala.collection.immutable.List.apply[dotty.tools.dotc.ast.untpd.Tree](dotty.tools.dotc.ast.tpd.Literal(dotty.tools.dotc.core.Constants.Constant.apply(name))(ctx), arg)
+        </td>
+      </tr><tr>
+        <td>
+          59
+        </td>
+        <td>
+          68901
+        </td>
+        <td>
+          2993
+          -
+          3016
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.tpd.Literal
+        </td>
+        <td style="background: #AEF1AE">
+          dotty.tools.dotc.ast.tpd.Literal(dotty.tools.dotc.core.Constants.Constant.apply(name))(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          60
+        </td>
+        <td>
+          68908
+        </td>
+        <td>
+          3048
+          -
+          3191
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          scala.collection.immutable.List.map
+        </td>
+        <td style="background: #AEF1AE">
+          args.map[dotty.tools.dotc.ast.untpd.Tuple, List[dotty.tools.dotc.ast.untpd.Tuple]](((x0$1: dotty.tools.dotc.ast.Trees.Tree[dotty.tools.dotc.ast.Trees.Untyped]) =&gt; x0$1 match {
+  case (name: dotty.tools.dotc.core.Names.Name, arg: dotty.tools.dotc.ast.Trees.Tree[dotty.tools.dotc.ast.Trees.Untyped])dotty.tools.dotc.ast.Trees.NamedArg[dotty.tools.dotc.ast.Trees.Untyped]((argName @ _), (arg @ _)) =&gt; namedArgTuple(argName.toString(), arg)
+  case (arg @ _) =&gt; namedArgTuple(&quot;&quot;, arg)
+}))(immutable.this.List.canBuildFrom[dotty.tools.dotc.ast.untpd.Tuple])
+        </td>
+      </tr><tr>
+        <td>
+          60
+        </td>
+        <td>
+          68907
+        </td>
+        <td>
+          3057
+          -
+          3057
+        </td>
+        <td>
+          TypeApply
+        </td>
+        <td>
+          scala.collection.immutable.List.canBuildFrom
+        </td>
+        <td style="background: #AEF1AE">
+          immutable.this.List.canBuildFrom[dotty.tools.dotc.ast.untpd.Tuple]
+        </td>
+      </tr><tr>
+        <td>
+          61
+        </td>
+        <td>
+          68905
+        </td>
+        <td>
+          3100
+          -
+          3136
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.typer.Dynamic.namedArgTuple
+        </td>
+        <td style="background: #AEF1AE">
+          namedArgTuple(argName.toString(), arg)
+        </td>
+      </tr><tr>
+        <td>
+          61
+        </td>
+        <td>
+          68904
+        </td>
+        <td>
+          3114
+          -
+          3130
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.Object.toString
+        </td>
+        <td style="background: #AEF1AE">
+          argName.toString()
+        </td>
+      </tr><tr>
+        <td>
+          62
+        </td>
+        <td>
+          68906
+        </td>
+        <td>
+          3159
+          -
+          3181
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.typer.Dynamic.namedArgTuple
+        </td>
+        <td style="background: #AEF1AE">
+          namedArgTuple(&quot;&quot;, arg)
+        </td>
+      </tr><tr>
+        <td>
+          64
+        </td>
+        <td>
+          68909
+        </td>
+        <td>
+          3227
+          -
+          3243
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.StdNames.ScalaNames.applyDynamic
+        </td>
+        <td style="background: #AEF1AE">
+          dotty.tools.dotc.core.StdNames.nme.applyDynamic
+        </td>
+      </tr><tr>
+        <td>
+          64
+        </td>
+        <td>
+          68912
+        </td>
+        <td>
+          3255
+          -
+          3264
+        </td>
+        <td>
+          Ident
+        </td>
+        <td>
+          dotty.tools.dotc.typer.Dynamic.namedArgs
+        </td>
+        <td style="background: #AEF1AE">
+          namedArgs
+        </td>
+      </tr><tr>
+        <td>
+          64
+        </td>
+        <td>
+          68911
+        </td>
+        <td>
+          3245
+          -
+          3249
+        </td>
+        <td>
+          Ident
+        </td>
+        <td>
+          dotty.tools.dotc.typer.Dynamic.args
+        </td>
+        <td style="background: #AEF1AE">
+          args
+        </td>
+      </tr><tr>
+        <td>
+          64
+        </td>
+        <td>
+          68910
+        </td>
+        <td>
+          3216
+          -
+          3243
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.Object.==
+        </td>
+        <td style="background: #AEF1AE">
+          dynName.==(dotty.tools.dotc.core.StdNames.nme.applyDynamic)
+        </td>
+      </tr><tr>
+        <td>
+          65
+        </td>
+        <td>
+          68913
+        </td>
+        <td>
+          3273
+          -
+          3348
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.typer.Applications.typedApply
+        </td>
+        <td style="background: #AEF1AE">
+          Dynamic.this.typedApply(dotty.tools.dotc.ast.untpd.Apply(Dynamic.this.coreDynamic(qual, dynName, name, targs)(ctx), args1), pt)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          69
+        </td>
+        <td>
+          68915
+        </td>
+        <td>
+          3369
+          -
+          3377
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Trees.Apply.fun
+        </td>
+        <td style="background: #AEF1AE">
+          tree.fun
+        </td>
+      </tr><tr>
+        <td>
+          70
+        </td>
+        <td>
+          68916
+        </td>
+        <td>
+          3419
+          -
+          3441
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.Boolean.unary_!
+        </td>
+        <td style="background: #AEF1AE">
+          Dynamic.isDynamicMethod(name).unary_!
+        </td>
+      </tr><tr>
+        <td>
+          71
+        </td>
+        <td>
+          68918
+        </td>
+        <td>
+          3453
+          -
+          3487
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.typer.Dynamic.typedDynamicApply
+        </td>
+        <td style="background: #AEF1AE">
+          typedDynamicApply(qual, name, scala.collection.immutable.Nil)
+        </td>
+      </tr><tr>
+        <td>
+          71
+        </td>
+        <td>
+          68917
+        </td>
+        <td>
+          3483
+          -
+          3486
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.collection.immutable.Nil
+        </td>
+        <td style="background: #AEF1AE">
+          scala.collection.immutable.Nil
+        </td>
+      </tr><tr>
+        <td>
+          72
+        </td>
+        <td>
+          68919
+        </td>
+        <td>
+          3539
+          -
+          3561
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.Boolean.unary_!
+        </td>
+        <td style="background: #AEF1AE">
+          Dynamic.isDynamicMethod(name).unary_!
+        </td>
+      </tr><tr>
+        <td>
+          73
+        </td>
+        <td>
+          68920
+        </td>
+        <td>
+          3573
+          -
+          3609
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.typer.Dynamic.typedDynamicApply
+        </td>
+        <td style="background: #AEF1AE">
+          typedDynamicApply(qual, name, targs)
+        </td>
+      </tr><tr>
+        <td>
+          75
+        </td>
+        <td>
+          68921
+        </td>
+        <td>
+          3677
+          -
+          3686
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.StdNames.ScalaNames.apply
+        </td>
+        <td style="background: #AEF1AE">
+          dotty.tools.dotc.core.StdNames.nme.apply
+        </td>
+      </tr><tr>
+        <td>
+          75
+        </td>
+        <td>
+          68922
+        </td>
+        <td>
+          3654
+          -
+          3694
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.typer.Dynamic.typedDynamicApply
+        </td>
+        <td style="background: #AEF1AE">
+          typedDynamicApply(fun, dotty.tools.dotc.core.StdNames.nme.apply, targs)
+        </td>
+      </tr><tr>
+        <td>
+          77
+        </td>
+        <td>
+          68924
+        </td>
+        <td>
+          3755
+          -
+          3758
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.collection.immutable.Nil
+        </td>
+        <td style="background: #AEF1AE">
+          scala.collection.immutable.Nil
+        </td>
+      </tr><tr>
+        <td>
+          77
+        </td>
+        <td>
+          68923
+        </td>
+        <td>
+          3744
+          -
+          3753
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.StdNames.ScalaNames.apply
+        </td>
+        <td style="background: #AEF1AE">
+          dotty.tools.dotc.core.StdNames.nme.apply
+        </td>
+      </tr><tr>
+        <td>
+          77
+        </td>
+        <td>
+          68925
+        </td>
+        <td>
+          3721
+          -
+          3759
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.typer.Dynamic.typedDynamicApply
+        </td>
+        <td style="background: #AEF1AE">
+          typedDynamicApply(fun, dotty.tools.dotc.core.StdNames.nme.apply, scala.collection.immutable.Nil)
+        </td>
+      </tr><tr>
+        <td>
+          89
+        </td>
+        <td>
+          68926
+        </td>
+        <td>
+          4333
+          -
+          4413
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.typer.Applications.typedApply
+        </td>
+        <td style="background: #AEF1AE">
+          Dynamic.this.typedApply(Dynamic.this.coreDynamic(tree.qualifier, dotty.tools.dotc.core.StdNames.nme.selectDynamic, tree.name, targs)(ctx), pt)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          96
+        </td>
+        <td>
+          68927
+        </td>
+        <td>
+          4761
+          -
+          4849
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.typer.Applications.typedApply
+        </td>
+        <td style="background: #AEF1AE">
+          Dynamic.this.typedApply(dotty.tools.dotc.ast.untpd.Apply(Dynamic.this.coreDynamic(qual, dotty.tools.dotc.core.StdNames.nme.updateDynamic, name, targs)(ctx), tree.rhs), pt)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          97
+        </td>
+        <td>
+          68928
+        </td>
+        <td>
+          4854
+          -
+          4862
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Trees.Assign.lhs
+        </td>
+        <td style="background: #AEF1AE">
+          tree.lhs
+        </td>
+      </tr><tr>
+        <td>
+          98
+        </td>
+        <td>
+          68929
+        </td>
+        <td>
+          4904
+          -
+          4926
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.Boolean.unary_!
+        </td>
+        <td style="background: #AEF1AE">
+          Dynamic.isDynamicMethod(name).unary_!
+        </td>
+      </tr><tr>
+        <td>
+          99
+        </td>
+        <td>
+          68930
+        </td>
+        <td>
+          4969
+          -
+          4972
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.collection.immutable.Nil
+        </td>
+        <td style="background: #AEF1AE">
+          scala.collection.immutable.Nil
+        </td>
+      </tr><tr>
+        <td>
+          99
+        </td>
+        <td>
+          68931
+        </td>
+        <td>
+          4938
+          -
+          4973
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.typer.Dynamic.typedDynamicAssign
+        </td>
+        <td style="background: #AEF1AE">
+          typedDynamicAssign(qual, name, scala.collection.immutable.Nil)
+        </td>
+      </tr><tr>
+        <td>
+          100
+        </td>
+        <td>
+          68932
+        </td>
+        <td>
+          5025
+          -
+          5047
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.Boolean.unary_!
+        </td>
+        <td style="background: #F0ADAD">
+          Dynamic.isDynamicMethod(name).unary_!
+        </td>
+      </tr><tr>
+        <td>
+          101
+        </td>
+        <td>
+          68933
+        </td>
+        <td>
+          5059
+          -
+          5096
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.typer.Dynamic.typedDynamicAssign
+        </td>
+        <td style="background: #F0ADAD">
+          typedDynamicAssign(qual, name, targs)
+        </td>
+      </tr><tr>
+        <td>
+          103
+        </td>
+        <td>
+          68934
+        </td>
+        <td>
+          5121
+          -
+          5177
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.typer.ErrorReporting.errorTree
+        </td>
+        <td style="background: #F0ADAD">
+          ErrorReporting.errorTree(tree, dotty.tools.dotc.reporting.diagnostic.messages.ReassignmentToVal.apply(tree.lhs.symbol(ctx).name(ctx))(ctx))(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          108
+        </td>
+        <td>
+          68935
+        </td>
+        <td>
+          5342
+          -
+          5369
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.ast.untpd.Select
+        </td>
+        <td style="background: #AEF1AE">
+          dotty.tools.dotc.ast.untpd.Select(qual, dynName)
+        </td>
+      </tr><tr>
+        <td>
+          110
+        </td>
+        <td>
+          68936
+        </td>
+        <td>
+          5406
+          -
+          5419
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.collection.SeqLike.isEmpty
+        </td>
+        <td style="background: #AEF1AE">
+          targs.isEmpty
+        </td>
+      </tr><tr>
+        <td>
+          110
+        </td>
+        <td>
+          68937
+        </td>
+        <td>
+          5421
+          -
+          5427
+        </td>
+        <td>
+          Ident
+        </td>
+        <td>
+          dotty.tools.dotc.typer.Dynamic.select
+        </td>
+        <td style="background: #AEF1AE">
+          select
+        </td>
+      </tr><tr>
+        <td>
+          111
+        </td>
+        <td>
+          68939
+        </td>
+        <td>
+          5439
+          -
+          5469
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          dotty.tools.dotc.ast.untpd.TypeApply
+        </td>
+        <td style="background: #AEF1AE">
+          dotty.tools.dotc.ast.untpd.TypeApply(select, targs)
+        </td>
+      </tr><tr>
+        <td>
+          111
+        </td>
+        <td>
+          68938
+        </td>
+        <td>
+          5439
+          -
+          5469
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.ast.untpd.TypeApply
+        </td>
+        <td style="background: #AEF1AE">
+          dotty.tools.dotc.ast.untpd.TypeApply(select, targs)
+        </td>
+      </tr><tr>
+        <td>
+          112
+        </td>
+        <td>
+          68941
+        </td>
+        <td>
+          5474
+          -
+          5536
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.ast.untpd.Apply
+        </td>
+        <td style="background: #AEF1AE">
+          dotty.tools.dotc.ast.untpd.Apply(selectWithTypes, dotty.tools.dotc.ast.tpd.Literal(dotty.tools.dotc.core.Constants.Constant.apply(name.toString()))(ctx))
+        </td>
+      </tr><tr>
+        <td>
+          112
+        </td>
+        <td>
+          68940
+        </td>
+        <td>
+          5503
+          -
+          5535
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.tpd.Literal
+        </td>
+        <td style="background: #AEF1AE">
+          dotty.tools.dotc.ast.tpd.Literal(dotty.tools.dotc.core.Constants.Constant.apply(name.toString()))(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          132
+        </td>
+        <td>
+          68942
+        </td>
+        <td>
+          6360
+          -
+          6360
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.Tuple2._1
+        </td>
+        <td style="background: #AEF1AE">
+          x$1._1
+        </td>
+      </tr><tr>
+        <td>
+          132
+        </td>
+        <td>
+          68943
+        </td>
+        <td>
+          6366
+          -
+          6366
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.Tuple2._2
+        </td>
+        <td style="background: #AEF1AE">
+          x$1._2
+        </td>
+      </tr><tr>
+        <td>
+          135
+        </td>
+        <td>
+          68944
+        </td>
+        <td>
+          6475
+          -
+          6507
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.typer.Typer.adapt
+        </td>
+        <td style="background: #AEF1AE">
+          Dynamic.this.adapt(qual, core.Symbols.defn(ctx).SelectableType)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          136
+        </td>
+        <td>
+          68950
+        </td>
+        <td>
+          6526
+          -
+          6679
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.ast.untpd.Apply
+        </td>
+        <td style="background: #AEF1AE">
+          dotty.tools.dotc.ast.untpd.Apply(dotty.tools.dotc.ast.untpd.TypedSplice.apply(dotty.tools.dotc.ast.tpd.TreeOps[dotty.tools.dotc.ast.tpd.Tree](selectable).select(selectorName)(ctx))(ctx), {
+  &lt;synthetic&gt; &lt;artifact&gt; val x$2: dotty.tools.dotc.ast.tpd.Literal = dotty.tools.dotc.ast.tpd.Literal(dotty.tools.dotc.core.Constants.Constant.apply(name.toString()))(ctx);
+  formals.::[dotty.tools.dotc.ast.tpd.Tree](x$2)
+}.map[dotty.tools.dotc.ast.untpd.TypedSplice, List[dotty.tools.dotc.ast.untpd.TypedSplice]](((x$3: dotty.tools.dotc.ast.tpd.Tree) =&gt; dotty.tools.dotc.ast.untpd.TypedSplice.apply(x$3)(ctx)))(immutable.this.List.canBuildFrom[dotty.tools.dotc.ast.untpd.TypedSplice]))
+        </td>
+      </tr><tr>
+        <td>
+          137
+        </td>
+        <td>
+          68945
+        </td>
+        <td>
+          6547
+          -
+          6597
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.untpd.TypedSplice.apply
+        </td>
+        <td style="background: #AEF1AE">
+          dotty.tools.dotc.ast.untpd.TypedSplice.apply(dotty.tools.dotc.ast.tpd.TreeOps[dotty.tools.dotc.ast.tpd.Tree](selectable).select(selectorName)(ctx))(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          138
+        </td>
+        <td>
+          68947
+        </td>
+        <td>
+          6657
+          -
+          6677
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.untpd.TypedSplice.apply
+        </td>
+        <td style="background: #AEF1AE">
+          dotty.tools.dotc.ast.untpd.TypedSplice.apply(x$3)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          138
+        </td>
+        <td>
+          68946
+        </td>
+        <td>
+          6641
+          -
+          6651
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.immutable.List.::
+        </td>
+        <td style="background: #AEF1AE">
+          formals.::[dotty.tools.dotc.ast.tpd.Tree](x$2)
+        </td>
+      </tr><tr>
+        <td>
+          138
+        </td>
+        <td>
+          68949
+        </td>
+        <td>
+          6608
+          -
+          6678
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          scala.collection.immutable.List.map
+        </td>
+        <td style="background: #AEF1AE">
+          {
+  &lt;synthetic&gt; &lt;artifact&gt; val x$2: dotty.tools.dotc.ast.tpd.Literal = dotty.tools.dotc.ast.tpd.Literal(dotty.tools.dotc.core.Constants.Constant.apply(name.toString()))(ctx);
+  formals.::[dotty.tools.dotc.ast.tpd.Tree](x$2)
+}.map[dotty.tools.dotc.ast.untpd.TypedSplice, List[dotty.tools.dotc.ast.untpd.TypedSplice]](((x$3: dotty.tools.dotc.ast.tpd.Tree) =&gt; dotty.tools.dotc.ast.untpd.TypedSplice.apply(x$3)(ctx)))(immutable.this.List.canBuildFrom[dotty.tools.dotc.ast.untpd.TypedSplice])
+        </td>
+      </tr><tr>
+        <td>
+          138
+        </td>
+        <td>
+          68948
+        </td>
+        <td>
+          6656
+          -
+          6656
+        </td>
+        <td>
+          TypeApply
+        </td>
+        <td>
+          scala.collection.immutable.List.canBuildFrom
+        </td>
+        <td style="background: #AEF1AE">
+          immutable.this.List.canBuildFrom[dotty.tools.dotc.ast.untpd.TypedSplice]
+        </td>
+      </tr><tr>
+        <td>
+          139
+        </td>
+        <td>
+          68951
+        </td>
+        <td>
+          6686
+          -
+          6698
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.typer.Typer.typed
+        </td>
+        <td style="background: #AEF1AE">
+          Dynamic.this.typed(scall, Dynamic.this.typed$default$2)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          143
+        </td>
+        <td>
+          68952
+        </td>
+        <td>
+          6743
+          -
+          6828
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.typer.ErrorReporting.errorTree
+        </td>
+        <td style="background: #F0ADAD">
+          ErrorReporting.errorTree(tree, diagnostic.this.Message.toNoExplanation(dotty.tools.dotc.core.Decorators.StringInterpolators(scala.StringContext.apply(&quot;Structural access not allowed on method &quot;, &quot; because it &quot;, &quot;&quot;)).em(name, reason)(ctx)))(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          145
+        </td>
+        <td>
+          68953
+        </td>
+        <td>
+          6834
+          -
+          6848
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.Types.Type.widen
+        </td>
+        <td style="background: #AEF1AE">
+          tree.tpe.widen(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          147
+        </td>
+        <td>
+          68954
+        </td>
+        <td>
+          6899
+          -
+          6919
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.Types.TermLambda.isParamDependent
+        </td>
+        <td style="background: #AEF1AE">
+          tpe.isParamDependent(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          148
+        </td>
+        <td>
+          68956
+        </td>
+        <td>
+          6931
+          -
+          6991
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.typer.Dynamic.fail
+        </td>
+        <td style="background: #F0ADAD">
+          fail(dotty.tools.dotc.core.Decorators.StringInterpolators(scala.StringContext.apply(&quot;has a method type with inter-parameter dependencies&quot;)).i()(ctx))
+        </td>
+      </tr><tr>
+        <td>
+          148
+        </td>
+        <td>
+          68955
+        </td>
+        <td>
+          6936
+          -
+          6990
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.Decorators.StringInterpolators.i
+        </td>
+        <td style="background: #F0ADAD">
+          dotty.tools.dotc.core.Decorators.StringInterpolators(scala.StringContext.apply(&quot;has a method type with inter-parameter dependencies&quot;)).i()(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          148
+        </td>
+        <td>
+          68957
+        </td>
+        <td>
+          6931
+          -
+          6991
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          dotty.tools.dotc.typer.Dynamic.fail
+        </td>
+        <td style="background: #F0ADAD">
+          fail(dotty.tools.dotc.core.Decorators.StringInterpolators(scala.StringContext.apply(&quot;has a method type with inter-parameter dependencies&quot;)).i()(ctx))
+        </td>
+      </tr><tr>
+        <td>
+          149
+        </td>
+        <td>
+          68959
+        </td>
+        <td>
+          7009
+          -
+          7069
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Int.&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          tpe.paramNames.length.&gt;(core.Definitions.MaxStructuralMethodArity)
+        </td>
+      </tr><tr>
+        <td>
+          149
+        </td>
+        <td>
+          68968
+        </td>
+        <td>
+          7005
+          -
+          7488
+        </td>
+        <td>
+          If
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          if (tpe.paramNames.length.&gt;(core.Definitions.MaxStructuralMethodArity))
+  fail(dotty.tools.dotc.core.Decorators.StringInterpolators(scala.StringContext.apply(&quot;takes too many parameters.\n                  |Structural types only support methods taking up to &quot;, &quot; arguments&quot;)).i(core.Definitions.MaxStructuralMethodArity)(ctx))
+else
+  {
+    val ctags: List[dotty.tools.dotc.ast.tpd.Tree] = tpe.paramInfos.map[dotty.tools.dotc.ast.tpd.Tree, List[dotty.tools.dotc.ast.tpd.Tree]](((pt: dotty.tools.dotc.core.Types.Type) =&gt; Dynamic.this.implicitArgTree(dotty.tools.dotc.core.Types.decorateTypeApplications(core.Symbols.defn(ctx).ClassTagType).appliedTo({
+      &lt;synthetic&gt; &lt;artifact&gt; val x$4: dotty.tools.dotc.core.Types.Type = pt;
+      scala.collection.immutable.Nil.::[dotty.tools.dotc.core.Types.Type](x$4)
+    })(ctx), tree.pos.endPos)(ctx)))(immutable.this.List.canBuildFrom[dotty.tools.dotc.ast.tpd.Tree]);
+    dotty.tools.dotc.ast.tpd.TreeOps[dotty.tools.dotc.ast.tpd.Tree](structuralCall(dotty.tools.dotc.core.StdNames.nme.selectDynamicMethod, ctags)).asInstance(tpe.toFunctionType(tpe.toFunctionType$default$1)(ctx))(ctx)
+  }
+        </td>
+      </tr><tr>
+        <td>
+          149
+        </td>
+        <td>
+          68958
+        </td>
+        <td>
+          7033
+          -
+          7069
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Definitions.MaxStructuralMethodArity
+        </td>
+        <td style="background: #AEF1AE">
+          core.Definitions.MaxStructuralMethodArity
+        </td>
+      </tr><tr>
+        <td>
+          150
+        </td>
+        <td>
+          68960
+        </td>
+        <td>
+          7086
+          -
+          7239
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.Decorators.StringInterpolators.i
+        </td>
+        <td style="background: #F0ADAD">
+          dotty.tools.dotc.core.Decorators.StringInterpolators(scala.StringContext.apply(&quot;takes too many parameters.\n                  |Structural types only support methods taking up to &quot;, &quot; arguments&quot;)).i(core.Definitions.MaxStructuralMethodArity)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          150
+        </td>
+        <td>
+          68962
+        </td>
+        <td>
+          7081
+          -
+          7240
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          dotty.tools.dotc.typer.Dynamic.fail
+        </td>
+        <td style="background: #F0ADAD">
+          fail(dotty.tools.dotc.core.Decorators.StringInterpolators(scala.StringContext.apply(&quot;takes too many parameters.\n                  |Structural types only support methods taking up to &quot;, &quot; arguments&quot;)).i(core.Definitions.MaxStructuralMethodArity)(ctx))
+        </td>
+      </tr><tr>
+        <td>
+          150
+        </td>
+        <td>
+          68961
+        </td>
+        <td>
+          7081
+          -
+          7240
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.typer.Dynamic.fail
+        </td>
+        <td style="background: #F0ADAD">
+          fail(dotty.tools.dotc.core.Decorators.StringInterpolators(scala.StringContext.apply(&quot;takes too many parameters.\n                  |Structural types only support methods taking up to &quot;, &quot; arguments&quot;)).i(core.Definitions.MaxStructuralMethodArity)(ctx))
+        </td>
+      </tr><tr>
+        <td>
+          152
+        </td>
+        <td>
+          68967
+        </td>
+        <td>
+          7254
+          -
+          7488
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          {
+  val ctags: List[dotty.tools.dotc.ast.tpd.Tree] = tpe.paramInfos.map[dotty.tools.dotc.ast.tpd.Tree, List[dotty.tools.dotc.ast.tpd.Tree]](((pt: dotty.tools.dotc.core.Types.Type) =&gt; Dynamic.this.implicitArgTree(dotty.tools.dotc.core.Types.decorateTypeApplications(core.Symbols.defn(ctx).ClassTagType).appliedTo({
+    &lt;synthetic&gt; &lt;artifact&gt; val x$4: dotty.tools.dotc.core.Types.Type = pt;
+    scala.collection.immutable.Nil.::[dotty.tools.dotc.core.Types.Type](x$4)
+  })(ctx), tree.pos.endPos)(ctx)))(immutable.this.List.canBuildFrom[dotty.tools.dotc.ast.tpd.Tree]);
+  dotty.tools.dotc.ast.tpd.TreeOps[dotty.tools.dotc.ast.tpd.Tree](structuralCall(dotty.tools.dotc.core.StdNames.nme.selectDynamicMethod, ctags)).asInstance(tpe.toFunctionType(tpe.toFunctionType$default$1)(ctx))(ctx)
+}
+        </td>
+      </tr><tr>
+        <td>
+          153
+        </td>
+        <td>
+          68965
+        </td>
+        <td>
+          7278
+          -
+          7388
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          scala.collection.immutable.List.map
+        </td>
+        <td style="background: #AEF1AE">
+          tpe.paramInfos.map[dotty.tools.dotc.ast.tpd.Tree, List[dotty.tools.dotc.ast.tpd.Tree]](((pt: dotty.tools.dotc.core.Types.Type) =&gt; Dynamic.this.implicitArgTree(dotty.tools.dotc.core.Types.decorateTypeApplications(core.Symbols.defn(ctx).ClassTagType).appliedTo({
+  &lt;synthetic&gt; &lt;artifact&gt; val x$4: dotty.tools.dotc.core.Types.Type = pt;
+  scala.collection.immutable.Nil.::[dotty.tools.dotc.core.Types.Type](x$4)
+})(ctx), tree.pos.endPos)(ctx)))(immutable.this.List.canBuildFrom[dotty.tools.dotc.ast.tpd.Tree])
+        </td>
+      </tr><tr>
+        <td>
+          153
+        </td>
+        <td>
+          68964
+        </td>
+        <td>
+          7296
+          -
+          7296
+        </td>
+        <td>
+          TypeApply
+        </td>
+        <td>
+          scala.collection.immutable.List.canBuildFrom
+        </td>
+        <td style="background: #AEF1AE">
+          immutable.this.List.canBuildFrom[dotty.tools.dotc.ast.tpd.Tree]
+        </td>
+      </tr><tr>
+        <td>
+          154
+        </td>
+        <td>
+          68963
+        </td>
+        <td>
+          7315
+          -
+          7387
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.typer.Implicits.implicitArgTree
+        </td>
+        <td style="background: #AEF1AE">
+          Dynamic.this.implicitArgTree(dotty.tools.dotc.core.Types.decorateTypeApplications(core.Symbols.defn(ctx).ClassTagType).appliedTo({
+  &lt;synthetic&gt; &lt;artifact&gt; val x$4: dotty.tools.dotc.core.Types.Type = pt;
+  scala.collection.immutable.Nil.::[dotty.tools.dotc.core.Types.Type](x$4)
+})(ctx), tree.pos.endPos)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          155
+        </td>
+        <td>
+          68966
+        </td>
+        <td>
+          7399
+          -
+          7478
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.tpd.TreeOps.asInstance
+        </td>
+        <td style="background: #AEF1AE">
+          dotty.tools.dotc.ast.tpd.TreeOps[dotty.tools.dotc.ast.tpd.Tree](structuralCall(dotty.tools.dotc.core.StdNames.nme.selectDynamicMethod, ctags)).asInstance(tpe.toFunctionType(tpe.toFunctionType$default$1)(ctx))(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          158
+        </td>
+        <td>
+          68969
+        </td>
+        <td>
+          7526
+          -
+          7580
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.tpd.TreeOps.asInstance
+        </td>
+        <td style="background: #AEF1AE">
+          dotty.tools.dotc.ast.tpd.TreeOps[dotty.tools.dotc.ast.tpd.Tree](structuralCall(dotty.tools.dotc.core.StdNames.nme.selectDynamic, scala.collection.immutable.Nil)).asInstance(tpe)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          160
+        </td>
+        <td>
+          68970
+        </td>
+        <td>
+          7617
+          -
+          7639
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.typer.Dynamic.fail
+        </td>
+        <td style="background: #F0ADAD">
+          fail(&quot;is polymorphic&quot;)
+        </td>
+      </tr><tr>
+        <td>
+          162
+        </td>
+        <td>
+          68972
+        </td>
+        <td>
+          7666
+          -
+          7704
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.typer.Dynamic.fail
+        </td>
+        <td style="background: #F0ADAD">
+          fail(dotty.tools.dotc.core.Decorators.StringInterpolators(scala.StringContext.apply(&quot;has an unsupported type: &quot;, &quot;&quot;)).i(tpe)(ctx))
+        </td>
+      </tr><tr>
+        <td>
+          162
+        </td>
+        <td>
+          68971
+        </td>
+        <td>
+          7671
+          -
+          7703
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.Decorators.StringInterpolators.i
+        </td>
+        <td style="background: #F0ADAD">
+          dotty.tools.dotc.core.Decorators.StringInterpolators(scala.StringContext.apply(&quot;has an unsupported type: &quot;, &quot;&quot;)).i(tpe)(ctx)
+        </td>
+      </tr>
+    </table>
+          </div>
+        </div>
+      </body>
+    </html>

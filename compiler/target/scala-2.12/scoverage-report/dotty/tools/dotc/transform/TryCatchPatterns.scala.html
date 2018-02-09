@@ -1,0 +1,1229 @@
+<html>
+      <head>
+        <meta http-equiv="Content-Type" content="text/html; charset=utf-8"/>
+        <title id="title">
+          dotty/tools/dotc/transform/TryCatchPatterns.scala.html
+        </title>
+        <script src="https://ajax.googleapis.com/ajax/libs/jquery/1.10.2/jquery.min.js"></script><link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/jquery.tablesorter/2.20.1/css/theme.default.min.css" type="text/css"/><script src="https://cdnjs.cloudflare.com/ajax/libs/jquery.tablesorter/2.20.1/js/jquery.tablesorter.min.js"></script><link rel="stylesheet" href="https://netdna.bootstrapcdn.com/bootstrap/3.0.3/css/bootstrap.min.css" type="text/css"/><script src="https://netdna.bootstrapcdn.com/bootstrap/3.0.3/js/bootstrap.min.js"></script><script type="text/javascript">
+        $(document).ready(function() {$(".tablesorter").tablesorter();});
+      </script>
+        <style>
+          table.codegrid { font-family: monospace; font-size: 12px; width: auto!important; }table.statementlist { width: auto!important; font-size: 13px; } table.codegrid td { padding: 0!important; border: 0!important } table td.linenumber { width: 40px!important; } 
+        </style>
+      </head>
+      <body style="font-family: monospace;">
+        <ul class="nav nav-tabs">
+          <li>
+            <a href="#codegrid" data-toggle="tab">Codegrid</a>
+          </li>
+          <li>
+            <a href="#statementlist" data-toggle="tab">Statement List</a>
+          </li>
+        </ul>
+        <div class="tab-content">
+          <div class="tab-pane active" id="codegrid">
+            <pre style='font-size: 12pt; font-family: courier;'>1 <span style=''>package dotty.tools.dotc
+</span>2 <span style=''>package transform
+</span>3 <span style=''>
+</span>4 <span style=''>import core.Symbols._
+</span>5 <span style=''>import core.StdNames._
+</span>6 <span style=''>import ast.Trees._
+</span>7 <span style=''>import core.Types._
+</span>8 <span style=''>import core.NameKinds.ExceptionBinderName
+</span>9 <span style=''>import dotty.tools.dotc.core.Decorators._
+</span>10 <span style=''>import dotty.tools.dotc.core.Flags
+</span>11 <span style=''>import dotty.tools.dotc.core.Contexts.Context
+</span>12 <span style=''>import dotty.tools.dotc.transform.MegaPhase.MiniPhase
+</span>13 <span style=''>import dotty.tools.dotc.util.Positions.Position
+</span>14 <span style=''>
+</span>15 <span style=''>/** Compiles the cases that can not be handled by primitive catch cases as a common pattern match.
+</span>16 <span style=''> *
+</span>17 <span style=''> *  The following code:
+</span>18 <span style=''> *    ```
+</span>19 <span style=''> *    try { &lt;code&gt; }
+</span>20 <span style=''> *    catch {
+</span>21 <span style=''> *      &lt;tryCases&gt; // Cases that can be handled by catch
+</span>22 <span style=''> *      &lt;patternMatchCases&gt; // Cases starting with first one that can't be handled by catch
+</span>23 <span style=''> *    }
+</span>24 <span style=''> *    ```
+</span>25 <span style=''> *  will become:
+</span>26 <span style=''> *    ```
+</span>27 <span style=''> *    try { &lt;code&gt; }
+</span>28 <span style=''> *    catch {
+</span>29 <span style=''> *      &lt;tryCases&gt;
+</span>30 <span style=''> *      case e =&gt; e match {
+</span>31 <span style=''> *        &lt;patternMatchCases&gt;
+</span>32 <span style=''> *      }
+</span>33 <span style=''> *    }
+</span>34 <span style=''> *    ```
+</span>35 <span style=''> *
+</span>36 <span style=''> *  Cases that are not supported include:
+</span>37 <span style=''> *   - Applies and unapplies
+</span>38 <span style=''> *   - Idents
+</span>39 <span style=''> *   - Alternatives
+</span>40 <span style=''> *   - `case _: T =&gt;` where `T` is not `Throwable`
+</span>41 <span style=''> *
+</span>42 <span style=''> */
+</span>43 <span style=''>class TryCatchPatterns extends MiniPhase {
+</span>44 <span style=''>  import dotty.tools.dotc.ast.tpd._
+</span>45 <span style=''>
+</span>46 <span style=''>  def phaseName: String = </span><span style='background: #AEF1AE'>&quot;tryCatchPatterns&quot;</span><span style=''>
+</span>47 <span style=''>
+</span>48 <span style=''>  override def runsAfter = </span><span style='background: #AEF1AE'>Set(classOf[ElimRepeated])</span><span style=''>
+</span>49 <span style=''>
+</span>50 <span style=''>  override def checkPostCondition(tree: Tree)(implicit ctx: Context): Unit = tree match {
+</span>51 <span style=''>    case Try(_, cases, _) =&gt;
+</span>52 <span style=''>      </span><span style='background: #AEF1AE'>cases.foreach {
+</span>53 <span style=''></span><span style='background: #AEF1AE'>        case CaseDef(Typed(_, _), guard, _) =&gt; assert(guard.isEmpty, </span><span style='background: #F0ADAD'>&quot;Try case should not contain a guard.&quot;</span><span style='background: #AEF1AE'>)
+</span>54 <span style=''></span><span style='background: #AEF1AE'>        case CaseDef(Bind(_, _), guard, _) =&gt; assert(guard.isEmpty, </span><span style='background: #F0ADAD'>&quot;Try case should not contain a guard.&quot;</span><span style='background: #AEF1AE'>)
+</span>55 <span style=''></span><span style='background: #AEF1AE'>        case c =&gt;
+</span>56 <span style=''></span><span style='background: #AEF1AE'>          assert(isDefaultCase(c), </span><span style='background: #F0ADAD'>&quot;Pattern in Try should be Bind, Typed or default case.&quot;</span><span style='background: #AEF1AE'>)
+</span>57 <span style=''></span><span style='background: #AEF1AE'>      }</span><span style=''>
+</span>58 <span style=''>    case _ </span><span style='background: #AEF1AE'>=&gt;</span><span style=''>
+</span>59 <span style=''>  }
+</span>60 <span style=''>
+</span>61 <span style=''>  override def transformTry(tree: Try)(implicit ctx: Context): Tree = {
+</span>62 <span style=''>    val (tryCases, patternMatchCases) = tree.cases.span(isCatchCase)
+</span>63 <span style=''>    val fallbackCase = </span><span style='background: #AEF1AE'>mkFallbackPatterMatchCase(patternMatchCases, tree.pos)</span><span style=''>
+</span>64 <span style=''>    </span><span style='background: #AEF1AE'>cpy.Try(tree)(cases = tryCases ++ fallbackCase)</span><span style=''>
+</span>65 <span style=''>  }
+</span>66 <span style=''>
+</span>67 <span style=''>  /** Is this pattern node a catch-all or type-test pattern? */
+</span>68 <span style=''>  private def isCatchCase(cdef: CaseDef)(implicit ctx: Context): Boolean = cdef match {
+</span>69 <span style=''>    case CaseDef(Typed(Ident(nme.WILDCARD), tpt), EmptyTree, _)          =&gt; </span><span style='background: #AEF1AE'>isSimpleThrowable(tpt.tpe)</span><span style=''>
+</span>70 <span style=''>    case CaseDef(Bind(_, Typed(Ident(nme.WILDCARD), tpt)), EmptyTree, _) =&gt; </span><span style='background: #AEF1AE'>isSimpleThrowable(tpt.tpe)</span><span style=''>
+</span>71 <span style=''>    case _                                                               =&gt; </span><span style='background: #AEF1AE'>isDefaultCase(cdef)</span><span style=''>
+</span>72 <span style=''>  }
+</span>73 <span style=''>
+</span>74 <span style=''>  private def isSimpleThrowable(tp: Type)(implicit ctx: Context): Boolean = </span><span style='background: #AEF1AE'>tp.stripAnnots</span><span style=''> match {
+</span>75 <span style=''>    case tp @ TypeRef(pre, _) =&gt;
+</span>76 <span style=''>      </span><span style='background: #AEF1AE'>(pre == NoPrefix || pre.widen.typeSymbol.isStatic) &amp;&amp; // Does not require outer class check
+</span>77 <span style=''></span><span style='background: #AEF1AE'>      !tp.symbol.is(Flags.Trait) &amp;&amp; // Traits not supported by JVM
+</span>78 <span style=''></span><span style='background: #AEF1AE'>      tp.derivesFrom(defn.ThrowableClass)</span><span style=''>
+</span>79 <span style=''>    case tp: AppliedType =&gt;
+</span>80 <span style=''>      </span><span style='background: #AEF1AE'>isSimpleThrowable(tp.tycon)</span><span style=''>
+</span>81 <span style=''>    case _ =&gt;
+</span>82 <span style=''>      </span><span style='background: #AEF1AE'>false</span><span style=''>
+</span>83 <span style=''>  }
+</span>84 <span style=''>
+</span>85 <span style=''>  private def mkFallbackPatterMatchCase(patternMatchCases: List[CaseDef], pos: Position)(
+</span>86 <span style=''>      implicit ctx: Context): Option[CaseDef] = {
+</span>87 <span style=''>    if (</span><span style='background: #AEF1AE'>patternMatchCases.isEmpty</span><span style=''>) </span><span style='background: #AEF1AE'>None</span><span style=''>
+</span>88 <span style=''>    else </span><span style='background: #AEF1AE'>{
+</span>89 <span style=''></span><span style='background: #AEF1AE'>      val exName = ExceptionBinderName.fresh()
+</span>90 <span style=''></span><span style='background: #AEF1AE'>      val fallbackSelector =
+</span>91 <span style=''></span><span style='background: #AEF1AE'>        ctx.newSymbol(ctx.owner, exName, Flags.Synthetic | Flags.Case, defn.ThrowableType, coord = pos)
+</span>92 <span style=''></span><span style='background: #AEF1AE'>      val sel = Ident(fallbackSelector.termRef).withPos(pos)
+</span>93 <span style=''></span><span style='background: #AEF1AE'>      val rethrow = CaseDef(EmptyTree, EmptyTree, Throw(ref(fallbackSelector)))
+</span>94 <span style=''></span><span style='background: #AEF1AE'>      Some(CaseDef(
+</span>95 <span style=''></span><span style='background: #AEF1AE'>          Bind(fallbackSelector, Underscore(fallbackSelector.info).withPos(pos)),
+</span>96 <span style=''></span><span style='background: #AEF1AE'>          EmptyTree,
+</span>97 <span style=''></span><span style='background: #AEF1AE'>          transformFollowing(Match(sel, patternMatchCases ::: rethrow :: Nil)))
+</span>98 <span style=''></span><span style='background: #AEF1AE'>      )
+</span>99 <span style=''></span><span style='background: #AEF1AE'>    }</span><span style=''>
+</span>100 <span style=''>  }
+</span>101 <span style=''>
+</span>102 <span style=''>}
+</span></pre>
+          </div>
+          <div class="tab-pane" id="statementlist">
+            <table cellspacing="0" cellpadding="0" class="table statementlist">
+      <tr>
+        <th>Line</th>
+        <th>Stmt Id</th>
+        <th>Pos</th>
+        <th>Tree</th>
+        <th>Symbol</th>
+        <th>Code</th>
+      </tr><tr>
+        <td>
+          46
+        </td>
+        <td>
+          63855
+        </td>
+        <td>
+          1173
+          -
+          1191
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          &quot;tryCatchPatterns&quot;
+        </td>
+      </tr><tr>
+        <td>
+          48
+        </td>
+        <td>
+          63856
+        </td>
+        <td>
+          1220
+          -
+          1246
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.generic.GenericCompanion.apply
+        </td>
+        <td style="background: #AEF1AE">
+          scala.Predef.Set.apply[Class[_ &lt;: dotty.tools.dotc.core.Phases.Phase]](classOf[dotty.tools.dotc.transform.ElimRepeated])
+        </td>
+      </tr><tr>
+        <td>
+          52
+        </td>
+        <td>
+          63866
+        </td>
+        <td>
+          1373
+          -
+          1723
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.immutable.List.foreach
+        </td>
+        <td style="background: #AEF1AE">
+          cases.foreach[Unit](((x0$1: dotty.tools.dotc.ast.Trees.CaseDef[dotty.tools.dotc.core.Types.Type]) =&gt; x0$1 match {
+  case (pat: dotty.tools.dotc.ast.Trees.Tree[dotty.tools.dotc.core.Types.Type], guard: dotty.tools.dotc.ast.Trees.Tree[dotty.tools.dotc.core.Types.Type], body: dotty.tools.dotc.ast.Trees.Tree[dotty.tools.dotc.core.Types.Type])dotty.tools.dotc.ast.Trees.CaseDef[dotty.tools.dotc.core.Types.Type]((expr: dotty.tools.dotc.ast.Trees.Tree[dotty.tools.dotc.core.Types.Type], tpt: dotty.tools.dotc.ast.Trees.Tree[dotty.tools.dotc.core.Types.Type])dotty.tools.dotc.ast.Trees.Typed[dotty.tools.dotc.core.Types.Type](_, _), (guard @ _), _) =&gt; scala.Predef.assert(guard.isEmpty, &quot;Try case should not contain a guard.&quot;)
+  case (pat: dotty.tools.dotc.ast.Trees.Tree[dotty.tools.dotc.core.Types.Type], guard: dotty.tools.dotc.ast.Trees.Tree[dotty.tools.dotc.core.Types.Type], body: dotty.tools.dotc.ast.Trees.Tree[dotty.tools.dotc.core.Types.Type])dotty.tools.dotc.ast.Trees.CaseDef[dotty.tools.dotc.core.Types.Type]((name: dotty.tools.dotc.core.Names.Name, body: dotty.tools.dotc.ast.Trees.Tree[dotty.tools.dotc.core.Types.Type])dotty.tools.dotc.ast.Trees.Bind[dotty.tools.dotc.core.Types.Type](_, _), (guard @ _), _) =&gt; scala.Predef.assert(guard.isEmpty, &quot;Try case should not contain a guard.&quot;)
+  case (c @ _) =&gt; scala.Predef.assert(dotty.tools.dotc.ast.tpd.isDefaultCase(c), &quot;Pattern in Try should be Bind, Typed or default case.&quot;)
+}))
+        </td>
+      </tr><tr>
+        <td>
+          53
+        </td>
+        <td>
+          63858
+        </td>
+        <td>
+          1458
+          -
+          1496
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          &quot;Try case should not contain a guard.&quot;
+        </td>
+      </tr><tr>
+        <td>
+          53
+        </td>
+        <td>
+          63857
+        </td>
+        <td>
+          1443
+          -
+          1456
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Trees.Tree.isEmpty
+        </td>
+        <td style="background: #AEF1AE">
+          guard.isEmpty
+        </td>
+      </tr><tr>
+        <td>
+          53
+        </td>
+        <td>
+          63859
+        </td>
+        <td>
+          1436
+          -
+          1497
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Predef.assert
+        </td>
+        <td style="background: #AEF1AE">
+          scala.Predef.assert(guard.isEmpty, &quot;Try case should not contain a guard.&quot;)
+        </td>
+      </tr><tr>
+        <td>
+          54
+        </td>
+        <td>
+          63860
+        </td>
+        <td>
+          1551
+          -
+          1564
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Trees.Tree.isEmpty
+        </td>
+        <td style="background: #AEF1AE">
+          guard.isEmpty
+        </td>
+      </tr><tr>
+        <td>
+          54
+        </td>
+        <td>
+          63862
+        </td>
+        <td>
+          1544
+          -
+          1605
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Predef.assert
+        </td>
+        <td style="background: #AEF1AE">
+          scala.Predef.assert(guard.isEmpty, &quot;Try case should not contain a guard.&quot;)
+        </td>
+      </tr><tr>
+        <td>
+          54
+        </td>
+        <td>
+          63861
+        </td>
+        <td>
+          1566
+          -
+          1604
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          &quot;Try case should not contain a guard.&quot;
+        </td>
+      </tr><tr>
+        <td>
+          56
+        </td>
+        <td>
+          63864
+        </td>
+        <td>
+          1659
+          -
+          1714
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          &quot;Pattern in Try should be Bind, Typed or default case.&quot;
+        </td>
+      </tr><tr>
+        <td>
+          56
+        </td>
+        <td>
+          63863
+        </td>
+        <td>
+          1641
+          -
+          1657
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.ast.TreeInfo.isDefaultCase
+        </td>
+        <td style="background: #AEF1AE">
+          dotty.tools.dotc.ast.tpd.isDefaultCase(c)
+        </td>
+      </tr><tr>
+        <td>
+          56
+        </td>
+        <td>
+          63865
+        </td>
+        <td>
+          1634
+          -
+          1715
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Predef.assert
+        </td>
+        <td style="background: #AEF1AE">
+          scala.Predef.assert(dotty.tools.dotc.ast.tpd.isDefaultCase(c), &quot;Pattern in Try should be Bind, Typed or default case.&quot;)
+        </td>
+      </tr><tr>
+        <td>
+          58
+        </td>
+        <td>
+          63867
+        </td>
+        <td>
+          1735
+          -
+          1737
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          ()
+        </td>
+      </tr><tr>
+        <td>
+          62
+        </td>
+        <td>
+          63869
+        </td>
+        <td>
+          1834
+          -
+          1834
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.Tuple2._2
+        </td>
+        <td style="background: #AEF1AE">
+          x$1._2
+        </td>
+      </tr><tr>
+        <td>
+          62
+        </td>
+        <td>
+          63868
+        </td>
+        <td>
+          1824
+          -
+          1824
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.Tuple2._1
+        </td>
+        <td style="background: #AEF1AE">
+          x$1._1
+        </td>
+      </tr><tr>
+        <td>
+          63
+        </td>
+        <td>
+          63870
+        </td>
+        <td>
+          1907
+          -
+          1961
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.transform.TryCatchPatterns.mkFallbackPatterMatchCase
+        </td>
+        <td style="background: #AEF1AE">
+          TryCatchPatterns.this.mkFallbackPatterMatchCase(patternMatchCases, tree.pos)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          64
+        </td>
+        <td>
+          63873
+        </td>
+        <td>
+          1988
+          -
+          2012
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          scala.collection.immutable.List.++
+        </td>
+        <td style="background: #AEF1AE">
+          tryCases.++[dotty.tools.dotc.ast.Trees.CaseDef[dotty.tools.dotc.core.Types.Type], List[dotty.tools.dotc.ast.tpd.CaseDef]](scala.this.Option.option2Iterable[dotty.tools.dotc.ast.tpd.CaseDef](fallbackCase))(immutable.this.List.canBuildFrom[dotty.tools.dotc.ast.Trees.CaseDef[dotty.tools.dotc.core.Types.Type]])
+        </td>
+      </tr><tr>
+        <td>
+          64
+        </td>
+        <td>
+          63876
+        </td>
+        <td>
+          1966
+          -
+          2013
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.ast.tpd.TypedTreeCopier.Try
+        </td>
+        <td style="background: #AEF1AE">
+          TryCatchPatterns.this.cpy.Try(x$4)(x$6, x$5, x$7)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          64
+        </td>
+        <td>
+          63875
+        </td>
+        <td>
+          1973
+          -
+          1973
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.ast.tpd.TypedTreeCopier.Try$default$4
+        </td>
+        <td style="background: #AEF1AE">
+          TryCatchPatterns.this.cpy.Try$default$4(x$4)
+        </td>
+      </tr><tr>
+        <td>
+          64
+        </td>
+        <td>
+          63872
+        </td>
+        <td>
+          1997
+          -
+          1997
+        </td>
+        <td>
+          TypeApply
+        </td>
+        <td>
+          scala.collection.immutable.List.canBuildFrom
+        </td>
+        <td style="background: #AEF1AE">
+          immutable.this.List.canBuildFrom[dotty.tools.dotc.ast.Trees.CaseDef[dotty.tools.dotc.core.Types.Type]]
+        </td>
+      </tr><tr>
+        <td>
+          64
+        </td>
+        <td>
+          63874
+        </td>
+        <td>
+          1973
+          -
+          1973
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.ast.tpd.TypedTreeCopier.Try$default$2
+        </td>
+        <td style="background: #AEF1AE">
+          TryCatchPatterns.this.cpy.Try$default$2(x$4)
+        </td>
+      </tr><tr>
+        <td>
+          64
+        </td>
+        <td>
+          63871
+        </td>
+        <td>
+          2000
+          -
+          2012
+        </td>
+        <td>
+          ApplyImplicitView
+        </td>
+        <td>
+          scala.Option.option2Iterable
+        </td>
+        <td style="background: #AEF1AE">
+          scala.this.Option.option2Iterable[dotty.tools.dotc.ast.tpd.CaseDef](fallbackCase)
+        </td>
+      </tr><tr>
+        <td>
+          69
+        </td>
+        <td>
+          63877
+        </td>
+        <td>
+          2247
+          -
+          2273
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.transform.TryCatchPatterns.isSimpleThrowable
+        </td>
+        <td style="background: #AEF1AE">
+          TryCatchPatterns.this.isSimpleThrowable(tpt.tpe)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          70
+        </td>
+        <td>
+          63878
+        </td>
+        <td>
+          2350
+          -
+          2376
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.transform.TryCatchPatterns.isSimpleThrowable
+        </td>
+        <td style="background: #AEF1AE">
+          TryCatchPatterns.this.isSimpleThrowable(tpt.tpe)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          71
+        </td>
+        <td>
+          63879
+        </td>
+        <td>
+          2453
+          -
+          2472
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.ast.TreeInfo.isDefaultCase
+        </td>
+        <td style="background: #AEF1AE">
+          dotty.tools.dotc.ast.tpd.isDefaultCase(cdef)
+        </td>
+      </tr><tr>
+        <td>
+          74
+        </td>
+        <td>
+          63880
+        </td>
+        <td>
+          2554
+          -
+          2568
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.Types.Type.stripAnnots
+        </td>
+        <td style="background: #AEF1AE">
+          tp.stripAnnots(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          76
+        </td>
+        <td>
+          63882
+        </td>
+        <td>
+          2636
+          -
+          2665
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.Symbols.Symbol.isStatic
+        </td>
+        <td style="background: #AEF1AE">
+          pre.widen(ctx).typeSymbol(ctx).isStatic(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          76
+        </td>
+        <td>
+          63881
+        </td>
+        <td>
+          2624
+          -
+          2632
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Types.NoPrefix
+        </td>
+        <td style="background: #AEF1AE">
+          core.Types.NoPrefix
+        </td>
+      </tr><tr>
+        <td>
+          77
+        </td>
+        <td>
+          63885
+        </td>
+        <td>
+          2714
+          -
+          2740
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.Boolean.unary_!
+        </td>
+        <td style="background: #AEF1AE">
+          core.Symbols.toDenot(tp.symbol(ctx))(ctx).is(dotty.tools.dotc.core.Flags.Trait)(ctx).unary_!
+        </td>
+      </tr><tr>
+        <td>
+          77
+        </td>
+        <td>
+          63884
+        </td>
+        <td>
+          2728
+          -
+          2739
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Flags.Trait
+        </td>
+        <td style="background: #AEF1AE">
+          dotty.tools.dotc.core.Flags.Trait
+        </td>
+      </tr><tr>
+        <td>
+          77
+        </td>
+        <td>
+          63887
+        </td>
+        <td>
+          2616
+          -
+          2816
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Boolean.&amp;&amp;
+        </td>
+        <td style="background: #AEF1AE">
+          pre.==(core.Types.NoPrefix).||(pre.widen(ctx).typeSymbol(ctx).isStatic(ctx)).&amp;&amp;(core.Symbols.toDenot(tp.symbol(ctx))(ctx).is(dotty.tools.dotc.core.Flags.Trait)(ctx).unary_!).&amp;&amp;(tp.derivesFrom(core.Symbols.defn(ctx).ThrowableClass(ctx))(ctx))
+        </td>
+      </tr><tr>
+        <td>
+          77
+        </td>
+        <td>
+          63883
+        </td>
+        <td>
+          2715
+          -
+          2724
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.Types.NamedType.symbol
+        </td>
+        <td style="background: #AEF1AE">
+          tp.symbol(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          78
+        </td>
+        <td>
+          63886
+        </td>
+        <td>
+          2781
+          -
+          2816
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.Types.Type.derivesFrom
+        </td>
+        <td style="background: #AEF1AE">
+          tp.derivesFrom(core.Symbols.defn(ctx).ThrowableClass(ctx))(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          80
+        </td>
+        <td>
+          63888
+        </td>
+        <td>
+          2851
+          -
+          2878
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.transform.TryCatchPatterns.isSimpleThrowable
+        </td>
+        <td style="background: #AEF1AE">
+          TryCatchPatterns.this.isSimpleThrowable(tp.tycon)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          82
+        </td>
+        <td>
+          63889
+        </td>
+        <td>
+          2899
+          -
+          2904
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          false
+        </td>
+      </tr><tr>
+        <td>
+          87
+        </td>
+        <td>
+          63891
+        </td>
+        <td>
+          3085
+          -
+          3089
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.None
+        </td>
+        <td style="background: #AEF1AE">
+          scala.None
+        </td>
+      </tr><tr>
+        <td>
+          87
+        </td>
+        <td>
+          63890
+        </td>
+        <td>
+          3058
+          -
+          3083
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.collection.SeqLike.isEmpty
+        </td>
+        <td style="background: #AEF1AE">
+          patternMatchCases.isEmpty
+        </td>
+      </tr><tr>
+        <td>
+          87
+        </td>
+        <td>
+          63892
+        </td>
+        <td>
+          3085
+          -
+          3089
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          scala.None
+        </td>
+        <td style="background: #AEF1AE">
+          scala.None
+        </td>
+      </tr><tr>
+        <td>
+          88
+        </td>
+        <td>
+          63904
+        </td>
+        <td>
+          3099
+          -
+          3638
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          {
+  val exName: dotty.tools.dotc.core.Names.TermName = core.NameKinds.ExceptionBinderName.fresh(core.NameKinds.ExceptionBinderName.fresh$default$1)(ctx);
+  val fallbackSelector: dotty.tools.dotc.core.Symbols.Symbol{type ThisName = dotty.tools.dotc.core.Names.TermName} = {
+    &lt;artifact&gt; val x$8: dotty.tools.dotc.core.Symbols.Symbol = ctx.owner;
+    &lt;artifact&gt; val x$9: dotty.tools.dotc.core.Names.TermName = exName;
+    &lt;artifact&gt; val x$10: dotty.tools.dotc.core.Flags.FlagSet = dotty.tools.dotc.core.Flags.Synthetic.|(dotty.tools.dotc.core.Flags.Case);
+    &lt;artifact&gt; val x$11: dotty.tools.dotc.core.Types.TypeRef = core.Symbols.defn(ctx).ThrowableType;
+    &lt;artifact&gt; val x$12: dotty.tools.dotc.util.Positions.Coord = util.this.Positions.positionCoord(pos);
+    &lt;artifact&gt; val x$13: dotty.tools.dotc.core.Symbols.Symbol = ctx.newSymbol$default$5[Nothing];
+    ctx.newSymbol[dotty.tools.dotc.core.Names.TermName](x$8, x$9, x$10, x$11, x$13, x$12)
+  };
+  val sel: dotty.tools.dotc.ast.Trees.Ident[dotty.tools.dotc.core.Types.Type] = dotty.tools.dotc.ast.tpd.Ident(core.Symbols.toDenot(fallbackSelector)(ctx).termRef(ctx))(ctx).withPos(pos);
+  val rethrow: dotty.tools.dotc.ast.tpd.CaseDef = dotty.tools.dotc.ast.tpd.CaseDef(dotty.tools.dotc.ast.tpd.EmptyTree, dotty.tools.dotc.ast.tpd.EmptyTree, dotty.tools.dotc.ast.tpd.Throw(dotty.tools.dotc.ast.tpd.ref(fallbackSelector)(ctx))(ctx))(ctx);
+  scala.Some.apply[dotty.tools.dotc.ast.tpd.CaseDef](dotty.tools.dotc.ast.tpd.CaseDef(dotty.tools.dotc.ast.tpd.Bind(fallbackSelector, dotty.tools.dotc.ast.tpd.Underscore(core.Symbols.toDenot(fallbackSelector)(ctx).info(ctx))(ctx).withPos(pos))(ctx), dotty.tools.dotc.ast.tpd.EmptyTree, TryCatchPatterns.this.transformFollowing(dotty.tools.dotc.ast.tpd.Match(sel, {
+    &lt;synthetic&gt; &lt;artifact&gt; val x$3: List[dotty.tools.dotc.ast.tpd.CaseDef] = patternMatchCases;
+    {
+  &lt;synthetic&gt; &lt;artifact&gt; val x$2: dotty.tools.dotc.ast.tpd.CaseDef = rethrow;
+  scala.collection.immutable.Nil.::[dotty.tools.dotc.ast.tpd.CaseDef](x$2)
+}.:::[dotty.tools.dotc.ast.tpd.CaseDef](x$3)
+  })(ctx))(ctx))(ctx))
+}
+        </td>
+      </tr><tr>
+        <td>
+          89
+        </td>
+        <td>
+          63893
+        </td>
+        <td>
+          3120
+          -
+          3147
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.NameKinds.UniqueNameKind.fresh
+        </td>
+        <td style="background: #AEF1AE">
+          core.NameKinds.ExceptionBinderName.fresh(core.NameKinds.ExceptionBinderName.fresh$default$1)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          91
+        </td>
+        <td>
+          63894
+        </td>
+        <td>
+          3199
+          -
+          3208
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Contexts.Context.owner
+        </td>
+        <td style="background: #AEF1AE">
+          ctx.owner
+        </td>
+      </tr><tr>
+        <td>
+          91
+        </td>
+        <td>
+          63896
+        </td>
+        <td>
+          3218
+          -
+          3246
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.core.Flags.FlagSet.|
+        </td>
+        <td style="background: #AEF1AE">
+          dotty.tools.dotc.core.Flags.Synthetic.|(dotty.tools.dotc.core.Flags.Case)
+        </td>
+      </tr><tr>
+        <td>
+          91
+        </td>
+        <td>
+          63899
+        </td>
+        <td>
+          3185
+          -
+          3280
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.core.Symbols.newSymbol
+        </td>
+        <td style="background: #AEF1AE">
+          ctx.newSymbol[dotty.tools.dotc.core.Names.TermName](x$8, x$9, x$10, x$11, x$13, x$12)
+        </td>
+      </tr><tr>
+        <td>
+          91
+        </td>
+        <td>
+          63898
+        </td>
+        <td>
+          3189
+          -
+          3189
+        </td>
+        <td>
+          TypeApply
+        </td>
+        <td>
+          dotty.tools.dotc.core.Symbols.newSymbol$default$5
+        </td>
+        <td style="background: #AEF1AE">
+          ctx.newSymbol$default$5[Nothing]
+        </td>
+      </tr><tr>
+        <td>
+          91
+        </td>
+        <td>
+          63895
+        </td>
+        <td>
+          3236
+          -
+          3246
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Flags.Case
+        </td>
+        <td style="background: #AEF1AE">
+          dotty.tools.dotc.core.Flags.Case
+        </td>
+      </tr><tr>
+        <td>
+          91
+        </td>
+        <td>
+          63897
+        </td>
+        <td>
+          3276
+          -
+          3279
+        </td>
+        <td>
+          ApplyImplicitView
+        </td>
+        <td>
+          dotty.tools.dotc.util.Positions.positionCoord
+        </td>
+        <td style="background: #AEF1AE">
+          util.this.Positions.positionCoord(pos)
+        </td>
+      </tr><tr>
+        <td>
+          92
+        </td>
+        <td>
+          63900
+        </td>
+        <td>
+          3297
+          -
+          3341
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Positioned.withPos
+        </td>
+        <td style="background: #AEF1AE">
+          dotty.tools.dotc.ast.tpd.Ident(core.Symbols.toDenot(fallbackSelector)(ctx).termRef(ctx))(ctx).withPos(pos)
+        </td>
+      </tr><tr>
+        <td>
+          93
+        </td>
+        <td>
+          63901
+        </td>
+        <td>
+          3362
+          -
+          3421
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.tpd.CaseDef
+        </td>
+        <td style="background: #AEF1AE">
+          dotty.tools.dotc.ast.tpd.CaseDef(dotty.tools.dotc.ast.tpd.EmptyTree, dotty.tools.dotc.ast.tpd.EmptyTree, dotty.tools.dotc.ast.tpd.Throw(dotty.tools.dotc.ast.tpd.ref(fallbackSelector)(ctx))(ctx))(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          94
+        </td>
+        <td>
+          63903
+        </td>
+        <td>
+          3428
+          -
+          3632
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Some.apply
+        </td>
+        <td style="background: #AEF1AE">
+          scala.Some.apply[dotty.tools.dotc.ast.tpd.CaseDef](dotty.tools.dotc.ast.tpd.CaseDef(dotty.tools.dotc.ast.tpd.Bind(fallbackSelector, dotty.tools.dotc.ast.tpd.Underscore(core.Symbols.toDenot(fallbackSelector)(ctx).info(ctx))(ctx).withPos(pos))(ctx), dotty.tools.dotc.ast.tpd.EmptyTree, TryCatchPatterns.this.transformFollowing(dotty.tools.dotc.ast.tpd.Match(sel, {
+  &lt;synthetic&gt; &lt;artifact&gt; val x$3: List[dotty.tools.dotc.ast.tpd.CaseDef] = patternMatchCases;
+  {
+  &lt;synthetic&gt; &lt;artifact&gt; val x$2: dotty.tools.dotc.ast.tpd.CaseDef = rethrow;
+  scala.collection.immutable.Nil.::[dotty.tools.dotc.ast.tpd.CaseDef](x$2)
+}.:::[dotty.tools.dotc.ast.tpd.CaseDef](x$3)
+})(ctx))(ctx))(ctx))
+        </td>
+      </tr><tr>
+        <td>
+          94
+        </td>
+        <td>
+          63902
+        </td>
+        <td>
+          3433
+          -
+          3624
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.tpd.CaseDef
+        </td>
+        <td style="background: #AEF1AE">
+          dotty.tools.dotc.ast.tpd.CaseDef(dotty.tools.dotc.ast.tpd.Bind(fallbackSelector, dotty.tools.dotc.ast.tpd.Underscore(core.Symbols.toDenot(fallbackSelector)(ctx).info(ctx))(ctx).withPos(pos))(ctx), dotty.tools.dotc.ast.tpd.EmptyTree, TryCatchPatterns.this.transformFollowing(dotty.tools.dotc.ast.tpd.Match(sel, {
+  &lt;synthetic&gt; &lt;artifact&gt; val x$3: List[dotty.tools.dotc.ast.tpd.CaseDef] = patternMatchCases;
+  {
+  &lt;synthetic&gt; &lt;artifact&gt; val x$2: dotty.tools.dotc.ast.tpd.CaseDef = rethrow;
+  scala.collection.immutable.Nil.::[dotty.tools.dotc.ast.tpd.CaseDef](x$2)
+}.:::[dotty.tools.dotc.ast.tpd.CaseDef](x$3)
+})(ctx))(ctx))(ctx)
+        </td>
+      </tr>
+    </table>
+          </div>
+        </div>
+      </body>
+    </html>

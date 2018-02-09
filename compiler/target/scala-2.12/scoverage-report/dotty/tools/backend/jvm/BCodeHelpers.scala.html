@@ -1,0 +1,7357 @@
+<html>
+      <head>
+        <meta http-equiv="Content-Type" content="text/html; charset=utf-8"/>
+        <title id="title">
+          dotty/tools/backend/jvm/BCodeHelpers.scala.html
+        </title>
+        <script src="https://ajax.googleapis.com/ajax/libs/jquery/1.10.2/jquery.min.js"></script><link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/jquery.tablesorter/2.20.1/css/theme.default.min.css" type="text/css"/><script src="https://cdnjs.cloudflare.com/ajax/libs/jquery.tablesorter/2.20.1/js/jquery.tablesorter.min.js"></script><link rel="stylesheet" href="https://netdna.bootstrapcdn.com/bootstrap/3.0.3/css/bootstrap.min.css" type="text/css"/><script src="https://netdna.bootstrapcdn.com/bootstrap/3.0.3/js/bootstrap.min.js"></script><script type="text/javascript">
+        $(document).ready(function() {$(".tablesorter").tablesorter();});
+      </script>
+        <style>
+          table.codegrid { font-family: monospace; font-size: 12px; width: auto!important; }table.statementlist { width: auto!important; font-size: 13px; } table.codegrid td { padding: 0!important; border: 0!important } table td.linenumber { width: 40px!important; } 
+        </style>
+      </head>
+      <body style="font-family: monospace;">
+        <ul class="nav nav-tabs">
+          <li>
+            <a href="#codegrid" data-toggle="tab">Codegrid</a>
+          </li>
+          <li>
+            <a href="#statementlist" data-toggle="tab">Statement List</a>
+          </li>
+        </ul>
+        <div class="tab-content">
+          <div class="tab-pane active" id="codegrid">
+            <pre style='font-size: 12pt; font-family: courier;'>1 <span style=''>/* NSC -- new Scala compiler
+</span>2 <span style=''> * Copyright 2005-2012 LAMP/EPFL
+</span>3 <span style=''> * @author  Martin Odersky
+</span>4 <span style=''> */
+</span>5 <span style=''>
+</span>6 <span style=''>package scala
+</span>7 <span style=''>package tools.nsc
+</span>8 <span style=''>package backend.jvm
+</span>9 <span style=''>
+</span>10 <span style=''>import scala.tools.asm
+</span>11 <span style=''>import scala.collection.mutable
+</span>12 <span style=''>import scala.tools.nsc.io.AbstractFile
+</span>13 <span style=''>
+</span>14 <span style=''>/*
+</span>15 <span style=''> *  Traits encapsulating functionality to convert Scala AST Trees into ASM ClassNodes.
+</span>16 <span style=''> *
+</span>17 <span style=''> *  @author  Miguel Garcia, http://lamp.epfl.ch/~magarcia/ScalaCompilerCornerReloaded
+</span>18 <span style=''> *  @version 1.0
+</span>19 <span style=''> *
+</span>20 <span style=''> */
+</span>21 <span style=''>trait BCodeHelpers extends BCodeIdiomatic with BytecodeWriters {
+</span>22 <span style=''>  // for some reason singleton types aren't allowed in constructor calls. will need several casts in code to enforce
+</span>23 <span style=''>
+</span>24 <span style=''>  //import global._
+</span>25 <span style=''>  //import bTypes._
+</span>26 <span style=''>  //import coreBTypes._
+</span>27 <span style=''>  import bTypes._
+</span>28 <span style=''>  import coreBTypes._
+</span>29 <span style=''>  import int._
+</span>30 <span style=''>
+</span>31 <span style=''>  val bCodeAsmCommon: BCodeAsmCommon[int.type] = </span><span style='background: #AEF1AE'>new BCodeAsmCommon(int)</span><span style=''>
+</span>32 <span style=''>  import bCodeAsmCommon._
+</span>33 <span style=''>
+</span>34 <span style=''>  /*
+</span>35 <span style=''>   * must-single-thread
+</span>36 <span style=''>   */
+</span>37 <span style=''>  def getFileForClassfile(base: AbstractFile, clsName: String, suffix: String): AbstractFile = {
+</span>38 <span style=''>    </span><span style='background: #AEF1AE'>getFile(base, clsName, suffix)</span><span style=''>
+</span>39 <span style=''>  }
+</span>40 <span style=''>
+</span>41 <span style=''>  /*
+</span>42 <span style=''>   * must-single-thread
+</span>43 <span style=''>   */
+</span>44 <span style=''>  def getOutFolder(csym: Symbol, cName: String): _root_.scala.tools.nsc.io.AbstractFile = {
+</span>45 <span style=''>    try {
+</span>46 <span style=''>      </span><span style='background: #AEF1AE'>csym.outputDirectory</span><span style=''>
+</span>47 <span style=''>    } catch {
+</span>48 <span style=''>      case ex: Throwable =&gt;
+</span>49 <span style=''>        </span><span style='background: #F0ADAD'>int.error(csym.pos, s&quot;Couldn't create file for class $cName\n${ex.getMessage}&quot;)</span><span style=''>
+</span>50 <span style=''>        </span><span style='background: #F0ADAD'>null</span><span style=''>
+</span>51 <span style=''>    }
+</span>52 <span style=''>  }
+</span>53 <span style=''>
+</span>54 <span style=''>  // -----------------------------------------------------------------------------------------
+</span>55 <span style=''>  // finding the least upper bound in agreement with the bytecode verifier (given two internal names handed by ASM)
+</span>56 <span style=''>  // Background:
+</span>57 <span style=''>  //  http://gallium.inria.fr/~xleroy/publi/bytecode-verification-JAR.pdf
+</span>58 <span style=''>  //  http://comments.gmane.org/gmane.comp.java.vm.languages/2293
+</span>59 <span style=''>  //  https://issues.scala-lang.org/browse/SI-3872
+</span>60 <span style=''>  // -----------------------------------------------------------------------------------------
+</span>61 <span style=''>
+</span>62 <span style=''>  /*  An `asm.ClassWriter` that uses `jvmWiseLUB()`
+</span>63 <span style=''>   *  The internal name of the least common ancestor of the types given by inameA and inameB.
+</span>64 <span style=''>   *  It's what ASM needs to know in order to compute stack map frames, http://asm.ow2.org/doc/developer-guide.html#controlflow
+</span>65 <span style=''>   */
+</span>66 <span style=''>  final class CClassWriter(flags: Int) extends asm.ClassWriter(flags) {
+</span>67 <span style=''>
+</span>68 <span style=''>    /**
+</span>69 <span style=''>     * This method is thread-safe: it depends only on the BTypes component, which does not depend
+</span>70 <span style=''>     * on global. TODO @lry move to a different place where no global is in scope, on bTypes.
+</span>71 <span style=''>     */
+</span>72 <span style=''>    override def getCommonSuperClass(inameA: String, inameB: String): String = {
+</span>73 <span style=''>      val a = </span><span style='background: #AEF1AE'>classBTypeFromInternalName(inameA)</span><span style=''>
+</span>74 <span style=''>      val b = </span><span style='background: #AEF1AE'>classBTypeFromInternalName(inameB)</span><span style=''>
+</span>75 <span style=''>      val lub = </span><span style='background: #AEF1AE'>a.jvmWiseLUB(b)</span><span style=''>
+</span>76 <span style=''>      val lubName = </span><span style='background: #AEF1AE'>lub.internalName</span><span style=''>
+</span>77 <span style=''>      </span><span style='background: #AEF1AE'>assert(lubName != &quot;scala/Any&quot;)</span><span style=''>
+</span>78 <span style=''>      lubName // ASM caches the answer during the lifetime of a ClassWriter. We outlive that. Not sure whether caching on our side would improve things.
+</span>79 <span style=''>    }
+</span>80 <span style=''>  }
+</span>81 <span style=''>
+</span>82 <span style=''>  /*
+</span>83 <span style=''>   * must-single-thread
+</span>84 <span style=''>   */
+</span>85 <span style=''>  def initBytecodeWriter(entryPoints: List[Symbol]): BytecodeWriter = {
+</span>86 <span style=''>    </span><span style='background: #AEF1AE'>getSingleOutput</span><span style=''> match {
+</span>87 <span style=''>      case Some(f) if </span><span style='background: #F0ADAD'>f hasExtension &quot;jar&quot;</span><span style=''> =&gt;
+</span>88 <span style=''>        // If no main class was specified, see if there's only one
+</span>89 <span style=''>        // entry point among the classes going into the jar.
+</span>90 <span style=''>        if (</span><span style='background: #F0ADAD'>mainClass.isEmpty</span><span style=''>) {
+</span>91 <span style=''>          </span><span style='background: #F0ADAD'>entryPoints map (_.fullName('.')) match {
+</span>92 <span style=''></span><span style='background: #F0ADAD'>            case Nil =&gt;
+</span>93 <span style=''></span><span style='background: #F0ADAD'>              log(&quot;No Main-Class designated or discovered.&quot;)
+</span>94 <span style=''></span><span style='background: #F0ADAD'>            case name :: Nil =&gt;
+</span>95 <span style=''></span><span style='background: #F0ADAD'>              log(s&quot;Unique entry point: setting Main-Class to $name&quot;)
+</span>96 <span style=''></span><span style='background: #F0ADAD'>              setMainClass(name)
+</span>97 <span style=''></span><span style='background: #F0ADAD'>            case names =&gt;
+</span>98 <span style=''></span><span style='background: #F0ADAD'>              log(s&quot;No Main-Class due to multiple entry points:\n  ${names.mkString(&quot;\n  &quot;)}&quot;)
+</span>99 <span style=''></span><span style='background: #F0ADAD'>          }</span><span style=''>
+</span>100 <span style=''>        }
+</span>101 <span style=''>        else </span><span style='background: #F0ADAD'>log(s&quot;Main-Class was specified: ${mainClass.get}&quot;)</span><span style=''>
+</span>102 <span style=''>
+</span>103 <span style=''>        </span><span style='background: #F0ADAD'>new DirectToJarfileWriter(f.file)</span><span style=''>
+</span>104 <span style=''>
+</span>105 <span style=''>      case _ =&gt; </span><span style='background: #AEF1AE'>factoryNonJarBytecodeWriter()</span><span style=''>
+</span>106 <span style=''>    }
+</span>107 <span style=''>  }
+</span>108 <span style=''>
+</span>109 <span style=''>  /*
+</span>110 <span style=''>   * Populates the InnerClasses JVM attribute with `refedInnerClasses`.
+</span>111 <span style=''>   * In addition to inner classes mentioned somewhere in `jclass` (where `jclass` is a class file being emitted)
+</span>112 <span style=''>   * `refedInnerClasses` should contain those inner classes defined as direct member classes of `jclass`
+</span>113 <span style=''>   * but otherwise not mentioned in `jclass`.
+</span>114 <span style=''>   *
+</span>115 <span style=''>   * `refedInnerClasses` may contain duplicates,
+</span>116 <span style=''>   * need not contain the enclosing inner classes of each inner class it lists (those are looked up for consistency).
+</span>117 <span style=''>   *
+</span>118 <span style=''>   * This method serializes in the InnerClasses JVM attribute in an appropriate order,
+</span>119 <span style=''>   * not necessarily that given by `refedInnerClasses`.
+</span>120 <span style=''>   *
+</span>121 <span style=''>   * can-multi-thread
+</span>122 <span style=''>   */
+</span>123 <span style=''>  final def addInnerClassesASM(jclass: asm.ClassVisitor, refedInnerClasses: List[ClassBType]): Unit = {
+</span>124 <span style=''>    val allNestedClasses = </span><span style='background: #AEF1AE'>refedInnerClasses.flatMap(_.enclosingNestedClassesChain).distinct</span><span style=''>
+</span>125 <span style=''>
+</span>126 <span style=''>    // sorting ensures nested classes are listed after their enclosing class thus satisfying the Eclipse Java compiler
+</span>127 <span style=''>    </span><span style='background: #AEF1AE'>for (nestedClass &lt;- allNestedClasses.sortBy(_.internalName.toString)) {
+</span>128 <span style=''></span><span style='background: #AEF1AE'>      // Extract the innerClassEntry - we know it exists, enclosingNestedClassesChain only returns nested classes.
+</span>129 <span style=''></span><span style='background: #AEF1AE'>      val Some(e) = nestedClass.innerClassAttributeEntry
+</span>130 <span style=''></span><span style='background: #AEF1AE'>      jclass.visitInnerClass(e.name, e.outerName, e.innerName, e.flags)
+</span>131 <span style=''></span><span style='background: #AEF1AE'>    }</span><span style=''>
+</span>132 <span style=''>  }
+</span>133 <span style=''>
+</span>134 <span style=''>  /*
+</span>135 <span style=''>   * Custom attribute (JVMS 4.7.1) &quot;ScalaSig&quot; used as marker only
+</span>136 <span style=''>   * i.e., the pickle is contained in a custom annotation, see:
+</span>137 <span style=''>   *   (1) `addAnnotations()`,
+</span>138 <span style=''>   *   (2) SID # 10 (draft) - Storage of pickled Scala signatures in class files, http://www.scala-lang.org/sid/10
+</span>139 <span style=''>   *   (3) SID # 5 - Internals of Scala Annotations, http://www.scala-lang.org/sid/5
+</span>140 <span style=''>   * That annotation in turn is not related to the &quot;java-generic-signature&quot; (JVMS 4.7.9)
+</span>141 <span style=''>   * other than both ending up encoded as attributes (JVMS 4.7)
+</span>142 <span style=''>   * (with the caveat that the &quot;ScalaSig&quot; attribute is associated to some classes,
+</span>143 <span style=''>   * while the &quot;Signature&quot; attribute can be associated to classes, methods, and fields.)
+</span>144 <span style=''>   *
+</span>145 <span style=''>   */
+</span>146 <span style=''>  trait BCPickles {
+</span>147 <span style=''>
+</span>148 <span style=''>    import scala.reflect.internal.pickling.{ PickleFormat, PickleBuffer }
+</span>149 <span style=''>
+</span>150 <span style=''>    val versionPickle = {
+</span>151 <span style=''>      val vp = </span><span style='background: #AEF1AE'>new PickleBuffer(new Array[Byte](16), -1, 0)</span><span style=''>
+</span>152 <span style=''>      </span><span style='background: #AEF1AE'>assert(vp.writeIndex == 0, vp)</span><span style=''>
+</span>153 <span style=''>      </span><span style='background: #AEF1AE'>vp writeNat PickleFormat.MajorVersion</span><span style=''>
+</span>154 <span style=''>      </span><span style='background: #AEF1AE'>vp writeNat PickleFormat.MinorVersion</span><span style=''>
+</span>155 <span style=''>      </span><span style='background: #AEF1AE'>vp writeNat 0</span><span style=''>
+</span>156 <span style=''>      vp
+</span>157 <span style=''>    }
+</span>158 <span style=''>
+</span>159 <span style=''>    /*
+</span>160 <span style=''>     * can-multi-thread
+</span>161 <span style=''>     */
+</span>162 <span style=''>    def createJAttribute(name: String, b: Array[Byte], offset: Int, len: Int): asm.Attribute = {
+</span>163 <span style=''>      val dest = </span><span style='background: #AEF1AE'>new Array[Byte](len)</span><span style=''>
+</span>164 <span style=''>      </span><span style='background: #AEF1AE'>System.arraycopy(b, offset, dest, 0, len)</span><span style=''>
+</span>165 <span style=''>      </span><span style='background: #AEF1AE'>new asm.CustomAttr(name, dest)</span><span style=''>
+</span>166 <span style=''>    }
+</span>167 <span style=''>
+</span>168 <span style=''>    /*
+</span>169 <span style=''>     * can-multi-thread
+</span>170 <span style=''>     */
+</span>171 <span style=''>    def pickleMarkerLocal = {
+</span>172 <span style=''>      </span><span style='background: #F0ADAD'>createJAttribute(ScalaSignatureATTRName, versionPickle.bytes, 0, versionPickle.writeIndex)</span><span style=''>
+</span>173 <span style=''>    }
+</span>174 <span style=''>
+</span>175 <span style=''>    /*
+</span>176 <span style=''>     * can-multi-thread
+</span>177 <span style=''>     */
+</span>178 <span style=''>    def pickleMarkerForeign = {
+</span>179 <span style=''>      </span><span style='background: #AEF1AE'>createJAttribute(ScalaATTRName, new Array[Byte](0), 0, 0)</span><span style=''>
+</span>180 <span style=''>    }
+</span>181 <span style=''>  } // end of trait BCPickles
+</span>182 <span style=''>
+</span>183 <span style=''>  trait BCInnerClassGen {
+</span>184 <span style=''>
+</span>185 <span style=''>    def debugLevel = </span><span style='background: #AEF1AE'>int.debuglevel</span><span style=''>
+</span>186 <span style=''>
+</span>187 <span style=''>    final val emitSource = </span><span style='background: #AEF1AE'>debugLevel &gt;= 1</span><span style=''>
+</span>188 <span style=''>    final val emitLines  = </span><span style='background: #AEF1AE'>debugLevel &gt;= 2</span><span style=''>
+</span>189 <span style=''>    final val emitVars   = </span><span style='background: #AEF1AE'>debugLevel &gt;= 3</span><span style=''>
+</span>190 <span style=''>
+</span>191 <span style=''>    /*
+</span>192 <span style=''>     *  Contains class-symbols that:
+</span>193 <span style=''>     *    (a) are known to denote inner classes
+</span>194 <span style=''>     *    (b) are mentioned somewhere in the class being generated.
+</span>195 <span style=''>     *
+</span>196 <span style=''>     *  In other words, the lifetime of `innerClassBufferASM` is associated to &quot;the class being generated&quot;.
+</span>197 <span style=''>     */
+</span>198 <span style=''>    final val innerClassBufferASM = </span><span style='background: #AEF1AE'>mutable.Set.empty[ClassBType]</span><span style=''>
+</span>199 <span style=''>
+</span>200 <span style=''>    /**
+</span>201 <span style=''>     * The class internal name for a given class symbol. If the symbol describes a nested class, the
+</span>202 <span style=''>     * ClassBType is added to the innerClassBufferASM.
+</span>203 <span style=''>     */
+</span>204 <span style=''>    final def internalName(sym: Symbol): String = {
+</span>205 <span style=''>      // For each java class, the scala compiler creates a class and a module (thus a module class).
+</span>206 <span style=''>      // If the `sym` is a java module class, we use the java class instead. This ensures that we
+</span>207 <span style=''>      // register the class (instead of the module class) in innerClassBufferASM.
+</span>208 <span style=''>      // The two symbols have the same name, so the resulting internalName is the same.
+</span>209 <span style=''>      val classSym = if (</span><span style='background: #AEF1AE'>sym.isJavaDefined &amp;&amp; sym.isModuleClass</span><span style=''>) </span><span style='background: #AEF1AE'>sym.linkedClassOfClass</span><span style=''> else </span><span style='background: #AEF1AE'>sym</span><span style=''>
+</span>210 <span style=''>      </span><span style='background: #AEF1AE'>getClassBTypeAndRegisterInnerClass(classSym).internalName</span><span style=''>
+</span>211 <span style=''>    }
+</span>212 <span style=''>
+</span>213 <span style=''>    private def assertClassNotArray(sym: Symbol): Unit = {
+</span>214 <span style=''>      </span><span style='background: #AEF1AE'>assert(sym.isClass, sym)</span><span style=''>
+</span>215 <span style=''>      </span><span style='background: #AEF1AE'>assert(sym != ArrayClass || isCompilingArray, sym)</span><span style=''>
+</span>216 <span style=''>    }
+</span>217 <span style=''>
+</span>218 <span style=''>    private def assertClassNotArrayNotPrimitive(sym: Symbol): Unit = {
+</span>219 <span style=''>      </span><span style='background: #AEF1AE'>assertClassNotArray(sym)</span><span style=''>
+</span>220 <span style=''>      </span><span style='background: #AEF1AE'>assert(!primitiveTypeMap.contains(sym) || </span><span style='background: #F0ADAD'>isCompilingPrimitive</span><span style='background: #AEF1AE'>, sym)</span><span style=''>
+</span>221 <span style=''>    }
+</span>222 <span style=''>
+</span>223 <span style=''>    /**
+</span>224 <span style=''>     * The ClassBType for a class symbol. If the class is nested, the ClassBType is added to the
+</span>225 <span style=''>     * innerClassBufferASM.
+</span>226 <span style=''>     *
+</span>227 <span style=''>     * The class symbol scala.Nothing is mapped to the class scala.runtime.Nothing$. Similarly,
+</span>228 <span style=''>     * scala.Null is mapped to scala.runtime.Null$. This is because there exist no class files
+</span>229 <span style=''>     * for the Nothing / Null. If used for example as a parameter type, we use the runtime classes
+</span>230 <span style=''>     * in the classfile method signature.
+</span>231 <span style=''>     *
+</span>232 <span style=''>     * Note that the referenced class symbol may be an implementation class. For example when
+</span>233 <span style=''>     * compiling a mixed-in method that forwards to the static method in the implementation class,
+</span>234 <span style=''>     * the class descriptor of the receiver (the implementation class) is obtained by creating the
+</span>235 <span style=''>     * ClassBType.
+</span>236 <span style=''>     */
+</span>237 <span style=''>    final def getClassBTypeAndRegisterInnerClass(sym: Symbol): ClassBType = {
+</span>238 <span style=''>      </span><span style='background: #AEF1AE'>assertClassNotArrayNotPrimitive(sym)</span><span style=''>
+</span>239 <span style=''>
+</span>240 <span style=''>      if (</span><span style='background: #AEF1AE'>sym == NothingClass</span><span style=''>) </span><span style='background: #AEF1AE'>RT_NOTHING</span><span style=''>
+</span>241 <span style=''>      else </span><span style='background: #AEF1AE'>if (sym == NullClass) RT_NULL
+</span>242 <span style=''></span><span style='background: #AEF1AE'>      else {
+</span>243 <span style=''></span><span style='background: #AEF1AE'>       val r = classBTypeFromSymbol(sym)
+</span>244 <span style=''></span><span style='background: #AEF1AE'>        if (r.isNestedClass) innerClassBufferASM += r
+</span>245 <span style=''></span><span style='background: #AEF1AE'>        r
+</span>246 <span style=''></span><span style='background: #AEF1AE'>      }</span><span style=''>
+</span>247 <span style=''>    }
+</span>248 <span style=''>
+</span>249 <span style=''>    /*
+</span>250 <span style=''>     * must-single-thread
+</span>251 <span style=''>     */
+</span>252 <span style=''>    final def asmMethodType(msym: Symbol): MethodBType = {
+</span>253 <span style=''>      </span><span style='background: #AEF1AE'>assert(msym.isMethod, </span><span style='background: #F0ADAD'>s&quot;not a method-symbol: $msym&quot;</span><span style='background: #AEF1AE'>)</span><span style=''>
+</span>254 <span style=''>      val resT: BType =
+</span>255 <span style=''>        if (</span><span style='background: #AEF1AE'>msym.isClassConstructor || msym.isConstructor</span><span style=''>) </span><span style='background: #AEF1AE'>UNIT</span><span style=''>
+</span>256 <span style=''>        else </span><span style='background: #AEF1AE'>toTypeKind(msym.tpe.resultType)</span><span style=''>
+</span>257 <span style=''>      </span><span style='background: #AEF1AE'>MethodBType(msym.tpe.paramTypes map toTypeKind, resT)</span><span style=''>
+</span>258 <span style=''>    }
+</span>259 <span style=''>
+</span>260 <span style=''>    /**
+</span>261 <span style=''>     * The jvm descriptor of a type. If `t` references a nested class, its ClassBType is added to
+</span>262 <span style=''>     * the innerClassBufferASM.
+</span>263 <span style=''>     */
+</span>264 <span style=''>    final def typeDescriptor(t: Type): String = { </span><span style='background: #AEF1AE'>toTypeKind(t).descriptor</span><span style=''>   }
+</span>265 <span style=''>
+</span>266 <span style=''>    /**
+</span>267 <span style=''>     * The jvm descriptor for a symbol. If `sym` represents a nested class, its ClassBType is added
+</span>268 <span style=''>     * to the innerClassBufferASM.
+</span>269 <span style=''>     */
+</span>270 <span style=''>    final def symDescriptor(sym: Symbol): String = { </span><span style='background: #AEF1AE'>getClassBTypeAndRegisterInnerClass(sym).descriptor</span><span style=''> }
+</span>271 <span style=''>
+</span>272 <span style=''>    final def toTypeKind(tp: Type): BType = </span><span style='background: #AEF1AE'>tp.toTypeKind(BCodeHelpers.this)(this)</span><span style=''>
+</span>273 <span style=''>
+</span>274 <span style=''>  } // end of trait BCInnerClassGen
+</span>275 <span style=''>
+</span>276 <span style=''>  trait BCAnnotGen extends BCInnerClassGen {
+</span>277 <span style=''>
+</span>278 <span style=''>    /*
+</span>279 <span style=''>     * must-single-thread
+</span>280 <span style=''>     */
+</span>281 <span style=''>    def emitAnnotations(cw: asm.ClassVisitor, annotations: List[Annotation]) =
+</span>282 <span style=''>      </span><span style='background: #AEF1AE'>int.emitAnnotations(cw, annotations, BCodeHelpers.this)(this)</span><span style=''>
+</span>283 <span style=''>
+</span>284 <span style=''>    /*
+</span>285 <span style=''>     * must-single-thread
+</span>286 <span style=''>     */
+</span>287 <span style=''>    def emitAnnotations(mw: asm.MethodVisitor, annotations: List[Annotation]) =
+</span>288 <span style=''>      </span><span style='background: #AEF1AE'>int.emitAnnotations(mw, annotations, BCodeHelpers.this)(this)</span><span style=''>
+</span>289 <span style=''>
+</span>290 <span style=''>    /*
+</span>291 <span style=''>     * must-single-thread
+</span>292 <span style=''>     */
+</span>293 <span style=''>    def emitAnnotations(fw: asm.FieldVisitor, annotations: List[Annotation]) =
+</span>294 <span style=''>      </span><span style='background: #AEF1AE'>int.emitAnnotations(fw, annotations, BCodeHelpers.this)(this)</span><span style=''>
+</span>295 <span style=''>
+</span>296 <span style=''>    /*
+</span>297 <span style=''>     * must-single-thread
+</span>298 <span style=''>     */
+</span>299 <span style=''>    def emitParamAnnotations(jmethod: asm.MethodVisitor, pannotss: List[List[Annotation]]) =
+</span>300 <span style=''>      </span><span style='background: #AEF1AE'>int.emitParamAnnotations(jmethod, pannotss, BCodeHelpers.this)(this)</span><span style=''>
+</span>301 <span style=''>
+</span>302 <span style=''>  } // end of trait BCAnnotGen
+</span>303 <span style=''>
+</span>304 <span style=''>  trait BCJGenSigGen {
+</span>305 <span style=''>
+</span>306 <span style=''>    def getCurrentCUnit(): CompilationUnit
+</span>307 <span style=''>
+</span>308 <span style=''>    /* @return
+</span>309 <span style=''>     *   - `null` if no Java signature is to be added (`null` is what ASM expects in these cases).
+</span>310 <span style=''>     *   - otherwise the signature in question
+</span>311 <span style=''>     *
+</span>312 <span style=''>     * must-single-thread
+</span>313 <span style=''>     */
+</span>314 <span style=''>    def getGenericSignature(sym: Symbol, owner: Symbol): String = </span><span style='background: #AEF1AE'>int.getGenericSignature(sym, owner)</span><span style=''>
+</span>315 <span style=''>
+</span>316 <span style=''>  } // end of trait BCJGenSigGen
+</span>317 <span style=''>
+</span>318 <span style=''>  trait BCForwardersGen extends BCAnnotGen with BCJGenSigGen {
+</span>319 <span style=''>
+</span>320 <span style=''>    /* Add a forwarder for method m. Used only from addForwarders().
+</span>321 <span style=''>     *
+</span>322 <span style=''>     * must-single-thread
+</span>323 <span style=''>     */
+</span>324 <span style=''>    private def addForwarder(jclass: asm.ClassVisitor, module: Symbol, m: Symbol): Unit = {
+</span>325 <span style=''>      val moduleName     = </span><span style='background: #AEF1AE'>internalName(module)</span><span style=''>
+</span>326 <span style=''>      val methodInfo     = </span><span style='background: #AEF1AE'>module.thisType.memberInfo(m)</span><span style=''>
+</span>327 <span style=''>      val paramJavaTypes: List[BType] = </span><span style='background: #AEF1AE'>methodInfo.paramTypes map toTypeKind</span><span style=''>
+</span>328 <span style=''>      // val paramNames     = 0 until paramJavaTypes.length map (&quot;x_&quot; + _)
+</span>329 <span style=''>
+</span>330 <span style=''>      /* Forwarders must not be marked final,
+</span>331 <span style=''>       *  as the JVM will not allow redefinition of a final static method,
+</span>332 <span style=''>       *  and we don't know what classes might be subclassing the companion class.  See SI-4827.
+</span>333 <span style=''>       */
+</span>334 <span style=''>      // TODO: evaluate the other flags we might be dropping on the floor here.
+</span>335 <span style=''>      // TODO: ACC_SYNTHETIC ?
+</span>336 <span style=''>      val flags = </span><span style='background: #AEF1AE'>GenBCodeOps.PublicStatic | (
+</span>337 <span style=''></span><span style='background: #AEF1AE'>        if (m.isVarargsMethod) </span><span style='background: #F0ADAD'>asm.Opcodes.ACC_VARARGS</span><span style='background: #AEF1AE'> else 0
+</span>338 <span style=''></span><span style='background: #AEF1AE'>      )</span><span style=''>
+</span>339 <span style=''>
+</span>340 <span style=''>      // TODO needed? for(ann &lt;- m.annotations) { ann.symbol.initialize }
+</span>341 <span style=''>      val jgensig = </span><span style='background: #AEF1AE'>getStaticForwarderGenericSignature(m, module)</span><span style=''>
+</span>342 <span style=''>      val (throws, others) = m.annotations partition (_.symbol == ThrowsClass)
+</span>343 <span style=''>      val thrownExceptions: List[String] = </span><span style='background: #AEF1AE'>getExceptions(throws)</span><span style=''>
+</span>344 <span style=''>
+</span>345 <span style=''>      val jReturnType = </span><span style='background: #AEF1AE'>toTypeKind(methodInfo.resultType)</span><span style=''>
+</span>346 <span style=''>      val mdesc = </span><span style='background: #AEF1AE'>MethodBType(paramJavaTypes, jReturnType).descriptor</span><span style=''>
+</span>347 <span style=''>      val mirrorMethodName = </span><span style='background: #AEF1AE'>m.javaSimpleName.toString</span><span style=''>
+</span>348 <span style=''>      val mirrorMethod: asm.MethodVisitor = </span><span style='background: #AEF1AE'>jclass.visitMethod(
+</span>349 <span style=''></span><span style='background: #AEF1AE'>        flags,
+</span>350 <span style=''></span><span style='background: #AEF1AE'>        mirrorMethodName,
+</span>351 <span style=''></span><span style='background: #AEF1AE'>        mdesc,
+</span>352 <span style=''></span><span style='background: #AEF1AE'>        jgensig,
+</span>353 <span style=''></span><span style='background: #AEF1AE'>        mkArrayS(thrownExceptions)
+</span>354 <span style=''></span><span style='background: #AEF1AE'>      )</span><span style=''>
+</span>355 <span style=''>
+</span>356 <span style=''>      </span><span style='background: #AEF1AE'>emitAnnotations(mirrorMethod, others)</span><span style=''>
+</span>357 <span style=''>      </span><span style='background: #AEF1AE'>emitParamAnnotations(mirrorMethod, m.info.params.map(</span><span style='background: #F0ADAD'>_.annotations</span><span style='background: #AEF1AE'>))</span><span style=''>
+</span>358 <span style=''>
+</span>359 <span style=''>      </span><span style='background: #AEF1AE'>mirrorMethod.visitCode()</span><span style=''>
+</span>360 <span style=''>
+</span>361 <span style=''>      </span><span style='background: #AEF1AE'>mirrorMethod.visitFieldInsn(asm.Opcodes.GETSTATIC, moduleName, MODULE_INSTANCE_FIELD, symDescriptor(module))</span><span style=''>
+</span>362 <span style=''>
+</span>363 <span style=''>      var index = </span><span style='background: #AEF1AE'>0</span><span style=''>
+</span>364 <span style=''>      </span><span style='background: #AEF1AE'>for(jparamType &lt;- paramJavaTypes) {
+</span>365 <span style=''></span><span style='background: #AEF1AE'>        mirrorMethod.visitVarInsn(jparamType.typedOpcode(asm.Opcodes.ILOAD), index)
+</span>366 <span style=''></span><span style='background: #AEF1AE'>        assert(!jparamType.isInstanceOf[MethodBType], jparamType)
+</span>367 <span style=''></span><span style='background: #AEF1AE'>        index += jparamType.size
+</span>368 <span style=''></span><span style='background: #AEF1AE'>      }</span><span style=''>
+</span>369 <span style=''>
+</span>370 <span style=''>      </span><span style='background: #AEF1AE'>mirrorMethod.visitMethodInsn(asm.Opcodes.INVOKEVIRTUAL, moduleName, mirrorMethodName, asmMethodType(m).descriptor, false)</span><span style=''>
+</span>371 <span style=''>      </span><span style='background: #AEF1AE'>mirrorMethod.visitInsn(jReturnType.typedOpcode(asm.Opcodes.IRETURN))</span><span style=''>
+</span>372 <span style=''>
+</span>373 <span style=''>      </span><span style='background: #AEF1AE'>mirrorMethod.visitMaxs(0, 0)</span><span style=''> // just to follow protocol, dummy arguments
+</span>374 <span style=''>      </span><span style='background: #AEF1AE'>mirrorMethod.visitEnd()</span><span style=''>
+</span>375 <span style=''>
+</span>376 <span style=''>    }
+</span>377 <span style=''>
+</span>378 <span style=''>    /* Add forwarders for all methods defined in `module` that don't conflict
+</span>379 <span style=''>     *  with methods in the companion class of `module`. A conflict arises when
+</span>380 <span style=''>     *  a method with the same name is defined both in a class and its companion object:
+</span>381 <span style=''>     *  method signature is not taken into account.
+</span>382 <span style=''>     *
+</span>383 <span style=''>     * must-single-thread
+</span>384 <span style=''>     */
+</span>385 <span style=''>    def addForwarders(jclass: asm.ClassVisitor, jclassName: String, moduleClass: Symbol): Unit = {
+</span>386 <span style=''>      </span><span style='background: #AEF1AE'>assert(moduleClass.isModuleClass, moduleClass)</span><span style=''>
+</span>387 <span style=''>      </span><span style='background: #AEF1AE'>debuglog(</span><span style='background: #F0ADAD'>s&quot;Dumping mirror class for object: $moduleClass&quot;</span><span style='background: #AEF1AE'>)</span><span style=''>
+</span>388 <span style=''>
+</span>389 <span style=''>      val linkedClass  = </span><span style='background: #AEF1AE'>moduleClass.companionClass</span><span style=''>
+</span>390 <span style=''>      lazy val conflictingNames: Set[Name] = {
+</span>391 <span style=''>        // Dotty deviation: needed to add &quot;: Symbol&quot; because of https://github.com/lampepfl/dotty/issues/2143
+</span>392 <span style=''>        (linkedClass.info.members collect { case sym if sym.name.isTermName =&gt; sym.name }).toSet
+</span>393 <span style=''>      }
+</span>394 <span style=''>      </span><span style='background: #AEF1AE'>debuglog(</span><span style='background: #F0ADAD'>s&quot;Potentially conflicting names for forwarders: $conflictingNames&quot;</span><span style='background: #AEF1AE'>)</span><span style=''>
+</span>395 <span style=''>
+</span>396 <span style=''>      </span><span style='background: #AEF1AE'>for (m &lt;- moduleClass.info.membersBasedOnFlags(ExcludedForwarderFlags, Flag_METHOD)) {
+</span>397 <span style=''></span><span style='background: #AEF1AE'>        if (m.isType || m.isDeferred || (m.owner eq ObjectClass) || m.isConstructor)
+</span>398 <span style=''></span><span style='background: #AEF1AE'>          debuglog(</span><span style='background: #F0ADAD'>s&quot;No forwarder for '$m' from $jclassName to '$moduleClass'&quot;</span><span style='background: #AEF1AE'>)
+</span>399 <span style=''></span><span style='background: #AEF1AE'>        else if (conflictingNames(m.name))
+</span>400 <span style=''></span><span style='background: #AEF1AE'>          log(</span><span style='background: #F0ADAD'>s&quot;No forwarder for $m due to conflict with ${linkedClass.info.member(m.name)}&quot;</span><span style='background: #AEF1AE'>)
+</span>401 <span style=''></span><span style='background: #AEF1AE'>        else if (m.hasAccessBoundary)
+</span>402 <span style=''></span><span style='background: #AEF1AE'>          </span><span style='background: #F0ADAD'>log(s&quot;No forwarder for non-public member $m&quot;)</span><span style='background: #AEF1AE'>
+</span>403 <span style=''></span><span style='background: #AEF1AE'>        else {
+</span>404 <span style=''></span><span style='background: #AEF1AE'>          log(</span><span style='background: #F0ADAD'>s&quot;Adding static forwarder for '$m' from $jclassName to '$moduleClass'&quot;</span><span style='background: #AEF1AE'>)
+</span>405 <span style=''></span><span style='background: #AEF1AE'>          addForwarder(jclass, moduleClass, m)
+</span>406 <span style=''></span><span style='background: #AEF1AE'>        }</span><span style=''>
+</span>407 <span style=''>      }
+</span>408 <span style=''>    }
+</span>409 <span style=''>
+</span>410 <span style=''>    /*
+</span>411 <span style=''>     * Quoting from JVMS 4.7.5 The Exceptions Attribute
+</span>412 <span style=''>     *   &quot;The Exceptions attribute indicates which checked exceptions a method may throw.
+</span>413 <span style=''>     *    There may be at most one Exceptions attribute in each method_info structure.&quot;
+</span>414 <span style=''>     *
+</span>415 <span style=''>     * The contents of that attribute are determined by the `String[] exceptions` argument to ASM's ClassVisitor.visitMethod()
+</span>416 <span style=''>     * This method returns such list of internal names.
+</span>417 <span style=''>     *
+</span>418 <span style=''>     * must-single-thread
+</span>419 <span style=''>     */
+</span>420 <span style=''>    def getExceptions(excs: List[Annotation]): List[String] = {
+</span>421 <span style=''>      </span><span style='background: #AEF1AE'>for (ThrownException(exc) &lt;- excs.distinct)
+</span>422 <span style=''></span><span style='background: #AEF1AE'>      yield </span><span style='background: #F0ADAD'>internalName(exc)</span><span style=''>
+</span>423 <span style=''>    }
+</span>424 <span style=''>
+</span>425 <span style=''>  } // end of trait BCForwardersGen
+</span>426 <span style=''>
+</span>427 <span style=''>  trait BCClassGen extends BCInnerClassGen {
+</span>428 <span style=''>
+</span>429 <span style=''>    // Used as threshold above which a tableswitch bytecode instruction is preferred over a lookupswitch.
+</span>430 <span style=''>    // There's a space tradeoff between these multi-branch instructions (details in the JVM spec).
+</span>431 <span style=''>    // The particular value in use for `MIN_SWITCH_DENSITY` reflects a heuristic.
+</span>432 <span style=''>    val MIN_SWITCH_DENSITY = </span><span style='background: #AEF1AE'>0.7</span><span style=''>
+</span>433 <span style=''>
+</span>434 <span style=''>    /*
+</span>435 <span style=''>     *  Add public static final field serialVersionUID with value `id`
+</span>436 <span style=''>     *
+</span>437 <span style=''>     *  can-multi-thread
+</span>438 <span style=''>     */
+</span>439 <span style=''>    def addSerialVUID(id: Long, jclass: asm.ClassVisitor): Unit = {
+</span>440 <span style=''>      // add static serialVersionUID field if `clasz` annotated with `@SerialVersionUID(uid: Long)`
+</span>441 <span style=''>      </span><span style='background: #F0ADAD'>jclass.visitField(
+</span>442 <span style=''></span><span style='background: #F0ADAD'>        GenBCodeOps.PublicStaticFinal,
+</span>443 <span style=''></span><span style='background: #F0ADAD'>        &quot;serialVersionUID&quot;,
+</span>444 <span style=''></span><span style='background: #F0ADAD'>        &quot;J&quot;,
+</span>445 <span style=''></span><span style='background: #F0ADAD'>        null, // no java-generic-signature
+</span>446 <span style=''></span><span style='background: #F0ADAD'>        new java.lang.Long(id)
+</span>447 <span style=''></span><span style='background: #F0ADAD'>      ).visitEnd()</span><span style=''>
+</span>448 <span style=''>    }
+</span>449 <span style=''>  } // end of trait BCClassGen
+</span>450 <span style=''>
+</span>451 <span style=''>  /* functionality for building plain and mirror classes */
+</span>452 <span style=''>  abstract class JCommonBuilder
+</span>453 <span style=''>    extends BCInnerClassGen
+</span>454 <span style=''>    with    BCAnnotGen
+</span>455 <span style=''>    with    BCForwardersGen
+</span>456 <span style=''>    with    BCPickles { }
+</span>457 <span style=''>
+</span>458 <span style=''>  /* builder of mirror classes */
+</span>459 <span style=''>  class JMirrorBuilder extends JCommonBuilder {
+</span>460 <span style=''>
+</span>461 <span style=''>    private var cunit: CompilationUnit = _
+</span>462 <span style=''>    def getCurrentCUnit(): CompilationUnit = </span><span style='background: #F0ADAD'>cunit</span><span style=''>;
+</span>463 <span style=''>
+</span>464 <span style=''>    /* Generate a mirror class for a top-level module. A mirror class is a class
+</span>465 <span style=''>     *  containing only static methods that forward to the corresponding method
+</span>466 <span style=''>     *  on the MODULE instance of the given Scala object.  It will only be
+</span>467 <span style=''>     *  generated if there is no companion class: if there is, an attempt will
+</span>468 <span style=''>     *  instead be made to add the forwarder methods to the companion class.
+</span>469 <span style=''>     *
+</span>470 <span style=''>     *  must-single-thread
+</span>471 <span style=''>     */
+</span>472 <span style=''>    def genMirrorClass(moduleClass: Symbol, cunit: CompilationUnit): asm.tree.ClassNode = {
+</span>473 <span style=''>      </span><span style='background: #AEF1AE'>assert(moduleClass.isModuleClass)</span><span style=''>
+</span>474 <span style=''>      </span><span style='background: #AEF1AE'>assert(moduleClass.companionClass == NoSymbol, moduleClass)</span><span style=''>
+</span>475 <span style=''>      </span><span style='background: #AEF1AE'>innerClassBufferASM.clear()</span><span style=''>
+</span>476 <span style=''>      </span><span style='background: #AEF1AE'>this.cunit = cunit</span><span style=''>
+</span>477 <span style=''>      val moduleName = </span><span style='background: #AEF1AE'>internalName(moduleClass)</span><span style=''> // + &quot;$&quot;
+</span>478 <span style=''>      val mirrorName = </span><span style='background: #AEF1AE'>moduleName.substring(0, moduleName.length() - 1)</span><span style=''>
+</span>479 <span style=''>
+</span>480 <span style=''>      val flags = (</span><span style='background: #AEF1AE'>asm.Opcodes.ACC_SUPER | asm.Opcodes.ACC_PUBLIC | asm.Opcodes.ACC_FINAL</span><span style=''>)
+</span>481 <span style=''>      val mirrorClass = </span><span style='background: #AEF1AE'>new asm.tree.ClassNode</span><span style=''>
+</span>482 <span style=''>      </span><span style='background: #AEF1AE'>mirrorClass.visit(
+</span>483 <span style=''></span><span style='background: #AEF1AE'>        classfileVersion,
+</span>484 <span style=''></span><span style='background: #AEF1AE'>        flags,
+</span>485 <span style=''></span><span style='background: #AEF1AE'>        mirrorName,
+</span>486 <span style=''></span><span style='background: #AEF1AE'>        null /* no java-generic-signature */,
+</span>487 <span style=''></span><span style='background: #AEF1AE'>        ObjectReference.internalName,
+</span>488 <span style=''></span><span style='background: #AEF1AE'>        EMPTY_STRING_ARRAY
+</span>489 <span style=''></span><span style='background: #AEF1AE'>      )</span><span style=''>
+</span>490 <span style=''>
+</span>491 <span style=''>      if (</span><span style='background: #AEF1AE'>emitSource</span><span style=''>) {
+</span>492 <span style=''>        </span><span style='background: #AEF1AE'>mirrorClass.visitSource(&quot;&quot; + sourceFileFor(cunit),
+</span>493 <span style=''></span><span style='background: #AEF1AE'>                                null /* SourceDebugExtension */)</span><span style=''>
+</span>494 <span style=''>      }
+</span>495 <span style=''>
+</span>496 <span style=''>      val ssa = </span><span style='background: #AEF1AE'>getAnnotPickle(mirrorName, moduleClass.companionSymbol)</span><span style=''>
+</span>497 <span style=''>      </span><span style='background: #AEF1AE'>mirrorClass.visitAttribute(if (ssa.isDefined) </span><span style='background: #F0ADAD'>pickleMarkerLocal</span><span style='background: #AEF1AE'> else pickleMarkerForeign)</span><span style=''>
+</span>498 <span style=''>      </span><span style='background: #AEF1AE'>emitAnnotations(mirrorClass, moduleClass.annotations ++ ssa)</span><span style=''>
+</span>499 <span style=''>
+</span>500 <span style=''>      </span><span style='background: #AEF1AE'>addForwarders(mirrorClass, mirrorName, moduleClass)</span><span style=''>
+</span>501 <span style=''>
+</span>502 <span style=''>      </span><span style='background: #AEF1AE'>innerClassBufferASM ++= classBTypeFromSymbol(moduleClass).info.memberClasses</span><span style=''>
+</span>503 <span style=''>      </span><span style='background: #AEF1AE'>addInnerClassesASM(mirrorClass, innerClassBufferASM.toList)</span><span style=''>
+</span>504 <span style=''>
+</span>505 <span style=''>      </span><span style='background: #AEF1AE'>mirrorClass.visitEnd()</span><span style=''>
+</span>506 <span style=''>
+</span>507 <span style=''>      </span><span style='background: #AEF1AE'>moduleClass.name</span><span style=''> // this side-effect is necessary, really.
+</span>508 <span style=''>
+</span>509 <span style=''>      mirrorClass
+</span>510 <span style=''>    }
+</span>511 <span style=''>
+</span>512 <span style=''>  } // end of class JMirrorBuilder
+</span>513 <span style=''>
+</span>514 <span style=''>  trait JAndroidBuilder {
+</span>515 <span style=''>    self: BCInnerClassGen =&gt;
+</span>516 <span style=''>
+</span>517 <span style=''>    /* From the reference documentation of the Android SDK:
+</span>518 <span style=''>     *  The `Parcelable` interface identifies classes whose instances can be written to and restored from a `Parcel`.
+</span>519 <span style=''>     *  Classes implementing the `Parcelable` interface must also have a static field called `CREATOR`,
+</span>520 <span style=''>     *  which is an object implementing the `Parcelable.Creator` interface.
+</span>521 <span style=''>     */
+</span>522 <span style=''>    val androidFieldName = </span><span style='background: #AEF1AE'>newTermName(&quot;CREATOR&quot;)</span><span style=''>
+</span>523 <span style=''>
+</span>524 <span style=''>    lazy val AndroidParcelableInterface : Symbol = getClassIfDefined(&quot;android.os.Parcelable&quot;)
+</span>525 <span style=''>    lazy val AndroidCreatorClass        : Symbol = getClassIfDefined(&quot;android.os.Parcelable$Creator&quot;)
+</span>526 <span style=''>
+</span>527 <span style=''>    /*
+</span>528 <span style=''>     * must-single-thread
+</span>529 <span style=''>     */
+</span>530 <span style=''>    def isAndroidParcelableClass(sym: Symbol) =
+</span>531 <span style=''>      </span><span style='background: #AEF1AE'>(AndroidParcelableInterface != NoSymbol) &amp;&amp;
+</span>532 <span style=''></span><span style='background: #AEF1AE'>      (</span><span style='background: #F0ADAD'>sym.parentSymbols contains AndroidParcelableInterface</span><span style='background: #AEF1AE'>)</span><span style=''>
+</span>533 <span style=''>
+</span>534 <span style=''>    /*
+</span>535 <span style=''>     * must-single-thread
+</span>536 <span style=''>     */
+</span>537 <span style=''>    def legacyAddCreatorCode(clinit: asm.MethodVisitor, cnode: asm.tree.ClassNode, thisName: String): Unit = {
+</span>538 <span style=''>      // this tracks the inner class in innerClassBufferASM, if needed.
+</span>539 <span style=''>      val androidCreatorType = </span><span style='background: #F0ADAD'>getClassBTypeAndRegisterInnerClass(AndroidCreatorClass)</span><span style=''>
+</span>540 <span style=''>      val tdesc_creator = </span><span style='background: #F0ADAD'>androidCreatorType.descriptor</span><span style=''>
+</span>541 <span style=''>
+</span>542 <span style=''>      </span><span style='background: #F0ADAD'>cnode.visitField(
+</span>543 <span style=''></span><span style='background: #F0ADAD'>        GenBCodeOps.PublicStaticFinal,
+</span>544 <span style=''></span><span style='background: #F0ADAD'>        &quot;CREATOR&quot;,
+</span>545 <span style=''></span><span style='background: #F0ADAD'>        tdesc_creator,
+</span>546 <span style=''></span><span style='background: #F0ADAD'>        null, // no java-generic-signature
+</span>547 <span style=''></span><span style='background: #F0ADAD'>        null  // no initial value
+</span>548 <span style=''></span><span style='background: #F0ADAD'>      ).visitEnd()</span><span style=''>
+</span>549 <span style=''>
+</span>550 <span style=''>      val moduleName = (</span><span style='background: #F0ADAD'>thisName + &quot;$&quot;</span><span style=''>)
+</span>551 <span style=''>
+</span>552 <span style=''>      // GETSTATIC `moduleName`.MODULE$ : `moduleName`;
+</span>553 <span style=''>      </span><span style='background: #F0ADAD'>clinit.visitFieldInsn(
+</span>554 <span style=''></span><span style='background: #F0ADAD'>        asm.Opcodes.GETSTATIC,
+</span>555 <span style=''></span><span style='background: #F0ADAD'>        moduleName,
+</span>556 <span style=''></span><span style='background: #F0ADAD'>        MODULE_INSTANCE_FIELD,
+</span>557 <span style=''></span><span style='background: #F0ADAD'>        &quot;L&quot; + moduleName + &quot;;&quot;
+</span>558 <span style=''></span><span style='background: #F0ADAD'>      )</span><span style=''>
+</span>559 <span style=''>
+</span>560 <span style=''>      // INVOKEVIRTUAL `moduleName`.CREATOR() : android.os.Parcelable$Creator;
+</span>561 <span style=''>      val bt = </span><span style='background: #F0ADAD'>MethodBType(Nil, androidCreatorType)</span><span style=''>
+</span>562 <span style=''>      </span><span style='background: #F0ADAD'>clinit.visitMethodInsn(
+</span>563 <span style=''></span><span style='background: #F0ADAD'>        asm.Opcodes.INVOKEVIRTUAL,
+</span>564 <span style=''></span><span style='background: #F0ADAD'>        moduleName,
+</span>565 <span style=''></span><span style='background: #F0ADAD'>        &quot;CREATOR&quot;,
+</span>566 <span style=''></span><span style='background: #F0ADAD'>        bt.descriptor,
+</span>567 <span style=''></span><span style='background: #F0ADAD'>        false
+</span>568 <span style=''></span><span style='background: #F0ADAD'>      )</span><span style=''>
+</span>569 <span style=''>
+</span>570 <span style=''>      // PUTSTATIC `thisName`.CREATOR;
+</span>571 <span style=''>      </span><span style='background: #F0ADAD'>clinit.visitFieldInsn(
+</span>572 <span style=''></span><span style='background: #F0ADAD'>        asm.Opcodes.PUTSTATIC,
+</span>573 <span style=''></span><span style='background: #F0ADAD'>        thisName,
+</span>574 <span style=''></span><span style='background: #F0ADAD'>        &quot;CREATOR&quot;,
+</span>575 <span style=''></span><span style='background: #F0ADAD'>        tdesc_creator
+</span>576 <span style=''></span><span style='background: #F0ADAD'>      )</span><span style=''>
+</span>577 <span style=''>    }
+</span>578 <span style=''>
+</span>579 <span style=''>  } // end of trait JAndroidBuilder
+</span>580 <span style=''>}
+</span>581 <span style=''>
+</span>582 <span style=''>object BCodeHelpers {
+</span>583 <span style=''>
+</span>584 <span style=''>  class InvokeStyle(val style: Int) extends AnyVal {
+</span>585 <span style=''>    import InvokeStyle._
+</span>586 <span style=''>    def isVirtual: Boolean = </span><span style='background: #AEF1AE'>this == Virtual</span><span style=''>
+</span>587 <span style=''>    def isStatic : Boolean = </span><span style='background: #AEF1AE'>this == Static</span><span style=''>
+</span>588 <span style=''>    def isSpecial: Boolean = </span><span style='background: #AEF1AE'>this == Special</span><span style=''>
+</span>589 <span style=''>    def isSuper  : Boolean = </span><span style='background: #AEF1AE'>this == Super</span><span style=''>
+</span>590 <span style=''>
+</span>591 <span style=''>    def hasInstance = </span><span style='background: #AEF1AE'>this != Static</span><span style=''>
+</span>592 <span style=''>  }
+</span>593 <span style=''>
+</span>594 <span style=''>  object InvokeStyle {
+</span>595 <span style=''>    val Virtual = </span><span style='background: #AEF1AE'>new InvokeStyle(0)</span><span style=''> // InvokeVirtual or InvokeInterface
+</span>596 <span style=''>    val Static  = </span><span style='background: #AEF1AE'>new InvokeStyle(1)</span><span style=''> // InvokeStatic
+</span>597 <span style=''>    val Special = </span><span style='background: #AEF1AE'>new InvokeStyle(2)</span><span style=''> // InvokeSpecial (private methods, constructors)
+</span>598 <span style=''>    val Super   = </span><span style='background: #AEF1AE'>new InvokeStyle(3)</span><span style=''> // InvokeSpecial (super calls)
+</span>599 <span style=''>  }
+</span>600 <span style=''>}
+</span></pre>
+          </div>
+          <div class="tab-pane" id="statementlist">
+            <table cellspacing="0" cellpadding="0" class="table statementlist">
+      <tr>
+        <th>Line</th>
+        <th>Stmt Id</th>
+        <th>Pos</th>
+        <th>Tree</th>
+        <th>Symbol</th>
+        <th>Code</th>
+      </tr><tr>
+        <td>
+          31
+        </td>
+        <td>
+          1694
+        </td>
+        <td>
+          797
+          -
+          820
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BCodeAsmCommon.&lt;init&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          new scala.tools.nsc.backend.jvm.BCodeAsmCommon[BCodeHelpers.this.int.type](BCodeHelpers.this.int)
+        </td>
+      </tr><tr>
+        <td>
+          31
+        </td>
+        <td>
+          1693
+        </td>
+        <td>
+          816
+          -
+          819
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BytecodeWriters.int
+        </td>
+        <td style="background: #AEF1AE">
+          BCodeHelpers.this.int
+        </td>
+      </tr><tr>
+        <td>
+          38
+        </td>
+        <td>
+          1695
+        </td>
+        <td>
+          984
+          -
+          1014
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BytecodeWriters.getFile
+        </td>
+        <td style="background: #AEF1AE">
+          BCodeHelpers.this.getFile(base, clsName, suffix)
+        </td>
+      </tr><tr>
+        <td>
+          46
+        </td>
+        <td>
+          1697
+        </td>
+        <td>
+          1163
+          -
+          1183
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BackendInterface.SymbolHelper.outputDirectory
+        </td>
+        <td style="background: #AEF1AE">
+          BCodeHelpers.this.int.symHelper(csym).outputDirectory
+        </td>
+      </tr><tr>
+        <td>
+          46
+        </td>
+        <td>
+          1696
+        </td>
+        <td>
+          1163
+          -
+          1183
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BackendInterface.SymbolHelper.outputDirectory
+        </td>
+        <td style="background: #AEF1AE">
+          BCodeHelpers.this.int.symHelper(csym).outputDirectory
+        </td>
+      </tr><tr>
+        <td>
+          49
+        </td>
+        <td>
+          1698
+        </td>
+        <td>
+          1244
+          -
+          1252
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BackendInterface.SymbolHelper.pos
+        </td>
+        <td style="background: #F0ADAD">
+          BCodeHelpers.this.int.symHelper(csym).pos
+        </td>
+      </tr><tr>
+        <td>
+          49
+        </td>
+        <td>
+          1701
+        </td>
+        <td>
+          1311
+          -
+          1312
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          &quot;&quot;
+        </td>
+      </tr><tr>
+        <td>
+          49
+        </td>
+        <td>
+          1704
+        </td>
+        <td>
+          1234
+          -
+          1313
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BackendInterface.error
+        </td>
+        <td style="background: #F0ADAD">
+          BCodeHelpers.this.int.error(BCodeHelpers.this.int.symHelper(csym).pos, StringContext.apply(&quot;Couldn\'t create file for class &quot;, &quot;\\n&quot;, &quot;&quot;).s(cName, ex.getMessage()))
+        </td>
+      </tr><tr>
+        <td>
+          49
+        </td>
+        <td>
+          1703
+        </td>
+        <td>
+          1254
+          -
+          1312
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.StringContext.s
+        </td>
+        <td style="background: #F0ADAD">
+          StringContext.apply(&quot;Couldn\'t create file for class &quot;, &quot;\\n&quot;, &quot;&quot;).s(cName, ex.getMessage())
+        </td>
+      </tr><tr>
+        <td>
+          49
+        </td>
+        <td>
+          1700
+        </td>
+        <td>
+          1293
+          -
+          1296
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          &quot;\\n&quot;
+        </td>
+      </tr><tr>
+        <td>
+          49
+        </td>
+        <td>
+          1702
+        </td>
+        <td>
+          1297
+          -
+          1310
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.Throwable.getMessage
+        </td>
+        <td style="background: #F0ADAD">
+          ex.getMessage()
+        </td>
+      </tr><tr>
+        <td>
+          49
+        </td>
+        <td>
+          1699
+        </td>
+        <td>
+          1256
+          -
+          1288
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          &quot;Couldn\'t create file for class &quot;
+        </td>
+      </tr><tr>
+        <td>
+          50
+        </td>
+        <td>
+          1705
+        </td>
+        <td>
+          1322
+          -
+          1326
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          null
+        </td>
+      </tr><tr>
+        <td>
+          73
+        </td>
+        <td>
+          1706
+        </td>
+        <td>
+          2509
+          -
+          2543
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BTypes.classBTypeFromInternalName
+        </td>
+        <td style="background: #AEF1AE">
+          BCodeHelpers.this.bTypes.classBTypeFromInternalName(inameA)
+        </td>
+      </tr><tr>
+        <td>
+          74
+        </td>
+        <td>
+          1707
+        </td>
+        <td>
+          2558
+          -
+          2592
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BTypes.classBTypeFromInternalName
+        </td>
+        <td style="background: #AEF1AE">
+          BCodeHelpers.this.bTypes.classBTypeFromInternalName(inameB)
+        </td>
+      </tr><tr>
+        <td>
+          75
+        </td>
+        <td>
+          1708
+        </td>
+        <td>
+          2609
+          -
+          2624
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BTypes.ClassBType.jvmWiseLUB
+        </td>
+        <td style="background: #AEF1AE">
+          a.jvmWiseLUB(b)
+        </td>
+      </tr><tr>
+        <td>
+          76
+        </td>
+        <td>
+          1709
+        </td>
+        <td>
+          2645
+          -
+          2661
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BTypes.ClassBType.internalName
+        </td>
+        <td style="background: #AEF1AE">
+          lub.internalName
+        </td>
+      </tr><tr>
+        <td>
+          77
+        </td>
+        <td>
+          1710
+        </td>
+        <td>
+          2675
+          -
+          2697
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.Object.!=
+        </td>
+        <td style="background: #AEF1AE">
+          lubName.!=(&quot;scala/Any&quot;)
+        </td>
+      </tr><tr>
+        <td>
+          77
+        </td>
+        <td>
+          1711
+        </td>
+        <td>
+          2668
+          -
+          2698
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Predef.assert
+        </td>
+        <td style="background: #AEF1AE">
+          scala.Predef.assert(lubName.!=(&quot;scala/Any&quot;))
+        </td>
+      </tr><tr>
+        <td>
+          86
+        </td>
+        <td>
+          1712
+        </td>
+        <td>
+          2974
+          -
+          2989
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BackendInterface.getSingleOutput
+        </td>
+        <td style="background: #AEF1AE">
+          BCodeHelpers.this.int.getSingleOutput
+        </td>
+      </tr><tr>
+        <td>
+          87
+        </td>
+        <td>
+          1713
+        </td>
+        <td>
+          3020
+          -
+          3040
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.io.AbstractFile.hasExtension
+        </td>
+        <td style="background: #F0ADAD">
+          f.hasExtension(&quot;jar&quot;)
+        </td>
+      </tr><tr>
+        <td>
+          90
+        </td>
+        <td>
+          1714
+        </td>
+        <td>
+          3184
+          -
+          3201
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.Option.isEmpty
+        </td>
+        <td style="background: #F0ADAD">
+          BCodeHelpers.this.int.mainClass.isEmpty
+        </td>
+      </tr><tr>
+        <td>
+          91
+        </td>
+        <td>
+          1716
+        </td>
+        <td>
+          3227
+          -
+          3227
+        </td>
+        <td>
+          TypeApply
+        </td>
+        <td>
+          scala.collection.immutable.List.canBuildFrom
+        </td>
+        <td style="background: #F0ADAD">
+          immutable.this.List.canBuildFrom[String]
+        </td>
+      </tr><tr>
+        <td>
+          91
+        </td>
+        <td>
+          1715
+        </td>
+        <td>
+          3232
+          -
+          3247
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BackendInterface.SymbolHelper.fullName
+        </td>
+        <td style="background: #F0ADAD">
+          BCodeHelpers.this.int.symHelper(x$1).fullName('.')
+        </td>
+      </tr><tr>
+        <td>
+          91
+        </td>
+        <td>
+          1727
+        </td>
+        <td>
+          3215
+          -
+          3609
+        </td>
+        <td>
+          Match
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          entryPoints.map[String, List[String]](((x$1: BCodeHelpers.this.int.Symbol) =&gt; BCodeHelpers.this.int.symHelper(x$1).fullName('.')))(immutable.this.List.canBuildFrom[String]) match {
+  case scala.collection.immutable.Nil =&gt; BCodeHelpers.this.int.log(&quot;No Main-Class designated or discovered.&quot;)
+  case (head: String, tl: List[String])scala.collection.immutable.::[String]((name @ _), scala.collection.immutable.Nil) =&gt; {
+    BCodeHelpers.this.int.log(StringContext.apply(&quot;Unique entry point: setting Main-Class to &quot;, &quot;&quot;).s(name));
+    BCodeHelpers.this.int.setMainClass(name)
+  }
+  case (names @ _) =&gt; BCodeHelpers.this.int.log(StringContext.apply(&quot;No Main-Class due to multiple entry points:\\n  &quot;, &quot;&quot;).s(names.mkString(&quot;\n  &quot;)))
+}
+        </td>
+      </tr><tr>
+        <td>
+          91
+        </td>
+        <td>
+          1717
+        </td>
+        <td>
+          3215
+          -
+          3248
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          scala.collection.immutable.List.map
+        </td>
+        <td style="background: #F0ADAD">
+          entryPoints.map[String, List[String]](((x$1: BCodeHelpers.this.int.Symbol) =&gt; BCodeHelpers.this.int.symHelper(x$1).fullName('.')))(immutable.this.List.canBuildFrom[String])
+        </td>
+      </tr><tr>
+        <td>
+          93
+        </td>
+        <td>
+          1718
+        </td>
+        <td>
+          3295
+          -
+          3341
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BackendInterface.log
+        </td>
+        <td style="background: #F0ADAD">
+          BCodeHelpers.this.int.log(&quot;No Main-Class designated or discovered.&quot;)
+        </td>
+      </tr><tr>
+        <td>
+          95
+        </td>
+        <td>
+          1719
+        </td>
+        <td>
+          3392
+          -
+          3442
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.StringContext.s
+        </td>
+        <td style="background: #F0ADAD">
+          StringContext.apply(&quot;Unique entry point: setting Main-Class to &quot;, &quot;&quot;).s(name)
+        </td>
+      </tr><tr>
+        <td>
+          95
+        </td>
+        <td>
+          1720
+        </td>
+        <td>
+          3388
+          -
+          3443
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BackendInterface.log
+        </td>
+        <td style="background: #F0ADAD">
+          BCodeHelpers.this.int.log(StringContext.apply(&quot;Unique entry point: setting Main-Class to &quot;, &quot;&quot;).s(name))
+        </td>
+      </tr><tr>
+        <td>
+          96
+        </td>
+        <td>
+          1721
+        </td>
+        <td>
+          3458
+          -
+          3476
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BackendInterface.setMainClass
+        </td>
+        <td style="background: #F0ADAD">
+          BCodeHelpers.this.int.setMainClass(name)
+        </td>
+      </tr><tr>
+        <td>
+          98
+        </td>
+        <td>
+          1725
+        </td>
+        <td>
+          3521
+          -
+          3596
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.StringContext.s
+        </td>
+        <td style="background: #F0ADAD">
+          StringContext.apply(&quot;No Main-Class due to multiple entry points:\\n  &quot;, &quot;&quot;).s(names.mkString(&quot;\n  &quot;))
+        </td>
+      </tr><tr>
+        <td>
+          98
+        </td>
+        <td>
+          1722
+        </td>
+        <td>
+          3523
+          -
+          3571
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          &quot;No Main-Class due to multiple entry points:\\n  &quot;
+        </td>
+      </tr><tr>
+        <td>
+          98
+        </td>
+        <td>
+          1724
+        </td>
+        <td>
+          3572
+          -
+          3594
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.TraversableOnce.mkString
+        </td>
+        <td style="background: #F0ADAD">
+          names.mkString(&quot;\n  &quot;)
+        </td>
+      </tr><tr>
+        <td>
+          98
+        </td>
+        <td>
+          1726
+        </td>
+        <td>
+          3517
+          -
+          3597
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BackendInterface.log
+        </td>
+        <td style="background: #F0ADAD">
+          BCodeHelpers.this.int.log(StringContext.apply(&quot;No Main-Class due to multiple entry points:\\n  &quot;, &quot;&quot;).s(names.mkString(&quot;\n  &quot;)))
+        </td>
+      </tr><tr>
+        <td>
+          98
+        </td>
+        <td>
+          1723
+        </td>
+        <td>
+          3595
+          -
+          3596
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          &quot;&quot;
+        </td>
+      </tr><tr>
+        <td>
+          101
+        </td>
+        <td>
+          1728
+        </td>
+        <td>
+          3639
+          -
+          3666
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          &quot;Main-Class was specified: &quot;
+        </td>
+      </tr><tr>
+        <td>
+          101
+        </td>
+        <td>
+          1731
+        </td>
+        <td>
+          3637
+          -
+          3682
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.StringContext.s
+        </td>
+        <td style="background: #F0ADAD">
+          StringContext.apply(&quot;Main-Class was specified: &quot;, &quot;&quot;).s(BCodeHelpers.this.int.mainClass.get)
+        </td>
+      </tr><tr>
+        <td>
+          101
+        </td>
+        <td>
+          1730
+        </td>
+        <td>
+          3667
+          -
+          3680
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.Option.get
+        </td>
+        <td style="background: #F0ADAD">
+          BCodeHelpers.this.int.mainClass.get
+        </td>
+      </tr><tr>
+        <td>
+          101
+        </td>
+        <td>
+          1733
+        </td>
+        <td>
+          3633
+          -
+          3683
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BackendInterface.log
+        </td>
+        <td style="background: #F0ADAD">
+          BCodeHelpers.this.int.log(StringContext.apply(&quot;Main-Class was specified: &quot;, &quot;&quot;).s(BCodeHelpers.this.int.mainClass.get))
+        </td>
+      </tr><tr>
+        <td>
+          101
+        </td>
+        <td>
+          1729
+        </td>
+        <td>
+          3681
+          -
+          3682
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          &quot;&quot;
+        </td>
+      </tr><tr>
+        <td>
+          101
+        </td>
+        <td>
+          1732
+        </td>
+        <td>
+          3633
+          -
+          3683
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BackendInterface.log
+        </td>
+        <td style="background: #F0ADAD">
+          BCodeHelpers.this.int.log(StringContext.apply(&quot;Main-Class was specified: &quot;, &quot;&quot;).s(BCodeHelpers.this.int.mainClass.get))
+        </td>
+      </tr><tr>
+        <td>
+          103
+        </td>
+        <td>
+          1734
+        </td>
+        <td>
+          3719
+          -
+          3725
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.io.AbstractFile.file
+        </td>
+        <td style="background: #F0ADAD">
+          f.file
+        </td>
+      </tr><tr>
+        <td>
+          103
+        </td>
+        <td>
+          1735
+        </td>
+        <td>
+          3693
+          -
+          3726
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BytecodeWriters.DirectToJarfileWriter.&lt;init&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          new BCodeHelpers.this.DirectToJarfileWriter(f.file)
+        </td>
+      </tr><tr>
+        <td>
+          105
+        </td>
+        <td>
+          1736
+        </td>
+        <td>
+          3744
+          -
+          3773
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BytecodeWriters.factoryNonJarBytecodeWriter
+        </td>
+        <td style="background: #AEF1AE">
+          BCodeHelpers.this.factoryNonJarBytecodeWriter()
+        </td>
+      </tr><tr>
+        <td>
+          124
+        </td>
+        <td>
+          1737
+        </td>
+        <td>
+          4636
+          -
+          4665
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BTypes.ClassBType.enclosingNestedClassesChain
+        </td>
+        <td style="background: #AEF1AE">
+          x$2.enclosingNestedClassesChain
+        </td>
+      </tr><tr>
+        <td>
+          124
+        </td>
+        <td>
+          1739
+        </td>
+        <td>
+          4610
+          -
+          4675
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.collection.SeqLike.distinct
+        </td>
+        <td style="background: #AEF1AE">
+          refedInnerClasses.flatMap[BCodeHelpers.this.bTypes.ClassBType, List[BCodeHelpers.this.bTypes.ClassBType]](((x$2: BCodeHelpers.this.bTypes.ClassBType) =&gt; x$2.enclosingNestedClassesChain))(immutable.this.List.canBuildFrom[BCodeHelpers.this.bTypes.ClassBType]).distinct
+        </td>
+      </tr><tr>
+        <td>
+          124
+        </td>
+        <td>
+          1738
+        </td>
+        <td>
+          4635
+          -
+          4635
+        </td>
+        <td>
+          TypeApply
+        </td>
+        <td>
+          scala.collection.immutable.List.canBuildFrom
+        </td>
+        <td style="background: #AEF1AE">
+          immutable.this.List.canBuildFrom[BCodeHelpers.this.bTypes.ClassBType]
+        </td>
+      </tr><tr>
+        <td>
+          127
+        </td>
+        <td>
+          1748
+        </td>
+        <td>
+          4800
+          -
+          5121
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.immutable.List.foreach
+        </td>
+        <td style="background: #AEF1AE">
+          allNestedClasses.sortBy[String](((x$3: BCodeHelpers.this.bTypes.ClassBType) =&gt; x$3.internalName.toString()))(math.this.Ordering.String).foreach[Unit](((nestedClass: BCodeHelpers.this.bTypes.ClassBType) =&gt; {
+  val e: BCodeHelpers.this.bTypes.InnerClassEntry = (nestedClass.innerClassAttributeEntry: Option[BCodeHelpers.this.bTypes.InnerClassEntry] @unchecked) match {
+    case (value: BCodeHelpers.this.bTypes.InnerClassEntry)Some[BCodeHelpers.this.bTypes.InnerClassEntry]((e @ _)) =&gt; e
+  };
+  jclass.visitInnerClass(e.name, e.outerName, e.innerName, e.flags)
+}))
+        </td>
+      </tr><tr>
+        <td>
+          127
+        </td>
+        <td>
+          1741
+        </td>
+        <td>
+          4843
+          -
+          4843
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.math.Ordering.String
+        </td>
+        <td style="background: #AEF1AE">
+          math.this.Ordering.String
+        </td>
+      </tr><tr>
+        <td>
+          127
+        </td>
+        <td>
+          1740
+        </td>
+        <td>
+          4844
+          -
+          4867
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.String.toString
+        </td>
+        <td style="background: #AEF1AE">
+          x$3.internalName.toString()
+        </td>
+      </tr><tr>
+        <td>
+          129
+        </td>
+        <td>
+          1742
+        </td>
+        <td>
+          5007
+          -
+          5043
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BTypes.ClassBType.innerClassAttributeEntry
+        </td>
+        <td style="background: #AEF1AE">
+          nestedClass.innerClassAttributeEntry
+        </td>
+      </tr><tr>
+        <td>
+          130
+        </td>
+        <td>
+          1743
+        </td>
+        <td>
+          5073
+          -
+          5079
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BTypes.InnerClassEntry.name
+        </td>
+        <td style="background: #AEF1AE">
+          e.name
+        </td>
+      </tr><tr>
+        <td>
+          130
+        </td>
+        <td>
+          1746
+        </td>
+        <td>
+          5107
+          -
+          5114
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BTypes.InnerClassEntry.flags
+        </td>
+        <td style="background: #AEF1AE">
+          e.flags
+        </td>
+      </tr><tr>
+        <td>
+          130
+        </td>
+        <td>
+          1745
+        </td>
+        <td>
+          5094
+          -
+          5105
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BTypes.InnerClassEntry.innerName
+        </td>
+        <td style="background: #AEF1AE">
+          e.innerName
+        </td>
+      </tr><tr>
+        <td>
+          130
+        </td>
+        <td>
+          1744
+        </td>
+        <td>
+          5081
+          -
+          5092
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BTypes.InnerClassEntry.outerName
+        </td>
+        <td style="background: #AEF1AE">
+          e.outerName
+        </td>
+      </tr><tr>
+        <td>
+          130
+        </td>
+        <td>
+          1747
+        </td>
+        <td>
+          5050
+          -
+          5115
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.tools.asm.ClassVisitor.visitInnerClass
+        </td>
+        <td style="background: #AEF1AE">
+          jclass.visitInnerClass(e.name, e.outerName, e.innerName, e.flags)
+        </td>
+      </tr><tr>
+        <td>
+          151
+        </td>
+        <td>
+          1752
+        </td>
+        <td>
+          5966
+          -
+          6010
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.core.unpickleScala2.PickleBuffer.&lt;init&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          new scala.reflect.internal.pickling.`package`.PickleBuffer(new Array[Byte](16), -1, 0)
+        </td>
+      </tr><tr>
+        <td>
+          151
+        </td>
+        <td>
+          1751
+        </td>
+        <td>
+          6008
+          -
+          6009
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          0
+        </td>
+      </tr><tr>
+        <td>
+          151
+        </td>
+        <td>
+          1750
+        </td>
+        <td>
+          6004
+          -
+          6006
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          -1
+        </td>
+      </tr><tr>
+        <td>
+          151
+        </td>
+        <td>
+          1749
+        </td>
+        <td>
+          5983
+          -
+          6002
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Array.&lt;init&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          new Array[Byte](16)
+        </td>
+      </tr><tr>
+        <td>
+          152
+        </td>
+        <td>
+          1754
+        </td>
+        <td>
+          6017
+          -
+          6047
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Predef.assert
+        </td>
+        <td style="background: #AEF1AE">
+          scala.Predef.assert(vp.writeIndex.==(0), vp)
+        </td>
+      </tr><tr>
+        <td>
+          152
+        </td>
+        <td>
+          1753
+        </td>
+        <td>
+          6024
+          -
+          6042
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Int.==
+        </td>
+        <td style="background: #AEF1AE">
+          vp.writeIndex.==(0)
+        </td>
+      </tr><tr>
+        <td>
+          153
+        </td>
+        <td>
+          1755
+        </td>
+        <td>
+          6066
+          -
+          6091
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.unpickleScala2.PickleFormat.MajorVersion
+        </td>
+        <td style="background: #AEF1AE">
+          scala.reflect.internal.pickling.`package`.PickleFormat.MajorVersion
+        </td>
+      </tr><tr>
+        <td>
+          153
+        </td>
+        <td>
+          1756
+        </td>
+        <td>
+          6054
+          -
+          6091
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.core.unpickleScala2.PickleBuffer.writeNat
+        </td>
+        <td style="background: #AEF1AE">
+          vp.writeNat(scala.reflect.internal.pickling.`package`.PickleFormat.MajorVersion)
+        </td>
+      </tr><tr>
+        <td>
+          154
+        </td>
+        <td>
+          1757
+        </td>
+        <td>
+          6110
+          -
+          6135
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.unpickleScala2.PickleFormat.MinorVersion
+        </td>
+        <td style="background: #AEF1AE">
+          scala.reflect.internal.pickling.`package`.PickleFormat.MinorVersion
+        </td>
+      </tr><tr>
+        <td>
+          154
+        </td>
+        <td>
+          1758
+        </td>
+        <td>
+          6098
+          -
+          6135
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.core.unpickleScala2.PickleBuffer.writeNat
+        </td>
+        <td style="background: #AEF1AE">
+          vp.writeNat(scala.reflect.internal.pickling.`package`.PickleFormat.MinorVersion)
+        </td>
+      </tr><tr>
+        <td>
+          155
+        </td>
+        <td>
+          1759
+        </td>
+        <td>
+          6142
+          -
+          6155
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.core.unpickleScala2.PickleBuffer.writeNat
+        </td>
+        <td style="background: #AEF1AE">
+          vp.writeNat(0)
+        </td>
+      </tr><tr>
+        <td>
+          163
+        </td>
+        <td>
+          1760
+        </td>
+        <td>
+          6325
+          -
+          6345
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Array.&lt;init&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          new Array[Byte](len)
+        </td>
+      </tr><tr>
+        <td>
+          164
+        </td>
+        <td>
+          1761
+        </td>
+        <td>
+          6352
+          -
+          6393
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.System.arraycopy
+        </td>
+        <td style="background: #AEF1AE">
+          java.lang.System.arraycopy(b, offset, dest, 0, len)
+        </td>
+      </tr><tr>
+        <td>
+          165
+        </td>
+        <td>
+          1762
+        </td>
+        <td>
+          6400
+          -
+          6430
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.tools.asm.CustomAttr.&lt;init&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          new scala.tools.asm.CustomAttr(name, dest)
+        </td>
+      </tr><tr>
+        <td>
+          172
+        </td>
+        <td>
+          1764
+        </td>
+        <td>
+          6554
+          -
+          6573
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.unpickleScala2.PickleBuffer.bytes
+        </td>
+        <td style="background: #F0ADAD">
+          BCPickles.this.versionPickle.bytes
+        </td>
+      </tr><tr>
+        <td>
+          172
+        </td>
+        <td>
+          1763
+        </td>
+        <td>
+          6530
+          -
+          6552
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BackendInterfaceDefinitions.ScalaSignatureATTRName
+        </td>
+        <td style="background: #F0ADAD">
+          BCodeHelpers.this.int.ScalaSignatureATTRName
+        </td>
+      </tr><tr>
+        <td>
+          172
+        </td>
+        <td>
+          1766
+        </td>
+        <td>
+          6578
+          -
+          6602
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.unpickleScala2.PickleBuffer.writeIndex
+        </td>
+        <td style="background: #F0ADAD">
+          BCPickles.this.versionPickle.writeIndex
+        </td>
+      </tr><tr>
+        <td>
+          172
+        </td>
+        <td>
+          1765
+        </td>
+        <td>
+          6575
+          -
+          6576
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          0
+        </td>
+      </tr><tr>
+        <td>
+          172
+        </td>
+        <td>
+          1767
+        </td>
+        <td>
+          6513
+          -
+          6603
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BCodeHelpers.BCPickles.createJAttribute
+        </td>
+        <td style="background: #F0ADAD">
+          BCPickles.this.createJAttribute(BCodeHelpers.this.int.ScalaSignatureATTRName, BCPickles.this.versionPickle.bytes, 0, BCPickles.this.versionPickle.writeIndex)
+        </td>
+      </tr><tr>
+        <td>
+          179
+        </td>
+        <td>
+          1770
+        </td>
+        <td>
+          6740
+          -
+          6741
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          0
+        </td>
+      </tr><tr>
+        <td>
+          179
+        </td>
+        <td>
+          1772
+        </td>
+        <td>
+          6688
+          -
+          6745
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BCodeHelpers.BCPickles.createJAttribute
+        </td>
+        <td style="background: #AEF1AE">
+          BCPickles.this.createJAttribute(BCodeHelpers.this.int.ScalaATTRName, new Array[Byte](0), 0, 0)
+        </td>
+      </tr><tr>
+        <td>
+          179
+        </td>
+        <td>
+          1769
+        </td>
+        <td>
+          6720
+          -
+          6738
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Array.&lt;init&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          new Array[Byte](0)
+        </td>
+      </tr><tr>
+        <td>
+          179
+        </td>
+        <td>
+          1771
+        </td>
+        <td>
+          6743
+          -
+          6744
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          0
+        </td>
+      </tr><tr>
+        <td>
+          179
+        </td>
+        <td>
+          1768
+        </td>
+        <td>
+          6705
+          -
+          6718
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BackendInterfaceDefinitions.ScalaATTRName
+        </td>
+        <td style="background: #AEF1AE">
+          BCodeHelpers.this.int.ScalaATTRName
+        </td>
+      </tr><tr>
+        <td>
+          185
+        </td>
+        <td>
+          1773
+        </td>
+        <td>
+          6831
+          -
+          6845
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BackendInterface.debuglevel
+        </td>
+        <td style="background: #AEF1AE">
+          BCodeHelpers.this.int.debuglevel
+        </td>
+      </tr><tr>
+        <td>
+          187
+        </td>
+        <td>
+          1774
+        </td>
+        <td>
+          6874
+          -
+          6889
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Int.&gt;=
+        </td>
+        <td style="background: #AEF1AE">
+          BCInnerClassGen.this.debugLevel.&gt;=(1)
+        </td>
+      </tr><tr>
+        <td>
+          188
+        </td>
+        <td>
+          1775
+        </td>
+        <td>
+          6917
+          -
+          6932
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Int.&gt;=
+        </td>
+        <td style="background: #AEF1AE">
+          BCInnerClassGen.this.debugLevel.&gt;=(2)
+        </td>
+      </tr><tr>
+        <td>
+          189
+        </td>
+        <td>
+          1776
+        </td>
+        <td>
+          6960
+          -
+          6975
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Int.&gt;=
+        </td>
+        <td style="background: #AEF1AE">
+          BCInnerClassGen.this.debugLevel.&gt;=(3)
+        </td>
+      </tr><tr>
+        <td>
+          198
+        </td>
+        <td>
+          1777
+        </td>
+        <td>
+          7296
+          -
+          7325
+        </td>
+        <td>
+          TypeApply
+        </td>
+        <td>
+          scala.collection.mutable.Set.empty
+        </td>
+        <td style="background: #AEF1AE">
+          scala.collection.mutable.Set.empty[BCodeHelpers.this.bTypes.ClassBType]
+        </td>
+      </tr><tr>
+        <td>
+          209
+        </td>
+        <td>
+          1779
+        </td>
+        <td>
+          7945
+          -
+          7983
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Boolean.&amp;&amp;
+        </td>
+        <td style="background: #AEF1AE">
+          BCodeHelpers.this.int.symHelper(sym).isJavaDefined.&amp;&amp;(BCodeHelpers.this.int.symHelper(sym).isModuleClass)
+        </td>
+      </tr><tr>
+        <td>
+          209
+        </td>
+        <td>
+          1782
+        </td>
+        <td>
+          8013
+          -
+          8016
+        </td>
+        <td>
+          Ident
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BCodeHelpers.BCInnerClassGen.sym
+        </td>
+        <td style="background: #AEF1AE">
+          sym
+        </td>
+      </tr><tr>
+        <td>
+          209
+        </td>
+        <td>
+          1781
+        </td>
+        <td>
+          7985
+          -
+          8007
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BackendInterface.SymbolHelper.linkedClassOfClass
+        </td>
+        <td style="background: #AEF1AE">
+          BCodeHelpers.this.int.symHelper(sym).linkedClassOfClass
+        </td>
+      </tr><tr>
+        <td>
+          209
+        </td>
+        <td>
+          1778
+        </td>
+        <td>
+          7966
+          -
+          7983
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BackendInterface.SymbolHelper.isModuleClass
+        </td>
+        <td style="background: #AEF1AE">
+          BCodeHelpers.this.int.symHelper(sym).isModuleClass
+        </td>
+      </tr><tr>
+        <td>
+          209
+        </td>
+        <td>
+          1780
+        </td>
+        <td>
+          7985
+          -
+          8007
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BackendInterface.SymbolHelper.linkedClassOfClass
+        </td>
+        <td style="background: #AEF1AE">
+          BCodeHelpers.this.int.symHelper(sym).linkedClassOfClass
+        </td>
+      </tr><tr>
+        <td>
+          210
+        </td>
+        <td>
+          1783
+        </td>
+        <td>
+          8023
+          -
+          8080
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BTypes.ClassBType.internalName
+        </td>
+        <td style="background: #AEF1AE">
+          BCInnerClassGen.this.getClassBTypeAndRegisterInnerClass(classSym).internalName
+        </td>
+      </tr><tr>
+        <td>
+          214
+        </td>
+        <td>
+          1784
+        </td>
+        <td>
+          8160
+          -
+          8171
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BackendInterface.SymbolHelper.isClass
+        </td>
+        <td style="background: #AEF1AE">
+          BCodeHelpers.this.int.symHelper(sym).isClass
+        </td>
+      </tr><tr>
+        <td>
+          214
+        </td>
+        <td>
+          1785
+        </td>
+        <td>
+          8153
+          -
+          8177
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Predef.assert
+        </td>
+        <td style="background: #AEF1AE">
+          scala.Predef.assert(BCodeHelpers.this.int.symHelper(sym).isClass, sym)
+        </td>
+      </tr><tr>
+        <td>
+          215
+        </td>
+        <td>
+          1788
+        </td>
+        <td>
+          8191
+          -
+          8228
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Boolean.||
+        </td>
+        <td style="background: #AEF1AE">
+          sym.!=(BCodeHelpers.this.int.ArrayClass).||(BCodeHelpers.this.int.isCompilingArray)
+        </td>
+      </tr><tr>
+        <td>
+          215
+        </td>
+        <td>
+          1787
+        </td>
+        <td>
+          8212
+          -
+          8228
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BackendInterfaceDefinitions.isCompilingArray
+        </td>
+        <td style="background: #AEF1AE">
+          BCodeHelpers.this.int.isCompilingArray
+        </td>
+      </tr><tr>
+        <td>
+          215
+        </td>
+        <td>
+          1786
+        </td>
+        <td>
+          8198
+          -
+          8208
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BackendInterfaceDefinitions.ArrayClass
+        </td>
+        <td style="background: #AEF1AE">
+          BCodeHelpers.this.int.ArrayClass
+        </td>
+      </tr><tr>
+        <td>
+          215
+        </td>
+        <td>
+          1789
+        </td>
+        <td>
+          8184
+          -
+          8234
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Predef.assert
+        </td>
+        <td style="background: #AEF1AE">
+          scala.Predef.assert(sym.!=(BCodeHelpers.this.int.ArrayClass).||(BCodeHelpers.this.int.isCompilingArray), sym)
+        </td>
+      </tr><tr>
+        <td>
+          219
+        </td>
+        <td>
+          1790
+        </td>
+        <td>
+          8319
+          -
+          8343
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BCodeHelpers.BCInnerClassGen.assertClassNotArray
+        </td>
+        <td style="background: #AEF1AE">
+          BCInnerClassGen.this.assertClassNotArray(sym)
+        </td>
+      </tr><tr>
+        <td>
+          220
+        </td>
+        <td>
+          1791
+        </td>
+        <td>
+          8392
+          -
+          8412
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BackendInterfaceDefinitions.isCompilingPrimitive
+        </td>
+        <td style="background: #F0ADAD">
+          BCodeHelpers.this.int.isCompilingPrimitive
+        </td>
+      </tr><tr>
+        <td>
+          220
+        </td>
+        <td>
+          1793
+        </td>
+        <td>
+          8350
+          -
+          8418
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Predef.assert
+        </td>
+        <td style="background: #AEF1AE">
+          scala.Predef.assert(BCodeHelpers.this.bTypes.coreBTypes.primitiveTypeMap.contains(sym).unary_!.||(BCodeHelpers.this.int.isCompilingPrimitive), sym)
+        </td>
+      </tr><tr>
+        <td>
+          220
+        </td>
+        <td>
+          1792
+        </td>
+        <td>
+          8357
+          -
+          8412
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Boolean.||
+        </td>
+        <td style="background: #AEF1AE">
+          BCodeHelpers.this.bTypes.coreBTypes.primitiveTypeMap.contains(sym).unary_!.||(BCodeHelpers.this.int.isCompilingPrimitive)
+        </td>
+      </tr><tr>
+        <td>
+          238
+        </td>
+        <td>
+          1794
+        </td>
+        <td>
+          9308
+          -
+          9344
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BCodeHelpers.BCInnerClassGen.assertClassNotArrayNotPrimitive
+        </td>
+        <td style="background: #AEF1AE">
+          BCInnerClassGen.this.assertClassNotArrayNotPrimitive(sym)
+        </td>
+      </tr><tr>
+        <td>
+          240
+        </td>
+        <td>
+          1797
+        </td>
+        <td>
+          9377
+          -
+          9387
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.CoreBTypesProxy.RT_NOTHING
+        </td>
+        <td style="background: #AEF1AE">
+          BCodeHelpers.this.bTypes.coreBTypes.RT_NOTHING
+        </td>
+      </tr><tr>
+        <td>
+          240
+        </td>
+        <td>
+          1796
+        </td>
+        <td>
+          9356
+          -
+          9375
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.Object.==
+        </td>
+        <td style="background: #AEF1AE">
+          sym.==(BCodeHelpers.this.int.NothingClass)
+        </td>
+      </tr><tr>
+        <td>
+          240
+        </td>
+        <td>
+          1795
+        </td>
+        <td>
+          9363
+          -
+          9375
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BackendInterfaceDefinitions.NothingClass
+        </td>
+        <td style="background: #AEF1AE">
+          BCodeHelpers.this.int.NothingClass
+        </td>
+      </tr><tr>
+        <td>
+          240
+        </td>
+        <td>
+          1798
+        </td>
+        <td>
+          9377
+          -
+          9387
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.CoreBTypesProxy.RT_NOTHING
+        </td>
+        <td style="background: #AEF1AE">
+          BCodeHelpers.this.bTypes.coreBTypes.RT_NOTHING
+        </td>
+      </tr><tr>
+        <td>
+          241
+        </td>
+        <td>
+          1799
+        </td>
+        <td>
+          9410
+          -
+          9419
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BackendInterfaceDefinitions.NullClass
+        </td>
+        <td style="background: #AEF1AE">
+          BCodeHelpers.this.int.NullClass
+        </td>
+      </tr><tr>
+        <td>
+          241
+        </td>
+        <td>
+          1802
+        </td>
+        <td>
+          9421
+          -
+          9428
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.CoreBTypesProxy.RT_NULL
+        </td>
+        <td style="background: #AEF1AE">
+          BCodeHelpers.this.bTypes.coreBTypes.RT_NULL
+        </td>
+      </tr><tr>
+        <td>
+          241
+        </td>
+        <td>
+          1810
+        </td>
+        <td>
+          9399
+          -
+          9554
+        </td>
+        <td>
+          If
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          if (sym.==(BCodeHelpers.this.int.NullClass))
+  BCodeHelpers.this.bTypes.coreBTypes.RT_NULL
+else
+  {
+    val r: BCodeHelpers.this.bTypes.ClassBType = BCodeHelpers.this.bTypes.classBTypeFromSymbol(sym);
+    if (r.isNestedClass)
+      BCInnerClassGen.this.innerClassBufferASM.+=(r)
+    else
+      ();
+    r
+  }
+        </td>
+      </tr><tr>
+        <td>
+          241
+        </td>
+        <td>
+          1801
+        </td>
+        <td>
+          9421
+          -
+          9428
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.CoreBTypesProxy.RT_NULL
+        </td>
+        <td style="background: #AEF1AE">
+          BCodeHelpers.this.bTypes.coreBTypes.RT_NULL
+        </td>
+      </tr><tr>
+        <td>
+          241
+        </td>
+        <td>
+          1800
+        </td>
+        <td>
+          9403
+          -
+          9419
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.Object.==
+        </td>
+        <td style="background: #AEF1AE">
+          sym.==(BCodeHelpers.this.int.NullClass)
+        </td>
+      </tr><tr>
+        <td>
+          242
+        </td>
+        <td>
+          1809
+        </td>
+        <td>
+          9440
+          -
+          9554
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          {
+  val r: BCodeHelpers.this.bTypes.ClassBType = BCodeHelpers.this.bTypes.classBTypeFromSymbol(sym);
+  if (r.isNestedClass)
+    BCInnerClassGen.this.innerClassBufferASM.+=(r)
+  else
+    ();
+  r
+}
+        </td>
+      </tr><tr>
+        <td>
+          243
+        </td>
+        <td>
+          1803
+        </td>
+        <td>
+          9457
+          -
+          9482
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BTypesFromSymbols.classBTypeFromSymbol
+        </td>
+        <td style="background: #AEF1AE">
+          BCodeHelpers.this.bTypes.classBTypeFromSymbol(sym)
+        </td>
+      </tr><tr>
+        <td>
+          244
+        </td>
+        <td>
+          1806
+        </td>
+        <td>
+          9512
+          -
+          9536
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          scala.collection.mutable.SetLike.+=
+        </td>
+        <td style="background: #AEF1AE">
+          BCInnerClassGen.this.innerClassBufferASM.+=(r)
+        </td>
+      </tr><tr>
+        <td>
+          244
+        </td>
+        <td>
+          1808
+        </td>
+        <td>
+          9491
+          -
+          9491
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          ()
+        </td>
+      </tr><tr>
+        <td>
+          244
+        </td>
+        <td>
+          1805
+        </td>
+        <td>
+          9512
+          -
+          9536
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.mutable.SetLike.+=
+        </td>
+        <td style="background: #AEF1AE">
+          BCInnerClassGen.this.innerClassBufferASM.+=(r)
+        </td>
+      </tr><tr>
+        <td>
+          244
+        </td>
+        <td>
+          1804
+        </td>
+        <td>
+          9495
+          -
+          9510
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BTypes.ClassBType.isNestedClass
+        </td>
+        <td style="background: #AEF1AE">
+          r.isNestedClass
+        </td>
+      </tr><tr>
+        <td>
+          244
+        </td>
+        <td>
+          1807
+        </td>
+        <td>
+          9491
+          -
+          9491
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          ()
+        </td>
+      </tr><tr>
+        <td>
+          253
+        </td>
+        <td>
+          1811
+        </td>
+        <td>
+          9675
+          -
+          9688
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BackendInterface.SymbolHelper.isMethod
+        </td>
+        <td style="background: #AEF1AE">
+          BCodeHelpers.this.int.symHelper(msym).isMethod
+        </td>
+      </tr><tr>
+        <td>
+          253
+        </td>
+        <td>
+          1813
+        </td>
+        <td>
+          9668
+          -
+          9720
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Predef.assert
+        </td>
+        <td style="background: #AEF1AE">
+          scala.Predef.assert(BCodeHelpers.this.int.symHelper(msym).isMethod, StringContext.apply(&quot;not a method-symbol: &quot;, &quot;&quot;).s(msym))
+        </td>
+      </tr><tr>
+        <td>
+          253
+        </td>
+        <td>
+          1812
+        </td>
+        <td>
+          9690
+          -
+          9719
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.StringContext.s
+        </td>
+        <td style="background: #F0ADAD">
+          StringContext.apply(&quot;not a method-symbol: &quot;, &quot;&quot;).s(msym)
+        </td>
+      </tr><tr>
+        <td>
+          255
+        </td>
+        <td>
+          1815
+        </td>
+        <td>
+          9757
+          -
+          9802
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Boolean.||
+        </td>
+        <td style="background: #AEF1AE">
+          BCodeHelpers.this.int.symHelper(msym).isClassConstructor.||(BCodeHelpers.this.int.symHelper(msym).isConstructor)
+        </td>
+      </tr><tr>
+        <td>
+          255
+        </td>
+        <td>
+          1814
+        </td>
+        <td>
+          9784
+          -
+          9802
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BackendInterface.SymbolHelper.isConstructor
+        </td>
+        <td style="background: #AEF1AE">
+          BCodeHelpers.this.int.symHelper(msym).isConstructor
+        </td>
+      </tr><tr>
+        <td>
+          255
+        </td>
+        <td>
+          1817
+        </td>
+        <td>
+          9804
+          -
+          9808
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BTypes.UNIT
+        </td>
+        <td style="background: #AEF1AE">
+          BCodeHelpers.this.bTypes.UNIT
+        </td>
+      </tr><tr>
+        <td>
+          255
+        </td>
+        <td>
+          1816
+        </td>
+        <td>
+          9804
+          -
+          9808
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BTypes.UNIT
+        </td>
+        <td style="background: #AEF1AE">
+          BCodeHelpers.this.bTypes.UNIT
+        </td>
+      </tr><tr>
+        <td>
+          256
+        </td>
+        <td>
+          1820
+        </td>
+        <td>
+          9822
+          -
+          9853
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BCodeHelpers.BCInnerClassGen.toTypeKind
+        </td>
+        <td style="background: #AEF1AE">
+          BCInnerClassGen.this.toTypeKind(BCodeHelpers.this.int.typeHelper(BCodeHelpers.this.int.symHelper(msym).tpe).resultType)
+        </td>
+      </tr><tr>
+        <td>
+          256
+        </td>
+        <td>
+          1819
+        </td>
+        <td>
+          9833
+          -
+          9852
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BackendInterface.TypeHelper.resultType
+        </td>
+        <td style="background: #AEF1AE">
+          BCodeHelpers.this.int.typeHelper(BCodeHelpers.this.int.symHelper(msym).tpe).resultType
+        </td>
+      </tr><tr>
+        <td>
+          256
+        </td>
+        <td>
+          1818
+        </td>
+        <td>
+          9833
+          -
+          9841
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BackendInterface.SymbolHelper.tpe
+        </td>
+        <td style="background: #AEF1AE">
+          BCodeHelpers.this.int.symHelper(msym).tpe
+        </td>
+      </tr><tr>
+        <td>
+          256
+        </td>
+        <td>
+          1821
+        </td>
+        <td>
+          9822
+          -
+          9853
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BCodeHelpers.BCInnerClassGen.toTypeKind
+        </td>
+        <td style="background: #AEF1AE">
+          BCInnerClassGen.this.toTypeKind(BCodeHelpers.this.int.typeHelper(BCodeHelpers.this.int.symHelper(msym).tpe).resultType)
+        </td>
+      </tr><tr>
+        <td>
+          257
+        </td>
+        <td>
+          1824
+        </td>
+        <td>
+          9892
+          -
+          9892
+        </td>
+        <td>
+          TypeApply
+        </td>
+        <td>
+          scala.collection.immutable.List.canBuildFrom
+        </td>
+        <td style="background: #AEF1AE">
+          immutable.this.List.canBuildFrom[BCodeHelpers.this.bTypes.BType]
+        </td>
+      </tr><tr>
+        <td>
+          257
+        </td>
+        <td>
+          1823
+        </td>
+        <td>
+          9896
+          -
+          9906
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BCodeHelpers.BCInnerClassGen.toTypeKind
+        </td>
+        <td style="background: #AEF1AE">
+          BCInnerClassGen.this.toTypeKind(tp)
+        </td>
+      </tr><tr>
+        <td>
+          257
+        </td>
+        <td>
+          1826
+        </td>
+        <td>
+          9860
+          -
+          9913
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BTypes.MethodBType.apply
+        </td>
+        <td style="background: #AEF1AE">
+          BCodeHelpers.this.bTypes.MethodBType.apply(BCodeHelpers.this.int.typeHelper(BCodeHelpers.this.int.symHelper(msym).tpe).paramTypes.map[BCodeHelpers.this.bTypes.BType, List[BCodeHelpers.this.bTypes.BType]]({
+  ((tp: BCodeHelpers.this.int.Type) =&gt; BCInnerClassGen.this.toTypeKind(tp))
+})(immutable.this.List.canBuildFrom[BCodeHelpers.this.bTypes.BType]), resT)
+        </td>
+      </tr><tr>
+        <td>
+          257
+        </td>
+        <td>
+          1822
+        </td>
+        <td>
+          9872
+          -
+          9880
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BackendInterface.SymbolHelper.tpe
+        </td>
+        <td style="background: #AEF1AE">
+          BCodeHelpers.this.int.symHelper(msym).tpe
+        </td>
+      </tr><tr>
+        <td>
+          257
+        </td>
+        <td>
+          1825
+        </td>
+        <td>
+          9872
+          -
+          9906
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          scala.collection.immutable.List.map
+        </td>
+        <td style="background: #AEF1AE">
+          BCodeHelpers.this.int.typeHelper(BCodeHelpers.this.int.symHelper(msym).tpe).paramTypes.map[BCodeHelpers.this.bTypes.BType, List[BCodeHelpers.this.bTypes.BType]]({
+  ((tp: BCodeHelpers.this.int.Type) =&gt; BCInnerClassGen.this.toTypeKind(tp))
+})(immutable.this.List.canBuildFrom[BCodeHelpers.this.bTypes.BType])
+        </td>
+      </tr><tr>
+        <td>
+          264
+        </td>
+        <td>
+          1827
+        </td>
+        <td>
+          10117
+          -
+          10141
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BTypes.BType.descriptor
+        </td>
+        <td style="background: #AEF1AE">
+          BCInnerClassGen.this.toTypeKind(t).descriptor
+        </td>
+      </tr><tr>
+        <td>
+          270
+        </td>
+        <td>
+          1828
+        </td>
+        <td>
+          10351
+          -
+          10401
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BTypes.BType.descriptor
+        </td>
+        <td style="background: #AEF1AE">
+          BCInnerClassGen.this.getClassBTypeAndRegisterInnerClass(sym).descriptor
+        </td>
+      </tr><tr>
+        <td>
+          272
+        </td>
+        <td>
+          1829
+        </td>
+        <td>
+          10449
+          -
+          10487
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BackendInterface.TypeHelper.toTypeKind
+        </td>
+        <td style="background: #AEF1AE">
+          BCodeHelpers.this.int.typeHelper(tp).toTypeKind(BCodeHelpers.this)(this)
+        </td>
+      </tr><tr>
+        <td>
+          282
+        </td>
+        <td>
+          1830
+        </td>
+        <td>
+          10698
+          -
+          10759
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BackendInterface.emitAnnotations
+        </td>
+        <td style="background: #AEF1AE">
+          BCodeHelpers.this.int.emitAnnotations(cw, annotations, BCodeHelpers.this)(this)
+        </td>
+      </tr><tr>
+        <td>
+          288
+        </td>
+        <td>
+          1831
+        </td>
+        <td>
+          10888
+          -
+          10949
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BackendInterface.emitAnnotations
+        </td>
+        <td style="background: #AEF1AE">
+          BCodeHelpers.this.int.emitAnnotations(mw, annotations, BCodeHelpers.this)(this)
+        </td>
+      </tr><tr>
+        <td>
+          294
+        </td>
+        <td>
+          1832
+        </td>
+        <td>
+          11077
+          -
+          11138
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BackendInterface.emitAnnotations
+        </td>
+        <td style="background: #AEF1AE">
+          BCodeHelpers.this.int.emitAnnotations(fw, annotations, BCodeHelpers.this)(this)
+        </td>
+      </tr><tr>
+        <td>
+          300
+        </td>
+        <td>
+          1833
+        </td>
+        <td>
+          11280
+          -
+          11348
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BackendInterface.emitParamAnnotations
+        </td>
+        <td style="background: #AEF1AE">
+          BCodeHelpers.this.int.emitParamAnnotations(jmethod, pannotss, BCodeHelpers.this)(this)
+        </td>
+      </tr><tr>
+        <td>
+          314
+        </td>
+        <td>
+          1834
+        </td>
+        <td>
+          11718
+          -
+          11753
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BackendInterface.getGenericSignature
+        </td>
+        <td style="background: #AEF1AE">
+          BCodeHelpers.this.int.getGenericSignature(sym, owner)
+        </td>
+      </tr><tr>
+        <td>
+          325
+        </td>
+        <td>
+          1835
+        </td>
+        <td>
+          12082
+          -
+          12102
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BCodeHelpers.BCInnerClassGen.internalName
+        </td>
+        <td style="background: #AEF1AE">
+          BCForwardersGen.this.internalName(module)
+        </td>
+      </tr><tr>
+        <td>
+          326
+        </td>
+        <td>
+          1836
+        </td>
+        <td>
+          12130
+          -
+          12159
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BackendInterface.TypeHelper.memberInfo
+        </td>
+        <td style="background: #AEF1AE">
+          BCodeHelpers.this.int.typeHelper(BCodeHelpers.this.int.symHelper(module).thisType).memberInfo(m)
+        </td>
+      </tr><tr>
+        <td>
+          327
+        </td>
+        <td>
+          1838
+        </td>
+        <td>
+          12222
+          -
+          12222
+        </td>
+        <td>
+          TypeApply
+        </td>
+        <td>
+          scala.collection.immutable.List.canBuildFrom
+        </td>
+        <td style="background: #AEF1AE">
+          immutable.this.List.canBuildFrom[BCodeHelpers.this.bTypes.BType]
+        </td>
+      </tr><tr>
+        <td>
+          327
+        </td>
+        <td>
+          1837
+        </td>
+        <td>
+          12226
+          -
+          12236
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BCodeHelpers.BCInnerClassGen.toTypeKind
+        </td>
+        <td style="background: #AEF1AE">
+          BCForwardersGen.this.toTypeKind(tp)
+        </td>
+      </tr><tr>
+        <td>
+          327
+        </td>
+        <td>
+          1839
+        </td>
+        <td>
+          12200
+          -
+          12236
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          scala.collection.immutable.List.map
+        </td>
+        <td style="background: #AEF1AE">
+          BCodeHelpers.this.int.typeHelper(methodInfo).paramTypes.map[BCodeHelpers.this.bTypes.BType, List[BCodeHelpers.this.bTypes.BType]]({
+  ((tp: BCodeHelpers.this.int.Type) =&gt; BCForwardersGen.this.toTypeKind(tp))
+})(immutable.this.List.canBuildFrom[BCodeHelpers.this.bTypes.BType])
+        </td>
+      </tr><tr>
+        <td>
+          336
+        </td>
+        <td>
+          1846
+        </td>
+        <td>
+          12670
+          -
+          12768
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Int.|
+        </td>
+        <td style="background: #AEF1AE">
+          9.|(if (BCodeHelpers.this.int.symHelper(m).isVarargsMethod)
+  128
+else
+  0)
+        </td>
+      </tr><tr>
+        <td>
+          336
+        </td>
+        <td>
+          1840
+        </td>
+        <td>
+          12670
+          -
+          12694
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          9
+        </td>
+      </tr><tr>
+        <td>
+          337
+        </td>
+        <td>
+          1842
+        </td>
+        <td>
+          12730
+          -
+          12753
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          128
+        </td>
+      </tr><tr>
+        <td>
+          337
+        </td>
+        <td>
+          1841
+        </td>
+        <td>
+          12711
+          -
+          12728
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BackendInterface.SymbolHelper.isVarargsMethod
+        </td>
+        <td style="background: #AEF1AE">
+          BCodeHelpers.this.int.symHelper(m).isVarargsMethod
+        </td>
+      </tr><tr>
+        <td>
+          337
+        </td>
+        <td>
+          1844
+        </td>
+        <td>
+          12759
+          -
+          12760
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          0
+        </td>
+      </tr><tr>
+        <td>
+          337
+        </td>
+        <td>
+          1843
+        </td>
+        <td>
+          12730
+          -
+          12753
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          128
+        </td>
+      </tr><tr>
+        <td>
+          337
+        </td>
+        <td>
+          1845
+        </td>
+        <td>
+          12759
+          -
+          12760
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          0
+        </td>
+      </tr><tr>
+        <td>
+          341
+        </td>
+        <td>
+          1847
+        </td>
+        <td>
+          12864
+          -
+          12909
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BackendInterface.getStaticForwarderGenericSignature
+        </td>
+        <td style="background: #AEF1AE">
+          BCodeHelpers.this.int.getStaticForwarderGenericSignature(m, module)
+        </td>
+      </tr><tr>
+        <td>
+          342
+        </td>
+        <td>
+          1849
+        </td>
+        <td>
+          12929
+          -
+          12929
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.Tuple2._2
+        </td>
+        <td style="background: #AEF1AE">
+          x$5._2
+        </td>
+      </tr><tr>
+        <td>
+          342
+        </td>
+        <td>
+          1848
+        </td>
+        <td>
+          12921
+          -
+          12921
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.Tuple2._1
+        </td>
+        <td style="background: #AEF1AE">
+          x$5._1
+        </td>
+      </tr><tr>
+        <td>
+          343
+        </td>
+        <td>
+          1850
+        </td>
+        <td>
+          13032
+          -
+          13053
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BCodeHelpers.BCForwardersGen.getExceptions
+        </td>
+        <td style="background: #AEF1AE">
+          BCForwardersGen.this.getExceptions(throws)
+        </td>
+      </tr><tr>
+        <td>
+          345
+        </td>
+        <td>
+          1851
+        </td>
+        <td>
+          13090
+          -
+          13111
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BackendInterface.TypeHelper.resultType
+        </td>
+        <td style="background: #AEF1AE">
+          BCodeHelpers.this.int.typeHelper(methodInfo).resultType
+        </td>
+      </tr><tr>
+        <td>
+          345
+        </td>
+        <td>
+          1852
+        </td>
+        <td>
+          13079
+          -
+          13112
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BCodeHelpers.BCInnerClassGen.toTypeKind
+        </td>
+        <td style="background: #AEF1AE">
+          BCForwardersGen.this.toTypeKind(BCodeHelpers.this.int.typeHelper(methodInfo).resultType)
+        </td>
+      </tr><tr>
+        <td>
+          346
+        </td>
+        <td>
+          1853
+        </td>
+        <td>
+          13131
+          -
+          13182
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BTypes.BType.descriptor
+        </td>
+        <td style="background: #AEF1AE">
+          BCodeHelpers.this.bTypes.MethodBType.apply(paramJavaTypes, jReturnType).descriptor
+        </td>
+      </tr><tr>
+        <td>
+          347
+        </td>
+        <td>
+          1854
+        </td>
+        <td>
+          13212
+          -
+          13237
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.String.toString
+        </td>
+        <td style="background: #AEF1AE">
+          BCodeHelpers.this.int.symHelper(m).javaSimpleName.toString()
+        </td>
+      </tr><tr>
+        <td>
+          348
+        </td>
+        <td>
+          1856
+        </td>
+        <td>
+          13282
+          -
+          13417
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.tools.asm.ClassVisitor.visitMethod
+        </td>
+        <td style="background: #AEF1AE">
+          jclass.visitMethod(flags, mirrorMethodName, mdesc, jgensig, BCodeHelpers.this.mkArrayS(thrownExceptions))
+        </td>
+      </tr><tr>
+        <td>
+          353
+        </td>
+        <td>
+          1855
+        </td>
+        <td>
+          13383
+          -
+          13409
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BCodeIdiomatic.mkArrayS
+        </td>
+        <td style="background: #AEF1AE">
+          BCodeHelpers.this.mkArrayS(thrownExceptions)
+        </td>
+      </tr><tr>
+        <td>
+          356
+        </td>
+        <td>
+          1857
+        </td>
+        <td>
+          13425
+          -
+          13462
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BCodeHelpers.BCAnnotGen.emitAnnotations
+        </td>
+        <td style="background: #AEF1AE">
+          BCForwardersGen.this.emitAnnotations(mirrorMethod, others)
+        </td>
+      </tr><tr>
+        <td>
+          357
+        </td>
+        <td>
+          1859
+        </td>
+        <td>
+          13522
+          -
+          13535
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BackendInterface.SymbolHelper.annotations
+        </td>
+        <td style="background: #F0ADAD">
+          BCodeHelpers.this.int.symHelper(x$6).annotations
+        </td>
+      </tr><tr>
+        <td>
+          357
+        </td>
+        <td>
+          1862
+        </td>
+        <td>
+          13469
+          -
+          13537
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BCodeHelpers.BCAnnotGen.emitParamAnnotations
+        </td>
+        <td style="background: #AEF1AE">
+          BCForwardersGen.this.emitParamAnnotations(mirrorMethod, BCodeHelpers.this.int.typeHelper(BCodeHelpers.this.int.symHelper(m).info).params.map[List[BCodeHelpers.this.int.Annotation], List[List[BCodeHelpers.this.int.Annotation]]](((x$6: BCodeHelpers.this.int.Symbol) =&gt; BCodeHelpers.this.int.symHelper(x$6).annotations))(immutable.this.List.canBuildFrom[List[BCodeHelpers.this.int.Annotation]]))
+        </td>
+      </tr><tr>
+        <td>
+          357
+        </td>
+        <td>
+          1858
+        </td>
+        <td>
+          13504
+          -
+          13510
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BackendInterface.SymbolHelper.info
+        </td>
+        <td style="background: #AEF1AE">
+          BCodeHelpers.this.int.symHelper(m).info
+        </td>
+      </tr><tr>
+        <td>
+          357
+        </td>
+        <td>
+          1861
+        </td>
+        <td>
+          13504
+          -
+          13536
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          scala.collection.immutable.List.map
+        </td>
+        <td style="background: #AEF1AE">
+          BCodeHelpers.this.int.typeHelper(BCodeHelpers.this.int.symHelper(m).info).params.map[List[BCodeHelpers.this.int.Annotation], List[List[BCodeHelpers.this.int.Annotation]]](((x$6: BCodeHelpers.this.int.Symbol) =&gt; BCodeHelpers.this.int.symHelper(x$6).annotations))(immutable.this.List.canBuildFrom[List[BCodeHelpers.this.int.Annotation]])
+        </td>
+      </tr><tr>
+        <td>
+          357
+        </td>
+        <td>
+          1860
+        </td>
+        <td>
+          13521
+          -
+          13521
+        </td>
+        <td>
+          TypeApply
+        </td>
+        <td>
+          scala.collection.immutable.List.canBuildFrom
+        </td>
+        <td style="background: #AEF1AE">
+          immutable.this.List.canBuildFrom[List[BCodeHelpers.this.int.Annotation]]
+        </td>
+      </tr><tr>
+        <td>
+          359
+        </td>
+        <td>
+          1863
+        </td>
+        <td>
+          13545
+          -
+          13569
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.tools.asm.MethodVisitor.visitCode
+        </td>
+        <td style="background: #AEF1AE">
+          mirrorMethod.visitCode()
+        </td>
+      </tr><tr>
+        <td>
+          361
+        </td>
+        <td>
+          1865
+        </td>
+        <td>
+          13640
+          -
+          13661
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BackendInterface.MODULE_INSTANCE_FIELD
+        </td>
+        <td style="background: #AEF1AE">
+          BCodeHelpers.this.int.MODULE_INSTANCE_FIELD
+        </td>
+      </tr><tr>
+        <td>
+          361
+        </td>
+        <td>
+          1864
+        </td>
+        <td>
+          13605
+          -
+          13626
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          178
+        </td>
+      </tr><tr>
+        <td>
+          361
+        </td>
+        <td>
+          1867
+        </td>
+        <td>
+          13577
+          -
+          13685
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.tools.asm.MethodVisitor.visitFieldInsn
+        </td>
+        <td style="background: #AEF1AE">
+          mirrorMethod.visitFieldInsn(178, moduleName, BCodeHelpers.this.int.MODULE_INSTANCE_FIELD, BCForwardersGen.this.symDescriptor(module))
+        </td>
+      </tr><tr>
+        <td>
+          361
+        </td>
+        <td>
+          1866
+        </td>
+        <td>
+          13663
+          -
+          13684
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BCodeHelpers.BCInnerClassGen.symDescriptor
+        </td>
+        <td style="background: #AEF1AE">
+          BCForwardersGen.this.symDescriptor(module)
+        </td>
+      </tr><tr>
+        <td>
+          363
+        </td>
+        <td>
+          1868
+        </td>
+        <td>
+          13705
+          -
+          13706
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          0
+        </td>
+      </tr><tr>
+        <td>
+          364
+        </td>
+        <td>
+          1875
+        </td>
+        <td>
+          13713
+          -
+          13939
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.immutable.List.foreach
+        </td>
+        <td style="background: #AEF1AE">
+          paramJavaTypes.foreach[Unit](((jparamType: BCodeHelpers.this.bTypes.BType) =&gt; {
+  mirrorMethod.visitVarInsn(jparamType.typedOpcode(21), index);
+  scala.Predef.assert(jparamType.isInstanceOf[BCodeHelpers.this.bTypes.MethodBType].unary_!, jparamType);
+  index = index.+(jparamType.size)
+}))
+        </td>
+      </tr><tr>
+        <td>
+          365
+        </td>
+        <td>
+          1870
+        </td>
+        <td>
+          13757
+          -
+          13832
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.tools.asm.MethodVisitor.visitVarInsn
+        </td>
+        <td style="background: #AEF1AE">
+          mirrorMethod.visitVarInsn(jparamType.typedOpcode(21), index)
+        </td>
+      </tr><tr>
+        <td>
+          365
+        </td>
+        <td>
+          1869
+        </td>
+        <td>
+          13783
+          -
+          13824
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BTypes.BType.typedOpcode
+        </td>
+        <td style="background: #AEF1AE">
+          jparamType.typedOpcode(21)
+        </td>
+      </tr><tr>
+        <td>
+          366
+        </td>
+        <td>
+          1871
+        </td>
+        <td>
+          13848
+          -
+          13885
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.Boolean.unary_!
+        </td>
+        <td style="background: #AEF1AE">
+          jparamType.isInstanceOf[BCodeHelpers.this.bTypes.MethodBType].unary_!
+        </td>
+      </tr><tr>
+        <td>
+          366
+        </td>
+        <td>
+          1872
+        </td>
+        <td>
+          13841
+          -
+          13898
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Predef.assert
+        </td>
+        <td style="background: #AEF1AE">
+          scala.Predef.assert(jparamType.isInstanceOf[BCodeHelpers.this.bTypes.MethodBType].unary_!, jparamType)
+        </td>
+      </tr><tr>
+        <td>
+          367
+        </td>
+        <td>
+          1874
+        </td>
+        <td>
+          13907
+          -
+          13931
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Int.+
+        </td>
+        <td style="background: #AEF1AE">
+          index.+(jparamType.size)
+        </td>
+      </tr><tr>
+        <td>
+          367
+        </td>
+        <td>
+          1873
+        </td>
+        <td>
+          13916
+          -
+          13931
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BTypes.BType.size
+        </td>
+        <td style="background: #AEF1AE">
+          jparamType.size
+        </td>
+      </tr><tr>
+        <td>
+          370
+        </td>
+        <td>
+          1877
+        </td>
+        <td>
+          14033
+          -
+          14060
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BTypes.BType.descriptor
+        </td>
+        <td style="background: #AEF1AE">
+          BCForwardersGen.this.asmMethodType(m).descriptor
+        </td>
+      </tr><tr>
+        <td>
+          370
+        </td>
+        <td>
+          1876
+        </td>
+        <td>
+          13976
+          -
+          14001
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          182
+        </td>
+      </tr><tr>
+        <td>
+          370
+        </td>
+        <td>
+          1879
+        </td>
+        <td>
+          13947
+          -
+          14068
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.tools.asm.MethodVisitor.visitMethodInsn
+        </td>
+        <td style="background: #AEF1AE">
+          mirrorMethod.visitMethodInsn(182, moduleName, mirrorMethodName, BCForwardersGen.this.asmMethodType(m).descriptor, false)
+        </td>
+      </tr><tr>
+        <td>
+          370
+        </td>
+        <td>
+          1878
+        </td>
+        <td>
+          14062
+          -
+          14067
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          false
+        </td>
+      </tr><tr>
+        <td>
+          371
+        </td>
+        <td>
+          1880
+        </td>
+        <td>
+          14098
+          -
+          14142
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BTypes.BType.typedOpcode
+        </td>
+        <td style="background: #AEF1AE">
+          jReturnType.typedOpcode(172)
+        </td>
+      </tr><tr>
+        <td>
+          371
+        </td>
+        <td>
+          1881
+        </td>
+        <td>
+          14075
+          -
+          14143
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.tools.asm.MethodVisitor.visitInsn
+        </td>
+        <td style="background: #AEF1AE">
+          mirrorMethod.visitInsn(jReturnType.typedOpcode(172))
+        </td>
+      </tr><tr>
+        <td>
+          373
+        </td>
+        <td>
+          1882
+        </td>
+        <td>
+          14151
+          -
+          14179
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.tools.asm.MethodVisitor.visitMaxs
+        </td>
+        <td style="background: #AEF1AE">
+          mirrorMethod.visitMaxs(0, 0)
+        </td>
+      </tr><tr>
+        <td>
+          374
+        </td>
+        <td>
+          1883
+        </td>
+        <td>
+          14230
+          -
+          14253
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.tools.asm.MethodVisitor.visitEnd
+        </td>
+        <td style="background: #AEF1AE">
+          mirrorMethod.visitEnd()
+        </td>
+      </tr><tr>
+        <td>
+          386
+        </td>
+        <td>
+          1885
+        </td>
+        <td>
+          14707
+          -
+          14753
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Predef.assert
+        </td>
+        <td style="background: #AEF1AE">
+          scala.Predef.assert(BCodeHelpers.this.int.symHelper(moduleClass).isModuleClass, moduleClass)
+        </td>
+      </tr><tr>
+        <td>
+          386
+        </td>
+        <td>
+          1884
+        </td>
+        <td>
+          14714
+          -
+          14739
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BackendInterface.SymbolHelper.isModuleClass
+        </td>
+        <td style="background: #AEF1AE">
+          BCodeHelpers.this.int.symHelper(moduleClass).isModuleClass
+        </td>
+      </tr><tr>
+        <td>
+          387
+        </td>
+        <td>
+          1886
+        </td>
+        <td>
+          14769
+          -
+          14817
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.StringContext.s
+        </td>
+        <td style="background: #F0ADAD">
+          StringContext.apply(&quot;Dumping mirror class for object: &quot;, &quot;&quot;).s(moduleClass)
+        </td>
+      </tr><tr>
+        <td>
+          387
+        </td>
+        <td>
+          1887
+        </td>
+        <td>
+          14760
+          -
+          14818
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BackendInterface.debuglog
+        </td>
+        <td style="background: #AEF1AE">
+          BCodeHelpers.this.int.debuglog(StringContext.apply(&quot;Dumping mirror class for object: &quot;, &quot;&quot;).s(moduleClass))
+        </td>
+      </tr><tr>
+        <td>
+          389
+        </td>
+        <td>
+          1888
+        </td>
+        <td>
+          14845
+          -
+          14871
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BackendInterface.SymbolHelper.companionClass
+        </td>
+        <td style="background: #AEF1AE">
+          BCodeHelpers.this.int.symHelper(moduleClass).companionClass
+        </td>
+      </tr><tr>
+        <td>
+          394
+        </td>
+        <td>
+          1889
+        </td>
+        <td>
+          15149
+          -
+          15215
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.StringContext.s
+        </td>
+        <td style="background: #F0ADAD">
+          StringContext.apply(&quot;Potentially conflicting names for forwarders: &quot;, &quot;&quot;).s(conflictingNames)
+        </td>
+      </tr><tr>
+        <td>
+          394
+        </td>
+        <td>
+          1890
+        </td>
+        <td>
+          15140
+          -
+          15216
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BackendInterface.debuglog
+        </td>
+        <td style="background: #AEF1AE">
+          BCodeHelpers.this.int.debuglog(StringContext.apply(&quot;Potentially conflicting names for forwarders: &quot;, &quot;&quot;).s(conflictingNames))
+        </td>
+      </tr><tr>
+        <td>
+          396
+        </td>
+        <td>
+          1892
+        </td>
+        <td>
+          15271
+          -
+          15293
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BackendInterface.ExcludedForwarderFlags
+        </td>
+        <td style="background: #AEF1AE">
+          BCodeHelpers.this.int.ExcludedForwarderFlags
+        </td>
+      </tr><tr>
+        <td>
+          396
+        </td>
+        <td>
+          1891
+        </td>
+        <td>
+          15234
+          -
+          15250
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BackendInterface.SymbolHelper.info
+        </td>
+        <td style="background: #AEF1AE">
+          BCodeHelpers.this.int.symHelper(moduleClass).info
+        </td>
+      </tr><tr>
+        <td>
+          396
+        </td>
+        <td>
+          1923
+        </td>
+        <td>
+          15224
+          -
+          15864
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.immutable.List.foreach
+        </td>
+        <td style="background: #AEF1AE">
+          BCodeHelpers.this.int.typeHelper(BCodeHelpers.this.int.symHelper(moduleClass).info).membersBasedOnFlags(BCodeHelpers.this.int.ExcludedForwarderFlags, BCodeHelpers.this.int.Flag_METHOD).foreach[Unit](((m: BCodeHelpers.this.int.Symbol) =&gt; if (BCodeHelpers.this.int.symHelper(m).isType.||(BCodeHelpers.this.int.symHelper(m).isDeferred).||(BCodeHelpers.this.int.symHelper(m).owner.eq(BCodeHelpers.this.int.ObjectClass)).||(BCodeHelpers.this.int.symHelper(m).isConstructor))
+  BCodeHelpers.this.int.debuglog(StringContext.apply(&quot;No forwarder for \'&quot;, &quot;\' from &quot;, &quot; to \'&quot;, &quot;\'&quot;).s(m, jclassName, moduleClass))
+else
+  if (conflictingNames.apply(BCodeHelpers.this.int.symHelper(m).name))
+    BCodeHelpers.this.int.log(StringContext.apply(&quot;No forwarder for &quot;, &quot; due to conflict with &quot;, &quot;&quot;).s(m, BCodeHelpers.this.int.typeHelper(BCodeHelpers.this.int.symHelper(linkedClass).info).member(BCodeHelpers.this.int.symHelper(m).name)))
+  else
+    if (BCodeHelpers.this.int.symHelper(m).hasAccessBoundary)
+      BCodeHelpers.this.int.log(StringContext.apply(&quot;No forwarder for non-public member &quot;, &quot;&quot;).s(m))
+    else
+      {
+        BCodeHelpers.this.int.log(StringContext.apply(&quot;Adding static forwarder for \'&quot;, &quot;\' from &quot;, &quot; to \'&quot;, &quot;\'&quot;).s(m, jclassName, moduleClass));
+        BCForwardersGen.this.addForwarder(jclass, moduleClass, m)
+      }))
+        </td>
+      </tr><tr>
+        <td>
+          396
+        </td>
+        <td>
+          1893
+        </td>
+        <td>
+          15295
+          -
+          15306
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BackendInterface.Flag_METHOD
+        </td>
+        <td style="background: #AEF1AE">
+          BCodeHelpers.this.int.Flag_METHOD
+        </td>
+      </tr><tr>
+        <td>
+          397
+        </td>
+        <td>
+          1895
+        </td>
+        <td>
+          15363
+          -
+          15374
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BackendInterfaceDefinitions.ObjectClass
+        </td>
+        <td style="background: #AEF1AE">
+          BCodeHelpers.this.int.ObjectClass
+        </td>
+      </tr><tr>
+        <td>
+          397
+        </td>
+        <td>
+          1898
+        </td>
+        <td>
+          15323
+          -
+          15394
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Boolean.||
+        </td>
+        <td style="background: #AEF1AE">
+          BCodeHelpers.this.int.symHelper(m).isType.||(BCodeHelpers.this.int.symHelper(m).isDeferred).||(BCodeHelpers.this.int.symHelper(m).owner.eq(BCodeHelpers.this.int.ObjectClass)).||(BCodeHelpers.this.int.symHelper(m).isConstructor)
+        </td>
+      </tr><tr>
+        <td>
+          397
+        </td>
+        <td>
+          1897
+        </td>
+        <td>
+          15379
+          -
+          15394
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BackendInterface.SymbolHelper.isConstructor
+        </td>
+        <td style="background: #AEF1AE">
+          BCodeHelpers.this.int.symHelper(m).isConstructor
+        </td>
+      </tr><tr>
+        <td>
+          397
+        </td>
+        <td>
+          1894
+        </td>
+        <td>
+          15335
+          -
+          15347
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BackendInterface.SymbolHelper.isDeferred
+        </td>
+        <td style="background: #AEF1AE">
+          BCodeHelpers.this.int.symHelper(m).isDeferred
+        </td>
+      </tr><tr>
+        <td>
+          397
+        </td>
+        <td>
+          1896
+        </td>
+        <td>
+          15352
+          -
+          15374
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.Object.eq
+        </td>
+        <td style="background: #AEF1AE">
+          BCodeHelpers.this.int.symHelper(m).owner.eq(BCodeHelpers.this.int.ObjectClass)
+        </td>
+      </tr><tr>
+        <td>
+          398
+        </td>
+        <td>
+          1901
+        </td>
+        <td>
+          15406
+          -
+          15475
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BackendInterface.debuglog
+        </td>
+        <td style="background: #AEF1AE">
+          BCodeHelpers.this.int.debuglog(StringContext.apply(&quot;No forwarder for \'&quot;, &quot;\' from &quot;, &quot; to \'&quot;, &quot;\'&quot;).s(m, jclassName, moduleClass))
+        </td>
+      </tr><tr>
+        <td>
+          398
+        </td>
+        <td>
+          1900
+        </td>
+        <td>
+          15406
+          -
+          15475
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BackendInterface.debuglog
+        </td>
+        <td style="background: #AEF1AE">
+          BCodeHelpers.this.int.debuglog(StringContext.apply(&quot;No forwarder for \'&quot;, &quot;\' from &quot;, &quot; to \'&quot;, &quot;\'&quot;).s(m, jclassName, moduleClass))
+        </td>
+      </tr><tr>
+        <td>
+          398
+        </td>
+        <td>
+          1899
+        </td>
+        <td>
+          15415
+          -
+          15474
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.StringContext.s
+        </td>
+        <td style="background: #F0ADAD">
+          StringContext.apply(&quot;No forwarder for \'&quot;, &quot;\' from &quot;, &quot; to \'&quot;, &quot;\'&quot;).s(m, jclassName, moduleClass)
+        </td>
+      </tr><tr>
+        <td>
+          399
+        </td>
+        <td>
+          1922
+        </td>
+        <td>
+          15489
+          -
+          15864
+        </td>
+        <td>
+          If
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          if (conflictingNames.apply(BCodeHelpers.this.int.symHelper(m).name))
+  BCodeHelpers.this.int.log(StringContext.apply(&quot;No forwarder for &quot;, &quot; due to conflict with &quot;, &quot;&quot;).s(m, BCodeHelpers.this.int.typeHelper(BCodeHelpers.this.int.symHelper(linkedClass).info).member(BCodeHelpers.this.int.symHelper(m).name)))
+else
+  if (BCodeHelpers.this.int.symHelper(m).hasAccessBoundary)
+    BCodeHelpers.this.int.log(StringContext.apply(&quot;No forwarder for non-public member &quot;, &quot;&quot;).s(m))
+  else
+    {
+      BCodeHelpers.this.int.log(StringContext.apply(&quot;Adding static forwarder for \'&quot;, &quot;\' from &quot;, &quot; to \'&quot;, &quot;\'&quot;).s(m, jclassName, moduleClass));
+      BCForwardersGen.this.addForwarder(jclass, moduleClass, m)
+    }
+        </td>
+      </tr><tr>
+        <td>
+          399
+        </td>
+        <td>
+          1903
+        </td>
+        <td>
+          15493
+          -
+          15517
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.GenSetLike.apply
+        </td>
+        <td style="background: #AEF1AE">
+          conflictingNames.apply(BCodeHelpers.this.int.symHelper(m).name)
+        </td>
+      </tr><tr>
+        <td>
+          399
+        </td>
+        <td>
+          1902
+        </td>
+        <td>
+          15510
+          -
+          15516
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BackendInterface.SymbolHelper.name
+        </td>
+        <td style="background: #AEF1AE">
+          BCodeHelpers.this.int.symHelper(m).name
+        </td>
+      </tr><tr>
+        <td>
+          400
+        </td>
+        <td>
+          1910
+        </td>
+        <td>
+          15533
+          -
+          15611
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.StringContext.s
+        </td>
+        <td style="background: #F0ADAD">
+          StringContext.apply(&quot;No forwarder for &quot;, &quot; due to conflict with &quot;, &quot;&quot;).s(m, BCodeHelpers.this.int.typeHelper(BCodeHelpers.this.int.symHelper(linkedClass).info).member(BCodeHelpers.this.int.symHelper(m).name))
+        </td>
+      </tr><tr>
+        <td>
+          400
+        </td>
+        <td>
+          1904
+        </td>
+        <td>
+          15535
+          -
+          15553
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          &quot;No forwarder for &quot;
+        </td>
+      </tr><tr>
+        <td>
+          400
+        </td>
+        <td>
+          1907
+        </td>
+        <td>
+          15578
+          -
+          15594
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BackendInterface.SymbolHelper.info
+        </td>
+        <td style="background: #F0ADAD">
+          BCodeHelpers.this.int.symHelper(linkedClass).info
+        </td>
+      </tr><tr>
+        <td>
+          400
+        </td>
+        <td>
+          1906
+        </td>
+        <td>
+          15610
+          -
+          15611
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          &quot;&quot;
+        </td>
+      </tr><tr>
+        <td>
+          400
+        </td>
+        <td>
+          1909
+        </td>
+        <td>
+          15578
+          -
+          15609
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BackendInterface.TypeHelper.member
+        </td>
+        <td style="background: #F0ADAD">
+          BCodeHelpers.this.int.typeHelper(BCodeHelpers.this.int.symHelper(linkedClass).info).member(BCodeHelpers.this.int.symHelper(m).name)
+        </td>
+      </tr><tr>
+        <td>
+          400
+        </td>
+        <td>
+          1912
+        </td>
+        <td>
+          15529
+          -
+          15612
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BackendInterface.log
+        </td>
+        <td style="background: #AEF1AE">
+          BCodeHelpers.this.int.log(StringContext.apply(&quot;No forwarder for &quot;, &quot; due to conflict with &quot;, &quot;&quot;).s(m, BCodeHelpers.this.int.typeHelper(BCodeHelpers.this.int.symHelper(linkedClass).info).member(BCodeHelpers.this.int.symHelper(m).name)))
+        </td>
+      </tr><tr>
+        <td>
+          400
+        </td>
+        <td>
+          1905
+        </td>
+        <td>
+          15554
+          -
+          15577
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          &quot; due to conflict with &quot;
+        </td>
+      </tr><tr>
+        <td>
+          400
+        </td>
+        <td>
+          1908
+        </td>
+        <td>
+          15602
+          -
+          15608
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BackendInterface.SymbolHelper.name
+        </td>
+        <td style="background: #F0ADAD">
+          BCodeHelpers.this.int.symHelper(m).name
+        </td>
+      </tr><tr>
+        <td>
+          400
+        </td>
+        <td>
+          1911
+        </td>
+        <td>
+          15529
+          -
+          15612
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BackendInterface.log
+        </td>
+        <td style="background: #AEF1AE">
+          BCodeHelpers.this.int.log(StringContext.apply(&quot;No forwarder for &quot;, &quot; due to conflict with &quot;, &quot;&quot;).s(m, BCodeHelpers.this.int.typeHelper(BCodeHelpers.this.int.symHelper(linkedClass).info).member(BCodeHelpers.this.int.symHelper(m).name)))
+        </td>
+      </tr><tr>
+        <td>
+          401
+        </td>
+        <td>
+          1913
+        </td>
+        <td>
+          15630
+          -
+          15649
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BackendInterface.SymbolHelper.hasAccessBoundary
+        </td>
+        <td style="background: #AEF1AE">
+          BCodeHelpers.this.int.symHelper(m).hasAccessBoundary
+        </td>
+      </tr><tr>
+        <td>
+          401
+        </td>
+        <td>
+          1921
+        </td>
+        <td>
+          15626
+          -
+          15864
+        </td>
+        <td>
+          If
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          if (BCodeHelpers.this.int.symHelper(m).hasAccessBoundary)
+  BCodeHelpers.this.int.log(StringContext.apply(&quot;No forwarder for non-public member &quot;, &quot;&quot;).s(m))
+else
+  {
+    BCodeHelpers.this.int.log(StringContext.apply(&quot;Adding static forwarder for \'&quot;, &quot;\' from &quot;, &quot; to \'&quot;, &quot;\'&quot;).s(m, jclassName, moduleClass));
+    BCForwardersGen.this.addForwarder(jclass, moduleClass, m)
+  }
+        </td>
+      </tr><tr>
+        <td>
+          402
+        </td>
+        <td>
+          1916
+        </td>
+        <td>
+          15661
+          -
+          15706
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BackendInterface.log
+        </td>
+        <td style="background: #F0ADAD">
+          BCodeHelpers.this.int.log(StringContext.apply(&quot;No forwarder for non-public member &quot;, &quot;&quot;).s(m))
+        </td>
+      </tr><tr>
+        <td>
+          402
+        </td>
+        <td>
+          1915
+        </td>
+        <td>
+          15661
+          -
+          15706
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BackendInterface.log
+        </td>
+        <td style="background: #F0ADAD">
+          BCodeHelpers.this.int.log(StringContext.apply(&quot;No forwarder for non-public member &quot;, &quot;&quot;).s(m))
+        </td>
+      </tr><tr>
+        <td>
+          402
+        </td>
+        <td>
+          1914
+        </td>
+        <td>
+          15665
+          -
+          15705
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.StringContext.s
+        </td>
+        <td style="background: #F0ADAD">
+          StringContext.apply(&quot;No forwarder for non-public member &quot;, &quot;&quot;).s(m)
+        </td>
+      </tr><tr>
+        <td>
+          403
+        </td>
+        <td>
+          1920
+        </td>
+        <td>
+          15720
+          -
+          15864
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          {
+  BCodeHelpers.this.int.log(StringContext.apply(&quot;Adding static forwarder for \'&quot;, &quot;\' from &quot;, &quot; to \'&quot;, &quot;\'&quot;).s(m, jclassName, moduleClass));
+  BCForwardersGen.this.addForwarder(jclass, moduleClass, m)
+}
+        </td>
+      </tr><tr>
+        <td>
+          404
+        </td>
+        <td>
+          1918
+        </td>
+        <td>
+          15732
+          -
+          15807
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BackendInterface.log
+        </td>
+        <td style="background: #AEF1AE">
+          BCodeHelpers.this.int.log(StringContext.apply(&quot;Adding static forwarder for \'&quot;, &quot;\' from &quot;, &quot; to \'&quot;, &quot;\'&quot;).s(m, jclassName, moduleClass))
+        </td>
+      </tr><tr>
+        <td>
+          404
+        </td>
+        <td>
+          1917
+        </td>
+        <td>
+          15736
+          -
+          15806
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.StringContext.s
+        </td>
+        <td style="background: #F0ADAD">
+          StringContext.apply(&quot;Adding static forwarder for \'&quot;, &quot;\' from &quot;, &quot; to \'&quot;, &quot;\'&quot;).s(m, jclassName, moduleClass)
+        </td>
+      </tr><tr>
+        <td>
+          405
+        </td>
+        <td>
+          1919
+        </td>
+        <td>
+          15818
+          -
+          15854
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BCodeHelpers.BCForwardersGen.addForwarder
+        </td>
+        <td style="background: #AEF1AE">
+          BCForwardersGen.this.addForwarder(jclass, moduleClass, m)
+        </td>
+      </tr><tr>
+        <td>
+          421
+        </td>
+        <td>
+          1925
+        </td>
+        <td>
+          16448
+          -
+          16448
+        </td>
+        <td>
+          TypeApply
+        </td>
+        <td>
+          scala.collection.immutable.List.canBuildFrom
+        </td>
+        <td style="background: #AEF1AE">
+          immutable.this.List.canBuildFrom[String]
+        </td>
+      </tr><tr>
+        <td>
+          421
+        </td>
+        <td>
+          1926
+        </td>
+        <td>
+          16422
+          -
+          16495
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          scala.collection.generic.FilterMonadic.map
+        </td>
+        <td style="background: #AEF1AE">
+          excs.distinct.withFilter(((check$ifrefutable$1: BCodeHelpers.this.int.Annotation) =&gt; (check$ifrefutable$1: BCodeHelpers.this.int.Annotation @unchecked) match {
+  case BCodeHelpers.this.int.ThrownException.unapply(&lt;unapply-selector&gt;) &lt;unapply&gt; ((exc @ _)) =&gt; true
+  case _ =&gt; false
+})).map[String, List[String]](((x$7: BCodeHelpers.this.int.Annotation) =&gt; (x$7: BCodeHelpers.this.int.Annotation @unchecked) match {
+  case BCodeHelpers.this.int.ThrownException.unapply(&lt;unapply-selector&gt;) &lt;unapply&gt; ((exc @ _)) =&gt; BCForwardersGen.this.internalName(exc)
+}))(immutable.this.List.canBuildFrom[String])
+        </td>
+      </tr><tr>
+        <td>
+          422
+        </td>
+        <td>
+          1924
+        </td>
+        <td>
+          16478
+          -
+          16495
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BCodeHelpers.BCInnerClassGen.internalName
+        </td>
+        <td style="background: #F0ADAD">
+          BCForwardersGen.this.internalName(exc)
+        </td>
+      </tr><tr>
+        <td>
+          432
+        </td>
+        <td>
+          1927
+        </td>
+        <td>
+          16902
+          -
+          16905
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          0.7
+        </td>
+      </tr><tr>
+        <td>
+          447
+        </td>
+        <td>
+          1928
+        </td>
+        <td>
+          17199
+          -
+          17390
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.tools.asm.FieldVisitor.visitEnd
+        </td>
+        <td style="background: #F0ADAD">
+          jclass.visitField(25, &quot;serialVersionUID&quot;, &quot;J&quot;, null, new java.lang.Long(id)).visitEnd()
+        </td>
+      </tr><tr>
+        <td>
+          462
+        </td>
+        <td>
+          1929
+        </td>
+        <td>
+          17798
+          -
+          17803
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BCodeHelpers.JMirrorBuilder.cunit
+        </td>
+        <td style="background: #F0ADAD">
+          JMirrorBuilder.this.cunit
+        </td>
+      </tr><tr>
+        <td>
+          473
+        </td>
+        <td>
+          1931
+        </td>
+        <td>
+          18338
+          -
+          18371
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Predef.assert
+        </td>
+        <td style="background: #AEF1AE">
+          scala.Predef.assert(BCodeHelpers.this.int.symHelper(moduleClass).isModuleClass)
+        </td>
+      </tr><tr>
+        <td>
+          473
+        </td>
+        <td>
+          1930
+        </td>
+        <td>
+          18345
+          -
+          18370
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BackendInterface.SymbolHelper.isModuleClass
+        </td>
+        <td style="background: #AEF1AE">
+          BCodeHelpers.this.int.symHelper(moduleClass).isModuleClass
+        </td>
+      </tr><tr>
+        <td>
+          474
+        </td>
+        <td>
+          1934
+        </td>
+        <td>
+          18378
+          -
+          18437
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Predef.assert
+        </td>
+        <td style="background: #AEF1AE">
+          scala.Predef.assert(BCodeHelpers.this.int.symHelper(moduleClass).companionClass.==(BCodeHelpers.this.int.NoSymbol), moduleClass)
+        </td>
+      </tr><tr>
+        <td>
+          474
+        </td>
+        <td>
+          1933
+        </td>
+        <td>
+          18385
+          -
+          18423
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.Object.==
+        </td>
+        <td style="background: #AEF1AE">
+          BCodeHelpers.this.int.symHelper(moduleClass).companionClass.==(BCodeHelpers.this.int.NoSymbol)
+        </td>
+      </tr><tr>
+        <td>
+          474
+        </td>
+        <td>
+          1932
+        </td>
+        <td>
+          18415
+          -
+          18423
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BackendInterfaceDefinitions.NoSymbol
+        </td>
+        <td style="background: #AEF1AE">
+          BCodeHelpers.this.int.NoSymbol
+        </td>
+      </tr><tr>
+        <td>
+          475
+        </td>
+        <td>
+          1935
+        </td>
+        <td>
+          18444
+          -
+          18471
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.mutable.SetLike.clear
+        </td>
+        <td style="background: #AEF1AE">
+          JMirrorBuilder.this.innerClassBufferASM.clear()
+        </td>
+      </tr><tr>
+        <td>
+          476
+        </td>
+        <td>
+          1936
+        </td>
+        <td>
+          18478
+          -
+          18496
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BCodeHelpers.JMirrorBuilder.cunit_=
+        </td>
+        <td style="background: #AEF1AE">
+          this.cunit_=(cunit)
+        </td>
+      </tr><tr>
+        <td>
+          477
+        </td>
+        <td>
+          1937
+        </td>
+        <td>
+          18520
+          -
+          18545
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BCodeHelpers.BCInnerClassGen.internalName
+        </td>
+        <td style="background: #AEF1AE">
+          JMirrorBuilder.this.internalName(moduleClass)
+        </td>
+      </tr><tr>
+        <td>
+          478
+        </td>
+        <td>
+          1940
+        </td>
+        <td>
+          18578
+          -
+          18626
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.String.substring
+        </td>
+        <td style="background: #AEF1AE">
+          moduleName.substring(0, moduleName.length().-(1))
+        </td>
+      </tr><tr>
+        <td>
+          478
+        </td>
+        <td>
+          1939
+        </td>
+        <td>
+          18602
+          -
+          18625
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Int.-
+        </td>
+        <td style="background: #AEF1AE">
+          moduleName.length().-(1)
+        </td>
+      </tr><tr>
+        <td>
+          478
+        </td>
+        <td>
+          1938
+        </td>
+        <td>
+          18599
+          -
+          18600
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          0
+        </td>
+      </tr><tr>
+        <td>
+          480
+        </td>
+        <td>
+          1941
+        </td>
+        <td>
+          18647
+          -
+          18717
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          49
+        </td>
+      </tr><tr>
+        <td>
+          481
+        </td>
+        <td>
+          1942
+        </td>
+        <td>
+          18743
+          -
+          18765
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.tools.asm.tree.ClassNode.&lt;init&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          new scala.tools.asm.tree.ClassNode()
+        </td>
+      </tr><tr>
+        <td>
+          482
+        </td>
+        <td>
+          1946
+        </td>
+        <td>
+          18772
+          -
+          18970
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.tools.asm.tree.ClassNode.visit
+        </td>
+        <td style="background: #AEF1AE">
+          mirrorClass.visit(BCodeHelpers.this.classfileVersion, flags, mirrorName, null, BCodeHelpers.this.bTypes.coreBTypes.ObjectReference.internalName, BCodeHelpers.this.EMPTY_STRING_ARRAY)
+        </td>
+      </tr><tr>
+        <td>
+          486
+        </td>
+        <td>
+          1943
+        </td>
+        <td>
+          18860
+          -
+          18864
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          null
+        </td>
+      </tr><tr>
+        <td>
+          487
+        </td>
+        <td>
+          1944
+        </td>
+        <td>
+          18906
+          -
+          18934
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BTypes.ClassBType.internalName
+        </td>
+        <td style="background: #AEF1AE">
+          BCodeHelpers.this.bTypes.coreBTypes.ObjectReference.internalName
+        </td>
+      </tr><tr>
+        <td>
+          488
+        </td>
+        <td>
+          1945
+        </td>
+        <td>
+          18944
+          -
+          18962
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BCodeIdiomatic.EMPTY_STRING_ARRAY
+        </td>
+        <td style="background: #AEF1AE">
+          BCodeHelpers.this.EMPTY_STRING_ARRAY
+        </td>
+      </tr><tr>
+        <td>
+          491
+        </td>
+        <td>
+          1955
+        </td>
+        <td>
+          18978
+          -
+          18978
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          ()
+        </td>
+      </tr><tr>
+        <td>
+          491
+        </td>
+        <td>
+          1954
+        </td>
+        <td>
+          18978
+          -
+          18978
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          ()
+        </td>
+      </tr><tr>
+        <td>
+          491
+        </td>
+        <td>
+          1947
+        </td>
+        <td>
+          18982
+          -
+          18992
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BCodeHelpers.BCInnerClassGen.emitSource
+        </td>
+        <td style="background: #AEF1AE">
+          JMirrorBuilder.this.emitSource
+        </td>
+      </tr><tr>
+        <td>
+          492
+        </td>
+        <td>
+          1952
+        </td>
+        <td>
+          19004
+          -
+          19119
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.tools.asm.tree.ClassNode.visitSource
+        </td>
+        <td style="background: #AEF1AE">
+          mirrorClass.visitSource(&quot;&quot;.+(BCodeHelpers.this.int.sourceFileFor(cunit)), null)
+        </td>
+      </tr><tr>
+        <td>
+          492
+        </td>
+        <td>
+          1949
+        </td>
+        <td>
+          19033
+          -
+          19053
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BackendInterface.sourceFileFor
+        </td>
+        <td style="background: #AEF1AE">
+          BCodeHelpers.this.int.sourceFileFor(cunit)
+        </td>
+      </tr><tr>
+        <td>
+          492
+        </td>
+        <td>
+          1948
+        </td>
+        <td>
+          19028
+          -
+          19030
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          &quot;&quot;
+        </td>
+      </tr><tr>
+        <td>
+          492
+        </td>
+        <td>
+          1950
+        </td>
+        <td>
+          19028
+          -
+          19053
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.String.+
+        </td>
+        <td style="background: #AEF1AE">
+          &quot;&quot;.+(BCodeHelpers.this.int.sourceFileFor(cunit))
+        </td>
+      </tr><tr>
+        <td>
+          492
+        </td>
+        <td>
+          1953
+        </td>
+        <td>
+          19004
+          -
+          19119
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          scala.tools.asm.tree.ClassNode.visitSource
+        </td>
+        <td style="background: #AEF1AE">
+          mirrorClass.visitSource(&quot;&quot;.+(BCodeHelpers.this.int.sourceFileFor(cunit)), null)
+        </td>
+      </tr><tr>
+        <td>
+          493
+        </td>
+        <td>
+          1951
+        </td>
+        <td>
+          19087
+          -
+          19091
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          null
+        </td>
+      </tr><tr>
+        <td>
+          496
+        </td>
+        <td>
+          1957
+        </td>
+        <td>
+          19145
+          -
+          19200
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BackendInterface.getAnnotPickle
+        </td>
+        <td style="background: #AEF1AE">
+          BCodeHelpers.this.int.getAnnotPickle(mirrorName, BCodeHelpers.this.int.symHelper(moduleClass).companionSymbol)
+        </td>
+      </tr><tr>
+        <td>
+          496
+        </td>
+        <td>
+          1956
+        </td>
+        <td>
+          19172
+          -
+          19199
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BackendInterface.SymbolHelper.companionSymbol
+        </td>
+        <td style="background: #AEF1AE">
+          BCodeHelpers.this.int.symHelper(moduleClass).companionSymbol
+        </td>
+      </tr><tr>
+        <td>
+          497
+        </td>
+        <td>
+          1961
+        </td>
+        <td>
+          19276
+          -
+          19295
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BCodeHelpers.BCPickles.pickleMarkerForeign
+        </td>
+        <td style="background: #AEF1AE">
+          JMirrorBuilder.this.pickleMarkerForeign
+        </td>
+      </tr><tr>
+        <td>
+          497
+        </td>
+        <td>
+          1958
+        </td>
+        <td>
+          19238
+          -
+          19251
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.Option.isDefined
+        </td>
+        <td style="background: #AEF1AE">
+          ssa.isDefined
+        </td>
+      </tr><tr>
+        <td>
+          497
+        </td>
+        <td>
+          1960
+        </td>
+        <td>
+          19253
+          -
+          19270
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BCodeHelpers.BCPickles.pickleMarkerLocal
+        </td>
+        <td style="background: #F0ADAD">
+          JMirrorBuilder.this.pickleMarkerLocal
+        </td>
+      </tr><tr>
+        <td>
+          497
+        </td>
+        <td>
+          1963
+        </td>
+        <td>
+          19207
+          -
+          19296
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.tools.asm.tree.ClassNode.visitAttribute
+        </td>
+        <td style="background: #AEF1AE">
+          mirrorClass.visitAttribute(if (ssa.isDefined)
+  JMirrorBuilder.this.pickleMarkerLocal
+else
+  JMirrorBuilder.this.pickleMarkerForeign)
+        </td>
+      </tr><tr>
+        <td>
+          497
+        </td>
+        <td>
+          1959
+        </td>
+        <td>
+          19253
+          -
+          19270
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BCodeHelpers.BCPickles.pickleMarkerLocal
+        </td>
+        <td style="background: #F0ADAD">
+          JMirrorBuilder.this.pickleMarkerLocal
+        </td>
+      </tr><tr>
+        <td>
+          497
+        </td>
+        <td>
+          1962
+        </td>
+        <td>
+          19276
+          -
+          19295
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BCodeHelpers.BCPickles.pickleMarkerForeign
+        </td>
+        <td style="background: #AEF1AE">
+          JMirrorBuilder.this.pickleMarkerForeign
+        </td>
+      </tr><tr>
+        <td>
+          498
+        </td>
+        <td>
+          1964
+        </td>
+        <td>
+          19359
+          -
+          19362
+        </td>
+        <td>
+          ApplyImplicitView
+        </td>
+        <td>
+          scala.Option.option2Iterable
+        </td>
+        <td style="background: #AEF1AE">
+          scala.this.Option.option2Iterable[BCodeHelpers.this.int.Annotation](ssa)
+        </td>
+      </tr><tr>
+        <td>
+          498
+        </td>
+        <td>
+          1967
+        </td>
+        <td>
+          19303
+          -
+          19363
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BCodeHelpers.BCAnnotGen.emitAnnotations
+        </td>
+        <td style="background: #AEF1AE">
+          JMirrorBuilder.this.emitAnnotations(mirrorClass, BCodeHelpers.this.int.symHelper(moduleClass).annotations.++[BCodeHelpers.this.int.Annotation, List[BCodeHelpers.this.int.Annotation]](scala.this.Option.option2Iterable[BCodeHelpers.this.int.Annotation](ssa))(immutable.this.List.canBuildFrom[BCodeHelpers.this.int.Annotation]))
+        </td>
+      </tr><tr>
+        <td>
+          498
+        </td>
+        <td>
+          1966
+        </td>
+        <td>
+          19332
+          -
+          19362
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          scala.collection.immutable.List.++
+        </td>
+        <td style="background: #AEF1AE">
+          BCodeHelpers.this.int.symHelper(moduleClass).annotations.++[BCodeHelpers.this.int.Annotation, List[BCodeHelpers.this.int.Annotation]](scala.this.Option.option2Iterable[BCodeHelpers.this.int.Annotation](ssa))(immutable.this.List.canBuildFrom[BCodeHelpers.this.int.Annotation])
+        </td>
+      </tr><tr>
+        <td>
+          498
+        </td>
+        <td>
+          1965
+        </td>
+        <td>
+          19356
+          -
+          19356
+        </td>
+        <td>
+          TypeApply
+        </td>
+        <td>
+          scala.collection.immutable.List.canBuildFrom
+        </td>
+        <td style="background: #AEF1AE">
+          immutable.this.List.canBuildFrom[BCodeHelpers.this.int.Annotation]
+        </td>
+      </tr><tr>
+        <td>
+          500
+        </td>
+        <td>
+          1968
+        </td>
+        <td>
+          19371
+          -
+          19422
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BCodeHelpers.BCForwardersGen.addForwarders
+        </td>
+        <td style="background: #AEF1AE">
+          JMirrorBuilder.this.addForwarders(mirrorClass, mirrorName, moduleClass)
+        </td>
+      </tr><tr>
+        <td>
+          502
+        </td>
+        <td>
+          1970
+        </td>
+        <td>
+          19430
+          -
+          19506
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.generic.Growable.++=
+        </td>
+        <td style="background: #AEF1AE">
+          JMirrorBuilder.this.innerClassBufferASM.++=(BCodeHelpers.this.bTypes.classBTypeFromSymbol(moduleClass).info.memberClasses)
+        </td>
+      </tr><tr>
+        <td>
+          502
+        </td>
+        <td>
+          1969
+        </td>
+        <td>
+          19454
+          -
+          19506
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BTypes.ClassInfo.memberClasses
+        </td>
+        <td style="background: #AEF1AE">
+          BCodeHelpers.this.bTypes.classBTypeFromSymbol(moduleClass).info.memberClasses
+        </td>
+      </tr><tr>
+        <td>
+          503
+        </td>
+        <td>
+          1972
+        </td>
+        <td>
+          19513
+          -
+          19572
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BCodeHelpers.addInnerClassesASM
+        </td>
+        <td style="background: #AEF1AE">
+          BCodeHelpers.this.addInnerClassesASM(mirrorClass, JMirrorBuilder.this.innerClassBufferASM.toList)
+        </td>
+      </tr><tr>
+        <td>
+          503
+        </td>
+        <td>
+          1971
+        </td>
+        <td>
+          19545
+          -
+          19571
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.collection.TraversableOnce.toList
+        </td>
+        <td style="background: #AEF1AE">
+          JMirrorBuilder.this.innerClassBufferASM.toList
+        </td>
+      </tr><tr>
+        <td>
+          505
+        </td>
+        <td>
+          1973
+        </td>
+        <td>
+          19580
+          -
+          19602
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.tools.asm.tree.ClassNode.visitEnd
+        </td>
+        <td style="background: #AEF1AE">
+          mirrorClass.visitEnd()
+        </td>
+      </tr><tr>
+        <td>
+          507
+        </td>
+        <td>
+          1974
+        </td>
+        <td>
+          19610
+          -
+          19626
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BackendInterface.SymbolHelper.name
+        </td>
+        <td style="background: #AEF1AE">
+          BCodeHelpers.this.int.symHelper(moduleClass).name
+        </td>
+      </tr><tr>
+        <td>
+          522
+        </td>
+        <td>
+          1975
+        </td>
+        <td>
+          20180
+          -
+          20202
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BackendInterface.newTermName
+        </td>
+        <td style="background: #AEF1AE">
+          BCodeHelpers.this.int.newTermName(&quot;CREATOR&quot;)
+        </td>
+      </tr><tr>
+        <td>
+          531
+        </td>
+        <td>
+          1976
+        </td>
+        <td>
+          20527
+          -
+          20535
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BackendInterfaceDefinitions.NoSymbol
+        </td>
+        <td style="background: #AEF1AE">
+          BCodeHelpers.this.int.NoSymbol
+        </td>
+      </tr><tr>
+        <td>
+          531
+        </td>
+        <td>
+          1978
+        </td>
+        <td>
+          20496
+          -
+          20601
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Boolean.&amp;&amp;
+        </td>
+        <td style="background: #AEF1AE">
+          JAndroidBuilder.this.AndroidParcelableInterface.!=(BCodeHelpers.this.int.NoSymbol).&amp;&amp;(BCodeHelpers.this.int.symHelper(sym).parentSymbols.contains[BCodeHelpers.this.int.Symbol](JAndroidBuilder.this.AndroidParcelableInterface))
+        </td>
+      </tr><tr>
+        <td>
+          532
+        </td>
+        <td>
+          1977
+        </td>
+        <td>
+          20547
+          -
+          20600
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.LinearSeqOptimized.contains
+        </td>
+        <td style="background: #F0ADAD">
+          BCodeHelpers.this.int.symHelper(sym).parentSymbols.contains[BCodeHelpers.this.int.Symbol](JAndroidBuilder.this.AndroidParcelableInterface)
+        </td>
+      </tr><tr>
+        <td>
+          539
+        </td>
+        <td>
+          1979
+        </td>
+        <td>
+          20858
+          -
+          20913
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BCodeHelpers.BCInnerClassGen.getClassBTypeAndRegisterInnerClass
+        </td>
+        <td style="background: #F0ADAD">
+          JAndroidBuilder.this.getClassBTypeAndRegisterInnerClass(JAndroidBuilder.this.AndroidCreatorClass)
+        </td>
+      </tr><tr>
+        <td>
+          540
+        </td>
+        <td>
+          1980
+        </td>
+        <td>
+          20940
+          -
+          20969
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BTypes.BType.descriptor
+        </td>
+        <td style="background: #F0ADAD">
+          androidCreatorType.descriptor
+        </td>
+      </tr><tr>
+        <td>
+          548
+        </td>
+        <td>
+          1981
+        </td>
+        <td>
+          20977
+          -
+          21171
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.tools.asm.FieldVisitor.visitEnd
+        </td>
+        <td style="background: #F0ADAD">
+          cnode.visitField(25, &quot;CREATOR&quot;, tdesc_creator, null, null).visitEnd()
+        </td>
+      </tr><tr>
+        <td>
+          550
+        </td>
+        <td>
+          1982
+        </td>
+        <td>
+          21197
+          -
+          21211
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.String.+
+        </td>
+        <td style="background: #F0ADAD">
+          thisName.+(&quot;$&quot;)
+        </td>
+      </tr><tr>
+        <td>
+          553
+        </td>
+        <td>
+          1986
+        </td>
+        <td>
+          21276
+          -
+          21419
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.tools.asm.MethodVisitor.visitFieldInsn
+        </td>
+        <td style="background: #F0ADAD">
+          clinit.visitFieldInsn(178, moduleName, BCodeHelpers.this.int.MODULE_INSTANCE_FIELD, &quot;L&quot;.+(moduleName).+(&quot;;&quot;))
+        </td>
+      </tr><tr>
+        <td>
+          554
+        </td>
+        <td>
+          1983
+        </td>
+        <td>
+          21307
+          -
+          21328
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          178
+        </td>
+      </tr><tr>
+        <td>
+          556
+        </td>
+        <td>
+          1984
+        </td>
+        <td>
+          21358
+          -
+          21379
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BackendInterface.MODULE_INSTANCE_FIELD
+        </td>
+        <td style="background: #F0ADAD">
+          BCodeHelpers.this.int.MODULE_INSTANCE_FIELD
+        </td>
+      </tr><tr>
+        <td>
+          557
+        </td>
+        <td>
+          1985
+        </td>
+        <td>
+          21389
+          -
+          21411
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.String.+
+        </td>
+        <td style="background: #F0ADAD">
+          &quot;L&quot;.+(moduleName).+(&quot;;&quot;)
+        </td>
+      </tr><tr>
+        <td>
+          561
+        </td>
+        <td>
+          1988
+        </td>
+        <td>
+          21515
+          -
+          21551
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BTypes.MethodBType.apply
+        </td>
+        <td style="background: #F0ADAD">
+          BCodeHelpers.this.bTypes.MethodBType.apply(scala.collection.immutable.Nil, androidCreatorType)
+        </td>
+      </tr><tr>
+        <td>
+          561
+        </td>
+        <td>
+          1987
+        </td>
+        <td>
+          21527
+          -
+          21530
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.collection.immutable.Nil
+        </td>
+        <td style="background: #F0ADAD">
+          scala.collection.immutable.Nil
+        </td>
+      </tr><tr>
+        <td>
+          562
+        </td>
+        <td>
+          1993
+        </td>
+        <td>
+          21558
+          -
+          21700
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.tools.asm.MethodVisitor.visitMethodInsn
+        </td>
+        <td style="background: #F0ADAD">
+          clinit.visitMethodInsn(182, moduleName, &quot;CREATOR&quot;, bt.descriptor, false)
+        </td>
+      </tr><tr>
+        <td>
+          563
+        </td>
+        <td>
+          1989
+        </td>
+        <td>
+          21590
+          -
+          21615
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          182
+        </td>
+      </tr><tr>
+        <td>
+          565
+        </td>
+        <td>
+          1990
+        </td>
+        <td>
+          21645
+          -
+          21654
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          &quot;CREATOR&quot;
+        </td>
+      </tr><tr>
+        <td>
+          566
+        </td>
+        <td>
+          1991
+        </td>
+        <td>
+          21664
+          -
+          21677
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BTypes.BType.descriptor
+        </td>
+        <td style="background: #F0ADAD">
+          bt.descriptor
+        </td>
+      </tr><tr>
+        <td>
+          567
+        </td>
+        <td>
+          1992
+        </td>
+        <td>
+          21687
+          -
+          21692
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          false
+        </td>
+      </tr><tr>
+        <td>
+          571
+        </td>
+        <td>
+          1994
+        </td>
+        <td>
+          21747
+          -
+          21867
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.tools.asm.MethodVisitor.visitFieldInsn
+        </td>
+        <td style="background: #F0ADAD">
+          clinit.visitFieldInsn(179, thisName, &quot;CREATOR&quot;, tdesc_creator)
+        </td>
+      </tr><tr>
+        <td>
+          586
+        </td>
+        <td>
+          1996
+        </td>
+        <td>
+          22044
+          -
+          22059
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Any.==
+        </td>
+        <td style="background: #AEF1AE">
+          this.==(BCodeHelpers.this.InvokeStyle.Virtual)
+        </td>
+      </tr><tr>
+        <td>
+          586
+        </td>
+        <td>
+          1995
+        </td>
+        <td>
+          22052
+          -
+          22059
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BCodeHelpers.InvokeStyle.Virtual
+        </td>
+        <td style="background: #AEF1AE">
+          BCodeHelpers.this.InvokeStyle.Virtual
+        </td>
+      </tr><tr>
+        <td>
+          587
+        </td>
+        <td>
+          1997
+        </td>
+        <td>
+          22097
+          -
+          22103
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BCodeHelpers.InvokeStyle.Static
+        </td>
+        <td style="background: #AEF1AE">
+          BCodeHelpers.this.InvokeStyle.Static
+        </td>
+      </tr><tr>
+        <td>
+          587
+        </td>
+        <td>
+          1998
+        </td>
+        <td>
+          22089
+          -
+          22103
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Any.==
+        </td>
+        <td style="background: #AEF1AE">
+          this.==(BCodeHelpers.this.InvokeStyle.Static)
+        </td>
+      </tr><tr>
+        <td>
+          588
+        </td>
+        <td>
+          2000
+        </td>
+        <td>
+          22133
+          -
+          22148
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Any.==
+        </td>
+        <td style="background: #AEF1AE">
+          this.==(BCodeHelpers.this.InvokeStyle.Special)
+        </td>
+      </tr><tr>
+        <td>
+          588
+        </td>
+        <td>
+          1999
+        </td>
+        <td>
+          22141
+          -
+          22148
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BCodeHelpers.InvokeStyle.Special
+        </td>
+        <td style="background: #AEF1AE">
+          BCodeHelpers.this.InvokeStyle.Special
+        </td>
+      </tr><tr>
+        <td>
+          589
+        </td>
+        <td>
+          2002
+        </td>
+        <td>
+          22178
+          -
+          22191
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Any.==
+        </td>
+        <td style="background: #AEF1AE">
+          this.==(BCodeHelpers.this.InvokeStyle.Super)
+        </td>
+      </tr><tr>
+        <td>
+          589
+        </td>
+        <td>
+          2001
+        </td>
+        <td>
+          22186
+          -
+          22191
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BCodeHelpers.InvokeStyle.Super
+        </td>
+        <td style="background: #AEF1AE">
+          BCodeHelpers.this.InvokeStyle.Super
+        </td>
+      </tr><tr>
+        <td>
+          591
+        </td>
+        <td>
+          2003
+        </td>
+        <td>
+          22223
+          -
+          22229
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BCodeHelpers.InvokeStyle.Static
+        </td>
+        <td style="background: #AEF1AE">
+          BCodeHelpers.this.InvokeStyle.Static
+        </td>
+      </tr><tr>
+        <td>
+          591
+        </td>
+        <td>
+          2004
+        </td>
+        <td>
+          22215
+          -
+          22229
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Any.!=
+        </td>
+        <td style="background: #AEF1AE">
+          this.!=(BCodeHelpers.this.InvokeStyle.Static)
+        </td>
+      </tr><tr>
+        <td>
+          595
+        </td>
+        <td>
+          2005
+        </td>
+        <td>
+          22276
+          -
+          22294
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BCodeHelpers.InvokeStyle.&lt;init&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          new BCodeHelpers.this.InvokeStyle(0)
+        </td>
+      </tr><tr>
+        <td>
+          596
+        </td>
+        <td>
+          2006
+        </td>
+        <td>
+          22349
+          -
+          22367
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BCodeHelpers.InvokeStyle.&lt;init&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          new BCodeHelpers.this.InvokeStyle(1)
+        </td>
+      </tr><tr>
+        <td>
+          597
+        </td>
+        <td>
+          2007
+        </td>
+        <td>
+          22402
+          -
+          22420
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BCodeHelpers.InvokeStyle.&lt;init&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          new BCodeHelpers.this.InvokeStyle(2)
+        </td>
+      </tr><tr>
+        <td>
+          598
+        </td>
+        <td>
+          2008
+        </td>
+        <td>
+          22488
+          -
+          22506
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.tools.nsc.backend.jvm.BCodeHelpers.InvokeStyle.&lt;init&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          new BCodeHelpers.this.InvokeStyle(3)
+        </td>
+      </tr>
+    </table>
+          </div>
+        </div>
+      </body>
+    </html>

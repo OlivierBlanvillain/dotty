@@ -1,0 +1,5725 @@
+<html>
+      <head>
+        <meta http-equiv="Content-Type" content="text/html; charset=utf-8"/>
+        <title id="title">
+          dotty/tools/dotc/ast/DesugarEnums.scala.html
+        </title>
+        <script src="https://ajax.googleapis.com/ajax/libs/jquery/1.10.2/jquery.min.js"></script><link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/jquery.tablesorter/2.20.1/css/theme.default.min.css" type="text/css"/><script src="https://cdnjs.cloudflare.com/ajax/libs/jquery.tablesorter/2.20.1/js/jquery.tablesorter.min.js"></script><link rel="stylesheet" href="https://netdna.bootstrapcdn.com/bootstrap/3.0.3/css/bootstrap.min.css" type="text/css"/><script src="https://netdna.bootstrapcdn.com/bootstrap/3.0.3/js/bootstrap.min.js"></script><script type="text/javascript">
+        $(document).ready(function() {$(".tablesorter").tablesorter();});
+      </script>
+        <style>
+          table.codegrid { font-family: monospace; font-size: 12px; width: auto!important; }table.statementlist { width: auto!important; font-size: 13px; } table.codegrid td { padding: 0!important; border: 0!important } table td.linenumber { width: 40px!important; } 
+        </style>
+      </head>
+      <body style="font-family: monospace;">
+        <ul class="nav nav-tabs">
+          <li>
+            <a href="#codegrid" data-toggle="tab">Codegrid</a>
+          </li>
+          <li>
+            <a href="#statementlist" data-toggle="tab">Statement List</a>
+          </li>
+        </ul>
+        <div class="tab-content">
+          <div class="tab-pane active" id="codegrid">
+            <pre style='font-size: 12pt; font-family: courier;'>1 <span style=''>package dotty.tools
+</span>2 <span style=''>package dotc
+</span>3 <span style=''>package ast
+</span>4 <span style=''>
+</span>5 <span style=''>import core._
+</span>6 <span style=''>import util.Positions._, Types._, Contexts._, Constants._, Names._, NameOps._, Flags._
+</span>7 <span style=''>import SymDenotations._, Symbols._, StdNames._, Annotations._, Trees._
+</span>8 <span style=''>import Decorators._
+</span>9 <span style=''>import reporting.diagnostic.messages.EnumCaseDefinitionInNonEnumOwner
+</span>10 <span style=''>import collection.mutable.ListBuffer
+</span>11 <span style=''>import util.Property
+</span>12 <span style=''>import typer.ErrorReporting._
+</span>13 <span style=''>
+</span>14 <span style=''>/** Helper methods to desugar enums */
+</span>15 <span style=''>object DesugarEnums {
+</span>16 <span style=''>  import untpd._
+</span>17 <span style=''>  import desugar.DerivedFromParamTree
+</span>18 <span style=''>
+</span>19 <span style=''>  @sharable object CaseKind extends Enumeration {
+</span>20 <span style=''>    val Simple, Object, Class = </span><span style='background: #AEF1AE'>Value</span><span style=''>
+</span>21 <span style=''>  }
+</span>22 <span style=''>
+</span>23 <span style=''>  /** Attachment containing the number of enum cases and the smallest kind that was seen so far. */
+</span>24 <span style=''>  val EnumCaseCount = </span><span style='background: #AEF1AE'>new Property.Key[(Int, CaseKind.Value)]</span><span style=''>
+</span>25 <span style=''>
+</span>26 <span style=''>  /** the enumeration class that is a companion of the current object */
+</span>27 <span style=''>  def enumClass(implicit ctx: Context) = </span><span style='background: #AEF1AE'>ctx.owner.linkedClass</span><span style=''>
+</span>28 <span style=''>
+</span>29 <span style=''>  /** Is this an enum case that's situated in a companion object of an enum class? */
+</span>30 <span style=''>  def isLegalEnumCase(tree: MemberDef)(implicit ctx: Context): Boolean =
+</span>31 <span style=''>    </span><span style='background: #AEF1AE'>tree.mods.hasMod[Mod.EnumCase] &amp;&amp; enumCaseIsLegal(tree)</span><span style=''>
+</span>32 <span style=''>
+</span>33 <span style=''>  /** Is enum case `tree` situated in a companion object of an enum class? */
+</span>34 <span style=''>  def enumCaseIsLegal(tree: Tree)(implicit ctx: Context): Boolean = (
+</span>35 <span style=''>    </span><span style='background: #AEF1AE'>ctx.owner.is(ModuleClass) &amp;&amp; enumClass.derivesFrom(defn.EnumClass)
+</span>36 <span style=''></span><span style='background: #AEF1AE'>    || { ctx.error(EnumCaseDefinitionInNonEnumOwner(ctx.owner), tree.pos)
+</span>37 <span style=''></span><span style='background: #AEF1AE'>         false
+</span>38 <span style=''></span><span style='background: #AEF1AE'>       }</span><span style=''>
+</span>39 <span style=''>    )
+</span>40 <span style=''>
+</span>41 <span style=''>  /** A reference to the enum class `E`, possibly followed by type arguments.
+</span>42 <span style=''>   *  Each covariant type parameter is approximated by its lower bound.
+</span>43 <span style=''>   *  Each contravariant type parameter is approximated by its upper bound.
+</span>44 <span style=''>   *  It is an error if a type parameter is non-variant, or if its approximation
+</span>45 <span style=''>   *  refers to pther type parameters.
+</span>46 <span style=''>   */
+</span>47 <span style=''>  def interpolatedEnumParent(pos: Position)(implicit ctx: Context): Tree = {
+</span>48 <span style=''>    val tparams = </span><span style='background: #AEF1AE'>enumClass.typeParams</span><span style=''>
+</span>49 <span style=''>    def isGround(tp: Type) = </span><span style='background: #AEF1AE'>tp.subst(tparams, tparams.map(_ =&gt; NoType)) eq tp</span><span style=''>
+</span>50 <span style=''>    val targs = </span><span style='background: #AEF1AE'>tparams map { tparam =&gt;
+</span>51 <span style=''></span><span style='background: #AEF1AE'>      if (tparam.variance &gt; 0 &amp;&amp; isGround(tparam.info.bounds.lo))
+</span>52 <span style=''></span><span style='background: #AEF1AE'>        tparam.info.bounds.lo
+</span>53 <span style=''></span><span style='background: #AEF1AE'>      else if (tparam.variance &lt; 0 &amp;&amp; isGround(tparam.info.bounds.hi))
+</span>54 <span style=''></span><span style='background: #AEF1AE'>        tparam.info.bounds.hi
+</span>55 <span style=''></span><span style='background: #AEF1AE'>      else {
+</span>56 <span style=''></span><span style='background: #AEF1AE'>        def problem =
+</span>57 <span style=''></span><span style='background: #AEF1AE'>          if (tparam.variance == 0) &quot;is non variant&quot;
+</span>58 <span style=''></span><span style='background: #AEF1AE'>          else &quot;has bounds that depend on a type parameter in the same parameter list&quot;
+</span>59 <span style=''></span><span style='background: #AEF1AE'>        errorType(i&quot;&quot;&quot;cannot determine type argument for enum parent $enumClass,
+</span>60 <span style=''></span><span style='background: #AEF1AE'>                     |type parameter $tparam $problem&quot;&quot;&quot;, pos)
+</span>61 <span style=''></span><span style='background: #AEF1AE'>      }</span><span style=''>
+</span>62 <span style=''>    }
+</span>63 <span style=''>    </span><span style='background: #AEF1AE'>TypeTree(enumClass.typeRef.appliedTo(targs)).withPos(pos)</span><span style=''>
+</span>64 <span style=''>  }
+</span>65 <span style=''>
+</span>66 <span style=''>  /** A type tree referring to `enumClass` */
+</span>67 <span style=''>  def enumClassRef(implicit ctx: Context) = </span><span style='background: #AEF1AE'>TypeTree(enumClass.typeRef)</span><span style=''>
+</span>68 <span style=''>
+</span>69 <span style=''>  /** Add implied flags to an enum class or an enum case */
+</span>70 <span style=''>  def addEnumFlags(cdef: TypeDef)(implicit ctx: Context) =
+</span>71 <span style=''>    if (</span><span style='background: #AEF1AE'>cdef.mods.hasMod[Mod.Enum]</span><span style=''>) </span><span style='background: #AEF1AE'>cdef.withFlags(cdef.mods.flags | Abstract | Sealed)</span><span style=''>
+</span>72 <span style=''>    else </span><span style='background: #AEF1AE'>if (isLegalEnumCase(cdef)) cdef.withFlags(cdef.mods.flags | Final)
+</span>73 <span style=''></span><span style='background: #AEF1AE'>    else cdef</span><span style=''>
+</span>74 <span style=''>
+</span>75 <span style=''>  private def valuesDot(name: String) = </span><span style='background: #AEF1AE'>Select(Ident(nme.DOLLAR_VALUES), name.toTermName)</span><span style=''>
+</span>76 <span style=''>  private def registerCall(implicit ctx: Context): List[Tree] =
+</span>77 <span style=''>    if (</span><span style='background: #AEF1AE'>enumClass.typeParams.nonEmpty</span><span style=''>) </span><span style='background: #AEF1AE'>Nil</span><span style=''>
+</span>78 <span style=''>    else </span><span style='background: #AEF1AE'>Apply(valuesDot(&quot;register&quot;), This(EmptyTypeIdent) :: Nil) :: Nil</span><span style=''>
+</span>79 <span style=''>
+</span>80 <span style=''>  /**  The following lists of definitions for an enum type E:
+</span>81 <span style=''>   *
+</span>82 <span style=''>   *   private val $values = new EnumValues[E]
+</span>83 <span style=''>   *   def enumValue = $values.fromInt
+</span>84 <span style=''>   *   def enumValueNamed = $values.fromName
+</span>85 <span style=''>   *   def enumValues = $values.values
+</span>86 <span style=''>   */
+</span>87 <span style=''>  private def enumScaffolding(implicit ctx: Context): List[Tree] = {
+</span>88 <span style=''>    def enumDefDef(name: String, select: String) =
+</span>89 <span style=''>      </span><span style='background: #AEF1AE'>DefDef(name.toTermName, Nil, Nil, TypeTree(), valuesDot(select))</span><span style=''>
+</span>90 <span style=''>    val privateValuesDef =
+</span>91 <span style=''>      </span><span style='background: #AEF1AE'>ValDef(nme.DOLLAR_VALUES, TypeTree(),
+</span>92 <span style=''></span><span style='background: #AEF1AE'>             New(TypeTree(defn.EnumValuesType.appliedTo(enumClass.typeRef :: Nil)), ListOfNil))
+</span>93 <span style=''></span><span style='background: #AEF1AE'>        .withFlags(Private)</span><span style=''>
+</span>94 <span style=''>    val valueOfDef = </span><span style='background: #AEF1AE'>enumDefDef(&quot;enumValue&quot;, &quot;fromInt&quot;)</span><span style=''>
+</span>95 <span style=''>    val withNameDef = </span><span style='background: #AEF1AE'>enumDefDef(&quot;enumValueNamed&quot;, &quot;fromName&quot;)</span><span style=''>
+</span>96 <span style=''>    val valuesDef = </span><span style='background: #AEF1AE'>enumDefDef(&quot;enumValues&quot;, &quot;values&quot;)</span><span style=''>
+</span>97 <span style=''>    </span><span style='background: #AEF1AE'>List(privateValuesDef, valueOfDef, withNameDef, valuesDef)</span><span style=''>
+</span>98 <span style=''>  }
+</span>99 <span style=''>
+</span>100 <span style=''>  /** A creation method for a value of enum type `E`, which is defined as follows:
+</span>101 <span style=''>   *
+</span>102 <span style=''>   *   private def $new(tag: Int, name: String) = new E {
+</span>103 <span style=''>   *     def enumTag = tag
+</span>104 <span style=''>   *     override def toString = name
+</span>105 <span style=''>   *     $values.register(this)
+</span>106 <span style=''>   *   }
+</span>107 <span style=''>   */
+</span>108 <span style=''>  private def enumValueCreator(implicit ctx: Context) = {
+</span>109 <span style=''>    def param(name: TermName, typ: Type) =
+</span>110 <span style=''>      </span><span style='background: #AEF1AE'>ValDef(name, TypeTree(typ), EmptyTree).withFlags(Param)</span><span style=''>
+</span>111 <span style=''>    val enumTagDef =
+</span>112 <span style=''>      </span><span style='background: #AEF1AE'>DefDef(nme.enumTag, Nil, Nil, TypeTree(), Ident(nme.tag))</span><span style=''>
+</span>113 <span style=''>    val toStringDef =
+</span>114 <span style=''>      </span><span style='background: #AEF1AE'>DefDef(nme.toString_, Nil, Nil, TypeTree(), Ident(nme.name))
+</span>115 <span style=''></span><span style='background: #AEF1AE'>        .withFlags(Override)</span><span style=''>
+</span>116 <span style=''>    def creator = </span><span style='background: #AEF1AE'>New(Template(emptyConstructor, enumClassRef :: Nil, EmptyValDef,
+</span>117 <span style=''></span><span style='background: #AEF1AE'>        List(enumTagDef, toStringDef) ++ registerCall))</span><span style=''>
+</span>118 <span style=''>    </span><span style='background: #AEF1AE'>DefDef(nme.DOLLAR_NEW, Nil,
+</span>119 <span style=''></span><span style='background: #AEF1AE'>        List(List(param(nme.tag, defn.IntType), param(nme.name, defn.StringType))),
+</span>120 <span style=''></span><span style='background: #AEF1AE'>        TypeTree(), creator)</span><span style=''>
+</span>121 <span style=''>  }
+</span>122 <span style=''>
+</span>123 <span style=''>  /** The return type of an enum case apply method and any widening methods in which
+</span>124 <span style=''>   *  the apply's right hand side will be wrapped. For parents of the form
+</span>125 <span style=''>   *
+</span>126 <span style=''>   *      extends E(args) with T1(args1) with ... TN(argsN)
+</span>127 <span style=''>   *
+</span>128 <span style=''>   *  and type parameters `tparams` the generated widen method is
+</span>129 <span style=''>   *
+</span>130 <span style=''>   *      def C$to$E[tparams](x$1: E[tparams] with T1 with ... TN) = x$1
+</span>131 <span style=''>   *
+</span>132 <span style=''>   *  @param cdef            The case definition
+</span>133 <span style=''>   *  @param parents         The declared parents of the enum case
+</span>134 <span style=''>   *  @param tparams         The type parameters of the enum case
+</span>135 <span style=''>   *  @param appliedEnumRef  The enum class applied to `tparams`.
+</span>136 <span style=''>   */
+</span>137 <span style=''>  def enumApplyResult(
+</span>138 <span style=''>      cdef: TypeDef,
+</span>139 <span style=''>      parents: List[Tree],
+</span>140 <span style=''>      tparams: List[TypeDef],
+</span>141 <span style=''>      appliedEnumRef: Tree)(implicit ctx: Context): (Tree, List[DefDef]) = {
+</span>142 <span style=''>
+</span>143 <span style=''>    def extractType(t: Tree): Tree = t match {
+</span>144 <span style=''>      case Apply(t1, _) =&gt; </span><span style='background: #AEF1AE'>extractType(t1)</span><span style=''>
+</span>145 <span style=''>      case TypeApply(t1, ts) =&gt; </span><span style='background: #F0ADAD'>AppliedTypeTree(extractType(t1), ts)</span><span style=''>
+</span>146 <span style=''>      case Select(t1, nme.CONSTRUCTOR) =&gt; </span><span style='background: #AEF1AE'>extractType(t1)</span><span style=''>
+</span>147 <span style=''>      case New(t1) =&gt; t1
+</span>148 <span style=''>      case t1 =&gt; t1
+</span>149 <span style=''>    }
+</span>150 <span style=''>
+</span>151 <span style=''>    val parentTypes = </span><span style='background: #AEF1AE'>parents.map(extractType)</span><span style=''>
+</span>152 <span style=''>    </span><span style='background: #AEF1AE'>parentTypes.head</span><span style=''> match {
+</span>153 <span style=''>      case parent: RefTree if </span><span style='background: #AEF1AE'>parent.name == enumClass.name</span><span style=''> =&gt;
+</span>154 <span style=''>        // need a widen method to compute correct type parameters for enum base class
+</span>155 <span style=''>        val widenParamType = </span><span style='background: #AEF1AE'>(appliedEnumRef /: parentTypes.tail)(AndTypeTree)</span><span style=''>
+</span>156 <span style=''>        val widenParam = </span><span style='background: #AEF1AE'>makeSyntheticParameter(tpt = widenParamType)</span><span style=''>
+</span>157 <span style=''>        val widenDef = </span><span style='background: #AEF1AE'>DefDef(
+</span>158 <span style=''></span><span style='background: #AEF1AE'>          name = s&quot;${cdef.name}$$to$$${enumClass.name}&quot;.toTermName,
+</span>159 <span style=''></span><span style='background: #AEF1AE'>          tparams = tparams,
+</span>160 <span style=''></span><span style='background: #AEF1AE'>          vparamss = (widenParam :: Nil) :: Nil,
+</span>161 <span style=''></span><span style='background: #AEF1AE'>          tpt = TypeTree(),
+</span>162 <span style=''></span><span style='background: #AEF1AE'>          rhs = Ident(widenParam.name))</span><span style=''>
+</span>163 <span style=''>        </span><span style='background: #AEF1AE'>(TypeTree(), widenDef :: Nil)</span><span style=''>
+</span>164 <span style=''>      case _ =&gt;
+</span>165 <span style=''>        </span><span style='background: #AEF1AE'>(parentTypes.reduceLeft(</span><span style='background: #F0ADAD'>AndTypeTree</span><span style='background: #AEF1AE'>), Nil)</span><span style=''>
+</span>166 <span style=''>    }
+</span>167 <span style=''>  }
+</span>168 <span style=''>
+</span>169 <span style=''>  /** A pair consisting of
+</span>170 <span style=''>   *   - the next enum tag
+</span>171 <span style=''>   *   - scaffolding containing the necessary definitions for singleton enum cases
+</span>172 <span style=''>   *     unless that scaffolding was already generated by a previous call to `nextEnumKind`.
+</span>173 <span style=''>   */
+</span>174 <span style=''>  def nextEnumTag(kind: CaseKind.Value)(implicit ctx: Context): (Int, List[Tree]) = {
+</span>175 <span style=''>    val (count, seenKind) = ctx.tree.removeAttachment(EnumCaseCount).getOrElse((0, CaseKind.Class))
+</span>176 <span style=''>    val minKind = if (</span><span style='background: #AEF1AE'>kind &lt; seenKind</span><span style=''>) </span><span style='background: #AEF1AE'>kind</span><span style=''> else </span><span style='background: #AEF1AE'>seenKind</span><span style=''>
+</span>177 <span style=''>    </span><span style='background: #AEF1AE'>ctx.tree.pushAttachment(EnumCaseCount, (count + 1, minKind))</span><span style=''>
+</span>178 <span style=''>    val scaffolding =
+</span>179 <span style=''>      if (</span><span style='background: #AEF1AE'>enumClass.typeParams.nonEmpty || kind &gt;= seenKind</span><span style=''>) </span><span style='background: #AEF1AE'>Nil</span><span style=''>
+</span>180 <span style=''>      else </span><span style='background: #AEF1AE'>if (kind == CaseKind.Object) enumScaffolding
+</span>181 <span style=''></span><span style='background: #AEF1AE'>      else if (seenKind == CaseKind.Object) </span><span style='background: #F0ADAD'>enumValueCreator :: Nil</span><span style='background: #AEF1AE'>
+</span>182 <span style=''></span><span style='background: #AEF1AE'>      else enumScaffolding :+ enumValueCreator</span><span style=''>
+</span>183 <span style=''>    </span><span style='background: #AEF1AE'>(count, scaffolding)</span><span style=''>
+</span>184 <span style=''>  }
+</span>185 <span style=''>
+</span>186 <span style=''>  /** A pair consisting of
+</span>187 <span style=''>   *   - a method returning the next enum tag
+</span>188 <span style=''>   *   - scaffolding as defined in `nextEnumTag`
+</span>189 <span style=''>   */
+</span>190 <span style=''>  def enumTagMeth(kind: CaseKind.Value)(implicit ctx: Context): (DefDef, List[Tree]) = {
+</span>191 <span style=''>    val (tag, scaffolding) = nextEnumTag(kind)
+</span>192 <span style=''>    </span><span style='background: #AEF1AE'>(DefDef(nme.enumTag, Nil, Nil, TypeTree(), Literal(Constant(tag))), scaffolding)</span><span style=''>
+</span>193 <span style=''>  }
+</span>194 <span style=''>
+</span>195 <span style=''>  /** Expand a module definition representing a parameterless enum case */
+</span>196 <span style=''>  def expandEnumModule(name: TermName, impl: Template, mods: Modifiers, pos: Position)(implicit ctx: Context): Tree =
+</span>197 <span style=''>    if (</span><span style='background: #AEF1AE'>impl.parents.isEmpty</span><span style=''>)
+</span>198 <span style=''>      </span><span style='background: #AEF1AE'>if (impl.body.isEmpty)
+</span>199 <span style=''></span><span style='background: #AEF1AE'>        expandSimpleEnumCase(name, mods, pos)
+</span>200 <span style=''></span><span style='background: #AEF1AE'>      else {
+</span>201 <span style=''></span><span style='background: #AEF1AE'>        val parent = interpolatedEnumParent(pos)
+</span>202 <span style=''></span><span style='background: #AEF1AE'>        expandEnumModule(name, cpy.Template(impl)(parents = parent :: Nil), mods, pos)
+</span>203 <span style=''></span><span style='background: #AEF1AE'>      }</span><span style=''>
+</span>204 <span style=''>    else </span><span style='background: #AEF1AE'>{
+</span>205 <span style=''></span><span style='background: #AEF1AE'>      def toStringMeth =
+</span>206 <span style=''></span><span style='background: #AEF1AE'>        DefDef(nme.toString_, Nil, Nil, TypeTree(defn.StringType), Literal(Constant(name.toString)))
+</span>207 <span style=''></span><span style='background: #AEF1AE'>          .withFlags(Override)
+</span>208 <span style=''></span><span style='background: #AEF1AE'>      val (tagMeth, scaffolding) = enumTagMeth(CaseKind.Object)
+</span>209 <span style=''></span><span style='background: #AEF1AE'>      val impl1 = cpy.Template(impl)(body =
+</span>210 <span style=''></span><span style='background: #AEF1AE'>        impl.body ++ List(tagMeth, toStringMeth) ++ registerCall)
+</span>211 <span style=''></span><span style='background: #AEF1AE'>      val vdef = ValDef(name, TypeTree(), New(impl1)).withMods(mods | Final)
+</span>212 <span style=''></span><span style='background: #AEF1AE'>      flatTree(scaffolding ::: vdef :: Nil).withPos(pos)
+</span>213 <span style=''></span><span style='background: #AEF1AE'>    }</span><span style=''>
+</span>214 <span style=''>
+</span>215 <span style=''>  /** Expand a simple enum case */
+</span>216 <span style=''>  def expandSimpleEnumCase(name: TermName, mods: Modifiers, pos: Position)(implicit ctx: Context): Tree =
+</span>217 <span style=''>    if (</span><span style='background: #AEF1AE'>enumClass.typeParams.nonEmpty</span><span style=''>) </span><span style='background: #AEF1AE'>{
+</span>218 <span style=''></span><span style='background: #AEF1AE'>      val parent = interpolatedEnumParent(pos)
+</span>219 <span style=''></span><span style='background: #AEF1AE'>      val impl = Template(emptyConstructor, parent :: Nil, EmptyValDef, Nil)
+</span>220 <span style=''></span><span style='background: #AEF1AE'>      expandEnumModule(name, impl, mods, pos)
+</span>221 <span style=''></span><span style='background: #AEF1AE'>    }</span><span style=''>
+</span>222 <span style=''>    else </span><span style='background: #AEF1AE'>{
+</span>223 <span style=''></span><span style='background: #AEF1AE'>      val (tag, scaffolding) = nextEnumTag(CaseKind.Simple)
+</span>224 <span style=''></span><span style='background: #AEF1AE'>      val creator = Apply(Ident(nme.DOLLAR_NEW), List(Literal(Constant(tag)), Literal(Constant(name.toString))))
+</span>225 <span style=''></span><span style='background: #AEF1AE'>      val vdef = ValDef(name, enumClassRef, creator).withMods(mods | Final)
+</span>226 <span style=''></span><span style='background: #AEF1AE'>      flatTree(scaffolding ::: vdef :: Nil).withPos(pos)
+</span>227 <span style=''></span><span style='background: #AEF1AE'>    }</span><span style=''>
+</span>228 <span style=''>}
+</span></pre>
+          </div>
+          <div class="tab-pane" id="statementlist">
+            <table cellspacing="0" cellpadding="0" class="table statementlist">
+      <tr>
+        <th>Line</th>
+        <th>Stmt Id</th>
+        <th>Pos</th>
+        <th>Tree</th>
+        <th>Symbol</th>
+        <th>Code</th>
+      </tr><tr>
+        <td>
+          20
+        </td>
+        <td>
+          7557
+        </td>
+        <td>
+          596
+          -
+          596
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.Enumeration.Value
+        </td>
+        <td style="background: #AEF1AE">
+          CaseKind.this.Value
+        </td>
+      </tr><tr>
+        <td>
+          20
+        </td>
+        <td>
+          7556
+        </td>
+        <td>
+          596
+          -
+          596
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.Enumeration.Value
+        </td>
+        <td style="background: #AEF1AE">
+          CaseKind.this.Value
+        </td>
+      </tr><tr>
+        <td>
+          20
+        </td>
+        <td>
+          7558
+        </td>
+        <td>
+          596
+          -
+          601
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.Enumeration.Value
+        </td>
+        <td style="background: #AEF1AE">
+          CaseKind.this.Value
+        </td>
+      </tr><tr>
+        <td>
+          24
+        </td>
+        <td>
+          7559
+        </td>
+        <td>
+          729
+          -
+          768
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.util.Property.Key.&lt;init&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          new dotty.tools.dotc.util.Property.Key[(Int, dotty.tools.dotc.ast.DesugarEnums.CaseKind.Value)]()
+        </td>
+      </tr><tr>
+        <td>
+          27
+        </td>
+        <td>
+          7560
+        </td>
+        <td>
+          884
+          -
+          905
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.SymDenotations.SymDenotation.linkedClass
+        </td>
+        <td style="background: #AEF1AE">
+          core.Symbols.toDenot(ctx.owner)(ctx).linkedClass(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          31
+        </td>
+        <td>
+          7562
+        </td>
+        <td>
+          1070
+          -
+          1125
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Boolean.&amp;&amp;
+        </td>
+        <td style="background: #AEF1AE">
+          untpd.modsDeco(tree)(ctx).mods.hasMod[dotty.tools.dotc.ast.untpd.Mod.EnumCase]((ClassTag.apply[dotty.tools.dotc.ast.untpd.Mod.EnumCase](classOf[dotty.tools.dotc.ast.untpd$$Mod$EnumCase]): scala.reflect.ClassTag[dotty.tools.dotc.ast.untpd.Mod.EnumCase])).&amp;&amp;(DesugarEnums.this.enumCaseIsLegal(tree)(ctx))
+        </td>
+      </tr><tr>
+        <td>
+          31
+        </td>
+        <td>
+          7561
+        </td>
+        <td>
+          1104
+          -
+          1125
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.DesugarEnums.enumCaseIsLegal
+        </td>
+        <td style="background: #AEF1AE">
+          DesugarEnums.this.enumCaseIsLegal(tree)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          35
+        </td>
+        <td>
+          7565
+        </td>
+        <td>
+          1308
+          -
+          1345
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.SymDenotations.SymDenotation.derivesFrom
+        </td>
+        <td style="background: #AEF1AE">
+          core.Symbols.toDenot(DesugarEnums.this.enumClass(ctx))(ctx).derivesFrom(core.Symbols.defn(ctx).EnumClass(ctx))(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          35
+        </td>
+        <td>
+          7564
+        </td>
+        <td>
+          1292
+          -
+          1303
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Flags.ModuleClass
+        </td>
+        <td style="background: #AEF1AE">
+          core.Flags.ModuleClass
+        </td>
+      </tr><tr>
+        <td>
+          35
+        </td>
+        <td>
+          7563
+        </td>
+        <td>
+          1279
+          -
+          1288
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Contexts.Context.owner
+        </td>
+        <td style="background: #AEF1AE">
+          ctx.owner
+        </td>
+      </tr><tr>
+        <td>
+          36
+        </td>
+        <td>
+          7566
+        </td>
+        <td>
+          1365
+          -
+          1408
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.reporting.diagnostic.messages.EnumCaseDefinitionInNonEnumOwner.apply
+        </td>
+        <td style="background: #AEF1AE">
+          reporting.diagnostic.messages.EnumCaseDefinitionInNonEnumOwner.apply(ctx.owner)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          36
+        </td>
+        <td>
+          7568
+        </td>
+        <td>
+          1355
+          -
+          1419
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.reporting.Reporting.error
+        </td>
+        <td style="background: #AEF1AE">
+          ctx.error(reporting.diagnostic.messages.EnumCaseDefinitionInNonEnumOwner.apply(ctx.owner)(ctx), core.Decorators.sourcePos(tree.pos)(ctx))
+        </td>
+      </tr><tr>
+        <td>
+          36
+        </td>
+        <td>
+          7570
+        </td>
+        <td>
+          1279
+          -
+          1443
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Boolean.||
+        </td>
+        <td style="background: #AEF1AE">
+          core.Symbols.toDenot(ctx.owner)(ctx).is(core.Flags.ModuleClass)(ctx).&amp;&amp;(core.Symbols.toDenot(DesugarEnums.this.enumClass(ctx))(ctx).derivesFrom(core.Symbols.defn(ctx).EnumClass(ctx))(ctx)).||({
+  ctx.error(reporting.diagnostic.messages.EnumCaseDefinitionInNonEnumOwner.apply(ctx.owner)(ctx), core.Decorators.sourcePos(tree.pos)(ctx));
+  false
+})
+        </td>
+      </tr><tr>
+        <td>
+          36
+        </td>
+        <td>
+          7567
+        </td>
+        <td>
+          1410
+          -
+          1418
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.Decorators.sourcePos
+        </td>
+        <td style="background: #AEF1AE">
+          core.Decorators.sourcePos(tree.pos)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          37
+        </td>
+        <td>
+          7569
+        </td>
+        <td>
+          1429
+          -
+          1434
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          false
+        </td>
+      </tr><tr>
+        <td>
+          48
+        </td>
+        <td>
+          7571
+        </td>
+        <td>
+          1898
+          -
+          1918
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.SymDenotations.SymDenotation.typeParams
+        </td>
+        <td style="background: #AEF1AE">
+          core.Symbols.toDenot(DesugarEnums.this.enumClass(ctx))(ctx).typeParams(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          49
+        </td>
+        <td>
+          7572
+        </td>
+        <td>
+          1948
+          -
+          1997
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.Object.eq
+        </td>
+        <td style="background: #AEF1AE">
+          tp.subst(tparams, tparams.map[dotty.tools.dotc.core.Types.NoType.type, List[dotty.tools.dotc.core.Types.NoType.type]](((x$1: dotty.tools.dotc.core.Symbols.TypeSymbol) =&gt; core.Types.NoType))(immutable.this.List.canBuildFrom[dotty.tools.dotc.core.Types.NoType.type]))(ctx).eq(tp)
+        </td>
+      </tr><tr>
+        <td>
+          50
+        </td>
+        <td>
+          7594
+        </td>
+        <td>
+          2014
+          -
+          2561
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          scala.collection.immutable.List.map
+        </td>
+        <td style="background: #AEF1AE">
+          tparams.map[dotty.tools.dotc.core.Types.Type, List[dotty.tools.dotc.core.Types.Type]](((tparam: dotty.tools.dotc.core.Symbols.TypeSymbol) =&gt; if (core.Symbols.toDenot(tparam)(ctx).variance(ctx).&gt;(0).&amp;&amp;(isGround(core.Symbols.toDenot(tparam)(ctx).info(ctx).bounds(ctx).lo)))
+  core.Symbols.toDenot(tparam)(ctx).info(ctx).bounds(ctx).lo
+else
+  if (core.Symbols.toDenot(tparam)(ctx).variance(ctx).&lt;(0).&amp;&amp;(isGround(core.Symbols.toDenot(tparam)(ctx).info(ctx).bounds(ctx).hi)))
+    core.Symbols.toDenot(tparam)(ctx).info(ctx).bounds(ctx).hi
+  else
+    {
+      def problem: String = if (core.Symbols.toDenot(tparam)(ctx).variance(ctx).==(0))
+        &quot;is non variant&quot;
+      else
+        &quot;has bounds that depend on a type parameter in the same parameter list&quot;;
+      typer.ErrorReporting.errorType(diagnostic.this.Message.toNoExplanation(core.Decorators.StringInterpolators(scala.StringContext.apply(&quot;cannot determine type argument for enum parent &quot;, &quot;,\n                     |type parameter &quot;, &quot; &quot;, &quot;&quot;)).i(DesugarEnums.this.enumClass(ctx), tparam, problem)(ctx)), pos)(ctx)
+    }))(immutable.this.List.canBuildFrom[dotty.tools.dotc.core.Types.Type])
+        </td>
+      </tr><tr>
+        <td>
+          50
+        </td>
+        <td>
+          7593
+        </td>
+        <td>
+          2022
+          -
+          2022
+        </td>
+        <td>
+          TypeApply
+        </td>
+        <td>
+          scala.collection.immutable.List.canBuildFrom
+        </td>
+        <td style="background: #AEF1AE">
+          immutable.this.List.canBuildFrom[dotty.tools.dotc.core.Types.Type]
+        </td>
+      </tr><tr>
+        <td>
+          51
+        </td>
+        <td>
+          7575
+        </td>
+        <td>
+          2071
+          -
+          2102
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.ast.DesugarEnums.isGround
+        </td>
+        <td style="background: #AEF1AE">
+          isGround(core.Symbols.toDenot(tparam)(ctx).info(ctx).bounds(ctx).lo)
+        </td>
+      </tr><tr>
+        <td>
+          51
+        </td>
+        <td>
+          7574
+        </td>
+        <td>
+          2080
+          -
+          2101
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Types.TypeBounds.lo
+        </td>
+        <td style="background: #AEF1AE">
+          core.Symbols.toDenot(tparam)(ctx).info(ctx).bounds(ctx).lo
+        </td>
+      </tr><tr>
+        <td>
+          51
+        </td>
+        <td>
+          7573
+        </td>
+        <td>
+          2066
+          -
+          2067
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          0
+        </td>
+      </tr><tr>
+        <td>
+          51
+        </td>
+        <td>
+          7576
+        </td>
+        <td>
+          2048
+          -
+          2102
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Boolean.&amp;&amp;
+        </td>
+        <td style="background: #AEF1AE">
+          core.Symbols.toDenot(tparam)(ctx).variance(ctx).&gt;(0).&amp;&amp;(isGround(core.Symbols.toDenot(tparam)(ctx).info(ctx).bounds(ctx).lo))
+        </td>
+      </tr><tr>
+        <td>
+          52
+        </td>
+        <td>
+          7577
+        </td>
+        <td>
+          2112
+          -
+          2133
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Types.TypeBounds.lo
+        </td>
+        <td style="background: #AEF1AE">
+          core.Symbols.toDenot(tparam)(ctx).info(ctx).bounds(ctx).lo
+        </td>
+      </tr><tr>
+        <td>
+          52
+        </td>
+        <td>
+          7578
+        </td>
+        <td>
+          2112
+          -
+          2133
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          dotty.tools.dotc.core.Types.TypeBounds.lo
+        </td>
+        <td style="background: #AEF1AE">
+          core.Symbols.toDenot(tparam)(ctx).info(ctx).bounds(ctx).lo
+        </td>
+      </tr><tr>
+        <td>
+          53
+        </td>
+        <td>
+          7592
+        </td>
+        <td>
+          2145
+          -
+          2561
+        </td>
+        <td>
+          If
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          if (core.Symbols.toDenot(tparam)(ctx).variance(ctx).&lt;(0).&amp;&amp;(isGround(core.Symbols.toDenot(tparam)(ctx).info(ctx).bounds(ctx).hi)))
+  core.Symbols.toDenot(tparam)(ctx).info(ctx).bounds(ctx).hi
+else
+  {
+    def problem: String = if (core.Symbols.toDenot(tparam)(ctx).variance(ctx).==(0))
+      &quot;is non variant&quot;
+    else
+      &quot;has bounds that depend on a type parameter in the same parameter list&quot;;
+    typer.ErrorReporting.errorType(diagnostic.this.Message.toNoExplanation(core.Decorators.StringInterpolators(scala.StringContext.apply(&quot;cannot determine type argument for enum parent &quot;, &quot;,\n                     |type parameter &quot;, &quot; &quot;, &quot;&quot;)).i(DesugarEnums.this.enumClass(ctx), tparam, problem)(ctx)), pos)(ctx)
+  }
+        </td>
+      </tr><tr>
+        <td>
+          53
+        </td>
+        <td>
+          7580
+        </td>
+        <td>
+          2181
+          -
+          2202
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Types.TypeBounds.hi
+        </td>
+        <td style="background: #AEF1AE">
+          core.Symbols.toDenot(tparam)(ctx).info(ctx).bounds(ctx).hi
+        </td>
+      </tr><tr>
+        <td>
+          53
+        </td>
+        <td>
+          7579
+        </td>
+        <td>
+          2167
+          -
+          2168
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          0
+        </td>
+      </tr><tr>
+        <td>
+          53
+        </td>
+        <td>
+          7582
+        </td>
+        <td>
+          2149
+          -
+          2203
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Boolean.&amp;&amp;
+        </td>
+        <td style="background: #AEF1AE">
+          core.Symbols.toDenot(tparam)(ctx).variance(ctx).&lt;(0).&amp;&amp;(isGround(core.Symbols.toDenot(tparam)(ctx).info(ctx).bounds(ctx).hi))
+        </td>
+      </tr><tr>
+        <td>
+          53
+        </td>
+        <td>
+          7581
+        </td>
+        <td>
+          2172
+          -
+          2203
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.ast.DesugarEnums.isGround
+        </td>
+        <td style="background: #AEF1AE">
+          isGround(core.Symbols.toDenot(tparam)(ctx).info(ctx).bounds(ctx).hi)
+        </td>
+      </tr><tr>
+        <td>
+          54
+        </td>
+        <td>
+          7584
+        </td>
+        <td>
+          2213
+          -
+          2234
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          dotty.tools.dotc.core.Types.TypeBounds.hi
+        </td>
+        <td style="background: #AEF1AE">
+          core.Symbols.toDenot(tparam)(ctx).info(ctx).bounds(ctx).hi
+        </td>
+      </tr><tr>
+        <td>
+          54
+        </td>
+        <td>
+          7583
+        </td>
+        <td>
+          2213
+          -
+          2234
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Types.TypeBounds.hi
+        </td>
+        <td style="background: #AEF1AE">
+          core.Symbols.toDenot(tparam)(ctx).info(ctx).bounds(ctx).hi
+        </td>
+      </tr><tr>
+        <td>
+          55
+        </td>
+        <td>
+          7591
+        </td>
+        <td>
+          2246
+          -
+          2561
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          {
+  def problem: String = if (core.Symbols.toDenot(tparam)(ctx).variance(ctx).==(0))
+    &quot;is non variant&quot;
+  else
+    &quot;has bounds that depend on a type parameter in the same parameter list&quot;;
+  typer.ErrorReporting.errorType(diagnostic.this.Message.toNoExplanation(core.Decorators.StringInterpolators(scala.StringContext.apply(&quot;cannot determine type argument for enum parent &quot;, &quot;,\n                     |type parameter &quot;, &quot; &quot;, &quot;&quot;)).i(DesugarEnums.this.enumClass(ctx), tparam, problem)(ctx)), pos)(ctx)
+}
+        </td>
+      </tr><tr>
+        <td>
+          57
+        </td>
+        <td>
+          7586
+        </td>
+        <td>
+          2306
+          -
+          2322
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          &quot;is non variant&quot;
+        </td>
+      </tr><tr>
+        <td>
+          57
+        </td>
+        <td>
+          7585
+        </td>
+        <td>
+          2284
+          -
+          2304
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Int.==
+        </td>
+        <td style="background: #AEF1AE">
+          core.Symbols.toDenot(tparam)(ctx).variance(ctx).==(0)
+        </td>
+      </tr><tr>
+        <td>
+          57
+        </td>
+        <td>
+          7587
+        </td>
+        <td>
+          2306
+          -
+          2322
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          &quot;is non variant&quot;
+        </td>
+      </tr><tr>
+        <td>
+          58
+        </td>
+        <td>
+          7589
+        </td>
+        <td>
+          2338
+          -
+          2409
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          &quot;has bounds that depend on a type parameter in the same parameter list&quot;
+        </td>
+      </tr><tr>
+        <td>
+          58
+        </td>
+        <td>
+          7588
+        </td>
+        <td>
+          2338
+          -
+          2409
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          &quot;has bounds that depend on a type parameter in the same parameter list&quot;
+        </td>
+      </tr><tr>
+        <td>
+          59
+        </td>
+        <td>
+          7590
+        </td>
+        <td>
+          2418
+          -
+          2553
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.typer.ErrorReporting.errorType
+        </td>
+        <td style="background: #AEF1AE">
+          typer.ErrorReporting.errorType(diagnostic.this.Message.toNoExplanation(core.Decorators.StringInterpolators(scala.StringContext.apply(&quot;cannot determine type argument for enum parent &quot;, &quot;,\n                     |type parameter &quot;, &quot; &quot;, &quot;&quot;)).i(DesugarEnums.this.enumClass(ctx), tparam, problem)(ctx)), pos)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          63
+        </td>
+        <td>
+          7595
+        </td>
+        <td>
+          2572
+          -
+          2629
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Positioned.withPos
+        </td>
+        <td style="background: #AEF1AE">
+          untpd.TypeTree(core.Types.decorateTypeApplications(core.Symbols.toDenot(DesugarEnums.this.enumClass(ctx))(ctx).typeRef(ctx)).appliedTo(targs)(ctx))(ctx).withPos(pos)
+        </td>
+      </tr><tr>
+        <td>
+          67
+        </td>
+        <td>
+          7596
+        </td>
+        <td>
+          2725
+          -
+          2752
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.untpd.TypeTree
+        </td>
+        <td style="background: #AEF1AE">
+          untpd.TypeTree(core.Symbols.toDenot(DesugarEnums.this.enumClass(ctx))(ctx).typeRef(ctx))(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          71
+        </td>
+        <td>
+          7601
+        </td>
+        <td>
+          2909
+          -
+          2960
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Trees.MemberDef.withFlags
+        </td>
+        <td style="background: #AEF1AE">
+          cdef.withFlags(untpd.modsDeco(cdef)(ctx).mods.flags.|(core.Flags.Abstract).|(core.Flags.Sealed))
+        </td>
+      </tr><tr>
+        <td>
+          71
+        </td>
+        <td>
+          7598
+        </td>
+        <td>
+          2942
+          -
+          2950
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Flags.Abstract
+        </td>
+        <td style="background: #AEF1AE">
+          core.Flags.Abstract
+        </td>
+      </tr><tr>
+        <td>
+          71
+        </td>
+        <td>
+          7597
+        </td>
+        <td>
+          2881
+          -
+          2907
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.untpd.Modifiers.hasMod
+        </td>
+        <td style="background: #AEF1AE">
+          untpd.modsDeco(cdef)(ctx).mods.hasMod[dotty.tools.dotc.ast.untpd.Mod.Enum]((ClassTag.apply[dotty.tools.dotc.ast.untpd.Mod.Enum](classOf[dotty.tools.dotc.ast.untpd$$Mod$Enum]): scala.reflect.ClassTag[dotty.tools.dotc.ast.untpd.Mod.Enum]))
+        </td>
+      </tr><tr>
+        <td>
+          71
+        </td>
+        <td>
+          7600
+        </td>
+        <td>
+          2924
+          -
+          2959
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.core.Flags.FlagSet.|
+        </td>
+        <td style="background: #AEF1AE">
+          untpd.modsDeco(cdef)(ctx).mods.flags.|(core.Flags.Abstract).|(core.Flags.Sealed)
+        </td>
+      </tr><tr>
+        <td>
+          71
+        </td>
+        <td>
+          7602
+        </td>
+        <td>
+          2909
+          -
+          2960
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Trees.MemberDef.withFlags
+        </td>
+        <td style="background: #AEF1AE">
+          cdef.withFlags(untpd.modsDeco(cdef)(ctx).mods.flags.|(core.Flags.Abstract).|(core.Flags.Sealed))
+        </td>
+      </tr><tr>
+        <td>
+          71
+        </td>
+        <td>
+          7599
+        </td>
+        <td>
+          2953
+          -
+          2959
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Flags.Sealed
+        </td>
+        <td style="background: #AEF1AE">
+          core.Flags.Sealed
+        </td>
+      </tr><tr>
+        <td>
+          72
+        </td>
+        <td>
+          7607
+        </td>
+        <td>
+          2997
+          -
+          3036
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Trees.MemberDef.withFlags
+        </td>
+        <td style="background: #AEF1AE">
+          cdef.withFlags(untpd.modsDeco(cdef)(ctx).mods.flags.|(core.Flags.Final))
+        </td>
+      </tr><tr>
+        <td>
+          72
+        </td>
+        <td>
+          7604
+        </td>
+        <td>
+          3030
+          -
+          3035
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Flags.Final
+        </td>
+        <td style="background: #AEF1AE">
+          core.Flags.Final
+        </td>
+      </tr><tr>
+        <td>
+          72
+        </td>
+        <td>
+          7606
+        </td>
+        <td>
+          2997
+          -
+          3036
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Trees.MemberDef.withFlags
+        </td>
+        <td style="background: #AEF1AE">
+          cdef.withFlags(untpd.modsDeco(cdef)(ctx).mods.flags.|(core.Flags.Final))
+        </td>
+      </tr><tr>
+        <td>
+          72
+        </td>
+        <td>
+          7609
+        </td>
+        <td>
+          2970
+          -
+          3050
+        </td>
+        <td>
+          If
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          if (DesugarEnums.this.isLegalEnumCase(cdef)(ctx))
+  cdef.withFlags(untpd.modsDeco(cdef)(ctx).mods.flags.|(core.Flags.Final))
+else
+  cdef
+        </td>
+      </tr><tr>
+        <td>
+          72
+        </td>
+        <td>
+          7603
+        </td>
+        <td>
+          2974
+          -
+          2995
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.DesugarEnums.isLegalEnumCase
+        </td>
+        <td style="background: #AEF1AE">
+          DesugarEnums.this.isLegalEnumCase(cdef)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          72
+        </td>
+        <td>
+          7605
+        </td>
+        <td>
+          3012
+          -
+          3035
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.core.Flags.FlagSet.|
+        </td>
+        <td style="background: #AEF1AE">
+          untpd.modsDeco(cdef)(ctx).mods.flags.|(core.Flags.Final)
+        </td>
+      </tr><tr>
+        <td>
+          73
+        </td>
+        <td>
+          7608
+        </td>
+        <td>
+          3046
+          -
+          3050
+        </td>
+        <td>
+          Ident
+        </td>
+        <td>
+          dotty.tools.dotc.ast.DesugarEnums.cdef
+        </td>
+        <td style="background: #AEF1AE">
+          cdef
+        </td>
+      </tr><tr>
+        <td>
+          75
+        </td>
+        <td>
+          7610
+        </td>
+        <td>
+          3105
+          -
+          3122
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.StdNames.ScalaNames.DOLLAR_VALUES
+        </td>
+        <td style="background: #AEF1AE">
+          core.StdNames.nme.DOLLAR_VALUES
+        </td>
+      </tr><tr>
+        <td>
+          75
+        </td>
+        <td>
+          7613
+        </td>
+        <td>
+          3092
+          -
+          3141
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.ast.untpd.Select
+        </td>
+        <td style="background: #AEF1AE">
+          untpd.Select(untpd.Ident(core.StdNames.nme.DOLLAR_VALUES), core.Decorators.PreNamedString(name).toTermName)
+        </td>
+      </tr><tr>
+        <td>
+          75
+        </td>
+        <td>
+          7612
+        </td>
+        <td>
+          3125
+          -
+          3140
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Decorators.PreNamedString.toTermName
+        </td>
+        <td style="background: #AEF1AE">
+          core.Decorators.PreNamedString(name).toTermName
+        </td>
+      </tr><tr>
+        <td>
+          75
+        </td>
+        <td>
+          7611
+        </td>
+        <td>
+          3099
+          -
+          3123
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.ast.untpd.Ident
+        </td>
+        <td style="background: #AEF1AE">
+          untpd.Ident(core.StdNames.nme.DOLLAR_VALUES)
+        </td>
+      </tr><tr>
+        <td>
+          77
+        </td>
+        <td>
+          7616
+        </td>
+        <td>
+          3245
+          -
+          3248
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.collection.immutable.Nil
+        </td>
+        <td style="background: #AEF1AE">
+          scala.collection.immutable.Nil
+        </td>
+      </tr><tr>
+        <td>
+          77
+        </td>
+        <td>
+          7615
+        </td>
+        <td>
+          3214
+          -
+          3243
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.collection.TraversableOnce.nonEmpty
+        </td>
+        <td style="background: #AEF1AE">
+          core.Symbols.toDenot(DesugarEnums.this.enumClass(ctx))(ctx).typeParams(ctx).nonEmpty
+        </td>
+      </tr><tr>
+        <td>
+          77
+        </td>
+        <td>
+          7614
+        </td>
+        <td>
+          3214
+          -
+          3223
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.DesugarEnums.enumClass
+        </td>
+        <td style="background: #AEF1AE">
+          DesugarEnums.this.enumClass(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          77
+        </td>
+        <td>
+          7617
+        </td>
+        <td>
+          3245
+          -
+          3248
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          scala.collection.immutable.Nil
+        </td>
+        <td style="background: #AEF1AE">
+          scala.collection.immutable.Nil
+        </td>
+      </tr><tr>
+        <td>
+          78
+        </td>
+        <td>
+          7619
+        </td>
+        <td>
+          3258
+          -
+          3322
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          {
+  &lt;synthetic&gt; &lt;artifact&gt; val x$3: dotty.tools.dotc.ast.untpd.Apply = untpd.Apply(DesugarEnums.this.valuesDot(&quot;register&quot;), {
+    &lt;synthetic&gt; &lt;artifact&gt; val x$2: dotty.tools.dotc.ast.untpd.This = untpd.This(untpd.EmptyTypeIdent);
+    scala.collection.immutable.Nil.::[dotty.tools.dotc.ast.untpd.This](x$2)
+  });
+  scala.collection.immutable.Nil.::[dotty.tools.dotc.ast.untpd.Apply](x$3)
+}
+        </td>
+      </tr><tr>
+        <td>
+          78
+        </td>
+        <td>
+          7618
+        </td>
+        <td>
+          3316
+          -
+          3322
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.immutable.List.::
+        </td>
+        <td style="background: #AEF1AE">
+          scala.collection.immutable.Nil.::[dotty.tools.dotc.ast.untpd.Apply](x$3)
+        </td>
+      </tr><tr>
+        <td>
+          89
+        </td>
+        <td>
+          7625
+        </td>
+        <td>
+          3693
+          -
+          3757
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.ast.untpd.DefDef
+        </td>
+        <td style="background: #AEF1AE">
+          untpd.DefDef(core.Decorators.PreNamedString(name).toTermName, scala.collection.immutable.Nil, scala.collection.immutable.Nil, untpd.TypeTree(), DesugarEnums.this.valuesDot(select))
+        </td>
+      </tr><tr>
+        <td>
+          89
+        </td>
+        <td>
+          7622
+        </td>
+        <td>
+          3722
+          -
+          3725
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.collection.immutable.Nil
+        </td>
+        <td style="background: #AEF1AE">
+          scala.collection.immutable.Nil
+        </td>
+      </tr><tr>
+        <td>
+          89
+        </td>
+        <td>
+          7624
+        </td>
+        <td>
+          3739
+          -
+          3756
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.ast.DesugarEnums.valuesDot
+        </td>
+        <td style="background: #AEF1AE">
+          DesugarEnums.this.valuesDot(select)
+        </td>
+      </tr><tr>
+        <td>
+          89
+        </td>
+        <td>
+          7621
+        </td>
+        <td>
+          3717
+          -
+          3720
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.collection.immutable.Nil
+        </td>
+        <td style="background: #AEF1AE">
+          scala.collection.immutable.Nil
+        </td>
+      </tr><tr>
+        <td>
+          89
+        </td>
+        <td>
+          7620
+        </td>
+        <td>
+          3700
+          -
+          3715
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Decorators.PreNamedString.toTermName
+        </td>
+        <td style="background: #AEF1AE">
+          core.Decorators.PreNamedString(name).toTermName
+        </td>
+      </tr><tr>
+        <td>
+          89
+        </td>
+        <td>
+          7623
+        </td>
+        <td>
+          3727
+          -
+          3737
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.ast.untpd.TypeTree
+        </td>
+        <td style="background: #AEF1AE">
+          untpd.TypeTree()
+        </td>
+      </tr><tr>
+        <td>
+          91
+        </td>
+        <td>
+          7627
+        </td>
+        <td>
+          3817
+          -
+          3827
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.ast.untpd.TypeTree
+        </td>
+        <td style="background: #AEF1AE">
+          untpd.TypeTree()
+        </td>
+      </tr><tr>
+        <td>
+          91
+        </td>
+        <td>
+          7626
+        </td>
+        <td>
+          3798
+          -
+          3815
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.StdNames.ScalaNames.DOLLAR_VALUES
+        </td>
+        <td style="background: #AEF1AE">
+          core.StdNames.nme.DOLLAR_VALUES
+        </td>
+      </tr><tr>
+        <td>
+          92
+        </td>
+        <td>
+          7628
+        </td>
+        <td>
+          3842
+          -
+          3923
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.untpd.New
+        </td>
+        <td style="background: #AEF1AE">
+          untpd.New(untpd.TypeTree(core.Types.decorateTypeApplications(core.Symbols.defn(ctx).EnumValuesType).appliedTo({
+  &lt;synthetic&gt; &lt;artifact&gt; val x$4: dotty.tools.dotc.core.Types.TypeRef = core.Symbols.toDenot(DesugarEnums.this.enumClass(ctx))(ctx).typeRef(ctx);
+  scala.collection.immutable.Nil.::[dotty.tools.dotc.core.Types.TypeRef](x$4)
+})(ctx))(ctx), tools.this.`package`.ListOfNil)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          93
+        </td>
+        <td>
+          7630
+        </td>
+        <td>
+          3791
+          -
+          3952
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Trees.MemberDef.withFlags
+        </td>
+        <td style="background: #AEF1AE">
+          untpd.ValDef(core.StdNames.nme.DOLLAR_VALUES, untpd.TypeTree(), untpd.New(untpd.TypeTree(core.Types.decorateTypeApplications(core.Symbols.defn(ctx).EnumValuesType).appliedTo({
+  &lt;synthetic&gt; &lt;artifact&gt; val x$4: dotty.tools.dotc.core.Types.TypeRef = core.Symbols.toDenot(DesugarEnums.this.enumClass(ctx))(ctx).typeRef(ctx);
+  scala.collection.immutable.Nil.::[dotty.tools.dotc.core.Types.TypeRef](x$4)
+})(ctx))(ctx), tools.this.`package`.ListOfNil)(ctx)).withFlags(core.Flags.Private)
+        </td>
+      </tr><tr>
+        <td>
+          93
+        </td>
+        <td>
+          7629
+        </td>
+        <td>
+          3944
+          -
+          3951
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Flags.Private
+        </td>
+        <td style="background: #AEF1AE">
+          core.Flags.Private
+        </td>
+      </tr><tr>
+        <td>
+          94
+        </td>
+        <td>
+          7631
+        </td>
+        <td>
+          3974
+          -
+          4008
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.ast.DesugarEnums.enumDefDef
+        </td>
+        <td style="background: #AEF1AE">
+          enumDefDef(&quot;enumValue&quot;, &quot;fromInt&quot;)
+        </td>
+      </tr><tr>
+        <td>
+          95
+        </td>
+        <td>
+          7632
+        </td>
+        <td>
+          4031
+          -
+          4071
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.ast.DesugarEnums.enumDefDef
+        </td>
+        <td style="background: #AEF1AE">
+          enumDefDef(&quot;enumValueNamed&quot;, &quot;fromName&quot;)
+        </td>
+      </tr><tr>
+        <td>
+          96
+        </td>
+        <td>
+          7633
+        </td>
+        <td>
+          4092
+          -
+          4126
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.ast.DesugarEnums.enumDefDef
+        </td>
+        <td style="background: #AEF1AE">
+          enumDefDef(&quot;enumValues&quot;, &quot;values&quot;)
+        </td>
+      </tr><tr>
+        <td>
+          97
+        </td>
+        <td>
+          7634
+        </td>
+        <td>
+          4131
+          -
+          4189
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.immutable.List.apply
+        </td>
+        <td style="background: #AEF1AE">
+          scala.collection.immutable.List.apply[dotty.tools.dotc.ast.Trees.ValOrDefDef[dotty.tools.dotc.ast.Trees.Untyped] with Serializable{def name: dotty.tools.dotc.core.Names.TermName}](privateValuesDef, valueOfDef, withNameDef, valuesDef)
+        </td>
+      </tr><tr>
+        <td>
+          110
+        </td>
+        <td>
+          7637
+        </td>
+        <td>
+          4609
+          -
+          4614
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Flags.Param
+        </td>
+        <td style="background: #AEF1AE">
+          core.Flags.Param
+        </td>
+      </tr><tr>
+        <td>
+          110
+        </td>
+        <td>
+          7636
+        </td>
+        <td>
+          4588
+          -
+          4597
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Trees.Instance.EmptyTree
+        </td>
+        <td style="background: #AEF1AE">
+          untpd.EmptyTree
+        </td>
+      </tr><tr>
+        <td>
+          110
+        </td>
+        <td>
+          7638
+        </td>
+        <td>
+          4560
+          -
+          4615
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Trees.MemberDef.withFlags
+        </td>
+        <td style="background: #AEF1AE">
+          untpd.ValDef(name, untpd.TypeTree(typ)(ctx), untpd.EmptyTree).withFlags(core.Flags.Param)
+        </td>
+      </tr><tr>
+        <td>
+          110
+        </td>
+        <td>
+          7635
+        </td>
+        <td>
+          4573
+          -
+          4586
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.untpd.TypeTree
+        </td>
+        <td style="background: #AEF1AE">
+          untpd.TypeTree(typ)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          112
+        </td>
+        <td>
+          7643
+        </td>
+        <td>
+          4691
+          -
+          4698
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.StdNames.ScalaNames.tag
+        </td>
+        <td style="background: #AEF1AE">
+          core.StdNames.nme.tag
+        </td>
+      </tr><tr>
+        <td>
+          112
+        </td>
+        <td>
+          7640
+        </td>
+        <td>
+          4663
+          -
+          4666
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.collection.immutable.Nil
+        </td>
+        <td style="background: #AEF1AE">
+          scala.collection.immutable.Nil
+        </td>
+      </tr><tr>
+        <td>
+          112
+        </td>
+        <td>
+          7639
+        </td>
+        <td>
+          4650
+          -
+          4661
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.StdNames.ScalaNames.enumTag
+        </td>
+        <td style="background: #AEF1AE">
+          core.StdNames.nme.enumTag
+        </td>
+      </tr><tr>
+        <td>
+          112
+        </td>
+        <td>
+          7642
+        </td>
+        <td>
+          4673
+          -
+          4683
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.ast.untpd.TypeTree
+        </td>
+        <td style="background: #AEF1AE">
+          untpd.TypeTree()
+        </td>
+      </tr><tr>
+        <td>
+          112
+        </td>
+        <td>
+          7645
+        </td>
+        <td>
+          4643
+          -
+          4700
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.ast.untpd.DefDef
+        </td>
+        <td style="background: #AEF1AE">
+          untpd.DefDef(core.StdNames.nme.enumTag, scala.collection.immutable.Nil, scala.collection.immutable.Nil, untpd.TypeTree(), untpd.Ident(core.StdNames.nme.tag))
+        </td>
+      </tr><tr>
+        <td>
+          112
+        </td>
+        <td>
+          7641
+        </td>
+        <td>
+          4668
+          -
+          4671
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.collection.immutable.Nil
+        </td>
+        <td style="background: #AEF1AE">
+          scala.collection.immutable.Nil
+        </td>
+      </tr><tr>
+        <td>
+          112
+        </td>
+        <td>
+          7644
+        </td>
+        <td>
+          4685
+          -
+          4699
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.ast.untpd.Ident
+        </td>
+        <td style="background: #AEF1AE">
+          untpd.Ident(core.StdNames.nme.tag)
+        </td>
+      </tr><tr>
+        <td>
+          114
+        </td>
+        <td>
+          7646
+        </td>
+        <td>
+          4736
+          -
+          4749
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.StdNames.ScalaNames.toString_
+        </td>
+        <td style="background: #AEF1AE">
+          core.StdNames.nme.toString_
+        </td>
+      </tr><tr>
+        <td>
+          114
+        </td>
+        <td>
+          7649
+        </td>
+        <td>
+          4761
+          -
+          4771
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.ast.untpd.TypeTree
+        </td>
+        <td style="background: #AEF1AE">
+          untpd.TypeTree()
+        </td>
+      </tr><tr>
+        <td>
+          114
+        </td>
+        <td>
+          7648
+        </td>
+        <td>
+          4756
+          -
+          4759
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.collection.immutable.Nil
+        </td>
+        <td style="background: #AEF1AE">
+          scala.collection.immutable.Nil
+        </td>
+      </tr><tr>
+        <td>
+          114
+        </td>
+        <td>
+          7651
+        </td>
+        <td>
+          4773
+          -
+          4788
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.ast.untpd.Ident
+        </td>
+        <td style="background: #AEF1AE">
+          untpd.Ident(core.StdNames.nme.name)
+        </td>
+      </tr><tr>
+        <td>
+          114
+        </td>
+        <td>
+          7647
+        </td>
+        <td>
+          4751
+          -
+          4754
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.collection.immutable.Nil
+        </td>
+        <td style="background: #AEF1AE">
+          scala.collection.immutable.Nil
+        </td>
+      </tr><tr>
+        <td>
+          114
+        </td>
+        <td>
+          7650
+        </td>
+        <td>
+          4779
+          -
+          4787
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.StdNames.ScalaNames.name
+        </td>
+        <td style="background: #AEF1AE">
+          core.StdNames.nme.name
+        </td>
+      </tr><tr>
+        <td>
+          115
+        </td>
+        <td>
+          7652
+        </td>
+        <td>
+          4809
+          -
+          4817
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Flags.Override
+        </td>
+        <td style="background: #AEF1AE">
+          core.Flags.Override
+        </td>
+      </tr><tr>
+        <td>
+          115
+        </td>
+        <td>
+          7653
+        </td>
+        <td>
+          4729
+          -
+          4818
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Trees.MemberDef.withFlags
+        </td>
+        <td style="background: #AEF1AE">
+          untpd.DefDef(core.StdNames.nme.toString_, scala.collection.immutable.Nil, scala.collection.immutable.Nil, untpd.TypeTree(), untpd.Ident(core.StdNames.nme.name)).withFlags(core.Flags.Override)
+        </td>
+      </tr><tr>
+        <td>
+          116
+        </td>
+        <td>
+          7661
+        </td>
+        <td>
+          4837
+          -
+          4957
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.ast.untpd.New
+        </td>
+        <td style="background: #AEF1AE">
+          untpd.New(untpd.Template(untpd.emptyConstructor(ctx), {
+  &lt;synthetic&gt; &lt;artifact&gt; val x$5: dotty.tools.dotc.ast.untpd.TypedSplice = DesugarEnums.this.enumClassRef(ctx);
+  scala.collection.immutable.Nil.::[dotty.tools.dotc.ast.untpd.TypedSplice](x$5)
+}, untpd.EmptyValDef, scala.collection.immutable.List.apply[dotty.tools.dotc.ast.Trees.DefDef[Null]](enumTagDef, toStringDef).++[dotty.tools.dotc.ast.untpd.Tree, dotty.tools.dotc.ast.Trees.LazyTreeList](DesugarEnums.this.registerCall(ctx))(immutable.this.List.canBuildFrom[dotty.tools.dotc.ast.untpd.Tree])))
+        </td>
+      </tr><tr>
+        <td>
+          116
+        </td>
+        <td>
+          7655
+        </td>
+        <td>
+          4881
+          -
+          4887
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.immutable.List.::
+        </td>
+        <td style="background: #AEF1AE">
+          scala.collection.immutable.Nil.::[dotty.tools.dotc.ast.untpd.TypedSplice](x$5)
+        </td>
+      </tr><tr>
+        <td>
+          116
+        </td>
+        <td>
+          7660
+        </td>
+        <td>
+          4841
+          -
+          4956
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.ast.untpd.Template
+        </td>
+        <td style="background: #AEF1AE">
+          untpd.Template(untpd.emptyConstructor(ctx), {
+  &lt;synthetic&gt; &lt;artifact&gt; val x$5: dotty.tools.dotc.ast.untpd.TypedSplice = DesugarEnums.this.enumClassRef(ctx);
+  scala.collection.immutable.Nil.::[dotty.tools.dotc.ast.untpd.TypedSplice](x$5)
+}, untpd.EmptyValDef, scala.collection.immutable.List.apply[dotty.tools.dotc.ast.Trees.DefDef[Null]](enumTagDef, toStringDef).++[dotty.tools.dotc.ast.untpd.Tree, dotty.tools.dotc.ast.Trees.LazyTreeList](DesugarEnums.this.registerCall(ctx))(immutable.this.List.canBuildFrom[dotty.tools.dotc.ast.untpd.Tree]))
+        </td>
+      </tr><tr>
+        <td>
+          116
+        </td>
+        <td>
+          7654
+        </td>
+        <td>
+          4850
+          -
+          4866
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.untpd.emptyConstructor
+        </td>
+        <td style="background: #AEF1AE">
+          untpd.emptyConstructor(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          116
+        </td>
+        <td>
+          7656
+        </td>
+        <td>
+          4889
+          -
+          4900
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Trees.Instance.EmptyValDef
+        </td>
+        <td style="background: #AEF1AE">
+          untpd.EmptyValDef
+        </td>
+      </tr><tr>
+        <td>
+          117
+        </td>
+        <td>
+          7658
+        </td>
+        <td>
+          4940
+          -
+          4940
+        </td>
+        <td>
+          TypeApply
+        </td>
+        <td>
+          scala.collection.immutable.List.canBuildFrom
+        </td>
+        <td style="background: #AEF1AE">
+          immutable.this.List.canBuildFrom[dotty.tools.dotc.ast.untpd.Tree]
+        </td>
+      </tr><tr>
+        <td>
+          117
+        </td>
+        <td>
+          7657
+        </td>
+        <td>
+          4943
+          -
+          4955
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.DesugarEnums.registerCall
+        </td>
+        <td style="background: #AEF1AE">
+          DesugarEnums.this.registerCall(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          117
+        </td>
+        <td>
+          7659
+        </td>
+        <td>
+          4910
+          -
+          4955
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          scala.collection.immutable.List.++
+        </td>
+        <td style="background: #AEF1AE">
+          scala.collection.immutable.List.apply[dotty.tools.dotc.ast.Trees.DefDef[Null]](enumTagDef, toStringDef).++[dotty.tools.dotc.ast.untpd.Tree, dotty.tools.dotc.ast.Trees.LazyTreeList](DesugarEnums.this.registerCall(ctx))(immutable.this.List.canBuildFrom[dotty.tools.dotc.ast.untpd.Tree])
+        </td>
+      </tr><tr>
+        <td>
+          118
+        </td>
+        <td>
+          7663
+        </td>
+        <td>
+          4985
+          -
+          4988
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.collection.immutable.Nil
+        </td>
+        <td style="background: #AEF1AE">
+          scala.collection.immutable.Nil
+        </td>
+      </tr><tr>
+        <td>
+          118
+        </td>
+        <td>
+          7672
+        </td>
+        <td>
+          4962
+          -
+          5102
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.ast.untpd.DefDef
+        </td>
+        <td style="background: #AEF1AE">
+          untpd.DefDef(core.StdNames.nme.DOLLAR_NEW, scala.collection.immutable.Nil, scala.collection.immutable.List.apply[List[dotty.tools.dotc.ast.Trees.ValDef[Null]]](scala.collection.immutable.List.apply[dotty.tools.dotc.ast.Trees.ValDef[Null]](param(core.StdNames.nme.tag, core.Symbols.defn(ctx).IntType), param(core.StdNames.nme.name, core.Symbols.defn(ctx).StringType))), untpd.TypeTree(), creator)
+        </td>
+      </tr><tr>
+        <td>
+          118
+        </td>
+        <td>
+          7662
+        </td>
+        <td>
+          4969
+          -
+          4983
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.StdNames.ScalaNames.DOLLAR_NEW
+        </td>
+        <td style="background: #AEF1AE">
+          core.StdNames.nme.DOLLAR_NEW
+        </td>
+      </tr><tr>
+        <td>
+          119
+        </td>
+        <td>
+          7667
+        </td>
+        <td>
+          5054
+          -
+          5069
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Definitions.StringType
+        </td>
+        <td style="background: #AEF1AE">
+          core.Symbols.defn(ctx).StringType
+        </td>
+      </tr><tr>
+        <td>
+          119
+        </td>
+        <td>
+          7670
+        </td>
+        <td>
+          4998
+          -
+          5072
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.immutable.List.apply
+        </td>
+        <td style="background: #AEF1AE">
+          scala.collection.immutable.List.apply[List[dotty.tools.dotc.ast.Trees.ValDef[Null]]](scala.collection.immutable.List.apply[dotty.tools.dotc.ast.Trees.ValDef[Null]](param(core.StdNames.nme.tag, core.Symbols.defn(ctx).IntType), param(core.StdNames.nme.name, core.Symbols.defn(ctx).StringType)))
+        </td>
+      </tr><tr>
+        <td>
+          119
+        </td>
+        <td>
+          7664
+        </td>
+        <td>
+          5014
+          -
+          5021
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.StdNames.ScalaNames.tag
+        </td>
+        <td style="background: #AEF1AE">
+          core.StdNames.nme.tag
+        </td>
+      </tr><tr>
+        <td>
+          119
+        </td>
+        <td>
+          7666
+        </td>
+        <td>
+          5044
+          -
+          5052
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.StdNames.ScalaNames.name
+        </td>
+        <td style="background: #AEF1AE">
+          core.StdNames.nme.name
+        </td>
+      </tr><tr>
+        <td>
+          119
+        </td>
+        <td>
+          7669
+        </td>
+        <td>
+          5003
+          -
+          5071
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.immutable.List.apply
+        </td>
+        <td style="background: #AEF1AE">
+          scala.collection.immutable.List.apply[dotty.tools.dotc.ast.Trees.ValDef[Null]](param(core.StdNames.nme.tag, core.Symbols.defn(ctx).IntType), param(core.StdNames.nme.name, core.Symbols.defn(ctx).StringType))
+        </td>
+      </tr><tr>
+        <td>
+          119
+        </td>
+        <td>
+          7665
+        </td>
+        <td>
+          5008
+          -
+          5036
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.ast.DesugarEnums.param
+        </td>
+        <td style="background: #AEF1AE">
+          param(core.StdNames.nme.tag, core.Symbols.defn(ctx).IntType)
+        </td>
+      </tr><tr>
+        <td>
+          119
+        </td>
+        <td>
+          7668
+        </td>
+        <td>
+          5038
+          -
+          5070
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.ast.DesugarEnums.param
+        </td>
+        <td style="background: #AEF1AE">
+          param(core.StdNames.nme.name, core.Symbols.defn(ctx).StringType)
+        </td>
+      </tr><tr>
+        <td>
+          120
+        </td>
+        <td>
+          7671
+        </td>
+        <td>
+          5082
+          -
+          5092
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.ast.untpd.TypeTree
+        </td>
+        <td style="background: #AEF1AE">
+          untpd.TypeTree()
+        </td>
+      </tr><tr>
+        <td>
+          144
+        </td>
+        <td>
+          7673
+        </td>
+        <td>
+          5994
+          -
+          6009
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.ast.DesugarEnums.extractType
+        </td>
+        <td style="background: #AEF1AE">
+          extractType(t1)
+        </td>
+      </tr><tr>
+        <td>
+          145
+        </td>
+        <td>
+          7675
+        </td>
+        <td>
+          6042
+          -
+          6078
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.ast.untpd.AppliedTypeTree
+        </td>
+        <td style="background: #F0ADAD">
+          untpd.AppliedTypeTree(extractType(t1), ts)
+        </td>
+      </tr><tr>
+        <td>
+          145
+        </td>
+        <td>
+          7674
+        </td>
+        <td>
+          6058
+          -
+          6073
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.ast.DesugarEnums.extractType
+        </td>
+        <td style="background: #F0ADAD">
+          extractType(t1)
+        </td>
+      </tr><tr>
+        <td>
+          146
+        </td>
+        <td>
+          7676
+        </td>
+        <td>
+          6121
+          -
+          6136
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.ast.DesugarEnums.extractType
+        </td>
+        <td style="background: #AEF1AE">
+          extractType(t1)
+        </td>
+      </tr><tr>
+        <td>
+          151
+        </td>
+        <td>
+          7679
+        </td>
+        <td>
+          6211
+          -
+          6235
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          scala.collection.immutable.List.map
+        </td>
+        <td style="background: #AEF1AE">
+          parents.map[dotty.tools.dotc.ast.untpd.Tree, List[dotty.tools.dotc.ast.untpd.Tree]]({
+  ((t: dotty.tools.dotc.ast.untpd.Tree) =&gt; extractType(t))
+})(immutable.this.List.canBuildFrom[dotty.tools.dotc.ast.untpd.Tree])
+        </td>
+      </tr><tr>
+        <td>
+          151
+        </td>
+        <td>
+          7678
+        </td>
+        <td>
+          6222
+          -
+          6222
+        </td>
+        <td>
+          TypeApply
+        </td>
+        <td>
+          scala.collection.immutable.List.canBuildFrom
+        </td>
+        <td style="background: #AEF1AE">
+          immutable.this.List.canBuildFrom[dotty.tools.dotc.ast.untpd.Tree]
+        </td>
+      </tr><tr>
+        <td>
+          151
+        </td>
+        <td>
+          7677
+        </td>
+        <td>
+          6223
+          -
+          6234
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.ast.DesugarEnums.extractType
+        </td>
+        <td style="background: #AEF1AE">
+          extractType(t)
+        </td>
+      </tr><tr>
+        <td>
+          152
+        </td>
+        <td>
+          7680
+        </td>
+        <td>
+          6240
+          -
+          6256
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.collection.IterableLike.head
+        </td>
+        <td style="background: #AEF1AE">
+          parentTypes.head
+        </td>
+      </tr><tr>
+        <td>
+          153
+        </td>
+        <td>
+          7682
+        </td>
+        <td>
+          6295
+          -
+          6324
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.Object.==
+        </td>
+        <td style="background: #AEF1AE">
+          parent.name.==(DesugarEnums.this.enumClass(ctx).name(ctx))
+        </td>
+      </tr><tr>
+        <td>
+          153
+        </td>
+        <td>
+          7681
+        </td>
+        <td>
+          6310
+          -
+          6324
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.Symbols.Symbol.name
+        </td>
+        <td style="background: #AEF1AE">
+          DesugarEnums.this.enumClass(ctx).name(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          155
+        </td>
+        <td>
+          7684
+        </td>
+        <td>
+          6443
+          -
+          6492
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.TraversableOnce./:
+        </td>
+        <td style="background: #AEF1AE">
+          parentTypes.tail./:[dotty.tools.dotc.ast.untpd.Tree](x$6)({
+  ((left: dotty.tools.dotc.ast.untpd.Tree, right: dotty.tools.dotc.ast.untpd.Tree) =&gt; untpd.AndTypeTree(left, right))
+})
+        </td>
+      </tr><tr>
+        <td>
+          155
+        </td>
+        <td>
+          7683
+        </td>
+        <td>
+          6480
+          -
+          6491
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.ast.untpd.AndTypeTree
+        </td>
+        <td style="background: #AEF1AE">
+          untpd.AndTypeTree(left, right)
+        </td>
+      </tr><tr>
+        <td>
+          156
+        </td>
+        <td>
+          7685
+        </td>
+        <td>
+          6518
+          -
+          6518
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.ast.untpd.makeSyntheticParameter$default$1
+        </td>
+        <td style="background: #AEF1AE">
+          untpd.makeSyntheticParameter$default$1
+        </td>
+      </tr><tr>
+        <td>
+          156
+        </td>
+        <td>
+          7686
+        </td>
+        <td>
+          6518
+          -
+          6562
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.ast.untpd.makeSyntheticParameter
+        </td>
+        <td style="background: #AEF1AE">
+          untpd.makeSyntheticParameter(x$22, x$21)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          157
+        </td>
+        <td>
+          7698
+        </td>
+        <td>
+          6586
+          -
+          6807
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.ast.untpd.DefDef
+        </td>
+        <td style="background: #AEF1AE">
+          untpd.DefDef(core.Decorators.PreNamedString(scala.StringContext.apply(&quot;&quot;, &quot;$to$&quot;, &quot;&quot;).s(cdef.name, DesugarEnums.this.enumClass(ctx).name(ctx))).toTermName, tparams, {
+  &lt;synthetic&gt; &lt;artifact&gt; val x$8: List[dotty.tools.dotc.ast.untpd.ValDef] = {
+    &lt;synthetic&gt; &lt;artifact&gt; val x$7: dotty.tools.dotc.ast.untpd.ValDef = widenParam;
+    scala.collection.immutable.Nil.::[dotty.tools.dotc.ast.untpd.ValDef](x$7)
+  };
+  scala.collection.immutable.Nil.::[List[dotty.tools.dotc.ast.untpd.ValDef]](x$8)
+}, untpd.TypeTree(), untpd.Ident(widenParam.name))
+        </td>
+      </tr><tr>
+        <td>
+          158
+        </td>
+        <td>
+          7688
+        </td>
+        <td>
+          6625
+          -
+          6632
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          &quot;$to$&quot;
+        </td>
+      </tr><tr>
+        <td>
+          158
+        </td>
+        <td>
+          7691
+        </td>
+        <td>
+          6633
+          -
+          6647
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.Symbols.Symbol.name
+        </td>
+        <td style="background: #AEF1AE">
+          DesugarEnums.this.enumClass(ctx).name(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          158
+        </td>
+        <td>
+          7690
+        </td>
+        <td>
+          6615
+          -
+          6624
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Trees.TypeDef.name
+        </td>
+        <td style="background: #AEF1AE">
+          cdef.name
+        </td>
+      </tr><tr>
+        <td>
+          158
+        </td>
+        <td>
+          7693
+        </td>
+        <td>
+          6611
+          -
+          6660
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Decorators.PreNamedString.toTermName
+        </td>
+        <td style="background: #AEF1AE">
+          core.Decorators.PreNamedString(scala.StringContext.apply(&quot;&quot;, &quot;$to$&quot;, &quot;&quot;).s(cdef.name, DesugarEnums.this.enumClass(ctx).name(ctx))).toTermName
+        </td>
+      </tr><tr>
+        <td>
+          158
+        </td>
+        <td>
+          7687
+        </td>
+        <td>
+          6613
+          -
+          6614
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          &quot;&quot;
+        </td>
+      </tr><tr>
+        <td>
+          158
+        </td>
+        <td>
+          7689
+        </td>
+        <td>
+          6648
+          -
+          6649
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          &quot;&quot;
+        </td>
+      </tr><tr>
+        <td>
+          158
+        </td>
+        <td>
+          7692
+        </td>
+        <td>
+          6611
+          -
+          6649
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.StringContext.s
+        </td>
+        <td style="background: #AEF1AE">
+          scala.StringContext.apply(&quot;&quot;, &quot;$to$&quot;, &quot;&quot;).s(cdef.name, DesugarEnums.this.enumClass(ctx).name(ctx))
+        </td>
+      </tr><tr>
+        <td>
+          160
+        </td>
+        <td>
+          7694
+        </td>
+        <td>
+          6732
+          -
+          6738
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.immutable.List.::
+        </td>
+        <td style="background: #AEF1AE">
+          scala.collection.immutable.Nil.::[List[dotty.tools.dotc.ast.untpd.ValDef]](x$8)
+        </td>
+      </tr><tr>
+        <td>
+          161
+        </td>
+        <td>
+          7695
+        </td>
+        <td>
+          6756
+          -
+          6766
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.ast.untpd.TypeTree
+        </td>
+        <td style="background: #AEF1AE">
+          untpd.TypeTree()
+        </td>
+      </tr><tr>
+        <td>
+          162
+        </td>
+        <td>
+          7697
+        </td>
+        <td>
+          6784
+          -
+          6806
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.ast.untpd.Ident
+        </td>
+        <td style="background: #AEF1AE">
+          untpd.Ident(widenParam.name)
+        </td>
+      </tr><tr>
+        <td>
+          162
+        </td>
+        <td>
+          7696
+        </td>
+        <td>
+          6790
+          -
+          6805
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Trees.ValDef.name
+        </td>
+        <td style="background: #AEF1AE">
+          widenParam.name
+        </td>
+      </tr><tr>
+        <td>
+          163
+        </td>
+        <td>
+          7700
+        </td>
+        <td>
+          6838
+          -
+          6844
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.immutable.List.::
+        </td>
+        <td style="background: #AEF1AE">
+          scala.collection.immutable.Nil.::[dotty.tools.dotc.ast.untpd.DefDef](x$9)
+        </td>
+      </tr><tr>
+        <td>
+          163
+        </td>
+        <td>
+          7699
+        </td>
+        <td>
+          6817
+          -
+          6827
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.ast.untpd.TypeTree
+        </td>
+        <td style="background: #AEF1AE">
+          untpd.TypeTree()
+        </td>
+      </tr><tr>
+        <td>
+          163
+        </td>
+        <td>
+          7701
+        </td>
+        <td>
+          6816
+          -
+          6845
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Tuple2.apply
+        </td>
+        <td style="background: #AEF1AE">
+          scala.Tuple2.apply[dotty.tools.dotc.ast.Trees.TypeTree[dotty.tools.dotc.ast.Trees.Untyped], List[dotty.tools.dotc.ast.untpd.DefDef]](untpd.TypeTree(), {
+  &lt;synthetic&gt; &lt;artifact&gt; val x$9: dotty.tools.dotc.ast.untpd.DefDef = widenDef;
+  scala.collection.immutable.Nil.::[dotty.tools.dotc.ast.untpd.DefDef](x$9)
+})
+        </td>
+      </tr><tr>
+        <td>
+          165
+        </td>
+        <td>
+          7703
+        </td>
+        <td>
+          6871
+          -
+          6906
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.LinearSeqOptimized.reduceLeft
+        </td>
+        <td style="background: #AEF1AE">
+          parentTypes.reduceLeft[dotty.tools.dotc.ast.untpd.Tree]({
+  ((left: dotty.tools.dotc.ast.untpd.Tree, right: dotty.tools.dotc.ast.untpd.Tree) =&gt; untpd.AndTypeTree(left, right))
+})
+        </td>
+      </tr><tr>
+        <td>
+          165
+        </td>
+        <td>
+          7702
+        </td>
+        <td>
+          6894
+          -
+          6905
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.ast.untpd.AndTypeTree
+        </td>
+        <td style="background: #F0ADAD">
+          untpd.AndTypeTree(left, right)
+        </td>
+      </tr><tr>
+        <td>
+          165
+        </td>
+        <td>
+          7705
+        </td>
+        <td>
+          6870
+          -
+          6912
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Tuple2.apply
+        </td>
+        <td style="background: #AEF1AE">
+          scala.Tuple2.apply[dotty.tools.dotc.ast.untpd.Tree, scala.collection.immutable.Nil.type](parentTypes.reduceLeft[dotty.tools.dotc.ast.untpd.Tree]({
+  ((left: dotty.tools.dotc.ast.untpd.Tree, right: dotty.tools.dotc.ast.untpd.Tree) =&gt; untpd.AndTypeTree(left, right))
+}), scala.collection.immutable.Nil)
+        </td>
+      </tr><tr>
+        <td>
+          165
+        </td>
+        <td>
+          7704
+        </td>
+        <td>
+          6908
+          -
+          6911
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.collection.immutable.Nil
+        </td>
+        <td style="background: #AEF1AE">
+          scala.collection.immutable.Nil
+        </td>
+      </tr><tr>
+        <td>
+          175
+        </td>
+        <td>
+          7706
+        </td>
+        <td>
+          7255
+          -
+          7255
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.Tuple2._1
+        </td>
+        <td style="background: #AEF1AE">
+          x$10._1
+        </td>
+      </tr><tr>
+        <td>
+          175
+        </td>
+        <td>
+          7707
+        </td>
+        <td>
+          7262
+          -
+          7262
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.Tuple2._2
+        </td>
+        <td style="background: #AEF1AE">
+          x$10._2
+        </td>
+      </tr><tr>
+        <td>
+          176
+        </td>
+        <td>
+          7709
+        </td>
+        <td>
+          7385
+          -
+          7389
+        </td>
+        <td>
+          Ident
+        </td>
+        <td>
+          dotty.tools.dotc.ast.DesugarEnums.kind
+        </td>
+        <td style="background: #AEF1AE">
+          kind
+        </td>
+      </tr><tr>
+        <td>
+          176
+        </td>
+        <td>
+          7708
+        </td>
+        <td>
+          7368
+          -
+          7383
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.math.Ordered.&lt;
+        </td>
+        <td style="background: #AEF1AE">
+          kind.&lt;(seenKind)
+        </td>
+      </tr><tr>
+        <td>
+          176
+        </td>
+        <td>
+          7710
+        </td>
+        <td>
+          7395
+          -
+          7403
+        </td>
+        <td>
+          Ident
+        </td>
+        <td>
+          dotty.tools.dotc.ast.DesugarEnums.seenKind
+        </td>
+        <td style="background: #AEF1AE">
+          seenKind
+        </td>
+      </tr><tr>
+        <td>
+          177
+        </td>
+        <td>
+          7712
+        </td>
+        <td>
+          7448
+          -
+          7457
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Int.+
+        </td>
+        <td style="background: #AEF1AE">
+          count.+(1)
+        </td>
+      </tr><tr>
+        <td>
+          177
+        </td>
+        <td>
+          7711
+        </td>
+        <td>
+          7432
+          -
+          7445
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.ast.DesugarEnums.EnumCaseCount
+        </td>
+        <td style="background: #AEF1AE">
+          DesugarEnums.this.EnumCaseCount
+        </td>
+      </tr><tr>
+        <td>
+          177
+        </td>
+        <td>
+          7714
+        </td>
+        <td>
+          7408
+          -
+          7468
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.util.Attachment.Container.pushAttachment
+        </td>
+        <td style="background: #AEF1AE">
+          ctx.tree.pushAttachment[(Int, dotty.tools.dotc.ast.DesugarEnums.CaseKind.Value)](DesugarEnums.this.EnumCaseCount, scala.Tuple2.apply[Int, dotty.tools.dotc.ast.DesugarEnums.CaseKind.Value](count.+(1), minKind))
+        </td>
+      </tr><tr>
+        <td>
+          177
+        </td>
+        <td>
+          7713
+        </td>
+        <td>
+          7447
+          -
+          7467
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Tuple2.apply
+        </td>
+        <td style="background: #AEF1AE">
+          scala.Tuple2.apply[Int, dotty.tools.dotc.ast.DesugarEnums.CaseKind.Value](count.+(1), minKind)
+        </td>
+      </tr><tr>
+        <td>
+          179
+        </td>
+        <td>
+          7715
+        </td>
+        <td>
+          7501
+          -
+          7510
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.DesugarEnums.enumClass
+        </td>
+        <td style="background: #AEF1AE">
+          DesugarEnums.this.enumClass(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          179
+        </td>
+        <td>
+          7718
+        </td>
+        <td>
+          7552
+          -
+          7555
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.collection.immutable.Nil
+        </td>
+        <td style="background: #AEF1AE">
+          scala.collection.immutable.Nil
+        </td>
+      </tr><tr>
+        <td>
+          179
+        </td>
+        <td>
+          7717
+        </td>
+        <td>
+          7501
+          -
+          7550
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Boolean.||
+        </td>
+        <td style="background: #AEF1AE">
+          core.Symbols.toDenot(DesugarEnums.this.enumClass(ctx))(ctx).typeParams(ctx).nonEmpty.||(kind.&gt;=(seenKind))
+        </td>
+      </tr><tr>
+        <td>
+          179
+        </td>
+        <td>
+          7716
+        </td>
+        <td>
+          7534
+          -
+          7550
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.math.Ordered.&gt;=
+        </td>
+        <td style="background: #AEF1AE">
+          kind.&gt;=(seenKind)
+        </td>
+      </tr><tr>
+        <td>
+          179
+        </td>
+        <td>
+          7719
+        </td>
+        <td>
+          7552
+          -
+          7555
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          scala.collection.immutable.Nil
+        </td>
+        <td style="background: #AEF1AE">
+          scala.collection.immutable.Nil
+        </td>
+      </tr><tr>
+        <td>
+          180
+        </td>
+        <td>
+          7721
+        </td>
+        <td>
+          7571
+          -
+          7594
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.Object.==
+        </td>
+        <td style="background: #AEF1AE">
+          kind.==(DesugarEnums.this.CaseKind.Object)
+        </td>
+      </tr><tr>
+        <td>
+          180
+        </td>
+        <td>
+          7733
+        </td>
+        <td>
+          7567
+          -
+          7726
+        </td>
+        <td>
+          If
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          if (kind.==(DesugarEnums.this.CaseKind.Object))
+  DesugarEnums.this.enumScaffolding(ctx)
+else
+  if (seenKind.==(DesugarEnums.this.CaseKind.Object))
+    {
+      &lt;synthetic&gt; &lt;artifact&gt; val x$11: dotty.tools.dotc.ast.untpd.DefDef = DesugarEnums.this.enumValueCreator(ctx);
+      scala.collection.immutable.Nil.::[dotty.tools.dotc.ast.untpd.DefDef](x$11)
+    }
+  else
+    DesugarEnums.this.enumScaffolding(ctx).:+[dotty.tools.dotc.ast.untpd.Tree, List[dotty.tools.dotc.ast.untpd.Tree]](DesugarEnums.this.enumValueCreator(ctx))(immutable.this.List.canBuildFrom[dotty.tools.dotc.ast.untpd.Tree])
+        </td>
+      </tr><tr>
+        <td>
+          180
+        </td>
+        <td>
+          7720
+        </td>
+        <td>
+          7579
+          -
+          7594
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.ast.DesugarEnums.CaseKind.Object
+        </td>
+        <td style="background: #AEF1AE">
+          DesugarEnums.this.CaseKind.Object
+        </td>
+      </tr><tr>
+        <td>
+          180
+        </td>
+        <td>
+          7723
+        </td>
+        <td>
+          7596
+          -
+          7611
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          dotty.tools.dotc.ast.DesugarEnums.enumScaffolding
+        </td>
+        <td style="background: #AEF1AE">
+          DesugarEnums.this.enumScaffolding(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          180
+        </td>
+        <td>
+          7722
+        </td>
+        <td>
+          7596
+          -
+          7611
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.DesugarEnums.enumScaffolding
+        </td>
+        <td style="background: #AEF1AE">
+          DesugarEnums.this.enumScaffolding(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          181
+        </td>
+        <td>
+          7727
+        </td>
+        <td>
+          7656
+          -
+          7679
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          {
+  &lt;synthetic&gt; &lt;artifact&gt; val x$11: dotty.tools.dotc.ast.untpd.DefDef = DesugarEnums.this.enumValueCreator(ctx);
+  scala.collection.immutable.Nil.::[dotty.tools.dotc.ast.untpd.DefDef](x$11)
+}
+        </td>
+      </tr><tr>
+        <td>
+          181
+        </td>
+        <td>
+          7724
+        </td>
+        <td>
+          7639
+          -
+          7654
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.ast.DesugarEnums.CaseKind.Object
+        </td>
+        <td style="background: #AEF1AE">
+          DesugarEnums.this.CaseKind.Object
+        </td>
+      </tr><tr>
+        <td>
+          181
+        </td>
+        <td>
+          7726
+        </td>
+        <td>
+          7673
+          -
+          7679
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.immutable.List.::
+        </td>
+        <td style="background: #F0ADAD">
+          scala.collection.immutable.Nil.::[dotty.tools.dotc.ast.untpd.DefDef](x$11)
+        </td>
+      </tr><tr>
+        <td>
+          181
+        </td>
+        <td>
+          7732
+        </td>
+        <td>
+          7623
+          -
+          7726
+        </td>
+        <td>
+          If
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          if (seenKind.==(DesugarEnums.this.CaseKind.Object))
+  {
+    &lt;synthetic&gt; &lt;artifact&gt; val x$11: dotty.tools.dotc.ast.untpd.DefDef = DesugarEnums.this.enumValueCreator(ctx);
+    scala.collection.immutable.Nil.::[dotty.tools.dotc.ast.untpd.DefDef](x$11)
+  }
+else
+  DesugarEnums.this.enumScaffolding(ctx).:+[dotty.tools.dotc.ast.untpd.Tree, List[dotty.tools.dotc.ast.untpd.Tree]](DesugarEnums.this.enumValueCreator(ctx))(immutable.this.List.canBuildFrom[dotty.tools.dotc.ast.untpd.Tree])
+        </td>
+      </tr><tr>
+        <td>
+          181
+        </td>
+        <td>
+          7725
+        </td>
+        <td>
+          7627
+          -
+          7654
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.Object.==
+        </td>
+        <td style="background: #AEF1AE">
+          seenKind.==(DesugarEnums.this.CaseKind.Object)
+        </td>
+      </tr><tr>
+        <td>
+          182
+        </td>
+        <td>
+          7730
+        </td>
+        <td>
+          7691
+          -
+          7726
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          scala.collection.SeqLike.:+
+        </td>
+        <td style="background: #AEF1AE">
+          DesugarEnums.this.enumScaffolding(ctx).:+[dotty.tools.dotc.ast.untpd.Tree, List[dotty.tools.dotc.ast.untpd.Tree]](DesugarEnums.this.enumValueCreator(ctx))(immutable.this.List.canBuildFrom[dotty.tools.dotc.ast.untpd.Tree])
+        </td>
+      </tr><tr>
+        <td>
+          182
+        </td>
+        <td>
+          7729
+        </td>
+        <td>
+          7707
+          -
+          7707
+        </td>
+        <td>
+          TypeApply
+        </td>
+        <td>
+          scala.collection.immutable.List.canBuildFrom
+        </td>
+        <td style="background: #AEF1AE">
+          immutable.this.List.canBuildFrom[dotty.tools.dotc.ast.untpd.Tree]
+        </td>
+      </tr><tr>
+        <td>
+          182
+        </td>
+        <td>
+          7731
+        </td>
+        <td>
+          7691
+          -
+          7726
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          scala.collection.SeqLike.:+
+        </td>
+        <td style="background: #AEF1AE">
+          DesugarEnums.this.enumScaffolding(ctx).:+[dotty.tools.dotc.ast.untpd.Tree, List[dotty.tools.dotc.ast.untpd.Tree]](DesugarEnums.this.enumValueCreator(ctx))(immutable.this.List.canBuildFrom[dotty.tools.dotc.ast.untpd.Tree])
+        </td>
+      </tr><tr>
+        <td>
+          182
+        </td>
+        <td>
+          7728
+        </td>
+        <td>
+          7710
+          -
+          7726
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.DesugarEnums.enumValueCreator
+        </td>
+        <td style="background: #AEF1AE">
+          DesugarEnums.this.enumValueCreator(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          183
+        </td>
+        <td>
+          7734
+        </td>
+        <td>
+          7731
+          -
+          7751
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Tuple2.apply
+        </td>
+        <td style="background: #AEF1AE">
+          scala.Tuple2.apply[Int, List[dotty.tools.dotc.ast.untpd.Tree]](count, scaffolding)
+        </td>
+      </tr><tr>
+        <td>
+          191
+        </td>
+        <td>
+          7736
+        </td>
+        <td>
+          7988
+          -
+          7988
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.Tuple2._2
+        </td>
+        <td style="background: #AEF1AE">
+          x$12._2
+        </td>
+      </tr><tr>
+        <td>
+          191
+        </td>
+        <td>
+          7735
+        </td>
+        <td>
+          7983
+          -
+          7983
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.Tuple2._1
+        </td>
+        <td style="background: #AEF1AE">
+          x$12._1
+        </td>
+      </tr><tr>
+        <td>
+          192
+        </td>
+        <td>
+          7739
+        </td>
+        <td>
+          8051
+          -
+          8054
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.collection.immutable.Nil
+        </td>
+        <td style="background: #AEF1AE">
+          scala.collection.immutable.Nil
+        </td>
+      </tr><tr>
+        <td>
+          192
+        </td>
+        <td>
+          7742
+        </td>
+        <td>
+          8068
+          -
+          8090
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.ast.untpd.Literal
+        </td>
+        <td style="background: #AEF1AE">
+          untpd.Literal(core.Constants.Constant.apply(tag))
+        </td>
+      </tr><tr>
+        <td>
+          192
+        </td>
+        <td>
+          7744
+        </td>
+        <td>
+          8025
+          -
+          8105
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Tuple2.apply
+        </td>
+        <td style="background: #AEF1AE">
+          scala.Tuple2.apply[dotty.tools.dotc.ast.untpd.DefDef, List[dotty.tools.dotc.ast.untpd.Tree]](untpd.DefDef(core.StdNames.nme.enumTag, scala.collection.immutable.Nil, scala.collection.immutable.Nil, untpd.TypeTree(), untpd.Literal(core.Constants.Constant.apply(tag))), scaffolding)
+        </td>
+      </tr><tr>
+        <td>
+          192
+        </td>
+        <td>
+          7738
+        </td>
+        <td>
+          8046
+          -
+          8049
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.collection.immutable.Nil
+        </td>
+        <td style="background: #AEF1AE">
+          scala.collection.immutable.Nil
+        </td>
+      </tr><tr>
+        <td>
+          192
+        </td>
+        <td>
+          7741
+        </td>
+        <td>
+          8076
+          -
+          8089
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.core.Constants.Constant.apply
+        </td>
+        <td style="background: #AEF1AE">
+          core.Constants.Constant.apply(tag)
+        </td>
+      </tr><tr>
+        <td>
+          192
+        </td>
+        <td>
+          7740
+        </td>
+        <td>
+          8056
+          -
+          8066
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.ast.untpd.TypeTree
+        </td>
+        <td style="background: #AEF1AE">
+          untpd.TypeTree()
+        </td>
+      </tr><tr>
+        <td>
+          192
+        </td>
+        <td>
+          7743
+        </td>
+        <td>
+          8026
+          -
+          8091
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.ast.untpd.DefDef
+        </td>
+        <td style="background: #AEF1AE">
+          untpd.DefDef(core.StdNames.nme.enumTag, scala.collection.immutable.Nil, scala.collection.immutable.Nil, untpd.TypeTree(), untpd.Literal(core.Constants.Constant.apply(tag)))
+        </td>
+      </tr><tr>
+        <td>
+          192
+        </td>
+        <td>
+          7737
+        </td>
+        <td>
+          8033
+          -
+          8044
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.StdNames.ScalaNames.enumTag
+        </td>
+        <td style="background: #AEF1AE">
+          core.StdNames.nme.enumTag
+        </td>
+      </tr><tr>
+        <td>
+          197
+        </td>
+        <td>
+          7745
+        </td>
+        <td>
+          8312
+          -
+          8332
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.collection.SeqLike.isEmpty
+        </td>
+        <td style="background: #AEF1AE">
+          impl.parents.isEmpty
+        </td>
+      </tr><tr>
+        <td>
+          198
+        </td>
+        <td>
+          7752
+        </td>
+        <td>
+          8340
+          -
+          8565
+        </td>
+        <td>
+          If
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          if (impl.body(ctx).isEmpty)
+  DesugarEnums.this.expandSimpleEnumCase(name, mods, pos)(ctx)
+else
+  {
+    val parent: dotty.tools.dotc.ast.untpd.Tree = DesugarEnums.this.interpolatedEnumParent(pos)(ctx);
+    DesugarEnums.this.expandEnumModule(name, {
+      &lt;artifact&gt; val x$23: dotty.tools.dotc.ast.untpd.Template = impl;
+      &lt;artifact&gt; val x$24: List[dotty.tools.dotc.ast.untpd.Tree] = {
+        &lt;synthetic&gt; &lt;artifact&gt; val x$13: dotty.tools.dotc.ast.untpd.Tree = parent;
+        scala.collection.immutable.Nil.::[dotty.tools.dotc.ast.untpd.Tree](x$13)
+      };
+      &lt;artifact&gt; val x$25: dotty.tools.dotc.ast.untpd.DefDef = untpd.cpy.Template$default$2(x$23);
+      &lt;artifact&gt; val x$26: dotty.tools.dotc.ast.untpd.ValDef = untpd.cpy.Template$default$4(x$23);
+      &lt;artifact&gt; val x$27: dotty.tools.dotc.ast.Trees.LazyTreeList = untpd.cpy.Template$default$5(x$23);
+      untpd.cpy.Template(x$23)(x$25, x$24, x$26, x$27)
+    }, mods, pos)(ctx)
+  }
+        </td>
+      </tr><tr>
+        <td>
+          198
+        </td>
+        <td>
+          7746
+        </td>
+        <td>
+          8344
+          -
+          8361
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.collection.SeqLike.isEmpty
+        </td>
+        <td style="background: #AEF1AE">
+          impl.body(ctx).isEmpty
+        </td>
+      </tr><tr>
+        <td>
+          199
+        </td>
+        <td>
+          7748
+        </td>
+        <td>
+          8371
+          -
+          8408
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          dotty.tools.dotc.ast.DesugarEnums.expandSimpleEnumCase
+        </td>
+        <td style="background: #AEF1AE">
+          DesugarEnums.this.expandSimpleEnumCase(name, mods, pos)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          199
+        </td>
+        <td>
+          7747
+        </td>
+        <td>
+          8371
+          -
+          8408
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.DesugarEnums.expandSimpleEnumCase
+        </td>
+        <td style="background: #AEF1AE">
+          DesugarEnums.this.expandSimpleEnumCase(name, mods, pos)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          200
+        </td>
+        <td>
+          7751
+        </td>
+        <td>
+          8420
+          -
+          8565
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          {
+  val parent: dotty.tools.dotc.ast.untpd.Tree = DesugarEnums.this.interpolatedEnumParent(pos)(ctx);
+  DesugarEnums.this.expandEnumModule(name, {
+    &lt;artifact&gt; val x$23: dotty.tools.dotc.ast.untpd.Template = impl;
+    &lt;artifact&gt; val x$24: List[dotty.tools.dotc.ast.untpd.Tree] = {
+      &lt;synthetic&gt; &lt;artifact&gt; val x$13: dotty.tools.dotc.ast.untpd.Tree = parent;
+      scala.collection.immutable.Nil.::[dotty.tools.dotc.ast.untpd.Tree](x$13)
+    };
+    &lt;artifact&gt; val x$25: dotty.tools.dotc.ast.untpd.DefDef = untpd.cpy.Template$default$2(x$23);
+    &lt;artifact&gt; val x$26: dotty.tools.dotc.ast.untpd.ValDef = untpd.cpy.Template$default$4(x$23);
+    &lt;artifact&gt; val x$27: dotty.tools.dotc.ast.Trees.LazyTreeList = untpd.cpy.Template$default$5(x$23);
+    untpd.cpy.Template(x$23)(x$25, x$24, x$26, x$27)
+  }, mods, pos)(ctx)
+}
+        </td>
+      </tr><tr>
+        <td>
+          201
+        </td>
+        <td>
+          7749
+        </td>
+        <td>
+          8443
+          -
+          8470
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.DesugarEnums.interpolatedEnumParent
+        </td>
+        <td style="background: #AEF1AE">
+          DesugarEnums.this.interpolatedEnumParent(pos)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          202
+        </td>
+        <td>
+          7750
+        </td>
+        <td>
+          8479
+          -
+          8557
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.DesugarEnums.expandEnumModule
+        </td>
+        <td style="background: #AEF1AE">
+          DesugarEnums.this.expandEnumModule(name, {
+  &lt;artifact&gt; val x$23: dotty.tools.dotc.ast.untpd.Template = impl;
+  &lt;artifact&gt; val x$24: List[dotty.tools.dotc.ast.untpd.Tree] = {
+    &lt;synthetic&gt; &lt;artifact&gt; val x$13: dotty.tools.dotc.ast.untpd.Tree = parent;
+    scala.collection.immutable.Nil.::[dotty.tools.dotc.ast.untpd.Tree](x$13)
+  };
+  &lt;artifact&gt; val x$25: dotty.tools.dotc.ast.untpd.DefDef = untpd.cpy.Template$default$2(x$23);
+  &lt;artifact&gt; val x$26: dotty.tools.dotc.ast.untpd.ValDef = untpd.cpy.Template$default$4(x$23);
+  &lt;artifact&gt; val x$27: dotty.tools.dotc.ast.Trees.LazyTreeList = untpd.cpy.Template$default$5(x$23);
+  untpd.cpy.Template(x$23)(x$25, x$24, x$26, x$27)
+}, mods, pos)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          204
+        </td>
+        <td>
+          7779
+        </td>
+        <td>
+          8575
+          -
+          9047
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          {
+  def toStringMeth: dotty.tools.dotc.ast.Trees.DefDef[Null] = untpd.DefDef(core.StdNames.nme.toString_, scala.collection.immutable.Nil, scala.collection.immutable.Nil, untpd.TypeTree(core.Symbols.defn(ctx).StringType)(ctx), untpd.Literal(core.Constants.Constant.apply(name.toString()))).withFlags(core.Flags.Override);
+  &lt;synthetic&gt; &lt;artifact&gt; private[this] val x$14: (dotty.tools.dotc.ast.untpd.DefDef, List[dotty.tools.dotc.ast.untpd.Tree]) = (DesugarEnums.this.enumTagMeth(DesugarEnums.this.CaseKind.Object)(ctx): (dotty.tools.dotc.ast.untpd.DefDef, List[dotty.tools.dotc.ast.untpd.Tree]) @unchecked) match {
+    case (_1: dotty.tools.dotc.ast.untpd.DefDef, _2: List[dotty.tools.dotc.ast.untpd.Tree])(dotty.tools.dotc.ast.untpd.DefDef, List[dotty.tools.dotc.ast.untpd.Tree])((tagMeth @ _), (scaffolding @ _)) =&gt; scala.Tuple2.apply[dotty.tools.dotc.ast.untpd.DefDef, List[dotty.tools.dotc.ast.untpd.Tree]](tagMeth, scaffolding)
+  };
+  val tagMeth: dotty.tools.dotc.ast.untpd.DefDef = x$14._1;
+  val scaffolding: List[dotty.tools.dotc.ast.untpd.Tree] = x$14._2;
+  val impl1: dotty.tools.dotc.ast.untpd.Template = {
+    &lt;artifact&gt; val x$28: dotty.tools.dotc.ast.untpd.Template = impl;
+    &lt;artifact&gt; val x$29: dotty.tools.dotc.ast.Trees.LazyTreeList = impl.body(ctx).++[dotty.tools.dotc.ast.Trees.Tree[dotty.tools.dotc.ast.Trees.Untyped], List[dotty.tools.dotc.ast.Trees.Tree[dotty.tools.dotc.ast.Trees.Untyped]]](scala.collection.immutable.List.apply[dotty.tools.dotc.ast.Trees.DefDef[Null]](tagMeth, toStringMeth))(immutable.this.List.canBuildFrom[dotty.tools.dotc.ast.Trees.Tree[dotty.tools.dotc.ast.Trees.Untyped]]).++[dotty.tools.dotc.ast.Trees.Tree[dotty.tools.dotc.ast.Trees.Untyped], dotty.tools.dotc.ast.Trees.LazyTreeList](DesugarEnums.this.registerCall(ctx))(immutable.this.List.canBuildFrom[dotty.tools.dotc.ast.Trees.Tree[dotty.tools.dotc.ast.Trees.Untyped]]);
+    &lt;artifact&gt; val x$30: dotty.tools.dotc.ast.untpd.DefDef = untpd.cpy.Template$default$2(x$28);
+    &lt;artifact&gt; val x$31: List[dotty.tools.dotc.ast.untpd.Tree] = untpd.cpy.Template$default$3(x$28);
+    &lt;artifact&gt; val x$32: dotty.tools.dotc.ast.untpd.ValDef = untpd.cpy.Template$default$4(x$28);
+    untpd.cpy.Template(x$28)(x$30, x$31, x$32, x$29)
+  };
+  val vdef: dotty.tools.dotc.ast.Trees.ValDef[Null] = untpd.ValDef(name, untpd.TypeTree(), untpd.New(impl1)).withMods(mods.|(core.Flags.Final));
+  untpd.flatTree({
+  &lt;synthetic&gt; &lt;artifact&gt; val x$16: List[dotty.tools.dotc.ast.untpd.Tree] = scaffolding;
+  {
+  &lt;synthetic&gt; &lt;artifact&gt; val x$15: dotty.tools.dotc.ast.Trees.ValDef[Null] = vdef;
+  scala.collection.immutable.Nil.::[dotty.tools.dotc.ast.Trees.ValDef[Null]](x$15)
+}.:::[dotty.tools.dotc.ast.untpd.Tree](x$16)
+}).withPos(pos)
+}
+        </td>
+      </tr><tr>
+        <td>
+          206
+        </td>
+        <td>
+          7754
+        </td>
+        <td>
+          8632
+          -
+          8635
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.collection.immutable.Nil
+        </td>
+        <td style="background: #AEF1AE">
+          scala.collection.immutable.Nil
+        </td>
+      </tr><tr>
+        <td>
+          206
+        </td>
+        <td>
+          7757
+        </td>
+        <td>
+          8686
+          -
+          8699
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.Object.toString
+        </td>
+        <td style="background: #AEF1AE">
+          name.toString()
+        </td>
+      </tr><tr>
+        <td>
+          206
+        </td>
+        <td>
+          7759
+        </td>
+        <td>
+          8669
+          -
+          8701
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.ast.untpd.Literal
+        </td>
+        <td style="background: #AEF1AE">
+          untpd.Literal(core.Constants.Constant.apply(name.toString()))
+        </td>
+      </tr><tr>
+        <td>
+          206
+        </td>
+        <td>
+          7753
+        </td>
+        <td>
+          8617
+          -
+          8630
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.StdNames.ScalaNames.toString_
+        </td>
+        <td style="background: #AEF1AE">
+          core.StdNames.nme.toString_
+        </td>
+      </tr><tr>
+        <td>
+          206
+        </td>
+        <td>
+          7756
+        </td>
+        <td>
+          8642
+          -
+          8667
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.untpd.TypeTree
+        </td>
+        <td style="background: #AEF1AE">
+          untpd.TypeTree(core.Symbols.defn(ctx).StringType)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          206
+        </td>
+        <td>
+          7758
+        </td>
+        <td>
+          8677
+          -
+          8700
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.core.Constants.Constant.apply
+        </td>
+        <td style="background: #AEF1AE">
+          core.Constants.Constant.apply(name.toString())
+        </td>
+      </tr><tr>
+        <td>
+          206
+        </td>
+        <td>
+          7755
+        </td>
+        <td>
+          8637
+          -
+          8640
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.collection.immutable.Nil
+        </td>
+        <td style="background: #AEF1AE">
+          scala.collection.immutable.Nil
+        </td>
+      </tr><tr>
+        <td>
+          207
+        </td>
+        <td>
+          7760
+        </td>
+        <td>
+          8724
+          -
+          8732
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Flags.Override
+        </td>
+        <td style="background: #AEF1AE">
+          core.Flags.Override
+        </td>
+      </tr><tr>
+        <td>
+          207
+        </td>
+        <td>
+          7761
+        </td>
+        <td>
+          8610
+          -
+          8733
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Trees.MemberDef.withFlags
+        </td>
+        <td style="background: #AEF1AE">
+          untpd.DefDef(core.StdNames.nme.toString_, scala.collection.immutable.Nil, scala.collection.immutable.Nil, untpd.TypeTree(core.Symbols.defn(ctx).StringType)(ctx), untpd.Literal(core.Constants.Constant.apply(name.toString()))).withFlags(core.Flags.Override)
+        </td>
+      </tr><tr>
+        <td>
+          208
+        </td>
+        <td>
+          7763
+        </td>
+        <td>
+          8754
+          -
+          8754
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.Tuple2._2
+        </td>
+        <td style="background: #AEF1AE">
+          x$14._2
+        </td>
+      </tr><tr>
+        <td>
+          208
+        </td>
+        <td>
+          7762
+        </td>
+        <td>
+          8745
+          -
+          8745
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.Tuple2._1
+        </td>
+        <td style="background: #AEF1AE">
+          x$14._1
+        </td>
+      </tr><tr>
+        <td>
+          209
+        </td>
+        <td>
+          7772
+        </td>
+        <td>
+          8816
+          -
+          8907
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Trees.Instance.TreeCopier.Template
+        </td>
+        <td style="background: #AEF1AE">
+          untpd.cpy.Template(x$28)(x$30, x$31, x$32, x$29)
+        </td>
+      </tr><tr>
+        <td>
+          209
+        </td>
+        <td>
+          7769
+        </td>
+        <td>
+          8828
+          -
+          8828
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Trees.Instance.TreeCopier.Template$default$2
+        </td>
+        <td style="background: #AEF1AE">
+          untpd.cpy.Template$default$2(x$28)
+        </td>
+      </tr><tr>
+        <td>
+          209
+        </td>
+        <td>
+          7771
+        </td>
+        <td>
+          8828
+          -
+          8828
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Trees.Instance.TreeCopier.Template$default$4
+        </td>
+        <td style="background: #AEF1AE">
+          untpd.cpy.Template$default$4(x$28)
+        </td>
+      </tr><tr>
+        <td>
+          209
+        </td>
+        <td>
+          7770
+        </td>
+        <td>
+          8828
+          -
+          8828
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Trees.Instance.TreeCopier.Template$default$3
+        </td>
+        <td style="background: #AEF1AE">
+          untpd.cpy.Template$default$3(x$28)
+        </td>
+      </tr><tr>
+        <td>
+          210
+        </td>
+        <td>
+          7766
+        </td>
+        <td>
+          8894
+          -
+          8906
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.DesugarEnums.registerCall
+        </td>
+        <td style="background: #AEF1AE">
+          DesugarEnums.this.registerCall(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          210
+        </td>
+        <td>
+          7768
+        </td>
+        <td>
+          8850
+          -
+          8906
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          scala.collection.immutable.List.++
+        </td>
+        <td style="background: #AEF1AE">
+          impl.body(ctx).++[dotty.tools.dotc.ast.Trees.Tree[dotty.tools.dotc.ast.Trees.Untyped], List[dotty.tools.dotc.ast.Trees.Tree[dotty.tools.dotc.ast.Trees.Untyped]]](scala.collection.immutable.List.apply[dotty.tools.dotc.ast.Trees.DefDef[Null]](tagMeth, toStringMeth))(immutable.this.List.canBuildFrom[dotty.tools.dotc.ast.Trees.Tree[dotty.tools.dotc.ast.Trees.Untyped]]).++[dotty.tools.dotc.ast.Trees.Tree[dotty.tools.dotc.ast.Trees.Untyped], dotty.tools.dotc.ast.Trees.LazyTreeList](DesugarEnums.this.registerCall(ctx))(immutable.this.List.canBuildFrom[dotty.tools.dotc.ast.Trees.Tree[dotty.tools.dotc.ast.Trees.Untyped]])
+        </td>
+      </tr><tr>
+        <td>
+          210
+        </td>
+        <td>
+          7765
+        </td>
+        <td>
+          8860
+          -
+          8860
+        </td>
+        <td>
+          TypeApply
+        </td>
+        <td>
+          scala.collection.immutable.List.canBuildFrom
+        </td>
+        <td style="background: #AEF1AE">
+          immutable.this.List.canBuildFrom[dotty.tools.dotc.ast.Trees.Tree[dotty.tools.dotc.ast.Trees.Untyped]]
+        </td>
+      </tr><tr>
+        <td>
+          210
+        </td>
+        <td>
+          7767
+        </td>
+        <td>
+          8891
+          -
+          8891
+        </td>
+        <td>
+          TypeApply
+        </td>
+        <td>
+          scala.collection.immutable.List.canBuildFrom
+        </td>
+        <td style="background: #AEF1AE">
+          immutable.this.List.canBuildFrom[dotty.tools.dotc.ast.Trees.Tree[dotty.tools.dotc.ast.Trees.Untyped]]
+        </td>
+      </tr><tr>
+        <td>
+          210
+        </td>
+        <td>
+          7764
+        </td>
+        <td>
+          8863
+          -
+          8890
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.immutable.List.apply
+        </td>
+        <td style="background: #AEF1AE">
+          scala.collection.immutable.List.apply[dotty.tools.dotc.ast.Trees.DefDef[Null]](tagMeth, toStringMeth)
+        </td>
+      </tr><tr>
+        <td>
+          211
+        </td>
+        <td>
+          7775
+        </td>
+        <td>
+          8978
+          -
+          8983
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Flags.Final
+        </td>
+        <td style="background: #AEF1AE">
+          core.Flags.Final
+        </td>
+      </tr><tr>
+        <td>
+          211
+        </td>
+        <td>
+          7777
+        </td>
+        <td>
+          8925
+          -
+          8984
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Trees.MemberDef.withMods
+        </td>
+        <td style="background: #AEF1AE">
+          untpd.ValDef(name, untpd.TypeTree(), untpd.New(impl1)).withMods(mods.|(core.Flags.Final))
+        </td>
+      </tr><tr>
+        <td>
+          211
+        </td>
+        <td>
+          7774
+        </td>
+        <td>
+          8950
+          -
+          8960
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.ast.untpd.New
+        </td>
+        <td style="background: #AEF1AE">
+          untpd.New(impl1)
+        </td>
+      </tr><tr>
+        <td>
+          211
+        </td>
+        <td>
+          7773
+        </td>
+        <td>
+          8938
+          -
+          8948
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.ast.untpd.TypeTree
+        </td>
+        <td style="background: #AEF1AE">
+          untpd.TypeTree()
+        </td>
+      </tr><tr>
+        <td>
+          211
+        </td>
+        <td>
+          7776
+        </td>
+        <td>
+          8971
+          -
+          8983
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.ast.untpd.Modifiers.|
+        </td>
+        <td style="background: #AEF1AE">
+          mods.|(core.Flags.Final)
+        </td>
+      </tr><tr>
+        <td>
+          212
+        </td>
+        <td>
+          7778
+        </td>
+        <td>
+          8991
+          -
+          9041
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Positioned.withPos
+        </td>
+        <td style="background: #AEF1AE">
+          untpd.flatTree({
+  &lt;synthetic&gt; &lt;artifact&gt; val x$16: List[dotty.tools.dotc.ast.untpd.Tree] = scaffolding;
+  {
+  &lt;synthetic&gt; &lt;artifact&gt; val x$15: dotty.tools.dotc.ast.Trees.ValDef[Null] = vdef;
+  scala.collection.immutable.Nil.::[dotty.tools.dotc.ast.Trees.ValDef[Null]](x$15)
+}.:::[dotty.tools.dotc.ast.untpd.Tree](x$16)
+}).withPos(pos)
+        </td>
+      </tr><tr>
+        <td>
+          217
+        </td>
+        <td>
+          7781
+        </td>
+        <td>
+          9198
+          -
+          9227
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.collection.TraversableOnce.nonEmpty
+        </td>
+        <td style="background: #AEF1AE">
+          core.Symbols.toDenot(DesugarEnums.this.enumClass(ctx))(ctx).typeParams(ctx).nonEmpty
+        </td>
+      </tr><tr>
+        <td>
+          217
+        </td>
+        <td>
+          7789
+        </td>
+        <td>
+          9229
+          -
+          9406
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          {
+  val parent: dotty.tools.dotc.ast.untpd.Tree = DesugarEnums.this.interpolatedEnumParent(pos)(ctx);
+  val impl: dotty.tools.dotc.ast.untpd.Template = untpd.Template(untpd.emptyConstructor(ctx), {
+    &lt;synthetic&gt; &lt;artifact&gt; val x$17: dotty.tools.dotc.ast.untpd.Tree = parent;
+    scala.collection.immutable.Nil.::[dotty.tools.dotc.ast.untpd.Tree](x$17)
+  }, untpd.EmptyValDef, scala.collection.immutable.Nil);
+  DesugarEnums.this.expandEnumModule(name, impl, mods, pos)(ctx)
+}
+        </td>
+      </tr><tr>
+        <td>
+          217
+        </td>
+        <td>
+          7780
+        </td>
+        <td>
+          9198
+          -
+          9207
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.DesugarEnums.enumClass
+        </td>
+        <td style="background: #AEF1AE">
+          DesugarEnums.this.enumClass(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          218
+        </td>
+        <td>
+          7782
+        </td>
+        <td>
+          9250
+          -
+          9277
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.DesugarEnums.interpolatedEnumParent
+        </td>
+        <td style="background: #AEF1AE">
+          DesugarEnums.this.interpolatedEnumParent(pos)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          219
+        </td>
+        <td>
+          7784
+        </td>
+        <td>
+          9329
+          -
+          9335
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.immutable.List.::
+        </td>
+        <td style="background: #AEF1AE">
+          scala.collection.immutable.Nil.::[dotty.tools.dotc.ast.untpd.Tree](x$17)
+        </td>
+      </tr><tr>
+        <td>
+          219
+        </td>
+        <td>
+          7786
+        </td>
+        <td>
+          9350
+          -
+          9353
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.collection.immutable.Nil
+        </td>
+        <td style="background: #AEF1AE">
+          scala.collection.immutable.Nil
+        </td>
+      </tr><tr>
+        <td>
+          219
+        </td>
+        <td>
+          7783
+        </td>
+        <td>
+          9304
+          -
+          9320
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.untpd.emptyConstructor
+        </td>
+        <td style="background: #AEF1AE">
+          untpd.emptyConstructor(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          219
+        </td>
+        <td>
+          7785
+        </td>
+        <td>
+          9337
+          -
+          9348
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Trees.Instance.EmptyValDef
+        </td>
+        <td style="background: #AEF1AE">
+          untpd.EmptyValDef
+        </td>
+      </tr><tr>
+        <td>
+          219
+        </td>
+        <td>
+          7787
+        </td>
+        <td>
+          9295
+          -
+          9354
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.ast.untpd.Template
+        </td>
+        <td style="background: #AEF1AE">
+          untpd.Template(untpd.emptyConstructor(ctx), {
+  &lt;synthetic&gt; &lt;artifact&gt; val x$17: dotty.tools.dotc.ast.untpd.Tree = parent;
+  scala.collection.immutable.Nil.::[dotty.tools.dotc.ast.untpd.Tree](x$17)
+}, untpd.EmptyValDef, scala.collection.immutable.Nil)
+        </td>
+      </tr><tr>
+        <td>
+          220
+        </td>
+        <td>
+          7788
+        </td>
+        <td>
+          9361
+          -
+          9400
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.DesugarEnums.expandEnumModule
+        </td>
+        <td style="background: #AEF1AE">
+          DesugarEnums.this.expandEnumModule(name, impl, mods, pos)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          222
+        </td>
+        <td>
+          7806
+        </td>
+        <td>
+          9416
+          -
+          9729
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          {
+  &lt;synthetic&gt; &lt;artifact&gt; private[this] val x$18: (Int, List[dotty.tools.dotc.ast.untpd.Tree]) = (DesugarEnums.this.nextEnumTag(DesugarEnums.this.CaseKind.Simple)(ctx): (Int, List[dotty.tools.dotc.ast.untpd.Tree]) @unchecked) match {
+    case (_1: Int, _2: List[dotty.tools.dotc.ast.untpd.Tree])(Int, List[dotty.tools.dotc.ast.untpd.Tree])((tag @ _), (scaffolding @ _)) =&gt; scala.Tuple2.apply[Int, List[dotty.tools.dotc.ast.untpd.Tree]](tag, scaffolding)
+  };
+  val tag: Int = x$18._1;
+  val scaffolding: List[dotty.tools.dotc.ast.untpd.Tree] = x$18._2;
+  val creator: dotty.tools.dotc.ast.untpd.Apply = untpd.Apply(untpd.Ident(core.StdNames.nme.DOLLAR_NEW), scala.collection.immutable.List.apply[dotty.tools.dotc.ast.untpd.Literal](untpd.Literal(core.Constants.Constant.apply(tag)), untpd.Literal(core.Constants.Constant.apply(name.toString()))));
+  val vdef: dotty.tools.dotc.ast.Trees.ValDef[Null] = untpd.ValDef(name, DesugarEnums.this.enumClassRef(ctx), creator).withMods(mods.|(core.Flags.Final));
+  untpd.flatTree({
+  &lt;synthetic&gt; &lt;artifact&gt; val x$20: List[dotty.tools.dotc.ast.untpd.Tree] = scaffolding;
+  {
+  &lt;synthetic&gt; &lt;artifact&gt; val x$19: dotty.tools.dotc.ast.Trees.ValDef[Null] = vdef;
+  scala.collection.immutable.Nil.::[dotty.tools.dotc.ast.Trees.ValDef[Null]](x$19)
+}.:::[dotty.tools.dotc.ast.untpd.Tree](x$20)
+}).withPos(pos)
+}
+        </td>
+      </tr><tr>
+        <td>
+          223
+        </td>
+        <td>
+          7790
+        </td>
+        <td>
+          9429
+          -
+          9429
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.Tuple2._1
+        </td>
+        <td style="background: #AEF1AE">
+          x$18._1
+        </td>
+      </tr><tr>
+        <td>
+          223
+        </td>
+        <td>
+          7791
+        </td>
+        <td>
+          9434
+          -
+          9434
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.Tuple2._2
+        </td>
+        <td style="background: #AEF1AE">
+          x$18._2
+        </td>
+      </tr><tr>
+        <td>
+          224
+        </td>
+        <td>
+          7799
+        </td>
+        <td>
+          9527
+          -
+          9589
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.immutable.List.apply
+        </td>
+        <td style="background: #AEF1AE">
+          scala.collection.immutable.List.apply[dotty.tools.dotc.ast.untpd.Literal](untpd.Literal(core.Constants.Constant.apply(tag)), untpd.Literal(core.Constants.Constant.apply(name.toString())))
+        </td>
+      </tr><tr>
+        <td>
+          224
+        </td>
+        <td>
+          7793
+        </td>
+        <td>
+          9504
+          -
+          9525
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.ast.untpd.Ident
+        </td>
+        <td style="background: #AEF1AE">
+          untpd.Ident(core.StdNames.nme.DOLLAR_NEW)
+        </td>
+      </tr><tr>
+        <td>
+          224
+        </td>
+        <td>
+          7795
+        </td>
+        <td>
+          9532
+          -
+          9554
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.ast.untpd.Literal
+        </td>
+        <td style="background: #AEF1AE">
+          untpd.Literal(core.Constants.Constant.apply(tag))
+        </td>
+      </tr><tr>
+        <td>
+          224
+        </td>
+        <td>
+          7798
+        </td>
+        <td>
+          9556
+          -
+          9588
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.ast.untpd.Literal
+        </td>
+        <td style="background: #AEF1AE">
+          untpd.Literal(core.Constants.Constant.apply(name.toString()))
+        </td>
+      </tr><tr>
+        <td>
+          224
+        </td>
+        <td>
+          7792
+        </td>
+        <td>
+          9510
+          -
+          9524
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.StdNames.ScalaNames.DOLLAR_NEW
+        </td>
+        <td style="background: #AEF1AE">
+          core.StdNames.nme.DOLLAR_NEW
+        </td>
+      </tr><tr>
+        <td>
+          224
+        </td>
+        <td>
+          7800
+        </td>
+        <td>
+          9498
+          -
+          9590
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.ast.untpd.Apply
+        </td>
+        <td style="background: #AEF1AE">
+          untpd.Apply(untpd.Ident(core.StdNames.nme.DOLLAR_NEW), scala.collection.immutable.List.apply[dotty.tools.dotc.ast.untpd.Literal](untpd.Literal(core.Constants.Constant.apply(tag)), untpd.Literal(core.Constants.Constant.apply(name.toString()))))
+        </td>
+      </tr><tr>
+        <td>
+          224
+        </td>
+        <td>
+          7794
+        </td>
+        <td>
+          9540
+          -
+          9553
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.core.Constants.Constant.apply
+        </td>
+        <td style="background: #AEF1AE">
+          core.Constants.Constant.apply(tag)
+        </td>
+      </tr><tr>
+        <td>
+          224
+        </td>
+        <td>
+          7797
+        </td>
+        <td>
+          9564
+          -
+          9587
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.core.Constants.Constant.apply
+        </td>
+        <td style="background: #AEF1AE">
+          core.Constants.Constant.apply(name.toString())
+        </td>
+      </tr><tr>
+        <td>
+          224
+        </td>
+        <td>
+          7796
+        </td>
+        <td>
+          9573
+          -
+          9586
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.Object.toString
+        </td>
+        <td style="background: #AEF1AE">
+          name.toString()
+        </td>
+      </tr><tr>
+        <td>
+          225
+        </td>
+        <td>
+          7802
+        </td>
+        <td>
+          9660
+          -
+          9665
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Flags.Final
+        </td>
+        <td style="background: #AEF1AE">
+          core.Flags.Final
+        </td>
+      </tr><tr>
+        <td>
+          225
+        </td>
+        <td>
+          7804
+        </td>
+        <td>
+          9608
+          -
+          9666
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Trees.MemberDef.withMods
+        </td>
+        <td style="background: #AEF1AE">
+          untpd.ValDef(name, DesugarEnums.this.enumClassRef(ctx), creator).withMods(mods.|(core.Flags.Final))
+        </td>
+      </tr><tr>
+        <td>
+          225
+        </td>
+        <td>
+          7801
+        </td>
+        <td>
+          9621
+          -
+          9633
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.DesugarEnums.enumClassRef
+        </td>
+        <td style="background: #AEF1AE">
+          DesugarEnums.this.enumClassRef(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          225
+        </td>
+        <td>
+          7803
+        </td>
+        <td>
+          9653
+          -
+          9665
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.ast.untpd.Modifiers.|
+        </td>
+        <td style="background: #AEF1AE">
+          mods.|(core.Flags.Final)
+        </td>
+      </tr><tr>
+        <td>
+          226
+        </td>
+        <td>
+          7805
+        </td>
+        <td>
+          9673
+          -
+          9723
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Positioned.withPos
+        </td>
+        <td style="background: #AEF1AE">
+          untpd.flatTree({
+  &lt;synthetic&gt; &lt;artifact&gt; val x$20: List[dotty.tools.dotc.ast.untpd.Tree] = scaffolding;
+  {
+  &lt;synthetic&gt; &lt;artifact&gt; val x$19: dotty.tools.dotc.ast.Trees.ValDef[Null] = vdef;
+  scala.collection.immutable.Nil.::[dotty.tools.dotc.ast.Trees.ValDef[Null]](x$19)
+}.:::[dotty.tools.dotc.ast.untpd.Tree](x$20)
+}).withPos(pos)
+        </td>
+      </tr>
+    </table>
+          </div>
+        </div>
+      </body>
+    </html>

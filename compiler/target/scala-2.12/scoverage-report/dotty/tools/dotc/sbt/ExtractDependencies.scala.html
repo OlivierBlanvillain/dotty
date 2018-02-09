@@ -1,0 +1,4799 @@
+<html>
+      <head>
+        <meta http-equiv="Content-Type" content="text/html; charset=utf-8"/>
+        <title id="title">
+          dotty/tools/dotc/sbt/ExtractDependencies.scala.html
+        </title>
+        <script src="https://ajax.googleapis.com/ajax/libs/jquery/1.10.2/jquery.min.js"></script><link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/jquery.tablesorter/2.20.1/css/theme.default.min.css" type="text/css"/><script src="https://cdnjs.cloudflare.com/ajax/libs/jquery.tablesorter/2.20.1/js/jquery.tablesorter.min.js"></script><link rel="stylesheet" href="https://netdna.bootstrapcdn.com/bootstrap/3.0.3/css/bootstrap.min.css" type="text/css"/><script src="https://netdna.bootstrapcdn.com/bootstrap/3.0.3/js/bootstrap.min.js"></script><script type="text/javascript">
+        $(document).ready(function() {$(".tablesorter").tablesorter();});
+      </script>
+        <style>
+          table.codegrid { font-family: monospace; font-size: 12px; width: auto!important; }table.statementlist { width: auto!important; font-size: 13px; } table.codegrid td { padding: 0!important; border: 0!important } table td.linenumber { width: 40px!important; } 
+        </style>
+      </head>
+      <body style="font-family: monospace;">
+        <ul class="nav nav-tabs">
+          <li>
+            <a href="#codegrid" data-toggle="tab">Codegrid</a>
+          </li>
+          <li>
+            <a href="#statementlist" data-toggle="tab">Statement List</a>
+          </li>
+        </ul>
+        <div class="tab-content">
+          <div class="tab-pane active" id="codegrid">
+            <pre style='font-size: 12pt; font-family: courier;'>1 <span style=''>package dotty.tools.dotc
+</span>2 <span style=''>package sbt
+</span>3 <span style=''>
+</span>4 <span style=''>import ast.{Trees, tpd}
+</span>5 <span style=''>import core._, core.Decorators._
+</span>6 <span style=''>import Contexts._, Flags._, Phases._, Trees._, Types._, Symbols._
+</span>7 <span style=''>import Names._, NameOps._, StdNames._
+</span>8 <span style=''>
+</span>9 <span style=''>import scala.collection.{Set, mutable}
+</span>10 <span style=''>
+</span>11 <span style=''>import dotty.tools.io.{AbstractFile, Path, ZipArchive, PlainFile}
+</span>12 <span style=''>import java.io.File
+</span>13 <span style=''>
+</span>14 <span style=''>import java.util.{Arrays, Comparator}
+</span>15 <span style=''>
+</span>16 <span style=''>import xsbti.DependencyContext
+</span>17 <span style=''>
+</span>18 <span style=''>/** This phase sends information on classes' dependencies to sbt via callbacks.
+</span>19 <span style=''> *
+</span>20 <span style=''> *  This is used by sbt for incremental recompilation. Briefly, when a file
+</span>21 <span style=''> *  changes sbt will recompile it, if its API has changed (determined by what
+</span>22 <span style=''> *  `ExtractAPI` sent) then sbt will determine which reverse-dependencies
+</span>23 <span style=''> *  (determined by what `ExtractDependencies` sent) of the API have to be
+</span>24 <span style=''> *  recompiled depending on what changed.
+</span>25 <span style=''> *
+</span>26 <span style=''> *  See the documentation of `ExtractDependenciesCollector`, `ExtractAPI`,
+</span>27 <span style=''> *  `ExtractAPICollector` and
+</span>28 <span style=''> *  http://www.scala-sbt.org/0.13/docs/Understanding-Recompilation.html for more
+</span>29 <span style=''> *  information on how sbt incremental compilation works.
+</span>30 <span style=''> *
+</span>31 <span style=''> *  The following flags affect this phase:
+</span>32 <span style=''> *   -Yforce-sbt-phases
+</span>33 <span style=''> *   -Ydump-sbt-inc
+</span>34 <span style=''> *
+</span>35 <span style=''> *  @see ExtractAPI
+</span>36 <span style=''> */
+</span>37 <span style=''>class ExtractDependencies extends Phase {
+</span>38 <span style=''>  override def phaseName: String = </span><span style='background: #AEF1AE'>&quot;sbt-deps&quot;</span><span style=''>
+</span>39 <span style=''>
+</span>40 <span style=''>  // This phase should be run directly after `Frontend`, if it is run after
+</span>41 <span style=''>  // `PostTyper`, some dependencies will be lost because trees get simplified.
+</span>42 <span style=''>  // See the scripted test `constants` for an example where this matters.
+</span>43 <span style=''>  // TODO: Add a `Phase#runsBefore` method ?
+</span>44 <span style=''>
+</span>45 <span style=''>  override def run(implicit ctx: Context): Unit = {
+</span>46 <span style=''>    val unit = </span><span style='background: #AEF1AE'>ctx.compilationUnit</span><span style=''>
+</span>47 <span style=''>    val dumpInc = </span><span style='background: #AEF1AE'>ctx.settings.YdumpSbtInc.value</span><span style=''>
+</span>48 <span style=''>    val forceRun = </span><span style='background: #AEF1AE'>dumpInc || ctx.settings.YforceSbtPhases.value</span><span style=''>
+</span>49 <span style=''>    if (</span><span style='background: #AEF1AE'>(ctx.sbtCallback != null || forceRun) &amp;&amp; !unit.isJava</span><span style=''>) </span><span style='background: #AEF1AE'>{
+</span>50 <span style=''></span><span style='background: #AEF1AE'>      val sourceFile = unit.source.file
+</span>51 <span style=''></span><span style='background: #AEF1AE'>      val extractDeps = new ExtractDependenciesCollector
+</span>52 <span style=''></span><span style='background: #AEF1AE'>      extractDeps.traverse(unit.tpdTree)
+</span>53 <span style=''></span><span style='background: #AEF1AE'>
+</span>54 <span style=''></span><span style='background: #AEF1AE'>      if (dumpInc) </span><span style='background: #F0ADAD'>{
+</span>55 <span style=''></span><span style='background: #F0ADAD'>        val names = extractDeps.usedNames.map(_.toString).toArray[Object]
+</span>56 <span style=''></span><span style='background: #F0ADAD'>        val deps = extractDeps.topLevelDependencies.map(_.toString).toArray[Object]
+</span>57 <span style=''></span><span style='background: #F0ADAD'>        val inhDeps = extractDeps.topLevelInheritanceDependencies.map(_.toString).toArray[Object]
+</span>58 <span style=''></span><span style='background: #F0ADAD'>        Arrays.sort(names)
+</span>59 <span style=''></span><span style='background: #F0ADAD'>        Arrays.sort(deps)
+</span>60 <span style=''></span><span style='background: #F0ADAD'>        Arrays.sort(inhDeps)
+</span>61 <span style=''></span><span style='background: #F0ADAD'>
+</span>62 <span style=''></span><span style='background: #F0ADAD'>        val pw = Path(sourceFile.jpath).changeExtension(&quot;inc&quot;).toFile.printWriter()
+</span>63 <span style=''></span><span style='background: #F0ADAD'>        try {
+</span>64 <span style=''></span><span style='background: #F0ADAD'>          pw.println(s&quot;// usedNames: ${names.mkString(&quot;,&quot;)}&quot;)
+</span>65 <span style=''></span><span style='background: #F0ADAD'>          pw.println(s&quot;// topLevelDependencies: ${deps.mkString(&quot;,&quot;)}&quot;)
+</span>66 <span style=''></span><span style='background: #F0ADAD'>          pw.println(s&quot;// topLevelInheritanceDependencies: ${inhDeps.mkString(&quot;,&quot;)}&quot;)
+</span>67 <span style=''></span><span style='background: #F0ADAD'>        } finally pw.close()
+</span>68 <span style=''></span><span style='background: #F0ADAD'>      }</span><span style='background: #AEF1AE'>
+</span>69 <span style=''></span><span style='background: #AEF1AE'>
+</span>70 <span style=''></span><span style='background: #AEF1AE'>      if (ctx.sbtCallback != null) {
+</span>71 <span style=''></span><span style='background: #AEF1AE'>        extractDeps.usedNames.foreach(name =&gt;
+</span>72 <span style=''></span><span style='background: #AEF1AE'>          ctx.sbtCallback.usedName(sourceFile.file, name.toString))
+</span>73 <span style=''></span><span style='background: #AEF1AE'>        extractDeps.topLevelDependencies.foreach(dep =&gt;
+</span>74 <span style=''></span><span style='background: #AEF1AE'>          recordDependency(sourceFile.file, dep, DependencyContext.DependencyByMemberRef))
+</span>75 <span style=''></span><span style='background: #AEF1AE'>        extractDeps.topLevelInheritanceDependencies.foreach(dep =&gt;
+</span>76 <span style=''></span><span style='background: #AEF1AE'>          recordDependency(sourceFile.file, dep, DependencyContext.DependencyByInheritance))
+</span>77 <span style=''></span><span style='background: #AEF1AE'>      }
+</span>78 <span style=''></span><span style='background: #AEF1AE'>    }</span><span style=''>
+</span>79 <span style=''>  }
+</span>80 <span style=''>
+</span>81 <span style=''>  /** Record that `currentSourceFile` depends on the file where `dep` was loaded from.
+</span>82 <span style=''>   *
+</span>83 <span style=''>   *  @param currentSourceFile  The source file of the current unit
+</span>84 <span style=''>   *  @param dep                The dependency
+</span>85 <span style=''>   *  @param context            Describes how `currentSourceFile` depends on `dep`
+</span>86 <span style=''>   */
+</span>87 <span style=''>  def recordDependency(currentSourceFile: File, dep: Symbol, context: DependencyContext)
+</span>88 <span style=''>      (implicit ctx: Context) = {
+</span>89 <span style=''>    val depFile = </span><span style='background: #AEF1AE'>dep.associatedFile</span><span style=''>
+</span>90 <span style=''>    if (</span><span style='background: #AEF1AE'>depFile != null</span><span style=''>) {
+</span>91 <span style=''>      </span><span style='background: #AEF1AE'>if (depFile.path.endsWith(&quot;.class&quot;)) {
+</span>92 <span style=''></span><span style='background: #AEF1AE'>        /** Transform `List(java, lang, String.class)` into `java.lang.String` */
+</span>93 <span style=''></span><span style='background: #AEF1AE'>        def className(classSegments: List[String]) =
+</span>94 <span style=''></span><span style='background: #AEF1AE'>          classSegments.mkString(&quot;.&quot;).stripSuffix(&quot;.class&quot;)
+</span>95 <span style=''></span><span style='background: #AEF1AE'>        def binaryDependency(file: File, className: String) =
+</span>96 <span style=''></span><span style='background: #AEF1AE'>          ctx.sbtCallback.binaryDependency(file, className, currentSourceFile, context)
+</span>97 <span style=''></span><span style='background: #AEF1AE'>
+</span>98 <span style=''></span><span style='background: #AEF1AE'>        depFile match {
+</span>99 <span style=''></span><span style='background: #AEF1AE'>          case ze: ZipArchive#Entry =&gt;
+</span>100 <span style=''></span><span style='background: #AEF1AE'>            for (zip &lt;- ze.underlyingSource; zipFile &lt;- Option(zip.file)) {
+</span>101 <span style=''></span><span style='background: #AEF1AE'>              val classSegments = Path(ze.path).segments
+</span>102 <span style=''></span><span style='background: #AEF1AE'>              binaryDependency(zipFile, className(classSegments))
+</span>103 <span style=''></span><span style='background: #AEF1AE'>            }
+</span>104 <span style=''></span><span style='background: #AEF1AE'>          case pf: PlainFile =&gt;
+</span>105 <span style=''></span><span style='background: #AEF1AE'>            val packages = dep.ownersIterator
+</span>106 <span style=''></span><span style='background: #AEF1AE'>              .filter(x =&gt; x.is(PackageClass) &amp;&amp; !x.isEffectiveRoot).length
+</span>107 <span style=''></span><span style='background: #AEF1AE'>            // We can recover the fully qualified name of a classfile from
+</span>108 <span style=''></span><span style='background: #AEF1AE'>            // its path
+</span>109 <span style=''></span><span style='background: #AEF1AE'>            val classSegments = pf.givenPath.segments.takeRight(packages + 1)
+</span>110 <span style=''></span><span style='background: #AEF1AE'>            binaryDependency(pf.file, className(classSegments))
+</span>111 <span style=''></span><span style='background: #AEF1AE'>          case _ =&gt;
+</span>112 <span style=''></span><span style='background: #AEF1AE'>            </span><span style='background: #F0ADAD'>ctx.warning(s&quot;sbt-deps: Ignoring dependency $depFile of class ${depFile.getClass}&quot;)</span><span style='background: #AEF1AE'>
+</span>113 <span style=''></span><span style='background: #AEF1AE'>        }
+</span>114 <span style=''></span><span style='background: #AEF1AE'>      } else if (depFile.file != currentSourceFile) {
+</span>115 <span style=''></span><span style='background: #AEF1AE'>        ctx.sbtCallback.sourceDependency(depFile.file, currentSourceFile, context)
+</span>116 <span style=''></span><span style='background: #AEF1AE'>      }</span><span style=''>
+</span>117 <span style=''>    }
+</span>118 <span style=''>  }
+</span>119 <span style=''>}
+</span>120 <span style=''>
+</span>121 <span style=''>/** Extract the dependency information of a compilation unit.
+</span>122 <span style=''> *
+</span>123 <span style=''> *  To understand why we track the used names see the section &quot;Name hashing
+</span>124 <span style=''> *  algorithm&quot; in http://www.scala-sbt.org/0.13/docs/Understanding-Recompilation.html
+</span>125 <span style=''> *  To understand why we need to track dependencies introduced by inheritance
+</span>126 <span style=''> *  specially, see the subsection &quot;Dependencies introduced by member reference and
+</span>127 <span style=''> *  inheritance&quot; in the &quot;Name hashing algorithm&quot; section.
+</span>128 <span style=''> */
+</span>129 <span style=''>private class ExtractDependenciesCollector(implicit val ctx: Context) extends tpd.TreeTraverser {
+</span>130 <span style=''>  import tpd._
+</span>131 <span style=''>
+</span>132 <span style=''>  private[this] val _usedNames = </span><span style='background: #AEF1AE'>new mutable.HashSet[Name]</span><span style=''>
+</span>133 <span style=''>  private[this] val _topLevelDependencies = </span><span style='background: #AEF1AE'>new mutable.HashSet[Symbol]</span><span style=''>
+</span>134 <span style=''>  private[this] val _topLevelInheritanceDependencies = </span><span style='background: #AEF1AE'>new mutable.HashSet[Symbol]</span><span style=''>
+</span>135 <span style=''>
+</span>136 <span style=''>  /** The names used in this class, this does not include names which are only
+</span>137 <span style=''>   *  defined and not referenced.
+</span>138 <span style=''>   */
+</span>139 <span style=''>  def usedNames: Set[Name] = </span><span style='background: #AEF1AE'>_usedNames</span><span style=''>
+</span>140 <span style=''>
+</span>141 <span style=''>  /** The set of top-level classes that the compilation unit depends on
+</span>142 <span style=''>   *  because it refers to these classes or something defined in them.
+</span>143 <span style=''>   *  This is always a superset of `topLevelInheritanceDependencies` by definition.
+</span>144 <span style=''>   */
+</span>145 <span style=''>  def topLevelDependencies: Set[Symbol] = </span><span style='background: #AEF1AE'>_topLevelDependencies</span><span style=''>
+</span>146 <span style=''>
+</span>147 <span style=''>  /** The set of top-level classes that the compilation unit extends or that
+</span>148 <span style=''>   *  contain a non-top-level class that the compilaion unit extends.
+</span>149 <span style=''>   */
+</span>150 <span style=''>  def topLevelInheritanceDependencies: Set[Symbol] = </span><span style='background: #AEF1AE'>_topLevelInheritanceDependencies</span><span style=''>
+</span>151 <span style=''>
+</span>152 <span style=''>  private def addUsedName(name: Name) =
+</span>153 <span style=''>    </span><span style='background: #AEF1AE'>_usedNames += name</span><span style=''>
+</span>154 <span style=''>
+</span>155 <span style=''>  private def addDependency(sym: Symbol): Unit =
+</span>156 <span style=''>    if (</span><span style='background: #AEF1AE'>!ignoreDependency(sym)</span><span style=''>) </span><span style='background: #AEF1AE'>{
+</span>157 <span style=''></span><span style='background: #AEF1AE'>      val tlClass = sym.topLevelClass
+</span>158 <span style=''></span><span style='background: #AEF1AE'>      if (tlClass.ne(NoSymbol)) // Some synthetic type aliases like AnyRef do not belong to any class
+</span>159 <span style=''></span><span style='background: #AEF1AE'>        _topLevelDependencies += sym.topLevelClass
+</span>160 <span style=''></span><span style='background: #AEF1AE'>      addUsedName(sym.name)
+</span>161 <span style=''></span><span style='background: #AEF1AE'>    }</span><span style=''>
+</span>162 <span style=''>
+</span>163 <span style=''>  private def ignoreDependency(sym: Symbol) =
+</span>164 <span style=''>    </span><span style='background: #AEF1AE'>sym.eq(NoSymbol) ||
+</span>165 <span style=''></span><span style='background: #AEF1AE'>    sym.isEffectiveRoot ||
+</span>166 <span style=''></span><span style='background: #AEF1AE'>    sym.isAnonymousFunction ||
+</span>167 <span style=''></span><span style='background: #AEF1AE'>    sym.isAnonymousClass</span><span style=''>
+</span>168 <span style=''>
+</span>169 <span style=''>  private def addInheritanceDependency(sym: Symbol): Unit =
+</span>170 <span style=''>    </span><span style='background: #AEF1AE'>_topLevelInheritanceDependencies += sym.topLevelClass</span><span style=''>
+</span>171 <span style=''>
+</span>172 <span style=''>  /** Traverse the tree of a source file and record the dependencies which
+</span>173 <span style=''>   *  can be retrieved using `topLevelDependencies`, `topLevelInheritanceDependencies`,
+</span>174 <span style=''>   *  and `usedNames`
+</span>175 <span style=''>   */
+</span>176 <span style=''>  override def traverse(tree: Tree)(implicit ctx: Context): Unit = {
+</span>177 <span style=''>    tree match {
+</span>178 <span style=''>      case Import(expr, selectors) =&gt;
+</span>179 <span style=''>        def lookupImported(name: Name) = </span><span style='background: #AEF1AE'>expr.tpe.member(name).symbol</span><span style=''>
+</span>180 <span style=''>        def addImported(name: Name) = {
+</span>181 <span style=''>          // importing a name means importing both a term and a type (if they exist)
+</span>182 <span style=''>          </span><span style='background: #AEF1AE'>addDependency(lookupImported(name.toTermName))</span><span style=''>
+</span>183 <span style=''>          </span><span style='background: #AEF1AE'>addDependency(lookupImported(name.toTypeName))</span><span style=''>
+</span>184 <span style=''>        }
+</span>185 <span style=''>        </span><span style='background: #AEF1AE'>selectors foreach {
+</span>186 <span style=''></span><span style='background: #AEF1AE'>          case Ident(name) =&gt;
+</span>187 <span style=''></span><span style='background: #AEF1AE'>            addImported(name)
+</span>188 <span style=''></span><span style='background: #AEF1AE'>          case Thicket(Ident(name) :: Ident(rename) :: Nil) =&gt;
+</span>189 <span style=''></span><span style='background: #AEF1AE'>            addImported(name)
+</span>190 <span style=''></span><span style='background: #AEF1AE'>            if (rename ne nme.WILDCARD)
+</span>191 <span style=''></span><span style='background: #AEF1AE'>              addUsedName(rename)
+</span>192 <span style=''></span><span style='background: #AEF1AE'>          case _ </span><span style='background: #F0ADAD'>=&gt;</span><span style='background: #AEF1AE'>
+</span>193 <span style=''></span><span style='background: #AEF1AE'>        }</span><span style=''>
+</span>194 <span style=''>      case Inlined(call, _, _) =&gt;
+</span>195 <span style=''>        // The inlined call is normally ignored by TreeTraverser but we need to
+</span>196 <span style=''>        // record it as a dependency
+</span>197 <span style=''>        </span><span style='background: #AEF1AE'>traverse(call)</span><span style=''>
+</span>198 <span style=''>      case t: TypeTree =&gt;
+</span>199 <span style=''>        </span><span style='background: #AEF1AE'>usedTypeTraverser.traverse(t.tpe)</span><span style=''>
+</span>200 <span style=''>      case ref: RefTree =&gt;
+</span>201 <span style=''>        </span><span style='background: #AEF1AE'>addDependency(ref.symbol)</span><span style=''>
+</span>202 <span style=''>        </span><span style='background: #AEF1AE'>usedTypeTraverser.traverse(ref.tpe)</span><span style=''>
+</span>203 <span style=''>      case t @ Template(_, parents, _, _) =&gt;
+</span>204 <span style=''>        </span><span style='background: #AEF1AE'>t.parents.foreach(p =&gt; addInheritanceDependency(p.tpe.classSymbol))</span><span style=''>
+</span>205 <span style=''>      case _ </span><span style='background: #AEF1AE'>=&gt;</span><span style=''>
+</span>206 <span style=''>    }
+</span>207 <span style=''>    </span><span style='background: #AEF1AE'>traverseChildren(tree)</span><span style=''>
+</span>208 <span style=''>  }
+</span>209 <span style=''>
+</span>210 <span style=''>  /** Traverse a used type and record all the dependencies we need to keep track
+</span>211 <span style=''>   *  of for incremental recompilation.
+</span>212 <span style=''>   *
+</span>213 <span style=''>   *  As a motivating example, given a type `T` defined as:
+</span>214 <span style=''>   *
+</span>215 <span style=''>   *    type T &gt;: L &lt;: H
+</span>216 <span style=''>   *    type L &lt;: A1
+</span>217 <span style=''>   *    type H &lt;: B1
+</span>218 <span style=''>   *    class A1 extends A0
+</span>219 <span style=''>   *    class B1 extends B0
+</span>220 <span style=''>   *
+</span>221 <span style=''>   *  We need to record a dependency on `T`, `L`, `H`, `A1`, `B1`. This is
+</span>222 <span style=''>   *  necessary because the API representation that `ExtractAPI` produces for
+</span>223 <span style=''>   *  `T` just refers to the strings &quot;L&quot; and &quot;H&quot;, it does not contain their API
+</span>224 <span style=''>   *  representation. Therefore, the name hash of `T` does not change if for
+</span>225 <span style=''>   *  example the definition of `L` changes.
+</span>226 <span style=''>   *
+</span>227 <span style=''>   *  We do not need to keep track of superclasses like `A0` and `B0` because
+</span>228 <span style=''>   *  the API representation of a class (and therefore its name hash) already
+</span>229 <span style=''>   *  contains all necessary information on superclasses.
+</span>230 <span style=''>   *
+</span>231 <span style=''>   *  A natural question to ask is: Since traversing all referenced types to
+</span>232 <span style=''>   *  find all these names is costly, why not change the API representation
+</span>233 <span style=''>   *  produced by `ExtractAPI` to contain that information? This way the name
+</span>234 <span style=''>   *  hash of `T` would change if any of the types it depends on change, and we
+</span>235 <span style=''>   *  would only need to record a dependency on `T`. Unfortunately there is no
+</span>236 <span style=''>   *  simple answer to the question &quot;what does T depend on?&quot; because it depends
+</span>237 <span style=''>   *  on the prefix and `ExtractAPI` does not compute types as seen from every
+</span>238 <span style=''>   *  possible prefix, the documentation of `ExtractAPI` explains why.
+</span>239 <span style=''>   *
+</span>240 <span style=''>   *  The tests in sbt `types-in-used-names-a`, `types-in-used-names-b`,
+</span>241 <span style=''>   *  `as-seen-from-a` and `as-seen-from-b` rely on this.
+</span>242 <span style=''>   */
+</span>243 <span style=''>  private object usedTypeTraverser extends TypeTraverser {
+</span>244 <span style=''>    val seen = </span><span style='background: #AEF1AE'>new mutable.HashSet[Type]</span><span style=''>
+</span>245 <span style=''>    def traverse(tp: Type): Unit = if (</span><span style='background: #AEF1AE'>!seen.contains(tp)</span><span style=''>) </span><span style='background: #AEF1AE'>{
+</span>246 <span style=''></span><span style='background: #AEF1AE'>      seen += tp
+</span>247 <span style=''></span><span style='background: #AEF1AE'>      tp match {
+</span>248 <span style=''></span><span style='background: #AEF1AE'>        case tp: NamedType =&gt;
+</span>249 <span style=''></span><span style='background: #AEF1AE'>          val sym = tp.symbol
+</span>250 <span style=''></span><span style='background: #AEF1AE'>          if (!sym.is(Package)) {
+</span>251 <span style=''></span><span style='background: #AEF1AE'>            addDependency(sym)
+</span>252 <span style=''></span><span style='background: #AEF1AE'>            if (!sym.isClass)
+</span>253 <span style=''></span><span style='background: #AEF1AE'>              traverse(tp.info)
+</span>254 <span style=''></span><span style='background: #AEF1AE'>            traverse(tp.prefix)
+</span>255 <span style=''></span><span style='background: #AEF1AE'>          }
+</span>256 <span style=''></span><span style='background: #AEF1AE'>        case tp: ThisType =&gt;
+</span>257 <span style=''></span><span style='background: #AEF1AE'>          traverse(tp.underlying)
+</span>258 <span style=''></span><span style='background: #AEF1AE'>        case tp: ConstantType =&gt;
+</span>259 <span style=''></span><span style='background: #AEF1AE'>          traverse(tp.underlying)
+</span>260 <span style=''></span><span style='background: #AEF1AE'>        case tp: ParamRef =&gt;
+</span>261 <span style=''></span><span style='background: #AEF1AE'>          traverse(tp.underlying)
+</span>262 <span style=''></span><span style='background: #AEF1AE'>        case _ =&gt;
+</span>263 <span style=''></span><span style='background: #AEF1AE'>          traverseChildren(tp)
+</span>264 <span style=''></span><span style='background: #AEF1AE'>      }
+</span>265 <span style=''></span><span style='background: #AEF1AE'>    }</span><span style=''>
+</span>266 <span style=''>  }
+</span>267 <span style=''>}
+</span></pre>
+          </div>
+          <div class="tab-pane" id="statementlist">
+            <table cellspacing="0" cellpadding="0" class="table statementlist">
+      <tr>
+        <th>Line</th>
+        <th>Stmt Id</th>
+        <th>Pos</th>
+        <th>Tree</th>
+        <th>Symbol</th>
+        <th>Code</th>
+      </tr><tr>
+        <td>
+          38
+        </td>
+        <td>
+          52071
+        </td>
+        <td>
+          1266
+          -
+          1276
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          &quot;sbt-deps&quot;
+        </td>
+      </tr><tr>
+        <td>
+          46
+        </td>
+        <td>
+          52072
+        </td>
+        <td>
+          1620
+          -
+          1639
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Contexts.Context.compilationUnit
+        </td>
+        <td style="background: #AEF1AE">
+          ctx.compilationUnit
+        </td>
+      </tr><tr>
+        <td>
+          47
+        </td>
+        <td>
+          52073
+        </td>
+        <td>
+          1658
+          -
+          1688
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.config.Settings.Setting.SettingDecorator.value
+        </td>
+        <td style="background: #AEF1AE">
+          Settings.this.Setting.SettingDecorator[Boolean](Contexts.this.Context.toBase(ctx).settings.YdumpSbtInc).value(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          48
+        </td>
+        <td>
+          52075
+        </td>
+        <td>
+          1708
+          -
+          1753
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Boolean.||
+        </td>
+        <td style="background: #AEF1AE">
+          dumpInc.||(Settings.this.Setting.SettingDecorator[Boolean](Contexts.this.Context.toBase(ctx).settings.YforceSbtPhases).value(ctx))
+        </td>
+      </tr><tr>
+        <td>
+          48
+        </td>
+        <td>
+          52074
+        </td>
+        <td>
+          1719
+          -
+          1753
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.config.Settings.Setting.SettingDecorator.value
+        </td>
+        <td style="background: #AEF1AE">
+          Settings.this.Setting.SettingDecorator[Boolean](Contexts.this.Context.toBase(ctx).settings.YforceSbtPhases).value(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          49
+        </td>
+        <td>
+          52129
+        </td>
+        <td>
+          1758
+          -
+          1758
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          ()
+        </td>
+      </tr><tr>
+        <td>
+          49
+        </td>
+        <td>
+          52078
+        </td>
+        <td>
+          1762
+          -
+          1815
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Boolean.&amp;&amp;
+        </td>
+        <td style="background: #AEF1AE">
+          ctx.sbtCallback.!=(null).||(forceRun).&amp;&amp;(unit.isJava.unary_!)
+        </td>
+      </tr><tr>
+        <td>
+          49
+        </td>
+        <td>
+          52128
+        </td>
+        <td>
+          1817
+          -
+          3145
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          {
+  val sourceFile: dotty.tools.io.AbstractFile = unit.source.file;
+  val extractDeps: dotty.tools.dotc.sbt.ExtractDependenciesCollector = new ExtractDependenciesCollector()(ctx);
+  extractDeps.traverse(unit.tpdTree)(ctx);
+  if (dumpInc)
+    {
+      val names: Array[Object] = extractDeps.usedNames.map[String, scala.collection.Set[String]](((x$1: dotty.tools.dotc.core.Names.Name) =&gt; x$1.toString()))(collection.this.Set.canBuildFrom[String]).toArray[Object]((ClassTag.Object: scala.reflect.ClassTag[Object]));
+      val deps: Array[Object] = extractDeps.topLevelDependencies.map[String, scala.collection.Set[String]](((x$2: dotty.tools.dotc.core.Symbols.Symbol) =&gt; x$2.toString()))(collection.this.Set.canBuildFrom[String]).toArray[Object]((ClassTag.Object: scala.reflect.ClassTag[Object]));
+      val inhDeps: Array[Object] = extractDeps.topLevelInheritanceDependencies.map[String, scala.collection.Set[String]](((x$3: dotty.tools.dotc.core.Symbols.Symbol) =&gt; x$3.toString()))(collection.this.Set.canBuildFrom[String]).toArray[Object]((ClassTag.Object: scala.reflect.ClassTag[Object]));
+      java.util.Arrays.sort(names);
+      java.util.Arrays.sort(deps);
+      java.util.Arrays.sort(inhDeps);
+      val pw: java.io.PrintWriter = dotty.tools.io.Path.apply(sourceFile.jpath).changeExtension(&quot;inc&quot;).toFile.printWriter();
+      try {
+        pw.println(scala.StringContext.apply(&quot;// usedNames: &quot;, &quot;&quot;).s(scala.Predef.refArrayOps[Object](names).mkString(&quot;,&quot;)));
+        pw.println(scala.StringContext.apply(&quot;// topLevelDependencies: &quot;, &quot;&quot;).s(scala.Predef.refArrayOps[Object](deps).mkString(&quot;,&quot;)));
+        pw.println(scala.StringContext.apply(&quot;// topLevelInheritanceDependencies: &quot;, &quot;&quot;).s(scala.Predef.refArrayOps[Object](inhDeps).mkString(&quot;,&quot;)))
+      } finally pw.close()
+    }
+  else
+    ();
+  if (ctx.sbtCallback.!=(null))
+    {
+      extractDeps.usedNames.foreach[Unit](((name: dotty.tools.dotc.core.Names.Name) =&gt; ctx.sbtCallback.usedName(sourceFile.file, name.toString())));
+      extractDeps.topLevelDependencies.foreach[Unit](((dep: dotty.tools.dotc.core.Symbols.Symbol) =&gt; ExtractDependencies.this.recordDependency(sourceFile.file, dep, DependencyByMemberRef)(ctx)));
+      extractDeps.topLevelInheritanceDependencies.foreach[Unit](((dep: dotty.tools.dotc.core.Symbols.Symbol) =&gt; ExtractDependencies.this.recordDependency(sourceFile.file, dep, DependencyByInheritance)(ctx)))
+    }
+  else
+    ()
+}
+        </td>
+      </tr><tr>
+        <td>
+          49
+        </td>
+        <td>
+          52077
+        </td>
+        <td>
+          1803
+          -
+          1815
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.Boolean.unary_!
+        </td>
+        <td style="background: #AEF1AE">
+          unit.isJava.unary_!
+        </td>
+      </tr><tr>
+        <td>
+          49
+        </td>
+        <td>
+          52130
+        </td>
+        <td>
+          1758
+          -
+          1758
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          ()
+        </td>
+      </tr><tr>
+        <td>
+          49
+        </td>
+        <td>
+          52076
+        </td>
+        <td>
+          1782
+          -
+          1786
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          null
+        </td>
+      </tr><tr>
+        <td>
+          50
+        </td>
+        <td>
+          52079
+        </td>
+        <td>
+          1842
+          -
+          1858
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.util.SourceFile.file
+        </td>
+        <td style="background: #AEF1AE">
+          unit.source.file
+        </td>
+      </tr><tr>
+        <td>
+          51
+        </td>
+        <td>
+          52080
+        </td>
+        <td>
+          1883
+          -
+          1915
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.sbt.ExtractDependenciesCollector.&lt;init&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          new ExtractDependenciesCollector()(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          52
+        </td>
+        <td>
+          52081
+        </td>
+        <td>
+          1922
+          -
+          1956
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.sbt.ExtractDependenciesCollector.traverse
+        </td>
+        <td style="background: #AEF1AE">
+          extractDeps.traverse(unit.tpdTree)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          54
+        </td>
+        <td>
+          52114
+        </td>
+        <td>
+          1964
+          -
+          1964
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          ()
+        </td>
+      </tr><tr>
+        <td>
+          54
+        </td>
+        <td>
+          52113
+        </td>
+        <td>
+          1977
+          -
+          2672
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          {
+  val names: Array[Object] = extractDeps.usedNames.map[String, scala.collection.Set[String]](((x$1: dotty.tools.dotc.core.Names.Name) =&gt; x$1.toString()))(collection.this.Set.canBuildFrom[String]).toArray[Object]((ClassTag.Object: scala.reflect.ClassTag[Object]));
+  val deps: Array[Object] = extractDeps.topLevelDependencies.map[String, scala.collection.Set[String]](((x$2: dotty.tools.dotc.core.Symbols.Symbol) =&gt; x$2.toString()))(collection.this.Set.canBuildFrom[String]).toArray[Object]((ClassTag.Object: scala.reflect.ClassTag[Object]));
+  val inhDeps: Array[Object] = extractDeps.topLevelInheritanceDependencies.map[String, scala.collection.Set[String]](((x$3: dotty.tools.dotc.core.Symbols.Symbol) =&gt; x$3.toString()))(collection.this.Set.canBuildFrom[String]).toArray[Object]((ClassTag.Object: scala.reflect.ClassTag[Object]));
+  java.util.Arrays.sort(names);
+  java.util.Arrays.sort(deps);
+  java.util.Arrays.sort(inhDeps);
+  val pw: java.io.PrintWriter = dotty.tools.io.Path.apply(sourceFile.jpath).changeExtension(&quot;inc&quot;).toFile.printWriter();
+  try {
+    pw.println(scala.StringContext.apply(&quot;// usedNames: &quot;, &quot;&quot;).s(scala.Predef.refArrayOps[Object](names).mkString(&quot;,&quot;)));
+    pw.println(scala.StringContext.apply(&quot;// topLevelDependencies: &quot;, &quot;&quot;).s(scala.Predef.refArrayOps[Object](deps).mkString(&quot;,&quot;)));
+    pw.println(scala.StringContext.apply(&quot;// topLevelInheritanceDependencies: &quot;, &quot;&quot;).s(scala.Predef.refArrayOps[Object](inhDeps).mkString(&quot;,&quot;)))
+  } finally pw.close()
+}
+        </td>
+      </tr><tr>
+        <td>
+          54
+        </td>
+        <td>
+          52115
+        </td>
+        <td>
+          1964
+          -
+          1964
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          ()
+        </td>
+      </tr><tr>
+        <td>
+          55
+        </td>
+        <td>
+          52084
+        </td>
+        <td>
+          1999
+          -
+          2052
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          scala.collection.TraversableOnce.toArray
+        </td>
+        <td style="background: #F0ADAD">
+          extractDeps.usedNames.map[String, scala.collection.Set[String]](((x$1: dotty.tools.dotc.core.Names.Name) =&gt; x$1.toString()))(collection.this.Set.canBuildFrom[String]).toArray[Object]((ClassTag.Object: scala.reflect.ClassTag[Object]))
+        </td>
+      </tr><tr>
+        <td>
+          55
+        </td>
+        <td>
+          52083
+        </td>
+        <td>
+          2024
+          -
+          2024
+        </td>
+        <td>
+          TypeApply
+        </td>
+        <td>
+          scala.collection.Set.canBuildFrom
+        </td>
+        <td style="background: #F0ADAD">
+          collection.this.Set.canBuildFrom[String]
+        </td>
+      </tr><tr>
+        <td>
+          55
+        </td>
+        <td>
+          52082
+        </td>
+        <td>
+          2025
+          -
+          2035
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.Object.toString
+        </td>
+        <td style="background: #F0ADAD">
+          x$1.toString()
+        </td>
+      </tr><tr>
+        <td>
+          56
+        </td>
+        <td>
+          52087
+        </td>
+        <td>
+          2072
+          -
+          2136
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          scala.collection.TraversableOnce.toArray
+        </td>
+        <td style="background: #F0ADAD">
+          extractDeps.topLevelDependencies.map[String, scala.collection.Set[String]](((x$2: dotty.tools.dotc.core.Symbols.Symbol) =&gt; x$2.toString()))(collection.this.Set.canBuildFrom[String]).toArray[Object]((ClassTag.Object: scala.reflect.ClassTag[Object]))
+        </td>
+      </tr><tr>
+        <td>
+          56
+        </td>
+        <td>
+          52086
+        </td>
+        <td>
+          2108
+          -
+          2108
+        </td>
+        <td>
+          TypeApply
+        </td>
+        <td>
+          scala.collection.Set.canBuildFrom
+        </td>
+        <td style="background: #F0ADAD">
+          collection.this.Set.canBuildFrom[String]
+        </td>
+      </tr><tr>
+        <td>
+          56
+        </td>
+        <td>
+          52085
+        </td>
+        <td>
+          2109
+          -
+          2119
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.core.Symbols.Symbol.toString
+        </td>
+        <td style="background: #F0ADAD">
+          x$2.toString()
+        </td>
+      </tr><tr>
+        <td>
+          57
+        </td>
+        <td>
+          52089
+        </td>
+        <td>
+          2206
+          -
+          2206
+        </td>
+        <td>
+          TypeApply
+        </td>
+        <td>
+          scala.collection.Set.canBuildFrom
+        </td>
+        <td style="background: #F0ADAD">
+          collection.this.Set.canBuildFrom[String]
+        </td>
+      </tr><tr>
+        <td>
+          57
+        </td>
+        <td>
+          52088
+        </td>
+        <td>
+          2207
+          -
+          2217
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.core.Symbols.Symbol.toString
+        </td>
+        <td style="background: #F0ADAD">
+          x$3.toString()
+        </td>
+      </tr><tr>
+        <td>
+          57
+        </td>
+        <td>
+          52090
+        </td>
+        <td>
+          2159
+          -
+          2234
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          scala.collection.TraversableOnce.toArray
+        </td>
+        <td style="background: #F0ADAD">
+          extractDeps.topLevelInheritanceDependencies.map[String, scala.collection.Set[String]](((x$3: dotty.tools.dotc.core.Symbols.Symbol) =&gt; x$3.toString()))(collection.this.Set.canBuildFrom[String]).toArray[Object]((ClassTag.Object: scala.reflect.ClassTag[Object]))
+        </td>
+      </tr><tr>
+        <td>
+          58
+        </td>
+        <td>
+          52091
+        </td>
+        <td>
+          2243
+          -
+          2261
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.util.Arrays.sort
+        </td>
+        <td style="background: #F0ADAD">
+          java.util.Arrays.sort(names)
+        </td>
+      </tr><tr>
+        <td>
+          59
+        </td>
+        <td>
+          52092
+        </td>
+        <td>
+          2270
+          -
+          2287
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.util.Arrays.sort
+        </td>
+        <td style="background: #F0ADAD">
+          java.util.Arrays.sort(deps)
+        </td>
+      </tr><tr>
+        <td>
+          60
+        </td>
+        <td>
+          52093
+        </td>
+        <td>
+          2296
+          -
+          2316
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.util.Arrays.sort
+        </td>
+        <td style="background: #F0ADAD">
+          java.util.Arrays.sort(inhDeps)
+        </td>
+      </tr><tr>
+        <td>
+          62
+        </td>
+        <td>
+          52094
+        </td>
+        <td>
+          2335
+          -
+          2401
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.io.File.printWriter
+        </td>
+        <td style="background: #F0ADAD">
+          dotty.tools.io.Path.apply(sourceFile.jpath).changeExtension(&quot;inc&quot;).toFile.printWriter()
+        </td>
+      </tr><tr>
+        <td>
+          63
+        </td>
+        <td>
+          52110
+        </td>
+        <td>
+          2426
+          -
+          2635
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          {
+  pw.println(scala.StringContext.apply(&quot;// usedNames: &quot;, &quot;&quot;).s(scala.Predef.refArrayOps[Object](names).mkString(&quot;,&quot;)));
+  pw.println(scala.StringContext.apply(&quot;// topLevelDependencies: &quot;, &quot;&quot;).s(scala.Predef.refArrayOps[Object](deps).mkString(&quot;,&quot;)));
+  pw.println(scala.StringContext.apply(&quot;// topLevelInheritanceDependencies: &quot;, &quot;&quot;).s(scala.Predef.refArrayOps[Object](inhDeps).mkString(&quot;,&quot;)))
+}
+        </td>
+      </tr><tr>
+        <td>
+          64
+        </td>
+        <td>
+          52096
+        </td>
+        <td>
+          2475
+          -
+          2476
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          &quot;&quot;
+        </td>
+      </tr><tr>
+        <td>
+          64
+        </td>
+        <td>
+          52095
+        </td>
+        <td>
+          2439
+          -
+          2454
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          &quot;// usedNames: &quot;
+        </td>
+      </tr><tr>
+        <td>
+          64
+        </td>
+        <td>
+          52098
+        </td>
+        <td>
+          2437
+          -
+          2476
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.StringContext.s
+        </td>
+        <td style="background: #F0ADAD">
+          scala.StringContext.apply(&quot;// usedNames: &quot;, &quot;&quot;).s(scala.Predef.refArrayOps[Object](names).mkString(&quot;,&quot;))
+        </td>
+      </tr><tr>
+        <td>
+          64
+        </td>
+        <td>
+          52097
+        </td>
+        <td>
+          2455
+          -
+          2474
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.TraversableOnce.mkString
+        </td>
+        <td style="background: #F0ADAD">
+          scala.Predef.refArrayOps[Object](names).mkString(&quot;,&quot;)
+        </td>
+      </tr><tr>
+        <td>
+          64
+        </td>
+        <td>
+          52099
+        </td>
+        <td>
+          2426
+          -
+          2477
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.io.PrintWriter.println
+        </td>
+        <td style="background: #F0ADAD">
+          pw.println(scala.StringContext.apply(&quot;// usedNames: &quot;, &quot;&quot;).s(scala.Predef.refArrayOps[Object](names).mkString(&quot;,&quot;)))
+        </td>
+      </tr><tr>
+        <td>
+          65
+        </td>
+        <td>
+          52102
+        </td>
+        <td>
+          2528
+          -
+          2546
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.TraversableOnce.mkString
+        </td>
+        <td style="background: #F0ADAD">
+          scala.Predef.refArrayOps[Object](deps).mkString(&quot;,&quot;)
+        </td>
+      </tr><tr>
+        <td>
+          65
+        </td>
+        <td>
+          52104
+        </td>
+        <td>
+          2488
+          -
+          2549
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.io.PrintWriter.println
+        </td>
+        <td style="background: #F0ADAD">
+          pw.println(scala.StringContext.apply(&quot;// topLevelDependencies: &quot;, &quot;&quot;).s(scala.Predef.refArrayOps[Object](deps).mkString(&quot;,&quot;)))
+        </td>
+      </tr><tr>
+        <td>
+          65
+        </td>
+        <td>
+          52101
+        </td>
+        <td>
+          2547
+          -
+          2548
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          &quot;&quot;
+        </td>
+      </tr><tr>
+        <td>
+          65
+        </td>
+        <td>
+          52103
+        </td>
+        <td>
+          2499
+          -
+          2548
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.StringContext.s
+        </td>
+        <td style="background: #F0ADAD">
+          scala.StringContext.apply(&quot;// topLevelDependencies: &quot;, &quot;&quot;).s(scala.Predef.refArrayOps[Object](deps).mkString(&quot;,&quot;))
+        </td>
+      </tr><tr>
+        <td>
+          65
+        </td>
+        <td>
+          52100
+        </td>
+        <td>
+          2501
+          -
+          2527
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          &quot;// topLevelDependencies: &quot;
+        </td>
+      </tr><tr>
+        <td>
+          66
+        </td>
+        <td>
+          52105
+        </td>
+        <td>
+          2573
+          -
+          2610
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          &quot;// topLevelInheritanceDependencies: &quot;
+        </td>
+      </tr><tr>
+        <td>
+          66
+        </td>
+        <td>
+          52107
+        </td>
+        <td>
+          2611
+          -
+          2632
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.TraversableOnce.mkString
+        </td>
+        <td style="background: #F0ADAD">
+          scala.Predef.refArrayOps[Object](inhDeps).mkString(&quot;,&quot;)
+        </td>
+      </tr><tr>
+        <td>
+          66
+        </td>
+        <td>
+          52109
+        </td>
+        <td>
+          2560
+          -
+          2635
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.io.PrintWriter.println
+        </td>
+        <td style="background: #F0ADAD">
+          pw.println(scala.StringContext.apply(&quot;// topLevelInheritanceDependencies: &quot;, &quot;&quot;).s(scala.Predef.refArrayOps[Object](inhDeps).mkString(&quot;,&quot;)))
+        </td>
+      </tr><tr>
+        <td>
+          66
+        </td>
+        <td>
+          52106
+        </td>
+        <td>
+          2633
+          -
+          2634
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          &quot;&quot;
+        </td>
+      </tr><tr>
+        <td>
+          66
+        </td>
+        <td>
+          52108
+        </td>
+        <td>
+          2571
+          -
+          2634
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.StringContext.s
+        </td>
+        <td style="background: #F0ADAD">
+          scala.StringContext.apply(&quot;// topLevelInheritanceDependencies: &quot;, &quot;&quot;).s(scala.Predef.refArrayOps[Object](inhDeps).mkString(&quot;,&quot;))
+        </td>
+      </tr><tr>
+        <td>
+          67
+        </td>
+        <td>
+          52111
+        </td>
+        <td>
+          2654
+          -
+          2664
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.io.PrintWriter.close
+        </td>
+        <td style="background: #F0ADAD">
+          pw.close()
+        </td>
+      </tr><tr>
+        <td>
+          67
+        </td>
+        <td>
+          52112
+        </td>
+        <td>
+          2654
+          -
+          2664
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          java.io.PrintWriter.close
+        </td>
+        <td style="background: #F0ADAD">
+          pw.close()
+        </td>
+      </tr><tr>
+        <td>
+          70
+        </td>
+        <td>
+          52116
+        </td>
+        <td>
+          2684
+          -
+          2707
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.Object.!=
+        </td>
+        <td style="background: #AEF1AE">
+          ctx.sbtCallback.!=(null)
+        </td>
+      </tr><tr>
+        <td>
+          70
+        </td>
+        <td>
+          52125
+        </td>
+        <td>
+          2709
+          -
+          3139
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          {
+  extractDeps.usedNames.foreach[Unit](((name: dotty.tools.dotc.core.Names.Name) =&gt; ctx.sbtCallback.usedName(sourceFile.file, name.toString())));
+  extractDeps.topLevelDependencies.foreach[Unit](((dep: dotty.tools.dotc.core.Symbols.Symbol) =&gt; ExtractDependencies.this.recordDependency(sourceFile.file, dep, DependencyByMemberRef)(ctx)));
+  extractDeps.topLevelInheritanceDependencies.foreach[Unit](((dep: dotty.tools.dotc.core.Symbols.Symbol) =&gt; ExtractDependencies.this.recordDependency(sourceFile.file, dep, DependencyByInheritance)(ctx)))
+}
+        </td>
+      </tr><tr>
+        <td>
+          70
+        </td>
+        <td>
+          52127
+        </td>
+        <td>
+          2680
+          -
+          2680
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          ()
+        </td>
+      </tr><tr>
+        <td>
+          70
+        </td>
+        <td>
+          52126
+        </td>
+        <td>
+          2680
+          -
+          2680
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          ()
+        </td>
+      </tr><tr>
+        <td>
+          71
+        </td>
+        <td>
+          52120
+        </td>
+        <td>
+          2719
+          -
+          2824
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.IterableLike.foreach
+        </td>
+        <td style="background: #AEF1AE">
+          extractDeps.usedNames.foreach[Unit](((name: dotty.tools.dotc.core.Names.Name) =&gt; ctx.sbtCallback.usedName(sourceFile.file, name.toString())))
+        </td>
+      </tr><tr>
+        <td>
+          72
+        </td>
+        <td>
+          52119
+        </td>
+        <td>
+          2767
+          -
+          2823
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          xsbti.AnalysisCallback.usedName
+        </td>
+        <td style="background: #AEF1AE">
+          ctx.sbtCallback.usedName(sourceFile.file, name.toString())
+        </td>
+      </tr><tr>
+        <td>
+          72
+        </td>
+        <td>
+          52118
+        </td>
+        <td>
+          2809
+          -
+          2822
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.Object.toString
+        </td>
+        <td style="background: #AEF1AE">
+          name.toString()
+        </td>
+      </tr><tr>
+        <td>
+          72
+        </td>
+        <td>
+          52117
+        </td>
+        <td>
+          2792
+          -
+          2807
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.io.AbstractFile.file
+        </td>
+        <td style="background: #AEF1AE">
+          sourceFile.file
+        </td>
+      </tr><tr>
+        <td>
+          73
+        </td>
+        <td>
+          52122
+        </td>
+        <td>
+          2833
+          -
+          2971
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.IterableLike.foreach
+        </td>
+        <td style="background: #AEF1AE">
+          extractDeps.topLevelDependencies.foreach[Unit](((dep: dotty.tools.dotc.core.Symbols.Symbol) =&gt; ExtractDependencies.this.recordDependency(sourceFile.file, dep, DependencyByMemberRef)(ctx)))
+        </td>
+      </tr><tr>
+        <td>
+          74
+        </td>
+        <td>
+          52121
+        </td>
+        <td>
+          2891
+          -
+          2970
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.sbt.ExtractDependencies.recordDependency
+        </td>
+        <td style="background: #AEF1AE">
+          ExtractDependencies.this.recordDependency(sourceFile.file, dep, DependencyByMemberRef)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          75
+        </td>
+        <td>
+          52124
+        </td>
+        <td>
+          2980
+          -
+          3131
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.IterableLike.foreach
+        </td>
+        <td style="background: #AEF1AE">
+          extractDeps.topLevelInheritanceDependencies.foreach[Unit](((dep: dotty.tools.dotc.core.Symbols.Symbol) =&gt; ExtractDependencies.this.recordDependency(sourceFile.file, dep, DependencyByInheritance)(ctx)))
+        </td>
+      </tr><tr>
+        <td>
+          76
+        </td>
+        <td>
+          52123
+        </td>
+        <td>
+          3049
+          -
+          3130
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.sbt.ExtractDependencies.recordDependency
+        </td>
+        <td style="background: #AEF1AE">
+          ExtractDependencies.this.recordDependency(sourceFile.file, dep, DependencyByInheritance)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          89
+        </td>
+        <td>
+          52131
+        </td>
+        <td>
+          3588
+          -
+          3606
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.Symbols.Symbol.associatedFile
+        </td>
+        <td style="background: #AEF1AE">
+          dep.associatedFile(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          90
+        </td>
+        <td>
+          52170
+        </td>
+        <td>
+          3611
+          -
+          3611
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          ()
+        </td>
+      </tr><tr>
+        <td>
+          90
+        </td>
+        <td>
+          52169
+        </td>
+        <td>
+          3611
+          -
+          3611
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          ()
+        </td>
+      </tr><tr>
+        <td>
+          90
+        </td>
+        <td>
+          52132
+        </td>
+        <td>
+          3615
+          -
+          3630
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.Object.!=
+        </td>
+        <td style="background: #AEF1AE">
+          depFile.!=(null)
+        </td>
+      </tr><tr>
+        <td>
+          91
+        </td>
+        <td>
+          52133
+        </td>
+        <td>
+          3644
+          -
+          3675
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.String.endsWith
+        </td>
+        <td style="background: #AEF1AE">
+          depFile.path.endsWith(&quot;.class&quot;)
+        </td>
+      </tr><tr>
+        <td>
+          91
+        </td>
+        <td>
+          52160
+        </td>
+        <td>
+          3677
+          -
+          4829
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          {
+  def className(classSegments: List[String]): String = scala.Predef.augmentString(classSegments.mkString(&quot;.&quot;)).stripSuffix(&quot;.class&quot;);
+  def binaryDependency(file: java.io.File, className: String): Unit = ctx.sbtCallback.binaryDependency(file, className, currentSourceFile, context);
+  depFile match {
+    case (ze @ (_: dotty.tools.io.ZipArchive#Entry)) =&gt; ze.underlyingSource.foreach[Unit](((zip: dotty.tools.io.ZipArchive) =&gt; scala.Option.apply[dotty.tools.io.JFile](zip.file).foreach[Unit](((zipFile: dotty.tools.io.JFile) =&gt; {
+      val classSegments: List[String] = dotty.tools.io.Path.apply(ze.path).segments;
+      binaryDependency(zipFile, className(classSegments))
+    }))))
+    case (pf @ (_: dotty.tools.io.PlainFile)) =&gt; {
+      val packages: Int = core.Symbols.toDenot(dep)(ctx).ownersIterator(ctx).filter(((x: dotty.tools.dotc.core.Symbols.Symbol) =&gt; core.Symbols.toDenot(x)(ctx).is(core.Flags.PackageClass)(ctx).&amp;&amp;(core.Symbols.toDenot(x)(ctx).isEffectiveRoot(ctx).unary_!))).length;
+      val classSegments: List[String] = pf.givenPath.segments.takeRight(packages.+(1));
+      binaryDependency(pf.file, className(classSegments))
+    }
+    case _ =&gt; ctx.warning(diagnostic.this.Message.toNoExplanation(scala.StringContext.apply(&quot;sbt-deps: Ignoring dependency &quot;, &quot; of class &quot;, &quot;&quot;).s(depFile, depFile.getClass())), ctx.warning$default$2)
+  }
+}
+        </td>
+      </tr><tr>
+        <td>
+          91
+        </td>
+        <td>
+          52168
+        </td>
+        <td>
+          3640
+          -
+          4966
+        </td>
+        <td>
+          If
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          if (depFile.path.endsWith(&quot;.class&quot;))
+  {
+    def className(classSegments: List[String]): String = scala.Predef.augmentString(classSegments.mkString(&quot;.&quot;)).stripSuffix(&quot;.class&quot;);
+    def binaryDependency(file: java.io.File, className: String): Unit = ctx.sbtCallback.binaryDependency(file, className, currentSourceFile, context);
+    depFile match {
+      case (ze @ (_: dotty.tools.io.ZipArchive#Entry)) =&gt; ze.underlyingSource.foreach[Unit](((zip: dotty.tools.io.ZipArchive) =&gt; scala.Option.apply[dotty.tools.io.JFile](zip.file).foreach[Unit](((zipFile: dotty.tools.io.JFile) =&gt; {
+        val classSegments: List[String] = dotty.tools.io.Path.apply(ze.path).segments;
+        binaryDependency(zipFile, className(classSegments))
+      }))))
+      case (pf @ (_: dotty.tools.io.PlainFile)) =&gt; {
+        val packages: Int = core.Symbols.toDenot(dep)(ctx).ownersIterator(ctx).filter(((x: dotty.tools.dotc.core.Symbols.Symbol) =&gt; core.Symbols.toDenot(x)(ctx).is(core.Flags.PackageClass)(ctx).&amp;&amp;(core.Symbols.toDenot(x)(ctx).isEffectiveRoot(ctx).unary_!))).length;
+        val classSegments: List[String] = pf.givenPath.segments.takeRight(packages.+(1));
+        binaryDependency(pf.file, className(classSegments))
+      }
+      case _ =&gt; ctx.warning(diagnostic.this.Message.toNoExplanation(scala.StringContext.apply(&quot;sbt-deps: Ignoring dependency &quot;, &quot; of class &quot;, &quot;&quot;).s(depFile, depFile.getClass())), ctx.warning$default$2)
+    }
+  }
+else
+  if (depFile.file.!=(currentSourceFile))
+    ctx.sbtCallback.sourceDependency(depFile.file, currentSourceFile, context)
+  else
+    ()
+        </td>
+      </tr><tr>
+        <td>
+          94
+        </td>
+        <td>
+          52134
+        </td>
+        <td>
+          3824
+          -
+          3873
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.immutable.StringLike.stripSuffix
+        </td>
+        <td style="background: #AEF1AE">
+          scala.Predef.augmentString(classSegments.mkString(&quot;.&quot;)).stripSuffix(&quot;.class&quot;)
+        </td>
+      </tr><tr>
+        <td>
+          96
+        </td>
+        <td>
+          52135
+        </td>
+        <td>
+          3946
+          -
+          4023
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          xsbti.AnalysisCallback.binaryDependency
+        </td>
+        <td style="background: #AEF1AE">
+          ctx.sbtCallback.binaryDependency(file, className, currentSourceFile, context)
+        </td>
+      </tr><tr>
+        <td>
+          100
+        </td>
+        <td>
+          52136
+        </td>
+        <td>
+          4151
+          -
+          4159
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.io.AbstractFile.file
+        </td>
+        <td style="background: #AEF1AE">
+          zip.file
+        </td>
+      </tr><tr>
+        <td>
+          100
+        </td>
+        <td>
+          52142
+        </td>
+        <td>
+          4100
+          -
+          4300
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Option.foreach
+        </td>
+        <td style="background: #AEF1AE">
+          ze.underlyingSource.foreach[Unit](((zip: dotty.tools.io.ZipArchive) =&gt; scala.Option.apply[dotty.tools.io.JFile](zip.file).foreach[Unit](((zipFile: dotty.tools.io.JFile) =&gt; {
+  val classSegments: List[String] = dotty.tools.io.Path.apply(ze.path).segments;
+  binaryDependency(zipFile, className(classSegments))
+}))))
+        </td>
+      </tr><tr>
+        <td>
+          100
+        </td>
+        <td>
+          52141
+        </td>
+        <td>
+          4133
+          -
+          4300
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Option.foreach
+        </td>
+        <td style="background: #AEF1AE">
+          scala.Option.apply[dotty.tools.io.JFile](zip.file).foreach[Unit](((zipFile: dotty.tools.io.JFile) =&gt; {
+  val classSegments: List[String] = dotty.tools.io.Path.apply(ze.path).segments;
+  binaryDependency(zipFile, className(classSegments))
+}))
+        </td>
+      </tr><tr>
+        <td>
+          101
+        </td>
+        <td>
+          52138
+        </td>
+        <td>
+          4198
+          -
+          4220
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.io.Path.segments
+        </td>
+        <td style="background: #AEF1AE">
+          dotty.tools.io.Path.apply(ze.path).segments
+        </td>
+      </tr><tr>
+        <td>
+          101
+        </td>
+        <td>
+          52137
+        </td>
+        <td>
+          4203
+          -
+          4210
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.io.VirtualFile.path
+        </td>
+        <td style="background: #AEF1AE">
+          ze.path
+        </td>
+      </tr><tr>
+        <td>
+          102
+        </td>
+        <td>
+          52140
+        </td>
+        <td>
+          4235
+          -
+          4286
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.sbt.ExtractDependencies.binaryDependency
+        </td>
+        <td style="background: #AEF1AE">
+          binaryDependency(zipFile, className(classSegments))
+        </td>
+      </tr><tr>
+        <td>
+          102
+        </td>
+        <td>
+          52139
+        </td>
+        <td>
+          4261
+          -
+          4285
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.sbt.ExtractDependencies.className
+        </td>
+        <td style="background: #AEF1AE">
+          className(classSegments)
+        </td>
+      </tr><tr>
+        <td>
+          106
+        </td>
+        <td>
+          52146
+        </td>
+        <td>
+          4360
+          -
+          4454
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.collection.Iterator.length
+        </td>
+        <td style="background: #AEF1AE">
+          core.Symbols.toDenot(dep)(ctx).ownersIterator(ctx).filter(((x: dotty.tools.dotc.core.Symbols.Symbol) =&gt; core.Symbols.toDenot(x)(ctx).is(core.Flags.PackageClass)(ctx).&amp;&amp;(core.Symbols.toDenot(x)(ctx).isEffectiveRoot(ctx).unary_!))).length
+        </td>
+      </tr><tr>
+        <td>
+          106
+        </td>
+        <td>
+          52143
+        </td>
+        <td>
+          4411
+          -
+          4423
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Flags.PackageClass
+        </td>
+        <td style="background: #AEF1AE">
+          core.Flags.PackageClass
+        </td>
+      </tr><tr>
+        <td>
+          106
+        </td>
+        <td>
+          52145
+        </td>
+        <td>
+          4406
+          -
+          4446
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Boolean.&amp;&amp;
+        </td>
+        <td style="background: #AEF1AE">
+          core.Symbols.toDenot(x)(ctx).is(core.Flags.PackageClass)(ctx).&amp;&amp;(core.Symbols.toDenot(x)(ctx).isEffectiveRoot(ctx).unary_!)
+        </td>
+      </tr><tr>
+        <td>
+          106
+        </td>
+        <td>
+          52144
+        </td>
+        <td>
+          4428
+          -
+          4446
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.Boolean.unary_!
+        </td>
+        <td style="background: #AEF1AE">
+          core.Symbols.toDenot(x)(ctx).isEffectiveRoot(ctx).unary_!
+        </td>
+      </tr><tr>
+        <td>
+          109
+        </td>
+        <td>
+          52147
+        </td>
+        <td>
+          4618
+          -
+          4630
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Int.+
+        </td>
+        <td style="background: #AEF1AE">
+          packages.+(1)
+        </td>
+      </tr><tr>
+        <td>
+          109
+        </td>
+        <td>
+          52148
+        </td>
+        <td>
+          4586
+          -
+          4631
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.immutable.List.takeRight
+        </td>
+        <td style="background: #AEF1AE">
+          pf.givenPath.segments.takeRight(packages.+(1))
+        </td>
+      </tr><tr>
+        <td>
+          110
+        </td>
+        <td>
+          52149
+        </td>
+        <td>
+          4661
+          -
+          4668
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.io.AbstractFile.file
+        </td>
+        <td style="background: #AEF1AE">
+          pf.file
+        </td>
+      </tr><tr>
+        <td>
+          110
+        </td>
+        <td>
+          52151
+        </td>
+        <td>
+          4644
+          -
+          4695
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.sbt.ExtractDependencies.binaryDependency
+        </td>
+        <td style="background: #AEF1AE">
+          binaryDependency(pf.file, className(classSegments))
+        </td>
+      </tr><tr>
+        <td>
+          110
+        </td>
+        <td>
+          52150
+        </td>
+        <td>
+          4670
+          -
+          4694
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.sbt.ExtractDependencies.className
+        </td>
+        <td style="background: #AEF1AE">
+          className(classSegments)
+        </td>
+      </tr><tr>
+        <td>
+          112
+        </td>
+        <td>
+          52156
+        </td>
+        <td>
+          4740
+          -
+          4810
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.StringContext.s
+        </td>
+        <td style="background: #F0ADAD">
+          scala.StringContext.apply(&quot;sbt-deps: Ignoring dependency &quot;, &quot; of class &quot;, &quot;&quot;).s(depFile, depFile.getClass())
+        </td>
+      </tr><tr>
+        <td>
+          112
+        </td>
+        <td>
+          52155
+        </td>
+        <td>
+          4792
+          -
+          4808
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.Object.getClass
+        </td>
+        <td style="background: #F0ADAD">
+          depFile.getClass()
+        </td>
+      </tr><tr>
+        <td>
+          112
+        </td>
+        <td>
+          52158
+        </td>
+        <td>
+          4732
+          -
+          4732
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.reporting.Reporting.warning$default$2
+        </td>
+        <td style="background: #F0ADAD">
+          ctx.warning$default$2
+        </td>
+      </tr><tr>
+        <td>
+          112
+        </td>
+        <td>
+          52152
+        </td>
+        <td>
+          4742
+          -
+          4773
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          &quot;sbt-deps: Ignoring dependency &quot;
+        </td>
+      </tr><tr>
+        <td>
+          112
+        </td>
+        <td>
+          52154
+        </td>
+        <td>
+          4809
+          -
+          4810
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          &quot;&quot;
+        </td>
+      </tr><tr>
+        <td>
+          112
+        </td>
+        <td>
+          52157
+        </td>
+        <td>
+          4740
+          -
+          4810
+        </td>
+        <td>
+          ApplyImplicitView
+        </td>
+        <td>
+          dotty.tools.dotc.reporting.diagnostic.Message.toNoExplanation
+        </td>
+        <td style="background: #F0ADAD">
+          diagnostic.this.Message.toNoExplanation(scala.StringContext.apply(&quot;sbt-deps: Ignoring dependency &quot;, &quot; of class &quot;, &quot;&quot;).s(depFile, depFile.getClass()))
+        </td>
+      </tr><tr>
+        <td>
+          112
+        </td>
+        <td>
+          52159
+        </td>
+        <td>
+          4728
+          -
+          4811
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.reporting.Reporting.warning
+        </td>
+        <td style="background: #F0ADAD">
+          ctx.warning(diagnostic.this.Message.toNoExplanation(scala.StringContext.apply(&quot;sbt-deps: Ignoring dependency &quot;, &quot; of class &quot;, &quot;&quot;).s(depFile, depFile.getClass())), ctx.warning$default$2)
+        </td>
+      </tr><tr>
+        <td>
+          112
+        </td>
+        <td>
+          52153
+        </td>
+        <td>
+          4780
+          -
+          4791
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          &quot; of class &quot;
+        </td>
+      </tr><tr>
+        <td>
+          114
+        </td>
+        <td>
+          52165
+        </td>
+        <td>
+          4835
+          -
+          4835
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          ()
+        </td>
+      </tr><tr>
+        <td>
+          114
+        </td>
+        <td>
+          52167
+        </td>
+        <td>
+          4835
+          -
+          4966
+        </td>
+        <td>
+          If
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          if (depFile.file.!=(currentSourceFile))
+  ctx.sbtCallback.sourceDependency(depFile.file, currentSourceFile, context)
+else
+  ()
+        </td>
+      </tr><tr>
+        <td>
+          114
+        </td>
+        <td>
+          52161
+        </td>
+        <td>
+          4839
+          -
+          4872
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.Object.!=
+        </td>
+        <td style="background: #AEF1AE">
+          depFile.file.!=(currentSourceFile)
+        </td>
+      </tr><tr>
+        <td>
+          114
+        </td>
+        <td>
+          52166
+        </td>
+        <td>
+          4835
+          -
+          4835
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          ()
+        </td>
+      </tr><tr>
+        <td>
+          115
+        </td>
+        <td>
+          52164
+        </td>
+        <td>
+          4884
+          -
+          4958
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          xsbti.AnalysisCallback.sourceDependency
+        </td>
+        <td style="background: #AEF1AE">
+          ctx.sbtCallback.sourceDependency(depFile.file, currentSourceFile, context)
+        </td>
+      </tr><tr>
+        <td>
+          115
+        </td>
+        <td>
+          52163
+        </td>
+        <td>
+          4884
+          -
+          4958
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          xsbti.AnalysisCallback.sourceDependency
+        </td>
+        <td style="background: #AEF1AE">
+          ctx.sbtCallback.sourceDependency(depFile.file, currentSourceFile, context)
+        </td>
+      </tr><tr>
+        <td>
+          115
+        </td>
+        <td>
+          52162
+        </td>
+        <td>
+          4917
+          -
+          4929
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.io.AbstractFile.file
+        </td>
+        <td style="background: #AEF1AE">
+          depFile.file
+        </td>
+      </tr><tr>
+        <td>
+          132
+        </td>
+        <td>
+          52171
+        </td>
+        <td>
+          5577
+          -
+          5602
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.mutable.HashSet.&lt;init&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          new scala.collection.mutable.HashSet[dotty.tools.dotc.core.Names.Name]()
+        </td>
+      </tr><tr>
+        <td>
+          133
+        </td>
+        <td>
+          52172
+        </td>
+        <td>
+          5647
+          -
+          5674
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.mutable.HashSet.&lt;init&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          new scala.collection.mutable.HashSet[dotty.tools.dotc.core.Symbols.Symbol]()
+        </td>
+      </tr><tr>
+        <td>
+          134
+        </td>
+        <td>
+          52173
+        </td>
+        <td>
+          5730
+          -
+          5757
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.mutable.HashSet.&lt;init&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          new scala.collection.mutable.HashSet[dotty.tools.dotc.core.Symbols.Symbol]()
+        </td>
+      </tr><tr>
+        <td>
+          139
+        </td>
+        <td>
+          52174
+        </td>
+        <td>
+          5907
+          -
+          5917
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.sbt.ExtractDependenciesCollector._usedNames
+        </td>
+        <td style="background: #AEF1AE">
+          ExtractDependenciesCollector.this._usedNames
+        </td>
+      </tr><tr>
+        <td>
+          145
+        </td>
+        <td>
+          52175
+        </td>
+        <td>
+          6194
+          -
+          6215
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.sbt.ExtractDependenciesCollector._topLevelDependencies
+        </td>
+        <td style="background: #AEF1AE">
+          ExtractDependenciesCollector.this._topLevelDependencies
+        </td>
+      </tr><tr>
+        <td>
+          150
+        </td>
+        <td>
+          52176
+        </td>
+        <td>
+          6423
+          -
+          6455
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.sbt.ExtractDependenciesCollector._topLevelInheritanceDependencies
+        </td>
+        <td style="background: #AEF1AE">
+          ExtractDependenciesCollector.this._topLevelInheritanceDependencies
+        </td>
+      </tr><tr>
+        <td>
+          153
+        </td>
+        <td>
+          52177
+        </td>
+        <td>
+          6501
+          -
+          6519
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.mutable.HashSet.+=
+        </td>
+        <td style="background: #AEF1AE">
+          ExtractDependenciesCollector.this._usedNames.+=(name)
+        </td>
+      </tr><tr>
+        <td>
+          156
+        </td>
+        <td>
+          52197
+        </td>
+        <td>
+          6574
+          -
+          6574
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          ()
+        </td>
+      </tr><tr>
+        <td>
+          156
+        </td>
+        <td>
+          52178
+        </td>
+        <td>
+          6578
+          -
+          6600
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.Boolean.unary_!
+        </td>
+        <td style="background: #AEF1AE">
+          ExtractDependenciesCollector.this.ignoreDependency(sym).unary_!
+        </td>
+      </tr><tr>
+        <td>
+          156
+        </td>
+        <td>
+          52196
+        </td>
+        <td>
+          6574
+          -
+          6574
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          ()
+        </td>
+      </tr><tr>
+        <td>
+          156
+        </td>
+        <td>
+          52195
+        </td>
+        <td>
+          6602
+          -
+          6828
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          {
+  val tlClass: dotty.tools.dotc.core.Symbols.Symbol = core.Symbols.toDenot(sym)(ExtractDependenciesCollector.this.ctx).topLevelClass(ExtractDependenciesCollector.this.ctx);
+  if (tlClass.ne(core.Symbols.NoSymbol))
+    ExtractDependenciesCollector.this._topLevelDependencies.+=(core.Symbols.toDenot(sym)(ExtractDependenciesCollector.this.ctx).topLevelClass(ExtractDependenciesCollector.this.ctx))
+  else
+    ();
+  {
+    ExtractDependenciesCollector.this.addUsedName(sym.name(ExtractDependenciesCollector.this.ctx));
+    ()
+  }
+}
+        </td>
+      </tr><tr>
+        <td>
+          157
+        </td>
+        <td>
+          52179
+        </td>
+        <td>
+          6624
+          -
+          6624
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.sbt.ExtractDependenciesCollector.ctx
+        </td>
+        <td style="background: #AEF1AE">
+          ExtractDependenciesCollector.this.ctx
+        </td>
+      </tr><tr>
+        <td>
+          157
+        </td>
+        <td>
+          52181
+        </td>
+        <td>
+          6624
+          -
+          6641
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.SymDenotations.SymDenotation.topLevelClass
+        </td>
+        <td style="background: #AEF1AE">
+          core.Symbols.toDenot(sym)(ExtractDependenciesCollector.this.ctx).topLevelClass(ExtractDependenciesCollector.this.ctx)
+        </td>
+      </tr><tr>
+        <td>
+          157
+        </td>
+        <td>
+          52180
+        </td>
+        <td>
+          6628
+          -
+          6628
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.sbt.ExtractDependenciesCollector.ctx
+        </td>
+        <td style="background: #AEF1AE">
+          ExtractDependenciesCollector.this.ctx
+        </td>
+      </tr><tr>
+        <td>
+          158
+        </td>
+        <td>
+          52182
+        </td>
+        <td>
+          6663
+          -
+          6671
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Symbols.NoSymbol
+        </td>
+        <td style="background: #AEF1AE">
+          core.Symbols.NoSymbol
+        </td>
+      </tr><tr>
+        <td>
+          158
+        </td>
+        <td>
+          52190
+        </td>
+        <td>
+          6648
+          -
+          6648
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          ()
+        </td>
+      </tr><tr>
+        <td>
+          158
+        </td>
+        <td>
+          52183
+        </td>
+        <td>
+          6652
+          -
+          6672
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.Object.ne
+        </td>
+        <td style="background: #AEF1AE">
+          tlClass.ne(core.Symbols.NoSymbol)
+        </td>
+      </tr><tr>
+        <td>
+          158
+        </td>
+        <td>
+          52189
+        </td>
+        <td>
+          6648
+          -
+          6648
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          ()
+        </td>
+      </tr><tr>
+        <td>
+          159
+        </td>
+        <td>
+          52185
+        </td>
+        <td>
+          6781
+          -
+          6781
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.sbt.ExtractDependenciesCollector.ctx
+        </td>
+        <td style="background: #AEF1AE">
+          ExtractDependenciesCollector.this.ctx
+        </td>
+      </tr><tr>
+        <td>
+          159
+        </td>
+        <td>
+          52188
+        </td>
+        <td>
+          6752
+          -
+          6794
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          scala.collection.mutable.HashSet.+=
+        </td>
+        <td style="background: #AEF1AE">
+          ExtractDependenciesCollector.this._topLevelDependencies.+=(core.Symbols.toDenot(sym)(ExtractDependenciesCollector.this.ctx).topLevelClass(ExtractDependenciesCollector.this.ctx))
+        </td>
+      </tr><tr>
+        <td>
+          159
+        </td>
+        <td>
+          52187
+        </td>
+        <td>
+          6752
+          -
+          6794
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.mutable.HashSet.+=
+        </td>
+        <td style="background: #AEF1AE">
+          ExtractDependenciesCollector.this._topLevelDependencies.+=(core.Symbols.toDenot(sym)(ExtractDependenciesCollector.this.ctx).topLevelClass(ExtractDependenciesCollector.this.ctx))
+        </td>
+      </tr><tr>
+        <td>
+          159
+        </td>
+        <td>
+          52184
+        </td>
+        <td>
+          6777
+          -
+          6777
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.sbt.ExtractDependenciesCollector.ctx
+        </td>
+        <td style="background: #AEF1AE">
+          ExtractDependenciesCollector.this.ctx
+        </td>
+      </tr><tr>
+        <td>
+          159
+        </td>
+        <td>
+          52186
+        </td>
+        <td>
+          6777
+          -
+          6794
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.SymDenotations.SymDenotation.topLevelClass
+        </td>
+        <td style="background: #AEF1AE">
+          core.Symbols.toDenot(sym)(ExtractDependenciesCollector.this.ctx).topLevelClass(ExtractDependenciesCollector.this.ctx)
+        </td>
+      </tr><tr>
+        <td>
+          160
+        </td>
+        <td>
+          52191
+        </td>
+        <td>
+          6817
+          -
+          6817
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.sbt.ExtractDependenciesCollector.ctx
+        </td>
+        <td style="background: #AEF1AE">
+          ExtractDependenciesCollector.this.ctx
+        </td>
+      </tr><tr>
+        <td>
+          160
+        </td>
+        <td>
+          52194
+        </td>
+        <td>
+          6812
+          -
+          6812
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          ()
+        </td>
+      </tr><tr>
+        <td>
+          160
+        </td>
+        <td>
+          52193
+        </td>
+        <td>
+          6801
+          -
+          6822
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.sbt.ExtractDependenciesCollector.addUsedName
+        </td>
+        <td style="background: #AEF1AE">
+          ExtractDependenciesCollector.this.addUsedName(sym.name(ExtractDependenciesCollector.this.ctx))
+        </td>
+      </tr><tr>
+        <td>
+          160
+        </td>
+        <td>
+          52192
+        </td>
+        <td>
+          6813
+          -
+          6821
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.Symbols.Symbol.name
+        </td>
+        <td style="background: #AEF1AE">
+          sym.name(ExtractDependenciesCollector.this.ctx)
+        </td>
+      </tr><tr>
+        <td>
+          164
+        </td>
+        <td>
+          52198
+        </td>
+        <td>
+          6887
+          -
+          6895
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Symbols.NoSymbol
+        </td>
+        <td style="background: #AEF1AE">
+          core.Symbols.NoSymbol
+        </td>
+      </tr><tr>
+        <td>
+          165
+        </td>
+        <td>
+          52200
+        </td>
+        <td>
+          6908
+          -
+          6908
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.sbt.ExtractDependenciesCollector.ctx
+        </td>
+        <td style="background: #AEF1AE">
+          ExtractDependenciesCollector.this.ctx
+        </td>
+      </tr><tr>
+        <td>
+          165
+        </td>
+        <td>
+          52199
+        </td>
+        <td>
+          6904
+          -
+          6904
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.sbt.ExtractDependenciesCollector.ctx
+        </td>
+        <td style="background: #AEF1AE">
+          ExtractDependenciesCollector.this.ctx
+        </td>
+      </tr><tr>
+        <td>
+          165
+        </td>
+        <td>
+          52201
+        </td>
+        <td>
+          6904
+          -
+          6923
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.SymDenotations.SymDenotation.isEffectiveRoot
+        </td>
+        <td style="background: #AEF1AE">
+          core.Symbols.toDenot(sym)(ExtractDependenciesCollector.this.ctx).isEffectiveRoot(ExtractDependenciesCollector.this.ctx)
+        </td>
+      </tr><tr>
+        <td>
+          166
+        </td>
+        <td>
+          52203
+        </td>
+        <td>
+          6935
+          -
+          6935
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.sbt.ExtractDependenciesCollector.ctx
+        </td>
+        <td style="background: #AEF1AE">
+          ExtractDependenciesCollector.this.ctx
+        </td>
+      </tr><tr>
+        <td>
+          166
+        </td>
+        <td>
+          52208
+        </td>
+        <td>
+          6880
+          -
+          6982
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Boolean.||
+        </td>
+        <td style="background: #AEF1AE">
+          sym.eq(core.Symbols.NoSymbol).||(core.Symbols.toDenot(sym)(ExtractDependenciesCollector.this.ctx).isEffectiveRoot(ExtractDependenciesCollector.this.ctx)).||(core.Symbols.toDenot(sym)(ExtractDependenciesCollector.this.ctx).isAnonymousFunction(ExtractDependenciesCollector.this.ctx)).||(core.Symbols.toDenot(sym)(ExtractDependenciesCollector.this.ctx).isAnonymousClass(ExtractDependenciesCollector.this.ctx))
+        </td>
+      </tr><tr>
+        <td>
+          166
+        </td>
+        <td>
+          52202
+        </td>
+        <td>
+          6931
+          -
+          6931
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.sbt.ExtractDependenciesCollector.ctx
+        </td>
+        <td style="background: #AEF1AE">
+          ExtractDependenciesCollector.this.ctx
+        </td>
+      </tr><tr>
+        <td>
+          166
+        </td>
+        <td>
+          52204
+        </td>
+        <td>
+          6931
+          -
+          6954
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.SymDenotations.SymDenotation.isAnonymousFunction
+        </td>
+        <td style="background: #AEF1AE">
+          core.Symbols.toDenot(sym)(ExtractDependenciesCollector.this.ctx).isAnonymousFunction(ExtractDependenciesCollector.this.ctx)
+        </td>
+      </tr><tr>
+        <td>
+          167
+        </td>
+        <td>
+          52206
+        </td>
+        <td>
+          6966
+          -
+          6966
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.sbt.ExtractDependenciesCollector.ctx
+        </td>
+        <td style="background: #AEF1AE">
+          ExtractDependenciesCollector.this.ctx
+        </td>
+      </tr><tr>
+        <td>
+          167
+        </td>
+        <td>
+          52205
+        </td>
+        <td>
+          6962
+          -
+          6962
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.sbt.ExtractDependenciesCollector.ctx
+        </td>
+        <td style="background: #AEF1AE">
+          ExtractDependenciesCollector.this.ctx
+        </td>
+      </tr><tr>
+        <td>
+          167
+        </td>
+        <td>
+          52207
+        </td>
+        <td>
+          6962
+          -
+          6982
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.SymDenotations.SymDenotation.isAnonymousClass
+        </td>
+        <td style="background: #AEF1AE">
+          core.Symbols.toDenot(sym)(ExtractDependenciesCollector.this.ctx).isAnonymousClass(ExtractDependenciesCollector.this.ctx)
+        </td>
+      </tr><tr>
+        <td>
+          170
+        </td>
+        <td>
+          52209
+        </td>
+        <td>
+          7084
+          -
+          7084
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.sbt.ExtractDependenciesCollector.ctx
+        </td>
+        <td style="background: #AEF1AE">
+          ExtractDependenciesCollector.this.ctx
+        </td>
+      </tr><tr>
+        <td>
+          170
+        </td>
+        <td>
+          52212
+        </td>
+        <td>
+          7048
+          -
+          7101
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.mutable.HashSet.+=
+        </td>
+        <td style="background: #AEF1AE">
+          ExtractDependenciesCollector.this._topLevelInheritanceDependencies.+=(core.Symbols.toDenot(sym)(ExtractDependenciesCollector.this.ctx).topLevelClass(ExtractDependenciesCollector.this.ctx))
+        </td>
+      </tr><tr>
+        <td>
+          170
+        </td>
+        <td>
+          52211
+        </td>
+        <td>
+          7084
+          -
+          7101
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.SymDenotations.SymDenotation.topLevelClass
+        </td>
+        <td style="background: #AEF1AE">
+          core.Symbols.toDenot(sym)(ExtractDependenciesCollector.this.ctx).topLevelClass(ExtractDependenciesCollector.this.ctx)
+        </td>
+      </tr><tr>
+        <td>
+          170
+        </td>
+        <td>
+          52210
+        </td>
+        <td>
+          7088
+          -
+          7088
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.sbt.ExtractDependenciesCollector.ctx
+        </td>
+        <td style="background: #AEF1AE">
+          ExtractDependenciesCollector.this.ctx
+        </td>
+      </tr><tr>
+        <td>
+          170
+        </td>
+        <td>
+          52213
+        </td>
+        <td>
+          7081
+          -
+          7081
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          ()
+        </td>
+      </tr><tr>
+        <td>
+          179
+        </td>
+        <td>
+          52214
+        </td>
+        <td>
+          7459
+          -
+          7487
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Denotations.Denotation.symbol
+        </td>
+        <td style="background: #AEF1AE">
+          expr.tpe.member(name)(ctx).symbol
+        </td>
+      </tr><tr>
+        <td>
+          182
+        </td>
+        <td>
+          52215
+        </td>
+        <td>
+          7652
+          -
+          7667
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Names.Name.toTermName
+        </td>
+        <td style="background: #AEF1AE">
+          name.toTermName
+        </td>
+      </tr><tr>
+        <td>
+          182
+        </td>
+        <td>
+          52217
+        </td>
+        <td>
+          7623
+          -
+          7669
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.sbt.ExtractDependenciesCollector.addDependency
+        </td>
+        <td style="background: #AEF1AE">
+          ExtractDependenciesCollector.this.addDependency(lookupImported(name.toTermName))
+        </td>
+      </tr><tr>
+        <td>
+          182
+        </td>
+        <td>
+          52216
+        </td>
+        <td>
+          7637
+          -
+          7668
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.sbt.ExtractDependenciesCollector.lookupImported
+        </td>
+        <td style="background: #AEF1AE">
+          lookupImported(name.toTermName)
+        </td>
+      </tr><tr>
+        <td>
+          183
+        </td>
+        <td>
+          52218
+        </td>
+        <td>
+          7709
+          -
+          7724
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Names.Name.toTypeName
+        </td>
+        <td style="background: #AEF1AE">
+          name.toTypeName
+        </td>
+      </tr><tr>
+        <td>
+          183
+        </td>
+        <td>
+          52220
+        </td>
+        <td>
+          7680
+          -
+          7726
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.sbt.ExtractDependenciesCollector.addDependency
+        </td>
+        <td style="background: #AEF1AE">
+          ExtractDependenciesCollector.this.addDependency(lookupImported(name.toTypeName))
+        </td>
+      </tr><tr>
+        <td>
+          183
+        </td>
+        <td>
+          52219
+        </td>
+        <td>
+          7694
+          -
+          7725
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.sbt.ExtractDependenciesCollector.lookupImported
+        </td>
+        <td style="background: #AEF1AE">
+          lookupImported(name.toTypeName)
+        </td>
+      </tr><tr>
+        <td>
+          185
+        </td>
+        <td>
+          52230
+        </td>
+        <td>
+          7745
+          -
+          8021
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.immutable.List.foreach
+        </td>
+        <td style="background: #AEF1AE">
+          selectors.foreach[Any](((x0$1: dotty.tools.dotc.ast.Trees.Tree[dotty.tools.dotc.ast.Trees.Untyped]) =&gt; x0$1 match {
+  case (name: dotty.tools.dotc.core.Names.Name)dotty.tools.dotc.ast.Trees.Ident[Any]((name @ _)) =&gt; addImported(name)
+  case (trees: List[dotty.tools.dotc.ast.Trees.Tree[dotty.tools.dotc.ast.Trees.Untyped]])dotty.tools.dotc.ast.Trees.Thicket[dotty.tools.dotc.ast.Trees.Untyped]((head: dotty.tools.dotc.ast.Trees.Tree[dotty.tools.dotc.ast.Trees.Untyped], tl: List[dotty.tools.dotc.ast.Trees.Tree[dotty.tools.dotc.ast.Trees.Untyped]])scala.collection.immutable.::[dotty.tools.dotc.ast.Trees.Tree[dotty.tools.dotc.ast.Trees.Untyped]]((name: dotty.tools.dotc.core.Names.Name)dotty.tools.dotc.ast.Trees.Ident[Any]((name @ _)), (head: dotty.tools.dotc.ast.Trees.Tree[dotty.tools.dotc.ast.Trees.Untyped], tl: List[dotty.tools.dotc.ast.Trees.Tree[dotty.tools.dotc.ast.Trees.Untyped]])scala.collection.immutable.::[dotty.tools.dotc.ast.Trees.Tree[dotty.tools.dotc.ast.Trees.Untyped]]((name: dotty.tools.dotc.core.Names.Name)dotty.tools.dotc.ast.Trees.Ident[Any]((rename @ _)), scala.collection.immutable.Nil))) =&gt; {
+    addImported(name);
+    if (rename.ne(core.StdNames.nme.WILDCARD))
+      ExtractDependenciesCollector.this.addUsedName(rename)
+    else
+      ()
+  }
+  case _ =&gt; ()
+}))
+        </td>
+      </tr><tr>
+        <td>
+          187
+        </td>
+        <td>
+          52221
+        </td>
+        <td>
+          7807
+          -
+          7824
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.sbt.ExtractDependenciesCollector.addImported
+        </td>
+        <td style="background: #AEF1AE">
+          addImported(name)
+        </td>
+      </tr><tr>
+        <td>
+          189
+        </td>
+        <td>
+          52222
+        </td>
+        <td>
+          7900
+          -
+          7917
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.sbt.ExtractDependenciesCollector.addImported
+        </td>
+        <td style="background: #AEF1AE">
+          addImported(name)
+        </td>
+      </tr><tr>
+        <td>
+          190
+        </td>
+        <td>
+          52224
+        </td>
+        <td>
+          7934
+          -
+          7956
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.Object.ne
+        </td>
+        <td style="background: #AEF1AE">
+          rename.ne(core.StdNames.nme.WILDCARD)
+        </td>
+      </tr><tr>
+        <td>
+          190
+        </td>
+        <td>
+          52227
+        </td>
+        <td>
+          7930
+          -
+          7930
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          ()
+        </td>
+      </tr><tr>
+        <td>
+          190
+        </td>
+        <td>
+          52223
+        </td>
+        <td>
+          7944
+          -
+          7956
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.StdNames.ScalaNames.WILDCARD
+        </td>
+        <td style="background: #AEF1AE">
+          core.StdNames.nme.WILDCARD
+        </td>
+      </tr><tr>
+        <td>
+          190
+        </td>
+        <td>
+          52228
+        </td>
+        <td>
+          7930
+          -
+          7930
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          ()
+        </td>
+      </tr><tr>
+        <td>
+          191
+        </td>
+        <td>
+          52226
+        </td>
+        <td>
+          7972
+          -
+          7991
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          dotty.tools.dotc.sbt.ExtractDependenciesCollector.addUsedName
+        </td>
+        <td style="background: #AEF1AE">
+          ExtractDependenciesCollector.this.addUsedName(rename)
+        </td>
+      </tr><tr>
+        <td>
+          191
+        </td>
+        <td>
+          52225
+        </td>
+        <td>
+          7972
+          -
+          7991
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.sbt.ExtractDependenciesCollector.addUsedName
+        </td>
+        <td style="background: #AEF1AE">
+          ExtractDependenciesCollector.this.addUsedName(rename)
+        </td>
+      </tr><tr>
+        <td>
+          192
+        </td>
+        <td>
+          52229
+        </td>
+        <td>
+          8009
+          -
+          8011
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          ()
+        </td>
+      </tr><tr>
+        <td>
+          197
+        </td>
+        <td>
+          52231
+        </td>
+        <td>
+          8181
+          -
+          8195
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.sbt.ExtractDependenciesCollector.traverse
+        </td>
+        <td style="background: #AEF1AE">
+          ExtractDependenciesCollector.this.traverse(call)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          199
+        </td>
+        <td>
+          52233
+        </td>
+        <td>
+          8230
+          -
+          8263
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.sbt.ExtractDependenciesCollector.usedTypeTraverser.traverse
+        </td>
+        <td style="background: #AEF1AE">
+          ExtractDependenciesCollector.this.usedTypeTraverser.traverse(t.tpe)
+        </td>
+      </tr><tr>
+        <td>
+          199
+        </td>
+        <td>
+          52232
+        </td>
+        <td>
+          8257
+          -
+          8262
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Trees.Tree.tpe
+        </td>
+        <td style="background: #AEF1AE">
+          t.tpe
+        </td>
+      </tr><tr>
+        <td>
+          201
+        </td>
+        <td>
+          52235
+        </td>
+        <td>
+          8299
+          -
+          8324
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.sbt.ExtractDependenciesCollector.addDependency
+        </td>
+        <td style="background: #AEF1AE">
+          ExtractDependenciesCollector.this.addDependency(ref.symbol(ctx))
+        </td>
+      </tr><tr>
+        <td>
+          201
+        </td>
+        <td>
+          52234
+        </td>
+        <td>
+          8313
+          -
+          8323
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Trees.Tree.symbol
+        </td>
+        <td style="background: #AEF1AE">
+          ref.symbol(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          202
+        </td>
+        <td>
+          52236
+        </td>
+        <td>
+          8360
+          -
+          8367
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Trees.Tree.tpe
+        </td>
+        <td style="background: #AEF1AE">
+          ref.tpe
+        </td>
+      </tr><tr>
+        <td>
+          202
+        </td>
+        <td>
+          52237
+        </td>
+        <td>
+          8333
+          -
+          8368
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.sbt.ExtractDependenciesCollector.usedTypeTraverser.traverse
+        </td>
+        <td style="background: #AEF1AE">
+          ExtractDependenciesCollector.this.usedTypeTraverser.traverse(ref.tpe)
+        </td>
+      </tr><tr>
+        <td>
+          204
+        </td>
+        <td>
+          52239
+        </td>
+        <td>
+          8445
+          -
+          8488
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.sbt.ExtractDependenciesCollector.addInheritanceDependency
+        </td>
+        <td style="background: #AEF1AE">
+          ExtractDependenciesCollector.this.addInheritanceDependency(p.tpe.classSymbol(ctx))
+        </td>
+      </tr><tr>
+        <td>
+          204
+        </td>
+        <td>
+          52238
+        </td>
+        <td>
+          8470
+          -
+          8487
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.Types.Type.classSymbol
+        </td>
+        <td style="background: #AEF1AE">
+          p.tpe.classSymbol(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          204
+        </td>
+        <td>
+          52240
+        </td>
+        <td>
+          8422
+          -
+          8489
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.immutable.List.foreach
+        </td>
+        <td style="background: #AEF1AE">
+          t.parents.foreach[Unit](((p: dotty.tools.dotc.ast.Trees.Tree[dotty.tools.dotc.core.Types.Type]) =&gt; ExtractDependenciesCollector.this.addInheritanceDependency(p.tpe.classSymbol(ctx))))
+        </td>
+      </tr><tr>
+        <td>
+          205
+        </td>
+        <td>
+          52241
+        </td>
+        <td>
+          8503
+          -
+          8505
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          ()
+        </td>
+      </tr><tr>
+        <td>
+          207
+        </td>
+        <td>
+          52242
+        </td>
+        <td>
+          8516
+          -
+          8538
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Trees.Instance.TreeTraverser.traverseChildren
+        </td>
+        <td style="background: #AEF1AE">
+          ExtractDependenciesCollector.this.traverseChildren(tree)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          244
+        </td>
+        <td>
+          52243
+        </td>
+        <td>
+          10278
+          -
+          10303
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.mutable.HashSet.&lt;init&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          new scala.collection.mutable.HashSet[dotty.tools.dotc.core.Types.Type]()
+        </td>
+      </tr><tr>
+        <td>
+          245
+        </td>
+        <td>
+          52275
+        </td>
+        <td>
+          10363
+          -
+          10885
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          {
+  usedTypeTraverser.this.seen.+=(tp);
+  tp match {
+    case (tp @ (_: dotty.tools.dotc.core.Types.NamedType)) =&gt; {
+      val sym: dotty.tools.dotc.core.Symbols.Symbol = tp.symbol(usedTypeTraverser.this.ctx);
+      if (core.Symbols.toDenot(sym)(usedTypeTraverser.this.ctx).is(core.Flags.Package)(usedTypeTraverser.this.ctx).unary_!)
+        {
+          ExtractDependenciesCollector.this.addDependency(sym);
+          if (sym.isClass.unary_!)
+            usedTypeTraverser.this.traverse(tp.info(usedTypeTraverser.this.ctx))
+          else
+            ();
+          usedTypeTraverser.this.traverse(tp.prefix)
+        }
+      else
+        ()
+    }
+    case (tp @ (_: dotty.tools.dotc.core.Types.ThisType)) =&gt; usedTypeTraverser.this.traverse(tp.underlying(usedTypeTraverser.this.ctx))
+    case (tp @ (_: dotty.tools.dotc.core.Types.ConstantType)) =&gt; usedTypeTraverser.this.traverse(tp.underlying(usedTypeTraverser.this.ctx))
+    case (tp @ (_: dotty.tools.dotc.core.Types.ParamRef)) =&gt; usedTypeTraverser.this.traverse(tp.underlying(usedTypeTraverser.this.ctx))
+    case _ =&gt; usedTypeTraverser.this.traverseChildren(tp)
+  }
+}
+        </td>
+      </tr><tr>
+        <td>
+          245
+        </td>
+        <td>
+          52277
+        </td>
+        <td>
+          10339
+          -
+          10339
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          ()
+        </td>
+      </tr><tr>
+        <td>
+          245
+        </td>
+        <td>
+          52244
+        </td>
+        <td>
+          10343
+          -
+          10361
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.Boolean.unary_!
+        </td>
+        <td style="background: #AEF1AE">
+          usedTypeTraverser.this.seen.contains(tp).unary_!
+        </td>
+      </tr><tr>
+        <td>
+          245
+        </td>
+        <td>
+          52276
+        </td>
+        <td>
+          10339
+          -
+          10339
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          ()
+        </td>
+      </tr><tr>
+        <td>
+          246
+        </td>
+        <td>
+          52245
+        </td>
+        <td>
+          10371
+          -
+          10381
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.mutable.HashSet.+=
+        </td>
+        <td style="background: #AEF1AE">
+          usedTypeTraverser.this.seen.+=(tp)
+        </td>
+      </tr><tr>
+        <td>
+          249
+        </td>
+        <td>
+          52247
+        </td>
+        <td>
+          10449
+          -
+          10458
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.Types.NamedType.symbol
+        </td>
+        <td style="background: #AEF1AE">
+          tp.symbol(usedTypeTraverser.this.ctx)
+        </td>
+      </tr><tr>
+        <td>
+          249
+        </td>
+        <td>
+          52246
+        </td>
+        <td>
+          10452
+          -
+          10452
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Types.TypeAccumulator.ctx
+        </td>
+        <td style="background: #AEF1AE">
+          usedTypeTraverser.this.ctx
+        </td>
+      </tr><tr>
+        <td>
+          250
+        </td>
+        <td>
+          52251
+        </td>
+        <td>
+          10473
+          -
+          10489
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.Boolean.unary_!
+        </td>
+        <td style="background: #AEF1AE">
+          core.Symbols.toDenot(sym)(usedTypeTraverser.this.ctx).is(core.Flags.Package)(usedTypeTraverser.this.ctx).unary_!
+        </td>
+      </tr><tr>
+        <td>
+          250
+        </td>
+        <td>
+          52263
+        </td>
+        <td>
+          10469
+          -
+          10469
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          ()
+        </td>
+      </tr><tr>
+        <td>
+          250
+        </td>
+        <td>
+          52248
+        </td>
+        <td>
+          10474
+          -
+          10474
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Types.TypeAccumulator.ctx
+        </td>
+        <td style="background: #AEF1AE">
+          usedTypeTraverser.this.ctx
+        </td>
+      </tr><tr>
+        <td>
+          250
+        </td>
+        <td>
+          52250
+        </td>
+        <td>
+          10480
+          -
+          10480
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Types.TypeAccumulator.ctx
+        </td>
+        <td style="background: #AEF1AE">
+          usedTypeTraverser.this.ctx
+        </td>
+      </tr><tr>
+        <td>
+          250
+        </td>
+        <td>
+          52262
+        </td>
+        <td>
+          10491
+          -
+          10629
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          {
+  ExtractDependenciesCollector.this.addDependency(sym);
+  if (sym.isClass.unary_!)
+    usedTypeTraverser.this.traverse(tp.info(usedTypeTraverser.this.ctx))
+  else
+    ();
+  usedTypeTraverser.this.traverse(tp.prefix)
+}
+        </td>
+      </tr><tr>
+        <td>
+          250
+        </td>
+        <td>
+          52264
+        </td>
+        <td>
+          10469
+          -
+          10469
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          ()
+        </td>
+      </tr><tr>
+        <td>
+          250
+        </td>
+        <td>
+          52249
+        </td>
+        <td>
+          10481
+          -
+          10488
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Flags.Package
+        </td>
+        <td style="background: #AEF1AE">
+          core.Flags.Package
+        </td>
+      </tr><tr>
+        <td>
+          251
+        </td>
+        <td>
+          52252
+        </td>
+        <td>
+          10505
+          -
+          10523
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.sbt.ExtractDependenciesCollector.addDependency
+        </td>
+        <td style="background: #AEF1AE">
+          ExtractDependenciesCollector.this.addDependency(sym)
+        </td>
+      </tr><tr>
+        <td>
+          252
+        </td>
+        <td>
+          52259
+        </td>
+        <td>
+          10536
+          -
+          10536
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          ()
+        </td>
+      </tr><tr>
+        <td>
+          252
+        </td>
+        <td>
+          52253
+        </td>
+        <td>
+          10540
+          -
+          10552
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.Boolean.unary_!
+        </td>
+        <td style="background: #AEF1AE">
+          sym.isClass.unary_!
+        </td>
+      </tr><tr>
+        <td>
+          252
+        </td>
+        <td>
+          52258
+        </td>
+        <td>
+          10536
+          -
+          10536
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          ()
+        </td>
+      </tr><tr>
+        <td>
+          253
+        </td>
+        <td>
+          52254
+        </td>
+        <td>
+          10580
+          -
+          10580
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Types.TypeAccumulator.ctx
+        </td>
+        <td style="background: #AEF1AE">
+          usedTypeTraverser.this.ctx
+        </td>
+      </tr><tr>
+        <td>
+          253
+        </td>
+        <td>
+          52257
+        </td>
+        <td>
+          10568
+          -
+          10585
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          dotty.tools.dotc.sbt.ExtractDependenciesCollector.usedTypeTraverser.traverse
+        </td>
+        <td style="background: #AEF1AE">
+          usedTypeTraverser.this.traverse(tp.info(usedTypeTraverser.this.ctx))
+        </td>
+      </tr><tr>
+        <td>
+          253
+        </td>
+        <td>
+          52256
+        </td>
+        <td>
+          10568
+          -
+          10585
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.sbt.ExtractDependenciesCollector.usedTypeTraverser.traverse
+        </td>
+        <td style="background: #AEF1AE">
+          usedTypeTraverser.this.traverse(tp.info(usedTypeTraverser.this.ctx))
+        </td>
+      </tr><tr>
+        <td>
+          253
+        </td>
+        <td>
+          52255
+        </td>
+        <td>
+          10577
+          -
+          10584
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.Types.NamedType.info
+        </td>
+        <td style="background: #AEF1AE">
+          tp.info(usedTypeTraverser.this.ctx)
+        </td>
+      </tr><tr>
+        <td>
+          254
+        </td>
+        <td>
+          52260
+        </td>
+        <td>
+          10607
+          -
+          10616
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Types.NamedType.prefix
+        </td>
+        <td style="background: #AEF1AE">
+          tp.prefix
+        </td>
+      </tr><tr>
+        <td>
+          254
+        </td>
+        <td>
+          52261
+        </td>
+        <td>
+          10598
+          -
+          10617
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.sbt.ExtractDependenciesCollector.usedTypeTraverser.traverse
+        </td>
+        <td style="background: #AEF1AE">
+          usedTypeTraverser.this.traverse(tp.prefix)
+        </td>
+      </tr><tr>
+        <td>
+          257
+        </td>
+        <td>
+          52266
+        </td>
+        <td>
+          10678
+          -
+          10691
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.Types.ThisType.underlying
+        </td>
+        <td style="background: #AEF1AE">
+          tp.underlying(usedTypeTraverser.this.ctx)
+        </td>
+      </tr><tr>
+        <td>
+          257
+        </td>
+        <td>
+          52265
+        </td>
+        <td>
+          10681
+          -
+          10681
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Types.TypeAccumulator.ctx
+        </td>
+        <td style="background: #AEF1AE">
+          usedTypeTraverser.this.ctx
+        </td>
+      </tr><tr>
+        <td>
+          257
+        </td>
+        <td>
+          52267
+        </td>
+        <td>
+          10669
+          -
+          10692
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.sbt.ExtractDependenciesCollector.usedTypeTraverser.traverse
+        </td>
+        <td style="background: #AEF1AE">
+          usedTypeTraverser.this.traverse(tp.underlying(usedTypeTraverser.this.ctx))
+        </td>
+      </tr><tr>
+        <td>
+          259
+        </td>
+        <td>
+          52269
+        </td>
+        <td>
+          10745
+          -
+          10758
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.Types.ConstantType.underlying
+        </td>
+        <td style="background: #AEF1AE">
+          tp.underlying(usedTypeTraverser.this.ctx)
+        </td>
+      </tr><tr>
+        <td>
+          259
+        </td>
+        <td>
+          52268
+        </td>
+        <td>
+          10748
+          -
+          10748
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Types.TypeAccumulator.ctx
+        </td>
+        <td style="background: #AEF1AE">
+          usedTypeTraverser.this.ctx
+        </td>
+      </tr><tr>
+        <td>
+          259
+        </td>
+        <td>
+          52270
+        </td>
+        <td>
+          10736
+          -
+          10759
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.sbt.ExtractDependenciesCollector.usedTypeTraverser.traverse
+        </td>
+        <td style="background: #AEF1AE">
+          usedTypeTraverser.this.traverse(tp.underlying(usedTypeTraverser.this.ctx))
+        </td>
+      </tr><tr>
+        <td>
+          261
+        </td>
+        <td>
+          52272
+        </td>
+        <td>
+          10808
+          -
+          10821
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.Types.ParamRef.underlying
+        </td>
+        <td style="background: #AEF1AE">
+          tp.underlying(usedTypeTraverser.this.ctx)
+        </td>
+      </tr><tr>
+        <td>
+          261
+        </td>
+        <td>
+          52271
+        </td>
+        <td>
+          10811
+          -
+          10811
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Types.TypeAccumulator.ctx
+        </td>
+        <td style="background: #AEF1AE">
+          usedTypeTraverser.this.ctx
+        </td>
+      </tr><tr>
+        <td>
+          261
+        </td>
+        <td>
+          52273
+        </td>
+        <td>
+          10799
+          -
+          10822
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.sbt.ExtractDependenciesCollector.usedTypeTraverser.traverse
+        </td>
+        <td style="background: #AEF1AE">
+          usedTypeTraverser.this.traverse(tp.underlying(usedTypeTraverser.this.ctx))
+        </td>
+      </tr><tr>
+        <td>
+          263
+        </td>
+        <td>
+          52274
+        </td>
+        <td>
+          10851
+          -
+          10871
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.core.Types.TypeTraverser.traverseChildren
+        </td>
+        <td style="background: #AEF1AE">
+          usedTypeTraverser.this.traverseChildren(tp)
+        </td>
+      </tr>
+    </table>
+          </div>
+        </div>
+      </body>
+    </html>

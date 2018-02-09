@@ -1,0 +1,1655 @@
+<html>
+      <head>
+        <meta http-equiv="Content-Type" content="text/html; charset=utf-8"/>
+        <title id="title">
+          dotty/tools/dotc/transform/ResolveSuper.scala.html
+        </title>
+        <script src="https://ajax.googleapis.com/ajax/libs/jquery/1.10.2/jquery.min.js"></script><link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/jquery.tablesorter/2.20.1/css/theme.default.min.css" type="text/css"/><script src="https://cdnjs.cloudflare.com/ajax/libs/jquery.tablesorter/2.20.1/js/jquery.tablesorter.min.js"></script><link rel="stylesheet" href="https://netdna.bootstrapcdn.com/bootstrap/3.0.3/css/bootstrap.min.css" type="text/css"/><script src="https://netdna.bootstrapcdn.com/bootstrap/3.0.3/js/bootstrap.min.js"></script><script type="text/javascript">
+        $(document).ready(function() {$(".tablesorter").tablesorter();});
+      </script>
+        <style>
+          table.codegrid { font-family: monospace; font-size: 12px; width: auto!important; }table.statementlist { width: auto!important; font-size: 13px; } table.codegrid td { padding: 0!important; border: 0!important } table td.linenumber { width: 40px!important; } 
+        </style>
+      </head>
+      <body style="font-family: monospace;">
+        <ul class="nav nav-tabs">
+          <li>
+            <a href="#codegrid" data-toggle="tab">Codegrid</a>
+          </li>
+          <li>
+            <a href="#statementlist" data-toggle="tab">Statement List</a>
+          </li>
+        </ul>
+        <div class="tab-content">
+          <div class="tab-pane active" id="codegrid">
+            <pre style='font-size: 12pt; font-family: courier;'>1 <span style=''>package dotty.tools.dotc
+</span>2 <span style=''>package transform
+</span>3 <span style=''>
+</span>4 <span style=''>import core._
+</span>5 <span style=''>import MegaPhase._
+</span>6 <span style=''>import Contexts.Context
+</span>7 <span style=''>import Flags._
+</span>8 <span style=''>import SymUtils._
+</span>9 <span style=''>import Symbols._
+</span>10 <span style=''>import SymDenotations._
+</span>11 <span style=''>import Types._
+</span>12 <span style=''>import Decorators._
+</span>13 <span style=''>import DenotTransformers._
+</span>14 <span style=''>import StdNames._
+</span>15 <span style=''>import NameOps._
+</span>16 <span style=''>import NameKinds._
+</span>17 <span style=''>import ast.Trees._
+</span>18 <span style=''>import util.Positions._
+</span>19 <span style=''>import Names._
+</span>20 <span style=''>import collection.mutable
+</span>21 <span style=''>import ResolveSuper._
+</span>22 <span style=''>
+</span>23 <span style=''>/** This phase adds super accessors and method overrides where
+</span>24 <span style=''> *  linearization differs from Java's rule for default methods in interfaces.
+</span>25 <span style=''> *  In particular:
+</span>26 <span style=''> *
+</span>27 <span style=''> *        For every trait M directly implemented by the class (see SymUtils.mixin), in
+</span>28 <span style=''> *        reverse linearization order, add the following definitions to C:
+</span>29 <span style=''> *
+</span>30 <span style=''> *          3.1 (done in `superAccessors`) For every superAccessor
+</span>31 <span style=''> *              `&lt;mods&gt; def super$f[Ts](ps1)...(psN): U` in M:
+</span>32 <span style=''> *
+</span>33 <span style=''> *                &lt;mods&gt; def super$f[Ts](ps1)...(psN): U = super[S].f[Ts](ps1)...(psN)
+</span>34 <span style=''> *
+</span>35 <span style=''> *              where `S` is the superclass of `M` in the linearization of `C`.
+</span>36 <span style=''> *
+</span>37 <span style=''> *          3.2 (done in `methodOverrides`) For every method
+</span>38 <span style=''> *              `&lt;mods&gt; def f[Ts](ps1)...(psN): U` in M` that needs to be disambiguated:
+</span>39 <span style=''> *
+</span>40 <span style=''> *                &lt;mods&gt; def f[Ts](ps1)...(psN): U = super[M].f[Ts](ps1)...(psN)
+</span>41 <span style=''> *
+</span>42 <span style=''> *        A method in M needs to be disambiguated if it is concrete, not overridden in C,
+</span>43 <span style=''> *        and if it overrides another concrete method.
+</span>44 <span style=''> *
+</span>45 <span style=''> *  This is the first part of what was the mixin phase. It is complemented by
+</span>46 <span style=''> *  Mixin, which runs after erasure.
+</span>47 <span style=''> */
+</span>48 <span style=''>class ResolveSuper extends MiniPhase with IdentityDenotTransformer { thisPhase =&gt;
+</span>49 <span style=''>  import ast.tpd._
+</span>50 <span style=''>
+</span>51 <span style=''>  override def phaseName: String = </span><span style='background: #AEF1AE'>&quot;resolveSuper&quot;</span><span style=''>
+</span>52 <span style=''>
+</span>53 <span style=''>  override def runsAfter = </span><span style='background: #AEF1AE'>Set(classOf[ElimByName], // verified empirically, need to figure out what the reason is.
+</span>54 <span style=''></span><span style='background: #AEF1AE'>                               classOf[AugmentScala2Traits])</span><span style=''>
+</span>55 <span style=''>
+</span>56 <span style=''>  override def changesMembers = </span><span style='background: #AEF1AE'>true</span><span style=''> // the phase adds super accessors and method forwarders
+</span>57 <span style=''>
+</span>58 <span style=''>  override def transformTemplate(impl: Template)(implicit ctx: Context) = {
+</span>59 <span style=''>    val cls = </span><span style='background: #AEF1AE'>impl.symbol.owner.asClass</span><span style=''>
+</span>60 <span style=''>    val ops = </span><span style='background: #AEF1AE'>new MixinOps(cls, thisPhase)</span><span style=''>
+</span>61 <span style=''>    import ops._
+</span>62 <span style=''>
+</span>63 <span style=''>    def superAccessors(mixin: ClassSymbol): List[Tree] =
+</span>64 <span style=''>      </span><span style='background: #AEF1AE'>for (superAcc &lt;- mixin.info.decls.filter(_.isSuperAccessor))
+</span>65 <span style=''></span><span style='background: #AEF1AE'>        yield {
+</span>66 <span style=''></span><span style='background: #AEF1AE'>          util.Stats.record(</span><span style='background: #F0ADAD'>&quot;super accessors&quot;</span><span style='background: #AEF1AE'>)
+</span>67 <span style=''></span><span style='background: #AEF1AE'>          polyDefDef(implementation(superAcc.asTerm), forwarder(rebindSuper(cls, superAcc)))
+</span>68 <span style=''></span><span style='background: #AEF1AE'>        }</span><span style=''>
+</span>69 <span style=''>
+</span>70 <span style=''>    def methodOverrides(mixin: ClassSymbol): List[Tree] =
+</span>71 <span style=''>      </span><span style='background: #AEF1AE'>for (meth &lt;- mixin.info.decls.toList if needsForwarder(meth))
+</span>72 <span style=''></span><span style='background: #AEF1AE'>        yield {
+</span>73 <span style=''></span><span style='background: #AEF1AE'>          util.Stats.record(</span><span style='background: #F0ADAD'>&quot;method forwarders&quot;</span><span style='background: #AEF1AE'>)
+</span>74 <span style=''></span><span style='background: #AEF1AE'>          polyDefDef(implementation(meth.asTerm), forwarder(meth))
+</span>75 <span style=''></span><span style='background: #AEF1AE'>        }</span><span style=''>
+</span>76 <span style=''>
+</span>77 <span style=''>    val overrides = </span><span style='background: #AEF1AE'>mixins.flatMap(mixin =&gt; superAccessors(mixin) ::: methodOverrides(mixin))</span><span style=''>
+</span>78 <span style=''>
+</span>79 <span style=''>    </span><span style='background: #AEF1AE'>cpy.Template(impl)(body = overrides ::: impl.body)</span><span style=''>
+</span>80 <span style=''>  }
+</span>81 <span style=''>
+</span>82 <span style=''>  override def transformDefDef(ddef: DefDef)(implicit ctx: Context) = {
+</span>83 <span style=''>    val meth = </span><span style='background: #AEF1AE'>ddef.symbol.asTerm</span><span style=''>
+</span>84 <span style=''>    if (</span><span style='background: #AEF1AE'>meth.isSuperAccessor &amp;&amp; !meth.is(Deferred)</span><span style=''>) </span><span style='background: #AEF1AE'>{
+</span>85 <span style=''></span><span style='background: #AEF1AE'>      assert(ddef.rhs.isEmpty)
+</span>86 <span style=''></span><span style='background: #AEF1AE'>      val cls = meth.owner.asClass
+</span>87 <span style=''></span><span style='background: #AEF1AE'>      val ops = new MixinOps(cls, thisPhase)
+</span>88 <span style=''></span><span style='background: #AEF1AE'>      import ops._
+</span>89 <span style=''></span><span style='background: #AEF1AE'>      polyDefDef(meth, forwarder(rebindSuper(cls, meth)))
+</span>90 <span style=''></span><span style='background: #AEF1AE'>    }</span><span style=''>
+</span>91 <span style=''>    else </span><span style='background: #AEF1AE'>ddef</span><span style=''>
+</span>92 <span style=''>  }
+</span>93 <span style=''>
+</span>94 <span style=''>  private val PrivateOrAccessorOrDeferred = </span><span style='background: #AEF1AE'>Private | Accessor | Deferred</span><span style=''>
+</span>95 <span style=''>}
+</span>96 <span style=''>
+</span>97 <span style=''>object ResolveSuper {
+</span>98 <span style=''>  /** Returns the symbol that is accessed by a super-accessor in a mixin composition.
+</span>99 <span style=''>   *
+</span>100 <span style=''>   *  @param base       The class in which everything is mixed together
+</span>101 <span style=''>   *  @param acc        The symbol statically referred to by the superaccessor in the trait
+</span>102 <span style=''>   */
+</span>103 <span style=''>  def rebindSuper(base: Symbol, acc: Symbol)(implicit ctx: Context): Symbol = {
+</span>104 <span style=''>    var bcs = </span><span style='background: #AEF1AE'>base.info.baseClasses.dropWhile(acc.owner != _).tail</span><span style=''>
+</span>105 <span style=''>    var sym: Symbol = </span><span style='background: #AEF1AE'>NoSymbol</span><span style=''>
+</span>106 <span style=''>    val SuperAccessorName(memberName) = </span><span style='background: #AEF1AE'>acc.name.unexpandedName</span><span style=''>
+</span>107 <span style=''>    </span><span style='background: #AEF1AE'>ctx.debuglog(</span><span style='background: #F0ADAD'>i&quot;starting rebindsuper from $base of ${acc.showLocated}: ${acc.info} in $bcs, name = $memberName&quot;</span><span style='background: #AEF1AE'>)</span><span style=''>
+</span>108 <span style=''>    while (</span><span style='background: #AEF1AE'>bcs.nonEmpty &amp;&amp; sym == NoSymbol</span><span style=''>) </span><span style='background: #AEF1AE'>{
+</span>109 <span style=''></span><span style='background: #AEF1AE'>      val other = bcs.head.info.nonPrivateDecl(memberName)
+</span>110 <span style=''></span><span style='background: #AEF1AE'>      if (ctx.settings.Ydebug.value)
+</span>111 <span style=''></span><span style='background: #AEF1AE'>        </span><span style='background: #F0ADAD'>ctx.log(i&quot;rebindsuper ${bcs.head} $other deferred = ${other.symbol.is(Deferred)}&quot;)</span><span style='background: #AEF1AE'>
+</span>112 <span style=''></span><span style='background: #AEF1AE'>      sym = other.matchingDenotation(base.thisType, base.thisType.memberInfo(acc)).symbol
+</span>113 <span style=''></span><span style='background: #AEF1AE'>      bcs = bcs.tail
+</span>114 <span style=''></span><span style='background: #AEF1AE'>    }</span><span style=''>
+</span>115 <span style=''>    </span><span style='background: #AEF1AE'>assert(sym.exists)</span><span style=''>
+</span>116 <span style=''>    sym
+</span>117 <span style=''>  }
+</span>118 <span style=''>}
+</span></pre>
+          </div>
+          <div class="tab-pane" id="statementlist">
+            <table cellspacing="0" cellpadding="0" class="table statementlist">
+      <tr>
+        <th>Line</th>
+        <th>Stmt Id</th>
+        <th>Pos</th>
+        <th>Tree</th>
+        <th>Symbol</th>
+        <th>Code</th>
+      </tr><tr>
+        <td>
+          51
+        </td>
+        <td>
+          62172
+        </td>
+        <td>
+          1673
+          -
+          1687
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          &quot;resolveSuper&quot;
+        </td>
+      </tr><tr>
+        <td>
+          53
+        </td>
+        <td>
+          62173
+        </td>
+        <td>
+          1716
+          -
+          1865
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.generic.GenericCompanion.apply
+        </td>
+        <td style="background: #AEF1AE">
+          scala.Predef.Set.apply[Class[_ &lt;: dotty.tools.dotc.core.Phases.Phase]](classOf[dotty.tools.dotc.transform.ElimByName], classOf[dotty.tools.dotc.transform.AugmentScala2Traits])
+        </td>
+      </tr><tr>
+        <td>
+          56
+        </td>
+        <td>
+          62174
+        </td>
+        <td>
+          1899
+          -
+          1903
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          true
+        </td>
+      </tr><tr>
+        <td>
+          59
+        </td>
+        <td>
+          62176
+        </td>
+        <td>
+          2051
+          -
+          2076
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Symbols.Symbol.asClass
+        </td>
+        <td style="background: #AEF1AE">
+          core.Symbols.toDenot(impl.symbol(ctx))(ctx).owner.asClass
+        </td>
+      </tr><tr>
+        <td>
+          59
+        </td>
+        <td>
+          62175
+        </td>
+        <td>
+          2051
+          -
+          2062
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Trees.Tree.symbol
+        </td>
+        <td style="background: #AEF1AE">
+          impl.symbol(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          60
+        </td>
+        <td>
+          62177
+        </td>
+        <td>
+          2091
+          -
+          2119
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.transform.MixinOps.&lt;init&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          new MixinOps(cls, ResolveSuper.this)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          64
+        </td>
+        <td>
+          62183
+        </td>
+        <td>
+          2215
+          -
+          2215
+        </td>
+        <td>
+          TypeApply
+        </td>
+        <td>
+          scala.collection.immutable.List.canBuildFrom
+        </td>
+        <td style="background: #AEF1AE">
+          immutable.this.List.canBuildFrom[dotty.tools.dotc.ast.tpd.DefDef]
+        </td>
+      </tr><tr>
+        <td>
+          64
+        </td>
+        <td>
+          62184
+        </td>
+        <td>
+          2201
+          -
+          2427
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          scala.collection.immutable.List.map
+        </td>
+        <td style="background: #AEF1AE">
+          core.Symbols.toClassDenot(mixin)(ctx).info(ctx).decls(ctx).filter(((x$1: dotty.tools.dotc.core.Symbols.Symbol) =&gt; SymUtils.decorateSymbol(x$1).isSuperAccessor(ctx)))(ctx).map[dotty.tools.dotc.ast.tpd.DefDef, List[dotty.tools.dotc.ast.tpd.Tree]](((superAcc: dotty.tools.dotc.core.Symbols.Symbol) =&gt; {
+  util.Stats.record(&quot;super accessors&quot;, util.Stats.record$default$2);
+  ast.tpd.polyDefDef(ops.implementation(superAcc.asTerm(ctx)), ops.forwarder(ResolveSuper.rebindSuper(cls, superAcc)(ctx)))(ctx)
+}))(immutable.this.List.canBuildFrom[dotty.tools.dotc.ast.tpd.DefDef])
+        </td>
+      </tr><tr>
+        <td>
+          64
+        </td>
+        <td>
+          62178
+        </td>
+        <td>
+          2242
+          -
+          2259
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.transform.SymUtils.isSuperAccessor
+        </td>
+        <td style="background: #AEF1AE">
+          SymUtils.decorateSymbol(x$1).isSuperAccessor(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          66
+        </td>
+        <td>
+          62180
+        </td>
+        <td>
+          2299
+          -
+          2299
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.util.Stats.record$default$2
+        </td>
+        <td style="background: #F0ADAD">
+          util.Stats.record$default$2
+        </td>
+      </tr><tr>
+        <td>
+          66
+        </td>
+        <td>
+          62179
+        </td>
+        <td>
+          2306
+          -
+          2323
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          &quot;super accessors&quot;
+        </td>
+      </tr><tr>
+        <td>
+          66
+        </td>
+        <td>
+          62181
+        </td>
+        <td>
+          2288
+          -
+          2324
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.util.Stats.record
+        </td>
+        <td style="background: #AEF1AE">
+          util.Stats.record(&quot;super accessors&quot;, util.Stats.record$default$2)
+        </td>
+      </tr><tr>
+        <td>
+          67
+        </td>
+        <td>
+          62182
+        </td>
+        <td>
+          2335
+          -
+          2417
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.tpd.polyDefDef
+        </td>
+        <td style="background: #AEF1AE">
+          ast.tpd.polyDefDef(ops.implementation(superAcc.asTerm(ctx)), ops.forwarder(ResolveSuper.rebindSuper(cls, superAcc)(ctx)))(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          71
+        </td>
+        <td>
+          62185
+        </td>
+        <td>
+          2533
+          -
+          2553
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.transform.MixinOps.needsForwarder
+        </td>
+        <td style="background: #AEF1AE">
+          ops.needsForwarder(meth)
+        </td>
+      </tr><tr>
+        <td>
+          71
+        </td>
+        <td>
+          62191
+        </td>
+        <td>
+          2493
+          -
+          2696
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          scala.collection.generic.FilterMonadic.map
+        </td>
+        <td style="background: #AEF1AE">
+          core.Symbols.toClassDenot(mixin)(ctx).info(ctx).decls(ctx).toList(ctx).withFilter(((meth: dotty.tools.dotc.core.Symbols.Symbol) =&gt; ops.needsForwarder(meth))).map[dotty.tools.dotc.ast.tpd.DefDef, List[dotty.tools.dotc.ast.tpd.Tree]](((meth: dotty.tools.dotc.core.Symbols.Symbol) =&gt; {
+  util.Stats.record(&quot;method forwarders&quot;, util.Stats.record$default$2);
+  ast.tpd.polyDefDef(ops.implementation(meth.asTerm(ctx)), ops.forwarder(meth))(ctx)
+}))(immutable.this.List.canBuildFrom[dotty.tools.dotc.ast.tpd.DefDef])
+        </td>
+      </tr><tr>
+        <td>
+          71
+        </td>
+        <td>
+          62190
+        </td>
+        <td>
+          2503
+          -
+          2503
+        </td>
+        <td>
+          TypeApply
+        </td>
+        <td>
+          scala.collection.immutable.List.canBuildFrom
+        </td>
+        <td style="background: #AEF1AE">
+          immutable.this.List.canBuildFrom[dotty.tools.dotc.ast.tpd.DefDef]
+        </td>
+      </tr><tr>
+        <td>
+          73
+        </td>
+        <td>
+          62186
+        </td>
+        <td>
+          2599
+          -
+          2618
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #F0ADAD">
+          &quot;method forwarders&quot;
+        </td>
+      </tr><tr>
+        <td>
+          73
+        </td>
+        <td>
+          62188
+        </td>
+        <td>
+          2581
+          -
+          2619
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.util.Stats.record
+        </td>
+        <td style="background: #AEF1AE">
+          util.Stats.record(&quot;method forwarders&quot;, util.Stats.record$default$2)
+        </td>
+      </tr><tr>
+        <td>
+          73
+        </td>
+        <td>
+          62187
+        </td>
+        <td>
+          2592
+          -
+          2592
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.util.Stats.record$default$2
+        </td>
+        <td style="background: #F0ADAD">
+          util.Stats.record$default$2
+        </td>
+      </tr><tr>
+        <td>
+          74
+        </td>
+        <td>
+          62189
+        </td>
+        <td>
+          2630
+          -
+          2686
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.tpd.polyDefDef
+        </td>
+        <td style="background: #AEF1AE">
+          ast.tpd.polyDefDef(ops.implementation(meth.asTerm(ctx)), ops.forwarder(meth))(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          77
+        </td>
+        <td>
+          62192
+        </td>
+        <td>
+          2764
+          -
+          2790
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.immutable.List.:::
+        </td>
+        <td style="background: #AEF1AE">
+          methodOverrides(mixin).:::[dotty.tools.dotc.ast.tpd.Tree](x$2)
+        </td>
+      </tr><tr>
+        <td>
+          77
+        </td>
+        <td>
+          62194
+        </td>
+        <td>
+          2718
+          -
+          2791
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          scala.collection.immutable.List.flatMap
+        </td>
+        <td style="background: #AEF1AE">
+          ops.mixins.flatMap[dotty.tools.dotc.ast.tpd.Tree, List[dotty.tools.dotc.ast.tpd.Tree]](((mixin: dotty.tools.dotc.core.Symbols.ClassSymbol) =&gt; {
+  &lt;synthetic&gt; &lt;artifact&gt; val x$2: List[dotty.tools.dotc.ast.tpd.Tree] = superAccessors(mixin);
+  methodOverrides(mixin).:::[dotty.tools.dotc.ast.tpd.Tree](x$2)
+}))(immutable.this.List.canBuildFrom[dotty.tools.dotc.ast.tpd.Tree])
+        </td>
+      </tr><tr>
+        <td>
+          77
+        </td>
+        <td>
+          62193
+        </td>
+        <td>
+          2732
+          -
+          2732
+        </td>
+        <td>
+          TypeApply
+        </td>
+        <td>
+          scala.collection.immutable.List.canBuildFrom
+        </td>
+        <td style="background: #AEF1AE">
+          immutable.this.List.canBuildFrom[dotty.tools.dotc.ast.tpd.Tree]
+        </td>
+      </tr><tr>
+        <td>
+          79
+        </td>
+        <td>
+          62198
+        </td>
+        <td>
+          2809
+          -
+          2809
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Trees.Instance.TreeCopier.Template$default$4
+        </td>
+        <td style="background: #AEF1AE">
+          ResolveSuper.this.cpy.Template$default$4(x$5)
+        </td>
+      </tr><tr>
+        <td>
+          79
+        </td>
+        <td>
+          62195
+        </td>
+        <td>
+          2833
+          -
+          2846
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.immutable.List.:::
+        </td>
+        <td style="background: #AEF1AE">
+          impl.body(ctx).:::[dotty.tools.dotc.ast.Trees.Tree[dotty.tools.dotc.core.Types.Type]](x$3)
+        </td>
+      </tr><tr>
+        <td>
+          79
+        </td>
+        <td>
+          62197
+        </td>
+        <td>
+          2809
+          -
+          2809
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Trees.Instance.TreeCopier.Template$default$3
+        </td>
+        <td style="background: #AEF1AE">
+          ResolveSuper.this.cpy.Template$default$3(x$5)
+        </td>
+      </tr><tr>
+        <td>
+          79
+        </td>
+        <td>
+          62199
+        </td>
+        <td>
+          2797
+          -
+          2847
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Trees.Instance.TreeCopier.Template
+        </td>
+        <td style="background: #AEF1AE">
+          ResolveSuper.this.cpy.Template(x$5)(x$7, x$8, x$9, x$6)
+        </td>
+      </tr><tr>
+        <td>
+          79
+        </td>
+        <td>
+          62196
+        </td>
+        <td>
+          2809
+          -
+          2809
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Trees.Instance.TreeCopier.Template$default$2
+        </td>
+        <td style="background: #AEF1AE">
+          ResolveSuper.this.cpy.Template$default$2(x$5)
+        </td>
+      </tr><tr>
+        <td>
+          83
+        </td>
+        <td>
+          62200
+        </td>
+        <td>
+          2940
+          -
+          2958
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.Symbols.Symbol.asTerm
+        </td>
+        <td style="background: #AEF1AE">
+          ddef.symbol(ctx).asTerm(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          84
+        </td>
+        <td>
+          62201
+        </td>
+        <td>
+          3000
+          -
+          3008
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Flags.Deferred
+        </td>
+        <td style="background: #AEF1AE">
+          core.Flags.Deferred
+        </td>
+      </tr><tr>
+        <td>
+          84
+        </td>
+        <td>
+          62203
+        </td>
+        <td>
+          2967
+          -
+          3009
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Boolean.&amp;&amp;
+        </td>
+        <td style="background: #AEF1AE">
+          SymUtils.decorateSymbol(meth).isSuperAccessor(ctx).&amp;&amp;(core.Symbols.toDenot(meth)(ctx).is(core.Flags.Deferred)(ctx).unary_!)
+        </td>
+      </tr><tr>
+        <td>
+          84
+        </td>
+        <td>
+          62209
+        </td>
+        <td>
+          3011
+          -
+          3206
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          {
+  scala.Predef.assert(ddef.rhs(ctx).isEmpty);
+  val cls: dotty.tools.dotc.core.Symbols.ClassSymbol = core.Symbols.toDenot(meth)(ctx).owner.asClass;
+  val ops: dotty.tools.dotc.transform.MixinOps = new MixinOps(cls, ResolveSuper.this)(ctx);
+  import ops._;
+  ast.tpd.polyDefDef(meth, ops.forwarder(ResolveSuper.rebindSuper(cls, meth)(ctx)))(ctx)
+}
+        </td>
+      </tr><tr>
+        <td>
+          84
+        </td>
+        <td>
+          62202
+        </td>
+        <td>
+          2991
+          -
+          3009
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.Boolean.unary_!
+        </td>
+        <td style="background: #AEF1AE">
+          core.Symbols.toDenot(meth)(ctx).is(core.Flags.Deferred)(ctx).unary_!
+        </td>
+      </tr><tr>
+        <td>
+          85
+        </td>
+        <td>
+          62204
+        </td>
+        <td>
+          3026
+          -
+          3042
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Trees.Tree.isEmpty
+        </td>
+        <td style="background: #AEF1AE">
+          ddef.rhs(ctx).isEmpty
+        </td>
+      </tr><tr>
+        <td>
+          85
+        </td>
+        <td>
+          62205
+        </td>
+        <td>
+          3019
+          -
+          3043
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Predef.assert
+        </td>
+        <td style="background: #AEF1AE">
+          scala.Predef.assert(ddef.rhs(ctx).isEmpty)
+        </td>
+      </tr><tr>
+        <td>
+          86
+        </td>
+        <td>
+          62206
+        </td>
+        <td>
+          3060
+          -
+          3078
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Symbols.Symbol.asClass
+        </td>
+        <td style="background: #AEF1AE">
+          core.Symbols.toDenot(meth)(ctx).owner.asClass
+        </td>
+      </tr><tr>
+        <td>
+          87
+        </td>
+        <td>
+          62207
+        </td>
+        <td>
+          3095
+          -
+          3123
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.transform.MixinOps.&lt;init&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          new MixinOps(cls, ResolveSuper.this)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          89
+        </td>
+        <td>
+          62208
+        </td>
+        <td>
+          3149
+          -
+          3200
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.tpd.polyDefDef
+        </td>
+        <td style="background: #AEF1AE">
+          ast.tpd.polyDefDef(meth, ops.forwarder(ResolveSuper.rebindSuper(cls, meth)(ctx)))(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          91
+        </td>
+        <td>
+          62210
+        </td>
+        <td>
+          3216
+          -
+          3220
+        </td>
+        <td>
+          Ident
+        </td>
+        <td>
+          dotty.tools.dotc.transform.ResolveSuper.ddef
+        </td>
+        <td style="background: #AEF1AE">
+          ddef
+        </td>
+      </tr><tr>
+        <td>
+          94
+        </td>
+        <td>
+          62213
+        </td>
+        <td>
+          3270
+          -
+          3299
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.core.Flags.FlagSet.|
+        </td>
+        <td style="background: #AEF1AE">
+          core.Flags.Private.|(core.Flags.Accessor).|(core.Flags.Deferred)
+        </td>
+      </tr><tr>
+        <td>
+          94
+        </td>
+        <td>
+          62212
+        </td>
+        <td>
+          3291
+          -
+          3299
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Flags.Deferred
+        </td>
+        <td style="background: #AEF1AE">
+          core.Flags.Deferred
+        </td>
+      </tr><tr>
+        <td>
+          94
+        </td>
+        <td>
+          62211
+        </td>
+        <td>
+          3280
+          -
+          3288
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Flags.Accessor
+        </td>
+        <td style="background: #AEF1AE">
+          core.Flags.Accessor
+        </td>
+      </tr><tr>
+        <td>
+          104
+        </td>
+        <td>
+          62215
+        </td>
+        <td>
+          3680
+          -
+          3732
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.collection.TraversableLike.tail
+        </td>
+        <td style="background: #AEF1AE">
+          core.Symbols.toDenot(base)(ctx).info(ctx).baseClasses(ctx).dropWhile(((x$4: dotty.tools.dotc.core.Symbols.ClassSymbol) =&gt; core.Symbols.toDenot(acc)(ctx).owner.!=(x$4))).tail
+        </td>
+      </tr><tr>
+        <td>
+          104
+        </td>
+        <td>
+          62214
+        </td>
+        <td>
+          3712
+          -
+          3726
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.Object.!=
+        </td>
+        <td style="background: #AEF1AE">
+          core.Symbols.toDenot(acc)(ctx).owner.!=(x$4)
+        </td>
+      </tr><tr>
+        <td>
+          105
+        </td>
+        <td>
+          62216
+        </td>
+        <td>
+          3755
+          -
+          3763
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Symbols.NoSymbol
+        </td>
+        <td style="background: #AEF1AE">
+          core.Symbols.NoSymbol
+        </td>
+      </tr><tr>
+        <td>
+          106
+        </td>
+        <td>
+          62218
+        </td>
+        <td>
+          3804
+          -
+          3827
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.NameOps.NameDecorator.unexpandedName
+        </td>
+        <td style="background: #AEF1AE">
+          core.NameOps.NameDecorator[acc.ThisName](acc.name(ctx)).unexpandedName
+        </td>
+      </tr><tr>
+        <td>
+          106
+        </td>
+        <td>
+          62217
+        </td>
+        <td>
+          3804
+          -
+          3812
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.Symbols.Symbol.name
+        </td>
+        <td style="background: #AEF1AE">
+          acc.name(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          107
+        </td>
+        <td>
+          62219
+        </td>
+        <td>
+          3845
+          -
+          3942
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.Decorators.StringInterpolators.i
+        </td>
+        <td style="background: #F0ADAD">
+          core.Decorators.StringInterpolators(scala.StringContext.apply(&quot;starting rebindsuper from &quot;, &quot; of &quot;, &quot;: &quot;, &quot; in &quot;, &quot;, name = &quot;, &quot;&quot;)).i(base, acc.showLocated(ctx), core.Symbols.toDenot(acc)(ctx).info(ctx), bcs, memberName)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          107
+        </td>
+        <td>
+          62220
+        </td>
+        <td>
+          3832
+          -
+          3943
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.reporting.Reporting.debuglog
+        </td>
+        <td style="background: #AEF1AE">
+          ctx.debuglog(core.Decorators.StringInterpolators(scala.StringContext.apply(&quot;starting rebindsuper from &quot;, &quot; of &quot;, &quot;: &quot;, &quot; in &quot;, &quot;, name = &quot;, &quot;&quot;)).i(base, acc.showLocated(ctx), core.Symbols.toDenot(acc)(ctx).info(ctx), bcs, memberName)(ctx))
+        </td>
+      </tr><tr>
+        <td>
+          108
+        </td>
+        <td>
+          62222
+        </td>
+        <td>
+          3971
+          -
+          3986
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          java.lang.Object.==
+        </td>
+        <td style="background: #AEF1AE">
+          sym.==(core.Symbols.NoSymbol)
+        </td>
+      </tr><tr>
+        <td>
+          108
+        </td>
+        <td>
+          62237
+        </td>
+        <td>
+          3988
+          -
+          4293
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          {
+  {
+    val other: dotty.tools.dotc.core.Denotations.Denotation = core.Symbols.toClassDenot(bcs.head)(ctx).info(ctx).nonPrivateDecl(memberName)(ctx);
+    if (Settings.this.Setting.SettingDecorator[Boolean](Contexts.this.Context.toBase(ctx).settings.Ydebug).value(ctx))
+      ctx.log(core.Decorators.StringInterpolators(scala.StringContext.apply(&quot;rebindsuper &quot;, &quot; &quot;, &quot; deferred = &quot;, &quot;&quot;)).i(bcs.head, other, core.Symbols.toDenot(other.symbol)(ctx).is(core.Flags.Deferred)(ctx))(ctx), ctx.log$default$2)
+    else
+      ();
+    sym = other.matchingDenotation(core.Symbols.toDenot(base)(ctx).thisType(ctx), core.Symbols.toDenot(base)(ctx).thisType(ctx).memberInfo(acc)(ctx))(ctx).symbol;
+    bcs = bcs.tail
+  };
+  while$1()
+}
+        </td>
+      </tr><tr>
+        <td>
+          108
+        </td>
+        <td>
+          62236
+        </td>
+        <td>
+          3988
+          -
+          3988
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.transform.ResolveSuper.while$1
+        </td>
+        <td style="background: #AEF1AE">
+          while$1()
+        </td>
+      </tr><tr>
+        <td>
+          108
+        </td>
+        <td>
+          62239
+        </td>
+        <td>
+          3948
+          -
+          3948
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          ()
+        </td>
+      </tr><tr>
+        <td>
+          108
+        </td>
+        <td>
+          62221
+        </td>
+        <td>
+          3978
+          -
+          3986
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Symbols.NoSymbol
+        </td>
+        <td style="background: #AEF1AE">
+          core.Symbols.NoSymbol
+        </td>
+      </tr><tr>
+        <td>
+          108
+        </td>
+        <td>
+          62238
+        </td>
+        <td>
+          3948
+          -
+          3948
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          ()
+        </td>
+      </tr><tr>
+        <td>
+          108
+        </td>
+        <td>
+          62223
+        </td>
+        <td>
+          3955
+          -
+          3986
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Boolean.&amp;&amp;
+        </td>
+        <td style="background: #AEF1AE">
+          bcs.nonEmpty.&amp;&amp;(sym.==(core.Symbols.NoSymbol))
+        </td>
+      </tr><tr>
+        <td>
+          109
+        </td>
+        <td>
+          62224
+        </td>
+        <td>
+          4008
+          -
+          4048
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.Types.Type.nonPrivateDecl
+        </td>
+        <td style="background: #AEF1AE">
+          core.Symbols.toClassDenot(bcs.head)(ctx).info(ctx).nonPrivateDecl(memberName)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          110
+        </td>
+        <td>
+          62231
+        </td>
+        <td>
+          4055
+          -
+          4055
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          ()
+        </td>
+      </tr><tr>
+        <td>
+          110
+        </td>
+        <td>
+          62225
+        </td>
+        <td>
+          4059
+          -
+          4084
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.config.Settings.Setting.SettingDecorator.value
+        </td>
+        <td style="background: #AEF1AE">
+          Settings.this.Setting.SettingDecorator[Boolean](Contexts.this.Context.toBase(ctx).settings.Ydebug).value(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          110
+        </td>
+        <td>
+          62230
+        </td>
+        <td>
+          4055
+          -
+          4055
+        </td>
+        <td>
+          Literal
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          ()
+        </td>
+      </tr><tr>
+        <td>
+          111
+        </td>
+        <td>
+          62228
+        </td>
+        <td>
+          4094
+          -
+          4176
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.reporting.Reporting.log
+        </td>
+        <td style="background: #F0ADAD">
+          ctx.log(core.Decorators.StringInterpolators(scala.StringContext.apply(&quot;rebindsuper &quot;, &quot; &quot;, &quot; deferred = &quot;, &quot;&quot;)).i(bcs.head, other, core.Symbols.toDenot(other.symbol)(ctx).is(core.Flags.Deferred)(ctx))(ctx), ctx.log$default$2)
+        </td>
+      </tr><tr>
+        <td>
+          111
+        </td>
+        <td>
+          62227
+        </td>
+        <td>
+          4098
+          -
+          4098
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.reporting.Reporting.log$default$2
+        </td>
+        <td style="background: #F0ADAD">
+          ctx.log$default$2
+        </td>
+      </tr><tr>
+        <td>
+          111
+        </td>
+        <td>
+          62226
+        </td>
+        <td>
+          4102
+          -
+          4175
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.Decorators.StringInterpolators.i
+        </td>
+        <td style="background: #F0ADAD">
+          core.Decorators.StringInterpolators(scala.StringContext.apply(&quot;rebindsuper &quot;, &quot; &quot;, &quot; deferred = &quot;, &quot;&quot;)).i(bcs.head, other, core.Symbols.toDenot(other.symbol)(ctx).is(core.Flags.Deferred)(ctx))(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          111
+        </td>
+        <td>
+          62229
+        </td>
+        <td>
+          4094
+          -
+          4176
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          dotty.tools.dotc.reporting.Reporting.log
+        </td>
+        <td style="background: #F0ADAD">
+          ctx.log(core.Decorators.StringInterpolators(scala.StringContext.apply(&quot;rebindsuper &quot;, &quot; &quot;, &quot; deferred = &quot;, &quot;&quot;)).i(bcs.head, other, core.Symbols.toDenot(other.symbol)(ctx).is(core.Flags.Deferred)(ctx))(ctx), ctx.log$default$2)
+        </td>
+      </tr><tr>
+        <td>
+          112
+        </td>
+        <td>
+          62234
+        </td>
+        <td>
+          4189
+          -
+          4266
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Denotations.Denotation.symbol
+        </td>
+        <td style="background: #AEF1AE">
+          other.matchingDenotation(core.Symbols.toDenot(base)(ctx).thisType(ctx), core.Symbols.toDenot(base)(ctx).thisType(ctx).memberInfo(acc)(ctx))(ctx).symbol
+        </td>
+      </tr><tr>
+        <td>
+          112
+        </td>
+        <td>
+          62233
+        </td>
+        <td>
+          4229
+          -
+          4258
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.Types.Type.memberInfo
+        </td>
+        <td style="background: #AEF1AE">
+          core.Symbols.toDenot(base)(ctx).thisType(ctx).memberInfo(acc)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          112
+        </td>
+        <td>
+          62232
+        </td>
+        <td>
+          4214
+          -
+          4227
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.SymDenotations.SymDenotation.thisType
+        </td>
+        <td style="background: #AEF1AE">
+          core.Symbols.toDenot(base)(ctx).thisType(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          113
+        </td>
+        <td>
+          62235
+        </td>
+        <td>
+          4279
+          -
+          4287
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.collection.TraversableLike.tail
+        </td>
+        <td style="background: #AEF1AE">
+          bcs.tail
+        </td>
+      </tr><tr>
+        <td>
+          115
+        </td>
+        <td>
+          62240
+        </td>
+        <td>
+          4305
+          -
+          4315
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Denotations.Denotation.exists
+        </td>
+        <td style="background: #AEF1AE">
+          core.Symbols.toDenot(sym)(ctx).exists
+        </td>
+      </tr><tr>
+        <td>
+          115
+        </td>
+        <td>
+          62241
+        </td>
+        <td>
+          4298
+          -
+          4316
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Predef.assert
+        </td>
+        <td style="background: #AEF1AE">
+          scala.Predef.assert(core.Symbols.toDenot(sym)(ctx).exists)
+        </td>
+      </tr>
+    </table>
+          </div>
+        </div>
+      </body>
+    </html>

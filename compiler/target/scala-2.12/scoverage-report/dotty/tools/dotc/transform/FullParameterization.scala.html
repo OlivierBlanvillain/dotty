@@ -1,0 +1,1802 @@
+<html>
+      <head>
+        <meta http-equiv="Content-Type" content="text/html; charset=utf-8"/>
+        <title id="title">
+          dotty/tools/dotc/transform/FullParameterization.scala.html
+        </title>
+        <script src="https://ajax.googleapis.com/ajax/libs/jquery/1.10.2/jquery.min.js"></script><link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/jquery.tablesorter/2.20.1/css/theme.default.min.css" type="text/css"/><script src="https://cdnjs.cloudflare.com/ajax/libs/jquery.tablesorter/2.20.1/js/jquery.tablesorter.min.js"></script><link rel="stylesheet" href="https://netdna.bootstrapcdn.com/bootstrap/3.0.3/css/bootstrap.min.css" type="text/css"/><script src="https://netdna.bootstrapcdn.com/bootstrap/3.0.3/js/bootstrap.min.js"></script><script type="text/javascript">
+        $(document).ready(function() {$(".tablesorter").tablesorter();});
+      </script>
+        <style>
+          table.codegrid { font-family: monospace; font-size: 12px; width: auto!important; }table.statementlist { width: auto!important; font-size: 13px; } table.codegrid td { padding: 0!important; border: 0!important } table td.linenumber { width: 40px!important; } 
+        </style>
+      </head>
+      <body style="font-family: monospace;">
+        <ul class="nav nav-tabs">
+          <li>
+            <a href="#codegrid" data-toggle="tab">Codegrid</a>
+          </li>
+          <li>
+            <a href="#statementlist" data-toggle="tab">Statement List</a>
+          </li>
+        </ul>
+        <div class="tab-content">
+          <div class="tab-pane active" id="codegrid">
+            <pre style='font-size: 12pt; font-family: courier;'>1 <span style=''>package dotty.tools.dotc
+</span>2 <span style=''>package transform
+</span>3 <span style=''>
+</span>4 <span style=''>import core._
+</span>5 <span style=''>import Types._
+</span>6 <span style=''>import Contexts._
+</span>7 <span style=''>import Symbols._
+</span>8 <span style=''>import Decorators._
+</span>9 <span style=''>import TypeUtils._
+</span>10 <span style=''>import StdNames.nme
+</span>11 <span style=''>import NameOps._
+</span>12 <span style=''>import ast._
+</span>13 <span style=''>import ast.Trees._
+</span>14 <span style=''>
+</span>15 <span style=''>/** Provides methods to produce fully parameterized versions of instance methods,
+</span>16 <span style=''> *  where the `this` of the enclosing class is abstracted out in an extra leading
+</span>17 <span style=''> *  `$this` parameter and type parameters of the class become additional type
+</span>18 <span style=''> *  parameters of the fully parameterized method.
+</span>19 <span style=''> *
+</span>20 <span style=''> *  Example usage scenarios are:
+</span>21 <span style=''> *
+</span>22 <span style=''> *    - extension methods of value classes
+</span>23 <span style=''> *    - implementations of trait methods
+</span>24 <span style=''> *    - static protected accessors
+</span>25 <span style=''> *    - local methods produced by tailrec transform
+</span>26 <span style=''> *
+</span>27 <span style=''> *  Note that the methods lift out type parameters of the class containing
+</span>28 <span style=''> *  the instance method, but not type parameters of enclosing classes. The
+</span>29 <span style=''> *  fully instantiated method therefore needs to be put in a scope &quot;close&quot;
+</span>30 <span style=''> *  to the original method, i.e. they need to share the same outer pointer.
+</span>31 <span style=''> *  Examples of legal positions are: in the companion object, or as a local
+</span>32 <span style=''> *  method inside the original method.
+</span>33 <span style=''> *
+</span>34 <span style=''> *  Note: The scheme does not handle yet methods where type parameter bounds
+</span>35 <span style=''> *  depend on value parameters of the enclosing class, as in:
+</span>36 <span style=''> *
+</span>37 <span style=''> *      class C(val a: String) extends AnyVal {
+</span>38 <span style=''> *        def foo[U &lt;: a.type]: Unit = ...
+</span>39 <span style=''> *      }
+</span>40 <span style=''> *
+</span>41 <span style=''> *  The expansion of method `foo` would lead to
+</span>42 <span style=''> *
+</span>43 <span style=''> *      def foo$extension[U &lt;: $this.a.type]($this: C): Unit = ...
+</span>44 <span style=''> *
+</span>45 <span style=''> *  which is not typable. Not clear yet what to do. Maybe allow PolyTypes
+</span>46 <span style=''> *  to follow method parameters and translate to the following:
+</span>47 <span style=''> *
+</span>48 <span style=''> *      def foo$extension($this: C)[U &lt;: $this.a.type]: Unit = ...
+</span>49 <span style=''> *
+</span>50 <span style=''> *  @see class-dependent-extension-method.scala in pending/pos.
+</span>51 <span style=''> */
+</span>52 <span style=''>trait FullParameterization {
+</span>53 <span style=''>
+</span>54 <span style=''>  import tpd._
+</span>55 <span style=''>  import FullParameterization._
+</span>56 <span style=''>
+</span>57 <span style=''>  /** If references to original symbol `referenced` from within fully parameterized method
+</span>58 <span style=''>   *  `derived` should be rewired to some fully parameterized method, the rewiring target symbol,
+</span>59 <span style=''>   *  otherwise NoSymbol.
+</span>60 <span style=''>   */
+</span>61 <span style=''>  protected def rewiredTarget(referenced: Symbol, derived: Symbol)(implicit ctx: Context): Symbol
+</span>62 <span style=''>
+</span>63 <span style=''>  /** If references to some original symbol from given tree node within fully parameterized method
+</span>64 <span style=''>   *  `derived` should be rewired to some fully parameterized method, the rewiring target symbol,
+</span>65 <span style=''>   *  otherwise NoSymbol. By default implemented as
+</span>66 <span style=''>   *
+</span>67 <span style=''>   *      rewiredTarget(tree.symbol, derived)
+</span>68 <span style=''>   *
+</span>69 <span style=''>   *  but can be overridden.
+</span>70 <span style=''>   */
+</span>71 <span style=''>  protected def rewiredTarget(tree: Tree, derived: Symbol)(implicit ctx: Context): Symbol =
+</span>72 <span style=''>    </span><span style='background: #AEF1AE'>rewiredTarget(tree.symbol, derived)</span><span style=''>
+</span>73 <span style=''>
+</span>74 <span style=''>  /** Converts the type `info` of a member of class `clazz` to a method type that
+</span>75 <span style=''>   *  takes the `this` of the class and any type parameters of the class
+</span>76 <span style=''>   *  as additional parameters. Example:
+</span>77 <span style=''>   *
+</span>78 <span style=''>   *    class Foo[+A &lt;: AnyRef](val xs: List[A]) extends AnyVal {
+</span>79 <span style=''>   *      def baz[B &gt;: A](x: B): List[B] = ...
+</span>80 <span style=''>   *    }
+</span>81 <span style=''>   *
+</span>82 <span style=''>   *  leads to:
+</span>83 <span style=''>   *
+</span>84 <span style=''>   *    object Foo {
+</span>85 <span style=''>   *      def extension$baz[B &gt;: A &lt;: Any, A &gt;: Nothing &lt;: AnyRef]($this: Foo[A])(x: B): List[B]
+</span>86 <span style=''>   *    }
+</span>87 <span style=''>   *
+</span>88 <span style=''>   *  If a self type is present, $this has this self type as its type.
+</span>89 <span style=''>   *
+</span>90 <span style=''>   *  @param abstractOverClass  if true, include the type parameters of the class in the method's list of type parameters.
+</span>91 <span style=''>   *  @param liftThisType       if true, require created $this to be $this: (Foo[A] &amp; Foo,this).
+</span>92 <span style=''>   *                            This is needed if created member stays inside scope of Foo(as in tailrec)
+</span>93 <span style=''>   */
+</span>94 <span style=''>  def fullyParameterizedType(info: Type, clazz: ClassSymbol, abstractOverClass: Boolean = true, liftThisType: Boolean = false)(implicit ctx: Context): Type = {
+</span>95 <span style=''>    val (mtparamCount, origResult) = info match {
+</span>96 <span style=''>      case info: PolyType =&gt; (info.paramNames.length, info.resultType)
+</span>97 <span style=''>      case info: ExprType =&gt; (0, info.resultType)
+</span>98 <span style=''>      case _ =&gt; (0, info)
+</span>99 <span style=''>    }
+</span>100 <span style=''>    val ctparams = if (abstractOverClass) </span><span style='background: #AEF1AE'>clazz.typeParams</span><span style=''> else </span><span style='background: #F0ADAD'>Nil</span><span style=''>
+</span>101 <span style=''>    val ctnames = </span><span style='background: #AEF1AE'>ctparams.map(_.name)</span><span style=''>
+</span>102 <span style=''>    val ctvariances = </span><span style='background: #AEF1AE'>ctparams.map(_.variance)</span><span style=''>
+</span>103 <span style=''>
+</span>104 <span style=''>    /** The method result type */
+</span>105 <span style=''>    def resultType(mapClassParams: Type =&gt; Type) = {
+</span>106 <span style=''>      val thisParamType = </span><span style='background: #AEF1AE'>mapClassParams(clazz.classInfo.selfType)</span><span style=''>
+</span>107 <span style=''>      val firstArgType = if (liftThisType) </span><span style='background: #F0ADAD'>thisParamType &amp; clazz.thisType</span><span style=''> else </span><span style='background: #AEF1AE'>thisParamType</span><span style=''>
+</span>108 <span style=''>      </span><span style='background: #AEF1AE'>MethodType(nme.SELF :: Nil)(
+</span>109 <span style=''></span><span style='background: #AEF1AE'>          mt =&gt; firstArgType :: Nil,
+</span>110 <span style=''></span><span style='background: #AEF1AE'>          mt =&gt; mapClassParams(origResult).substThisUnlessStatic(clazz, mt.newParamRef(0)))</span><span style=''>
+</span>111 <span style=''>    }
+</span>112 <span style=''>
+</span>113 <span style=''>    /** Replace class type parameters by the added type parameters of the polytype `pt` */
+</span>114 <span style=''>    def mapClassParams(tp: Type, pt: PolyType): Type = {
+</span>115 <span style=''>      val classParamsRange = (</span><span style='background: #AEF1AE'>mtparamCount until mtparamCount + ctparams.length).toList</span><span style=''>
+</span>116 <span style=''>      </span><span style='background: #AEF1AE'>tp.substDealias(ctparams, classParamsRange map (pt.paramRefs(_)))</span><span style=''>
+</span>117 <span style=''>    }
+</span>118 <span style=''>
+</span>119 <span style=''>    /** The bounds for the added type parameters of the polytype `pt` */
+</span>120 <span style=''>    def mappedClassBounds(pt: PolyType): List[TypeBounds] =
+</span>121 <span style=''>      </span><span style='background: #AEF1AE'>ctparams.map(tparam =&gt; mapClassParams(tparam.info, pt).bounds)</span><span style=''>
+</span>122 <span style=''>
+</span>123 <span style=''>    info match {
+</span>124 <span style=''>      case info: PolyType =&gt;
+</span>125 <span style=''>        </span><span style='background: #AEF1AE'>PolyType(info.paramNames ++ ctnames)(
+</span>126 <span style=''></span><span style='background: #AEF1AE'>          pt =&gt;
+</span>127 <span style=''></span><span style='background: #AEF1AE'>            (info.paramInfos.map(mapClassParams(_, pt).bounds) ++
+</span>128 <span style=''></span><span style='background: #AEF1AE'>             mappedClassBounds(pt)).mapConserve(_.subst(info, pt).bounds),
+</span>129 <span style=''></span><span style='background: #AEF1AE'>          pt =&gt; resultType(mapClassParams(_, pt)).subst(info, pt))</span><span style=''>
+</span>130 <span style=''>      case _ =&gt;
+</span>131 <span style=''>        if (</span><span style='background: #AEF1AE'>ctparams.isEmpty</span><span style=''>) </span><span style='background: #AEF1AE'>resultType(identity)</span><span style=''>
+</span>132 <span style=''>        else </span><span style='background: #AEF1AE'>PolyType(ctnames)(mappedClassBounds, pt =&gt; resultType(mapClassParams(_, pt)))</span><span style=''>
+</span>133 <span style=''>    }
+</span>134 <span style=''>  }
+</span>135 <span style=''>
+</span>136 <span style=''>  /** The type parameters (skolems) of the method definition `originalDef`,
+</span>137 <span style=''>   *  followed by the class parameters of its enclosing class.
+</span>138 <span style=''>   */
+</span>139 <span style=''>  private def allInstanceTypeParams(originalDef: DefDef, abstractOverClass: Boolean)(implicit ctx: Context): List[Symbol] =
+</span>140 <span style=''>    if (abstractOverClass)
+</span>141 <span style=''>      </span><span style='background: #AEF1AE'>originalDef.tparams.map(_.symbol) ::: originalDef.symbol.enclosingClass.typeParams</span><span style=''>
+</span>142 <span style=''>    else </span><span style='background: #F0ADAD'>originalDef.tparams.map(_.symbol)</span><span style=''>
+</span>143 <span style=''>
+</span>144 <span style=''>  /** Given an instance method definition `originalDef`, return a
+</span>145 <span style=''>   *  fully parameterized method definition derived from `originalDef`, which
+</span>146 <span style=''>   *  has `derived` as symbol and `fullyParameterizedType(originalDef.symbol.info)`
+</span>147 <span style=''>   *  as info.
+</span>148 <span style=''>   *  `abstractOverClass` defines weather the DefDef should abstract over type parameters
+</span>149 <span style=''>   *  of class that contained original defDef
+</span>150 <span style=''>   */
+</span>151 <span style=''>  def fullyParameterizedDef(derived: TermSymbol, originalDef: DefDef, abstractOverClass: Boolean = true)(implicit ctx: Context): Tree =
+</span>152 <span style=''>    </span><span style='background: #AEF1AE'>polyDefDef(derived, trefs =&gt; vrefss =&gt; {
+</span>153 <span style=''></span><span style='background: #AEF1AE'>      val origMeth = originalDef.symbol
+</span>154 <span style=''></span><span style='background: #AEF1AE'>      val origClass = origMeth.enclosingClass.asClass
+</span>155 <span style=''></span><span style='background: #AEF1AE'>      val origTParams = allInstanceTypeParams(originalDef, abstractOverClass)
+</span>156 <span style=''></span><span style='background: #AEF1AE'>      val origVParams = originalDef.vparamss.flatten map (_.symbol)
+</span>157 <span style=''></span><span style='background: #AEF1AE'>      val thisRef :: argRefs = vrefss.flatten
+</span>158 <span style=''></span><span style='background: #AEF1AE'>
+</span>159 <span style=''></span><span style='background: #AEF1AE'>      /** If tree should be rewired, the rewired tree, otherwise EmptyTree.
+</span>160 <span style=''></span><span style='background: #AEF1AE'>       *  @param   targs  Any type arguments passed to the rewired tree.
+</span>161 <span style=''></span><span style='background: #AEF1AE'>       */
+</span>162 <span style=''></span><span style='background: #AEF1AE'>      def rewireTree(tree: Tree, targs: List[Tree])(implicit ctx: Context): Tree = {
+</span>163 <span style=''></span><span style='background: #AEF1AE'>        def rewireCall(thisArg: Tree): Tree = {
+</span>164 <span style=''></span><span style='background: #AEF1AE'>          val rewired = rewiredTarget(tree, derived)
+</span>165 <span style=''></span><span style='background: #AEF1AE'>          if (rewired.exists) {
+</span>166 <span style=''></span><span style='background: #AEF1AE'>            val base = thisArg.tpe.baseType(origClass)
+</span>167 <span style=''></span><span style='background: #AEF1AE'>            assert(base.exists)
+</span>168 <span style=''></span><span style='background: #AEF1AE'>            ref(rewired.termRef)
+</span>169 <span style=''></span><span style='background: #AEF1AE'>              .appliedToTypeTrees(targs ++ base.argInfos.map(TypeTree(_)))
+</span>170 <span style=''></span><span style='background: #AEF1AE'>              .appliedTo(thisArg)
+</span>171 <span style=''></span><span style='background: #AEF1AE'>          } else EmptyTree
+</span>172 <span style=''></span><span style='background: #AEF1AE'>        }
+</span>173 <span style=''></span><span style='background: #AEF1AE'>        tree match {
+</span>174 <span style=''></span><span style='background: #AEF1AE'>          case Return(expr, from) if !from.isEmpty =&gt;
+</span>175 <span style=''></span><span style='background: #AEF1AE'>            val rewired = rewiredTarget(from, derived)
+</span>176 <span style=''></span><span style='background: #AEF1AE'>            if (rewired.exists)
+</span>177 <span style=''></span><span style='background: #AEF1AE'>              tpd.cpy.Return(tree)(expr, Ident(rewired.termRef))
+</span>178 <span style=''></span><span style='background: #AEF1AE'>            else
+</span>179 <span style=''></span><span style='background: #AEF1AE'>              EmptyTree
+</span>180 <span style=''></span><span style='background: #AEF1AE'>          case Ident(_) =&gt; rewireCall(thisRef)
+</span>181 <span style=''></span><span style='background: #AEF1AE'>          case Select(qual, _) =&gt; rewireCall(qual)
+</span>182 <span style=''></span><span style='background: #AEF1AE'>          case tree @ TypeApply(fn, targs1) =&gt;
+</span>183 <span style=''></span><span style='background: #AEF1AE'>            assert(targs.isEmpty)
+</span>184 <span style=''></span><span style='background: #AEF1AE'>            rewireTree(fn, targs1)
+</span>185 <span style=''></span><span style='background: #AEF1AE'>          case _ =&gt; EmptyTree
+</span>186 <span style=''></span><span style='background: #AEF1AE'>        }
+</span>187 <span style=''></span><span style='background: #AEF1AE'>      }
+</span>188 <span style=''></span><span style='background: #AEF1AE'>
+</span>189 <span style=''></span><span style='background: #AEF1AE'>      /** Type rewiring is needed because a previous reference to an instance
+</span>190 <span style=''></span><span style='background: #AEF1AE'>       *  method might still persist in the types of enclosing nodes. Example:
+</span>191 <span style=''></span><span style='background: #AEF1AE'>       *
+</span>192 <span style=''></span><span style='background: #AEF1AE'>       *     if (true) this.imeth else this.imeth
+</span>193 <span style=''></span><span style='background: #AEF1AE'>       *
+</span>194 <span style=''></span><span style='background: #AEF1AE'>       *  is rewritten to
+</span>195 <span style=''></span><span style='background: #AEF1AE'>       *
+</span>196 <span style=''></span><span style='background: #AEF1AE'>       *      if (true) xmeth($this) else xmeth($this)
+</span>197 <span style=''></span><span style='background: #AEF1AE'>       *
+</span>198 <span style=''></span><span style='background: #AEF1AE'>       *  but the type `this.imeth` still persists as the result type of the `if`,
+</span>199 <span style=''></span><span style='background: #AEF1AE'>       *  because it is kept by the `cpy` operation of the tree transformer.
+</span>200 <span style=''></span><span style='background: #AEF1AE'>       *  It needs to be rewritten to the common result type of `imeth` and `xmeth`.
+</span>201 <span style=''></span><span style='background: #AEF1AE'>       */
+</span>202 <span style=''></span><span style='background: #AEF1AE'>      def rewireType(tpe: Type) = tpe match {
+</span>203 <span style=''></span><span style='background: #AEF1AE'>        case tpe: TermRef if rewiredTarget(tpe.symbol, derived).exists =&gt; tpe.widen
+</span>204 <span style=''></span><span style='background: #AEF1AE'>        case _ =&gt; tpe
+</span>205 <span style=''></span><span style='background: #AEF1AE'>      }
+</span>206 <span style=''></span><span style='background: #AEF1AE'>
+</span>207 <span style=''></span><span style='background: #AEF1AE'>      new TreeTypeMap(
+</span>208 <span style=''></span><span style='background: #AEF1AE'>        typeMap = rewireType(_)
+</span>209 <span style=''></span><span style='background: #AEF1AE'>          .substDealias(origTParams, trefs)
+</span>210 <span style=''></span><span style='background: #AEF1AE'>          .subst(origVParams, argRefs.map(_.tpe))
+</span>211 <span style=''></span><span style='background: #AEF1AE'>          .substThisUnlessStatic(origClass, thisRef.tpe),
+</span>212 <span style=''></span><span style='background: #AEF1AE'>        treeMap = {
+</span>213 <span style=''></span><span style='background: #AEF1AE'>          case tree: This if tree.symbol == origClass =&gt; thisRef
+</span>214 <span style=''></span><span style='background: #AEF1AE'>          case tree =&gt; rewireTree(tree, Nil) orElse tree
+</span>215 <span style=''></span><span style='background: #AEF1AE'>        },
+</span>216 <span style=''></span><span style='background: #AEF1AE'>        oldOwners = origMeth :: Nil,
+</span>217 <span style=''></span><span style='background: #AEF1AE'>        newOwners = derived :: Nil
+</span>218 <span style=''></span><span style='background: #AEF1AE'>      ).transform(originalDef.rhs)
+</span>219 <span style=''></span><span style='background: #AEF1AE'>    })</span><span style=''>
+</span>220 <span style=''>
+</span>221 <span style=''>  /** A forwarder expression which calls `derived`, passing along
+</span>222 <span style=''>   *  - if `abstractOverClass` the type parameters and enclosing class parameters of originalDef`,
+</span>223 <span style=''>   *  - the `this` of the enclosing class,
+</span>224 <span style=''>   *  - the value parameters of the original method `originalDef`.
+</span>225 <span style=''>   */
+</span>226 <span style=''>  def forwarder(derived: TermSymbol, originalDef: DefDef, abstractOverClass: Boolean = true, liftThisType: Boolean = false)(implicit ctx: Context): Tree = {
+</span>227 <span style=''>    val fun =
+</span>228 <span style=''>      </span><span style='background: #AEF1AE'>ref(derived.termRef)
+</span>229 <span style=''></span><span style='background: #AEF1AE'>        .appliedToTypes(allInstanceTypeParams(originalDef, abstractOverClass).map(_.typeRef))
+</span>230 <span style=''></span><span style='background: #AEF1AE'>        .appliedTo(This(originalDef.symbol.enclosingClass.asClass))</span><span style=''>
+</span>231 <span style=''>
+</span>232 <span style=''>    (</span><span style='background: #AEF1AE'>if (!liftThisType)
+</span>233 <span style=''></span><span style='background: #AEF1AE'>      fun.appliedToArgss(originalDef.vparamss.nestedMap(vparam =&gt; ref(vparam.symbol)))
+</span>234 <span style=''></span><span style='background: #AEF1AE'>    else {
+</span>235 <span style=''></span><span style='background: #AEF1AE'>      // this type could have changed on forwarding. Need to insert a cast.
+</span>236 <span style=''></span><span style='background: #AEF1AE'>      val args = (originalDef.vparamss, fun.tpe.paramInfoss).zipped.map((vparams, paramTypes) =&gt;
+</span>237 <span style=''></span><span style='background: #AEF1AE'>        (vparams, paramTypes).zipped.map((vparam, paramType) =&gt; {
+</span>238 <span style=''></span><span style='background: #AEF1AE'>          assert(vparam.tpe &lt;:&lt; paramType.widen) // type should still conform to widened type
+</span>239 <span style=''></span><span style='background: #AEF1AE'>          ref(vparam.symbol).ensureConforms(paramType)
+</span>240 <span style=''></span><span style='background: #AEF1AE'>        })
+</span>241 <span style=''></span><span style='background: #AEF1AE'>      )
+</span>242 <span style=''></span><span style='background: #AEF1AE'>      fun.appliedToArgss(args)
+</span>243 <span style=''></span><span style='background: #AEF1AE'>
+</span>244 <span style=''></span><span style='background: #AEF1AE'>    }).withPos(originalDef.rhs.pos)</span><span style=''>
+</span>245 <span style=''>  }
+</span>246 <span style=''>}
+</span>247 <span style=''>
+</span>248 <span style=''>object FullParameterization {
+</span>249 <span style=''>
+</span>250 <span style=''>  /** Assuming `info` is a result of a `fullyParameterizedType` call, the signature of the
+</span>251 <span style=''>   *  original method type `X` such that `info = fullyParameterizedType(X, ...)`.
+</span>252 <span style=''>   */
+</span>253 <span style=''>  def memberSignature(info: Type)(implicit ctx: Context): Signature = info match {
+</span>254 <span style=''>    case info: PolyType =&gt;
+</span>255 <span style=''>      </span><span style='background: #AEF1AE'>memberSignature(info.resultType)</span><span style=''>
+</span>256 <span style=''>    case MethodTpe(nme.SELF :: Nil, _, restpe) =&gt;
+</span>257 <span style=''>      </span><span style='background: #AEF1AE'>restpe.ensureMethodic.signature</span><span style=''>
+</span>258 <span style=''>    case info @ MethodTpe(nme.SELF :: otherNames, thisType :: otherTypes, restpe) =&gt;
+</span>259 <span style=''>      </span><span style='background: #AEF1AE'>info.derivedLambdaType(otherNames, otherTypes, restpe).signature</span><span style=''>
+</span>260 <span style=''>    case _ =&gt;
+</span>261 <span style=''>      </span><span style='background: #F0ADAD'>Signature.NotAMethod</span><span style=''>
+</span>262 <span style=''>  }
+</span>263 <span style=''>}
+</span></pre>
+          </div>
+          <div class="tab-pane" id="statementlist">
+            <table cellspacing="0" cellpadding="0" class="table statementlist">
+      <tr>
+        <th>Line</th>
+        <th>Stmt Id</th>
+        <th>Pos</th>
+        <th>Tree</th>
+        <th>Symbol</th>
+        <th>Code</th>
+      </tr><tr>
+        <td>
+          72
+        </td>
+        <td>
+          55023
+        </td>
+        <td>
+          2621
+          -
+          2656
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.transform.FullParameterization.rewiredTarget
+        </td>
+        <td style="background: #AEF1AE">
+          FullParameterization.this.rewiredTarget(tree.symbol(ctx), derived)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          95
+        </td>
+        <td>
+          55025
+        </td>
+        <td>
+          3732
+          -
+          3732
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.Tuple2._2
+        </td>
+        <td style="background: #AEF1AE">
+          x$1._2
+        </td>
+      </tr><tr>
+        <td>
+          95
+        </td>
+        <td>
+          55024
+        </td>
+        <td>
+          3718
+          -
+          3718
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.Tuple2._1
+        </td>
+        <td style="background: #AEF1AE">
+          x$1._1
+        </td>
+      </tr><tr>
+        <td>
+          100
+        </td>
+        <td>
+          55027
+        </td>
+        <td>
+          3954
+          -
+          3970
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          dotty.tools.dotc.core.SymDenotations.ClassDenotation.typeParams
+        </td>
+        <td style="background: #AEF1AE">
+          core.Symbols.toClassDenot(clazz)(ctx).typeParams(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          100
+        </td>
+        <td>
+          55026
+        </td>
+        <td>
+          3954
+          -
+          3970
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.SymDenotations.ClassDenotation.typeParams
+        </td>
+        <td style="background: #AEF1AE">
+          core.Symbols.toClassDenot(clazz)(ctx).typeParams(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          100
+        </td>
+        <td>
+          55029
+        </td>
+        <td>
+          3976
+          -
+          3979
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          scala.collection.immutable.Nil
+        </td>
+        <td style="background: #F0ADAD">
+          scala.collection.immutable.Nil
+        </td>
+      </tr><tr>
+        <td>
+          100
+        </td>
+        <td>
+          55028
+        </td>
+        <td>
+          3976
+          -
+          3979
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.collection.immutable.Nil
+        </td>
+        <td style="background: #F0ADAD">
+          scala.collection.immutable.Nil
+        </td>
+      </tr><tr>
+        <td>
+          101
+        </td>
+        <td>
+          55032
+        </td>
+        <td>
+          3998
+          -
+          4018
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          scala.collection.immutable.List.map
+        </td>
+        <td style="background: #AEF1AE">
+          ctparams.map[dotty.tools.dotc.core.Names.TypeName, List[dotty.tools.dotc.core.Names.TypeName]](((x$2: dotty.tools.dotc.core.Symbols.TypeSymbol) =&gt; x$2.name(ctx)))(immutable.this.List.canBuildFrom[dotty.tools.dotc.core.Names.TypeName])
+        </td>
+      </tr><tr>
+        <td>
+          101
+        </td>
+        <td>
+          55031
+        </td>
+        <td>
+          4010
+          -
+          4010
+        </td>
+        <td>
+          TypeApply
+        </td>
+        <td>
+          scala.collection.immutable.List.canBuildFrom
+        </td>
+        <td style="background: #AEF1AE">
+          immutable.this.List.canBuildFrom[dotty.tools.dotc.core.Names.TypeName]
+        </td>
+      </tr><tr>
+        <td>
+          101
+        </td>
+        <td>
+          55030
+        </td>
+        <td>
+          4011
+          -
+          4017
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.Symbols.Symbol.name
+        </td>
+        <td style="background: #AEF1AE">
+          x$2.name(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          102
+        </td>
+        <td>
+          55035
+        </td>
+        <td>
+          4041
+          -
+          4065
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          scala.collection.immutable.List.map
+        </td>
+        <td style="background: #AEF1AE">
+          ctparams.map[Int, List[Int]](((x$3: dotty.tools.dotc.core.Symbols.TypeSymbol) =&gt; core.Symbols.toDenot(x$3)(ctx).variance(ctx)))(immutable.this.List.canBuildFrom[Int])
+        </td>
+      </tr><tr>
+        <td>
+          102
+        </td>
+        <td>
+          55034
+        </td>
+        <td>
+          4053
+          -
+          4053
+        </td>
+        <td>
+          TypeApply
+        </td>
+        <td>
+          scala.collection.immutable.List.canBuildFrom
+        </td>
+        <td style="background: #AEF1AE">
+          immutable.this.List.canBuildFrom[Int]
+        </td>
+      </tr><tr>
+        <td>
+          102
+        </td>
+        <td>
+          55033
+        </td>
+        <td>
+          4054
+          -
+          4064
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.SymDenotations.SymDenotation.variance
+        </td>
+        <td style="background: #AEF1AE">
+          core.Symbols.toDenot(x$3)(ctx).variance(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          106
+        </td>
+        <td>
+          55036
+        </td>
+        <td>
+          4195
+          -
+          4219
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.Types.ClassInfo.selfType
+        </td>
+        <td style="background: #AEF1AE">
+          core.Symbols.toClassDenot(clazz)(ctx).classInfo(ctx).selfType(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          106
+        </td>
+        <td>
+          55037
+        </td>
+        <td>
+          4180
+          -
+          4220
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Function1.apply
+        </td>
+        <td style="background: #AEF1AE">
+          mapClassParams.apply(core.Symbols.toClassDenot(clazz)(ctx).classInfo(ctx).selfType(ctx))
+        </td>
+      </tr><tr>
+        <td>
+          107
+        </td>
+        <td>
+          55038
+        </td>
+        <td>
+          4264
+          -
+          4294
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.Types.Type.&amp;
+        </td>
+        <td style="background: #F0ADAD">
+          thisParamType.&amp;(core.Symbols.toClassDenot(clazz)(ctx).thisType(ctx))(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          107
+        </td>
+        <td>
+          55040
+        </td>
+        <td>
+          4300
+          -
+          4313
+        </td>
+        <td>
+          Ident
+        </td>
+        <td>
+          dotty.tools.dotc.transform.FullParameterization.thisParamType
+        </td>
+        <td style="background: #AEF1AE">
+          thisParamType
+        </td>
+      </tr><tr>
+        <td>
+          107
+        </td>
+        <td>
+          55039
+        </td>
+        <td>
+          4264
+          -
+          4294
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          dotty.tools.dotc.core.Types.Type.&amp;
+        </td>
+        <td style="background: #F0ADAD">
+          thisParamType.&amp;(core.Symbols.toClassDenot(clazz)(ctx).thisType(ctx))(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          108
+        </td>
+        <td>
+          55041
+        </td>
+        <td>
+          4320
+          -
+          4477
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.Types.MethodTypeCompanion.apply
+        </td>
+        <td style="background: #AEF1AE">
+          core.Types.MethodType.apply({
+  &lt;synthetic&gt; &lt;artifact&gt; val x$4: dotty.tools.dotc.core.Names.TermName = core.StdNames.nme.SELF;
+  scala.collection.immutable.Nil.::[dotty.tools.dotc.core.Names.TermName](x$4)
+})(((mt: dotty.tools.dotc.core.Types.MethodType) =&gt; {
+  &lt;synthetic&gt; &lt;artifact&gt; val x$5: dotty.tools.dotc.core.Types.Type = firstArgType;
+  scala.collection.immutable.Nil.::[dotty.tools.dotc.core.Types.Type](x$5)
+}), ((mt: dotty.tools.dotc.core.Types.MethodType) =&gt; mapClassParams.apply(origResult).substThisUnlessStatic(clazz, mt.newParamRef(0))(ctx)))(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          115
+        </td>
+        <td>
+          55044
+        </td>
+        <td>
+          4663
+          -
+          4720
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.collection.TraversableOnce.toList
+        </td>
+        <td style="background: #AEF1AE">
+          scala.Predef.intWrapper(mtparamCount).until(mtparamCount.+(ctparams.length)).toList
+        </td>
+      </tr><tr>
+        <td>
+          115
+        </td>
+        <td>
+          55043
+        </td>
+        <td>
+          4682
+          -
+          4712
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Int.+
+        </td>
+        <td style="background: #AEF1AE">
+          mtparamCount.+(ctparams.length)
+        </td>
+      </tr><tr>
+        <td>
+          115
+        </td>
+        <td>
+          55042
+        </td>
+        <td>
+          4697
+          -
+          4712
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.collection.LinearSeqOptimized.length
+        </td>
+        <td style="background: #AEF1AE">
+          ctparams.length
+        </td>
+      </tr><tr>
+        <td>
+          116
+        </td>
+        <td>
+          55045
+        </td>
+        <td>
+          4727
+          -
+          4792
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.Types.Type.substDealias
+        </td>
+        <td style="background: #AEF1AE">
+          tp.substDealias(ctparams, classParamsRange.map[pt.ParamRefType, List[dotty.tools.dotc.core.Types.Type]](((x$6: Int) =&gt; pt.paramRefs.apply(x$6)))(immutable.this.List.canBuildFrom[pt.ParamRefType]))(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          121
+        </td>
+        <td>
+          55047
+        </td>
+        <td>
+          4951
+          -
+          4951
+        </td>
+        <td>
+          TypeApply
+        </td>
+        <td>
+          scala.collection.immutable.List.canBuildFrom
+        </td>
+        <td style="background: #AEF1AE">
+          immutable.this.List.canBuildFrom[dotty.tools.dotc.core.Types.TypeBounds]
+        </td>
+      </tr><tr>
+        <td>
+          121
+        </td>
+        <td>
+          55046
+        </td>
+        <td>
+          4962
+          -
+          5000
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.Types.Type.bounds
+        </td>
+        <td style="background: #AEF1AE">
+          mapClassParams(core.Symbols.toDenot(tparam)(ctx).info(ctx), pt).bounds(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          121
+        </td>
+        <td>
+          55048
+        </td>
+        <td>
+          4939
+          -
+          5001
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          scala.collection.immutable.List.map
+        </td>
+        <td style="background: #AEF1AE">
+          ctparams.map[dotty.tools.dotc.core.Types.TypeBounds, List[dotty.tools.dotc.core.Types.TypeBounds]](((tparam: dotty.tools.dotc.core.Symbols.TypeSymbol) =&gt; mapClassParams(core.Symbols.toDenot(tparam)(ctx).info(ctx), pt).bounds(ctx)))(immutable.this.List.canBuildFrom[dotty.tools.dotc.core.Types.TypeBounds])
+        </td>
+      </tr><tr>
+        <td>
+          125
+        </td>
+        <td>
+          55049
+        </td>
+        <td>
+          5057
+          -
+          5318
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.Types.PolyType.apply
+        </td>
+        <td style="background: #AEF1AE">
+          core.Types.PolyType.apply(info.paramNames.++[dotty.tools.dotc.core.Names.TypeName, List[dotty.tools.dotc.core.Names.TypeName]](ctnames)(immutable.this.List.canBuildFrom[dotty.tools.dotc.core.Names.TypeName]))(((pt: dotty.tools.dotc.core.Types.PolyType) =&gt; info.paramInfos.map[dotty.tools.dotc.core.Types.TypeBounds, List[dotty.tools.dotc.core.Types.TypeBounds]](((x$7: dotty.tools.dotc.core.Types.TypeBounds) =&gt; mapClassParams(x$7, pt).bounds(ctx)))(immutable.this.List.canBuildFrom[dotty.tools.dotc.core.Types.TypeBounds]).++[dotty.tools.dotc.core.Types.TypeBounds, List[dotty.tools.dotc.core.Types.TypeBounds]](mappedClassBounds(pt))(immutable.this.List.canBuildFrom[dotty.tools.dotc.core.Types.TypeBounds]).mapConserve[dotty.tools.dotc.core.Types.TypeBounds](((x$8: dotty.tools.dotc.core.Types.TypeBounds) =&gt; x$8.subst(info, pt)(ctx).bounds(ctx)))), ((pt: dotty.tools.dotc.core.Types.PolyType) =&gt; resultType(((x$9: dotty.tools.dotc.core.Types.Type) =&gt; mapClassParams(x$9, pt))).subst(info, pt)(ctx)))(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          131
+        </td>
+        <td>
+          55053
+        </td>
+        <td>
+          5365
+          -
+          5385
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          dotty.tools.dotc.transform.FullParameterization.resultType
+        </td>
+        <td style="background: #AEF1AE">
+          resultType({
+  ((x: dotty.tools.dotc.core.Types.Type) =&gt; scala.Predef.identity[dotty.tools.dotc.core.Types.Type](x))
+})
+        </td>
+      </tr><tr>
+        <td>
+          131
+        </td>
+        <td>
+          55050
+        </td>
+        <td>
+          5347
+          -
+          5363
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.collection.SeqLike.isEmpty
+        </td>
+        <td style="background: #AEF1AE">
+          ctparams.isEmpty
+        </td>
+      </tr><tr>
+        <td>
+          131
+        </td>
+        <td>
+          55052
+        </td>
+        <td>
+          5365
+          -
+          5385
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.transform.FullParameterization.resultType
+        </td>
+        <td style="background: #AEF1AE">
+          resultType({
+  ((x: dotty.tools.dotc.core.Types.Type) =&gt; scala.Predef.identity[dotty.tools.dotc.core.Types.Type](x))
+})
+        </td>
+      </tr><tr>
+        <td>
+          131
+        </td>
+        <td>
+          55051
+        </td>
+        <td>
+          5376
+          -
+          5384
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Predef.identity
+        </td>
+        <td style="background: #AEF1AE">
+          scala.Predef.identity[dotty.tools.dotc.core.Types.Type](x)
+        </td>
+      </tr><tr>
+        <td>
+          132
+        </td>
+        <td>
+          55055
+        </td>
+        <td>
+          5399
+          -
+          5476
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          dotty.tools.dotc.core.Types.PolyType.apply
+        </td>
+        <td style="background: #AEF1AE">
+          core.Types.PolyType.apply(ctnames)({
+  ((pt: dotty.tools.dotc.core.Types.PolyType) =&gt; mappedClassBounds(pt))
+}, ((pt: dotty.tools.dotc.core.Types.PolyType) =&gt; resultType(((x$10: dotty.tools.dotc.core.Types.Type) =&gt; mapClassParams(x$10, pt)))))(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          132
+        </td>
+        <td>
+          55054
+        </td>
+        <td>
+          5399
+          -
+          5476
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.Types.PolyType.apply
+        </td>
+        <td style="background: #AEF1AE">
+          core.Types.PolyType.apply(ctnames)({
+  ((pt: dotty.tools.dotc.core.Types.PolyType) =&gt; mappedClassBounds(pt))
+}, ((pt: dotty.tools.dotc.core.Types.PolyType) =&gt; resultType(((x$10: dotty.tools.dotc.core.Types.Type) =&gt; mapClassParams(x$10, pt)))))(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          141
+        </td>
+        <td>
+          55056
+        </td>
+        <td>
+          5824
+          -
+          5872
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.collection.immutable.List.:::
+        </td>
+        <td style="background: #AEF1AE">
+          core.Symbols.toDenot(core.Symbols.toDenot(originalDef.symbol(ctx))(ctx).enclosingClass(ctx))(ctx).typeParams(ctx).:::[dotty.tools.dotc.core.Symbols.Symbol](x$12)
+        </td>
+      </tr><tr>
+        <td>
+          141
+        </td>
+        <td>
+          55057
+        </td>
+        <td>
+          5790
+          -
+          5872
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          {
+  &lt;synthetic&gt; &lt;artifact&gt; val x$12: List[dotty.tools.dotc.core.Symbols.Symbol] = originalDef.tparams.map[dotty.tools.dotc.core.Symbols.Symbol, List[dotty.tools.dotc.core.Symbols.Symbol]](((x$11: dotty.tools.dotc.ast.Trees.TypeDef[dotty.tools.dotc.core.Types.Type]) =&gt; x$11.symbol(ctx)))(immutable.this.List.canBuildFrom[dotty.tools.dotc.core.Symbols.Symbol]);
+  core.Symbols.toDenot(core.Symbols.toDenot(originalDef.symbol(ctx))(ctx).enclosingClass(ctx))(ctx).typeParams(ctx).:::[dotty.tools.dotc.core.Symbols.Symbol](x$12)
+}
+        </td>
+      </tr><tr>
+        <td>
+          142
+        </td>
+        <td>
+          55059
+        </td>
+        <td>
+          5905
+          -
+          5905
+        </td>
+        <td>
+          TypeApply
+        </td>
+        <td>
+          scala.collection.immutable.List.canBuildFrom
+        </td>
+        <td style="background: #F0ADAD">
+          immutable.this.List.canBuildFrom[dotty.tools.dotc.core.Symbols.Symbol]
+        </td>
+      </tr><tr>
+        <td>
+          142
+        </td>
+        <td>
+          55058
+        </td>
+        <td>
+          5906
+          -
+          5914
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Trees.Tree.symbol
+        </td>
+        <td style="background: #F0ADAD">
+          x$13.symbol(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          142
+        </td>
+        <td>
+          55061
+        </td>
+        <td>
+          5882
+          -
+          5915
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          scala.collection.immutable.List.map
+        </td>
+        <td style="background: #F0ADAD">
+          originalDef.tparams.map[dotty.tools.dotc.core.Symbols.Symbol, List[dotty.tools.dotc.core.Symbols.Symbol]](((x$13: dotty.tools.dotc.ast.Trees.TypeDef[dotty.tools.dotc.core.Types.Type]) =&gt; x$13.symbol(ctx)))(immutable.this.List.canBuildFrom[dotty.tools.dotc.core.Symbols.Symbol])
+        </td>
+      </tr><tr>
+        <td>
+          142
+        </td>
+        <td>
+          55060
+        </td>
+        <td>
+          5882
+          -
+          5915
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          scala.collection.immutable.List.map
+        </td>
+        <td style="background: #F0ADAD">
+          originalDef.tparams.map[dotty.tools.dotc.core.Symbols.Symbol, List[dotty.tools.dotc.core.Symbols.Symbol]](((x$13: dotty.tools.dotc.ast.Trees.TypeDef[dotty.tools.dotc.core.Types.Type]) =&gt; x$13.symbol(ctx)))(immutable.this.List.canBuildFrom[dotty.tools.dotc.core.Symbols.Symbol])
+        </td>
+      </tr><tr>
+        <td>
+          152
+        </td>
+        <td>
+          55062
+        </td>
+        <td>
+          6442
+          -
+          9157
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.tpd.polyDefDef
+        </td>
+        <td style="background: #AEF1AE">
+          ast.tpd.polyDefDef(derived, ((trefs: List[dotty.tools.dotc.core.Types.Type]) =&gt; ((vrefss: List[List[dotty.tools.dotc.ast.tpd.Tree]]) =&gt; {
+  val origMeth: dotty.tools.dotc.core.Symbols.Symbol = originalDef.symbol(ctx);
+  val origClass: dotty.tools.dotc.core.Symbols.ClassSymbol = core.Symbols.toDenot(origMeth)(ctx).enclosingClass(ctx).asClass;
+  val origTParams: List[dotty.tools.dotc.core.Symbols.Symbol] = FullParameterization.this.allInstanceTypeParams(originalDef, abstractOverClass)(ctx);
+  val origVParams: List[dotty.tools.dotc.core.Symbols.Symbol] = originalDef.vparamss.flatten[dotty.tools.dotc.ast.Trees.ValDef[dotty.tools.dotc.core.Types.Type]](scala.Predef.$conforms[List[dotty.tools.dotc.ast.Trees.ValDef[dotty.tools.dotc.core.Types.Type]]]).map[dotty.tools.dotc.core.Symbols.Symbol, List[dotty.tools.dotc.core.Symbols.Symbol]](((x$14: dotty.tools.dotc.ast.Trees.ValDef[dotty.tools.dotc.core.Types.Type]) =&gt; x$14.symbol(ctx)))(immutable.this.List.canBuildFrom[dotty.tools.dotc.core.Symbols.Symbol]);
+  &lt;synthetic&gt; &lt;artifact&gt; private[this] val x$15: (dotty.tools.dotc.ast.tpd.Tree, List[dotty.tools.dotc.ast.tpd.Tree]) = (vrefss.flatten[dotty.tools.dotc.ast.tpd.Tree](scala.Predef.$conforms[List[dotty.tools.dotc.ast.tpd.Tree]]): List[dotty.tools.dotc.ast.tpd.Tree] @unchecked) match {
+    case (head: dotty.tools.dotc.ast.tpd.Tree, tl: List[dotty.tools.dotc.ast.tpd.Tree])scala.collection.immutable.::[dotty.tools.dotc.ast.tpd.Tree]((thisRef @ _), (argRefs @ _)) =&gt; scala.Tuple2.apply[dotty.tools.dotc.ast.tpd.Tree, List[dotty.tools.dotc.ast.tpd.Tree]](thisRef, argRefs)
+  };
+  val thisRef: dotty.tools.dotc.ast.tpd.Tree = x$15._1;
+  val argRefs: List[dotty.tools.dotc.ast.tpd.Tree] = x$15._2;
+  def rewireTree(tree: dotty.tools.dotc.ast.tpd.Tree, targs: List[dotty.tools.dotc.ast.tpd.Tree])(implicit ctx: dotty.tools.dotc.core.Contexts.Context): dotty.tools.dotc.ast.tpd.Tree = {
+    def rewireCall(thisArg: dotty.tools.dotc.ast.tpd.Tree): dotty.tools.dotc.ast.tpd.Tree = {
+      val rewired: dotty.tools.dotc.core.Symbols.Symbol = FullParameterization.this.rewiredTarget(tree, derived)(ctx);
+      if (core.Symbols.toDenot(rewired)(ctx).exists)
+        {
+          val base: dotty.tools.dotc.core.Types.Type = thisArg.tpe.baseType(origClass)(ctx);
+          scala.Predef.assert(base.exists);
+          ast.tpd.TreeOps[dotty.tools.dotc.ast.tpd.Tree](ast.tpd.TreeOps[dotty.tools.dotc.ast.tpd.Tree](ast.tpd.ref(core.Symbols.toDenot(rewired)(ctx).termRef(ctx))(ctx)).appliedToTypeTrees(targs.++[dotty.tools.dotc.ast.tpd.Tree, List[dotty.tools.dotc.ast.tpd.Tree]](core.Types.decorateTypeApplications(base).argInfos(ctx).map[dotty.tools.dotc.ast.tpd.TypeTree, List[dotty.tools.dotc.ast.tpd.TypeTree]](((x$16: dotty.tools.dotc.core.Types.Type) =&gt; ast.tpd.TypeTree(x$16)(ctx)))(immutable.this.List.canBuildFrom[dotty.tools.dotc.ast.tpd.TypeTree]))(immutable.this.List.canBuildFrom[dotty.tools.dotc.ast.tpd.Tree]))(ctx)).appliedTo(thisArg)(ctx)
+        }
+      else
+        ast.tpd.EmptyTree
+    };
+    tree match {
+      case (expr: dotty.tools.dotc.ast.Trees.Tree[dotty.tools.dotc.core.Types.Type], from: dotty.tools.dotc.ast.Trees.Tree[dotty.tools.dotc.core.Types.Type])dotty.tools.dotc.ast.Trees.Return[dotty.tools.dotc.core.Types.Type]((expr @ _), (from @ _)) if from.isEmpty.unary_! =&gt; {
+        val rewired: dotty.tools.dotc.core.Symbols.Symbol = FullParameterization.this.rewiredTarget(from, derived)(ctx);
+        if (core.Symbols.toDenot(rewired)(ctx).exists)
+          ast.tpd.cpy.Return(tree)(expr, ast.tpd.Ident(core.Symbols.toDenot(rewired)(ctx).termRef(ctx))(ctx))(ctx)
+        else
+          ast.tpd.EmptyTree
+      }
+      case (name: dotty.tools.dotc.core.Names.Name)dotty.tools.dotc.ast.Trees.Ident[Any](_) =&gt; rewireCall(thisRef)
+      case (qualifier: dotty.tools.dotc.ast.Trees.Tree[dotty.tools.dotc.core.Types.Type], name: dotty.tools.dotc.core.Names.Name)dotty.tools.dotc.ast.Trees.Select[dotty.tools.dotc.core.Types.Type]((qual @ _), _) =&gt; rewireCall(qual)
+      case (tree @ (fun: dotty.tools.dotc.ast.Trees.Tree[dotty.tools.dotc.core.Types.Type], args: List[dotty.tools.dotc.ast.Trees.Tree[dotty.tools.dotc.core.Types.Type]])dotty.tools.dotc.ast.Trees.TypeApply[dotty.tools.dotc.core.Types.Type]((fn @ _), (targs1 @ _))) =&gt; {
+        scala.Predef.assert(targs.isEmpty);
+        rewireTree(fn, targs1)(ctx)
+      }
+      case _ =&gt; ast.tpd.EmptyTree
+    }
+  };
+  def rewireType(tpe: dotty.tools.dotc.core.Types.Type): dotty.tools.dotc.core.Types.Type = tpe match {
+    case (tpe @ (_: dotty.tools.dotc.core.Types.TermRef)) if core.Symbols.toDenot(FullParameterization.this.rewiredTarget(tpe.symbol(ctx), derived)(ctx))(ctx).exists =&gt; tpe.widen(ctx)
+    case _ =&gt; tpe
+  };
+  new ast.TreeTypeMap(((x$17: dotty.tools.dotc.core.Types.Type) =&gt; rewireType(x$17).substDealias(origTParams, trefs)(ctx).subst(origVParams, argRefs.map[dotty.tools.dotc.core.Types.Type, List[dotty.tools.dotc.core.Types.Type]](((x$18: dotty.tools.dotc.ast.tpd.Tree) =&gt; x$18.tpe))(immutable.this.List.canBuildFrom[dotty.tools.dotc.core.Types.Type]))(ctx).substThisUnlessStatic(origClass, thisRef.tpe)(ctx)), ((x0$1: dotty.tools.dotc.ast.tpd.Tree) =&gt; x0$1 match {
+  case (tree @ (_: dotty.tools.dotc.ast.tpd.This)) if tree.symbol(ctx).==(origClass) =&gt; thisRef
+  case (tree @ _) =&gt; rewireTree(tree, scala.collection.immutable.Nil)(ctx).orElse[dotty.tools.dotc.core.Types.Type](tree)
+}), {
+  &lt;synthetic&gt; &lt;artifact&gt; val x$19: dotty.tools.dotc.core.Symbols.Symbol = origMeth;
+  scala.collection.immutable.Nil.::[dotty.tools.dotc.core.Symbols.Symbol](x$19)
+}, {
+  &lt;synthetic&gt; &lt;artifact&gt; val x$20: dotty.tools.dotc.core.Symbols.TermSymbol = derived;
+  scala.collection.immutable.Nil.::[dotty.tools.dotc.core.Symbols.TermSymbol](x$20)
+}, ast.this.TreeTypeMap.&lt;init&gt;$default$5, ast.this.TreeTypeMap.&lt;init&gt;$default$6)(ctx).transform(originalDef.rhs(ctx))(ctx)
+})))(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          230
+        </td>
+        <td>
+          55063
+        </td>
+        <td>
+          9617
+          -
+          9799
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.tpd.TreeOps.appliedTo
+        </td>
+        <td style="background: #AEF1AE">
+          ast.tpd.TreeOps[dotty.tools.dotc.ast.tpd.Tree](ast.tpd.TreeOps[dotty.tools.dotc.ast.tpd.Tree](ast.tpd.ref(core.Symbols.toDenot(derived)(ctx).termRef(ctx))(ctx)).appliedToTypes(FullParameterization.this.allInstanceTypeParams(originalDef, abstractOverClass)(ctx).map[dotty.tools.dotc.core.Types.TypeRef, List[dotty.tools.dotc.core.Types.Type]](((x$21: dotty.tools.dotc.core.Symbols.Symbol) =&gt; core.Symbols.toDenot(x$21)(ctx).typeRef(ctx)))(immutable.this.List.canBuildFrom[dotty.tools.dotc.core.Types.TypeRef]))(ctx)).appliedTo(ast.tpd.This(core.Symbols.toDenot(originalDef.symbol(ctx))(ctx).enclosingClass(ctx).asClass)(ctx))(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          232
+        </td>
+        <td>
+          55064
+        </td>
+        <td>
+          9810
+          -
+          9823
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          scala.Boolean.unary_!
+        </td>
+        <td style="background: #AEF1AE">
+          liftThisType.unary_!
+        </td>
+      </tr><tr>
+        <td>
+          233
+        </td>
+        <td>
+          55065
+        </td>
+        <td>
+          9831
+          -
+          9911
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.tpd.TreeOps.appliedToArgss
+        </td>
+        <td style="background: #AEF1AE">
+          ast.tpd.TreeOps[dotty.tools.dotc.ast.tpd.Tree](fun).appliedToArgss(core.Decorators.ListOfListDecorator[dotty.tools.dotc.ast.Trees.ValDef[dotty.tools.dotc.core.Types.Type]](originalDef.vparamss).nestedMap[dotty.tools.dotc.ast.tpd.Tree](((vparam: dotty.tools.dotc.ast.Trees.ValDef[dotty.tools.dotc.core.Types.Type]) =&gt; ast.tpd.ref(vparam.symbol(ctx))(ctx))))(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          233
+        </td>
+        <td>
+          55066
+        </td>
+        <td>
+          9831
+          -
+          9911
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          dotty.tools.dotc.ast.tpd.TreeOps.appliedToArgss
+        </td>
+        <td style="background: #AEF1AE">
+          ast.tpd.TreeOps[dotty.tools.dotc.ast.tpd.Tree](fun).appliedToArgss(core.Decorators.ListOfListDecorator[dotty.tools.dotc.ast.Trees.ValDef[dotty.tools.dotc.core.Types.Type]](originalDef.vparamss).nestedMap[dotty.tools.dotc.ast.tpd.Tree](((vparam: dotty.tools.dotc.ast.Trees.ValDef[dotty.tools.dotc.core.Types.Type]) =&gt; ast.tpd.ref(vparam.symbol(ctx))(ctx))))(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          234
+        </td>
+        <td>
+          55083
+        </td>
+        <td>
+          9921
+          -
+          10367
+        </td>
+        <td>
+          Block
+        </td>
+        <td>
+          &lt;nosymbol&gt;
+        </td>
+        <td style="background: #AEF1AE">
+          {
+  val args: List[List[dotty.tools.dotc.ast.tpd.Tree]] = scala.Predef.tuple2ToZippedOps[List[List[dotty.tools.dotc.ast.Trees.ValDef[dotty.tools.dotc.core.Types.Type]]], List[List[dotty.tools.dotc.core.Types.Type]]](scala.Tuple2.apply[List[List[dotty.tools.dotc.ast.Trees.ValDef[dotty.tools.dotc.core.Types.Type]]], List[List[dotty.tools.dotc.core.Types.Type]]](originalDef.vparamss, fun.tpe.paramInfoss(ctx))).zipped[List[dotty.tools.dotc.ast.Trees.ValDef[dotty.tools.dotc.core.Types.Type]], List[List[dotty.tools.dotc.ast.Trees.ValDef[dotty.tools.dotc.core.Types.Type]]], List[dotty.tools.dotc.core.Types.Type], List[List[dotty.tools.dotc.core.Types.Type]]](scala.Predef.$conforms[List[List[dotty.tools.dotc.ast.Trees.ValDef[dotty.tools.dotc.core.Types.Type]]]], scala.Predef.$conforms[List[List[dotty.tools.dotc.core.Types.Type]]]).map[List[dotty.tools.dotc.ast.tpd.Tree], List[List[dotty.tools.dotc.ast.tpd.Tree]]](((vparams: List[dotty.tools.dotc.ast.Trees.ValDef[dotty.tools.dotc.core.Types.Type]], paramTypes: List[dotty.tools.dotc.core.Types.Type]) =&gt; scala.Predef.tuple2ToZippedOps[List[dotty.tools.dotc.ast.Trees.ValDef[dotty.tools.dotc.core.Types.Type]], List[dotty.tools.dotc.core.Types.Type]](scala.Tuple2.apply[List[dotty.tools.dotc.ast.Trees.ValDef[dotty.tools.dotc.core.Types.Type]], List[dotty.tools.dotc.core.Types.Type]](vparams, paramTypes)).zipped[dotty.tools.dotc.ast.Trees.ValDef[dotty.tools.dotc.core.Types.Type], List[dotty.tools.dotc.ast.Trees.ValDef[dotty.tools.dotc.core.Types.Type]], dotty.tools.dotc.core.Types.Type, List[dotty.tools.dotc.core.Types.Type]](scala.Predef.$conforms[List[dotty.tools.dotc.ast.Trees.ValDef[dotty.tools.dotc.core.Types.Type]]], scala.Predef.$conforms[List[dotty.tools.dotc.core.Types.Type]]).map[dotty.tools.dotc.ast.tpd.Tree, List[dotty.tools.dotc.ast.tpd.Tree]](((vparam: dotty.tools.dotc.ast.Trees.ValDef[dotty.tools.dotc.core.Types.Type], paramType: dotty.tools.dotc.core.Types.Type) =&gt; {
+    scala.Predef.assert(vparam.tpe.&lt;:&lt;(paramType.widen(ctx))(ctx));
+    ast.tpd.TreeOps[dotty.tools.dotc.ast.tpd.Tree](ast.tpd.ref(vparam.symbol(ctx))(ctx)).ensureConforms(paramType)(ctx)
+  }))(immutable.this.List.canBuildFrom[dotty.tools.dotc.ast.tpd.Tree])))(immutable.this.List.canBuildFrom[List[dotty.tools.dotc.ast.tpd.Tree]]);
+  ast.tpd.TreeOps[dotty.tools.dotc.ast.tpd.Tree](fun).appliedToArgss(args)(ctx)
+}
+        </td>
+      </tr><tr>
+        <td>
+          236
+        </td>
+        <td>
+          55071
+        </td>
+        <td>
+          10060
+          -
+          10060
+        </td>
+        <td>
+          TypeApply
+        </td>
+        <td>
+          scala.Predef.$conforms
+        </td>
+        <td style="background: #AEF1AE">
+          scala.Predef.$conforms[List[List[dotty.tools.dotc.core.Types.Type]]]
+        </td>
+      </tr><tr>
+        <td>
+          236
+        </td>
+        <td>
+          55080
+        </td>
+        <td>
+          10070
+          -
+          10070
+        </td>
+        <td>
+          TypeApply
+        </td>
+        <td>
+          scala.collection.immutable.List.canBuildFrom
+        </td>
+        <td style="background: #AEF1AE">
+          immutable.this.List.canBuildFrom[List[dotty.tools.dotc.ast.tpd.Tree]]
+        </td>
+      </tr><tr>
+        <td>
+          236
+        </td>
+        <td>
+          55068
+        </td>
+        <td>
+          10039
+          -
+          10058
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.Types.Type.paramInfoss
+        </td>
+        <td style="background: #AEF1AE">
+          fun.tpe.paramInfoss(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          236
+        </td>
+        <td>
+          55067
+        </td>
+        <td>
+          10017
+          -
+          10037
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Trees.DefDef.vparamss
+        </td>
+        <td style="background: #AEF1AE">
+          originalDef.vparamss
+        </td>
+      </tr><tr>
+        <td>
+          236
+        </td>
+        <td>
+          55070
+        </td>
+        <td>
+          10060
+          -
+          10060
+        </td>
+        <td>
+          TypeApply
+        </td>
+        <td>
+          scala.Predef.$conforms
+        </td>
+        <td style="background: #AEF1AE">
+          scala.Predef.$conforms[List[List[dotty.tools.dotc.ast.Trees.ValDef[dotty.tools.dotc.core.Types.Type]]]]
+        </td>
+      </tr><tr>
+        <td>
+          236
+        </td>
+        <td>
+          55081
+        </td>
+        <td>
+          10016
+          -
+          10329
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          scala.runtime.Tuple2Zipped.map
+        </td>
+        <td style="background: #AEF1AE">
+          scala.Predef.tuple2ToZippedOps[List[List[dotty.tools.dotc.ast.Trees.ValDef[dotty.tools.dotc.core.Types.Type]]], List[List[dotty.tools.dotc.core.Types.Type]]](scala.Tuple2.apply[List[List[dotty.tools.dotc.ast.Trees.ValDef[dotty.tools.dotc.core.Types.Type]]], List[List[dotty.tools.dotc.core.Types.Type]]](originalDef.vparamss, fun.tpe.paramInfoss(ctx))).zipped[List[dotty.tools.dotc.ast.Trees.ValDef[dotty.tools.dotc.core.Types.Type]], List[List[dotty.tools.dotc.ast.Trees.ValDef[dotty.tools.dotc.core.Types.Type]]], List[dotty.tools.dotc.core.Types.Type], List[List[dotty.tools.dotc.core.Types.Type]]](scala.Predef.$conforms[List[List[dotty.tools.dotc.ast.Trees.ValDef[dotty.tools.dotc.core.Types.Type]]]], scala.Predef.$conforms[List[List[dotty.tools.dotc.core.Types.Type]]]).map[List[dotty.tools.dotc.ast.tpd.Tree], List[List[dotty.tools.dotc.ast.tpd.Tree]]](((vparams: List[dotty.tools.dotc.ast.Trees.ValDef[dotty.tools.dotc.core.Types.Type]], paramTypes: List[dotty.tools.dotc.core.Types.Type]) =&gt; scala.Predef.tuple2ToZippedOps[List[dotty.tools.dotc.ast.Trees.ValDef[dotty.tools.dotc.core.Types.Type]], List[dotty.tools.dotc.core.Types.Type]](scala.Tuple2.apply[List[dotty.tools.dotc.ast.Trees.ValDef[dotty.tools.dotc.core.Types.Type]], List[dotty.tools.dotc.core.Types.Type]](vparams, paramTypes)).zipped[dotty.tools.dotc.ast.Trees.ValDef[dotty.tools.dotc.core.Types.Type], List[dotty.tools.dotc.ast.Trees.ValDef[dotty.tools.dotc.core.Types.Type]], dotty.tools.dotc.core.Types.Type, List[dotty.tools.dotc.core.Types.Type]](scala.Predef.$conforms[List[dotty.tools.dotc.ast.Trees.ValDef[dotty.tools.dotc.core.Types.Type]]], scala.Predef.$conforms[List[dotty.tools.dotc.core.Types.Type]]).map[dotty.tools.dotc.ast.tpd.Tree, List[dotty.tools.dotc.ast.tpd.Tree]](((vparam: dotty.tools.dotc.ast.Trees.ValDef[dotty.tools.dotc.core.Types.Type], paramType: dotty.tools.dotc.core.Types.Type) =&gt; {
+  scala.Predef.assert(vparam.tpe.&lt;:&lt;(paramType.widen(ctx))(ctx));
+  ast.tpd.TreeOps[dotty.tools.dotc.ast.tpd.Tree](ast.tpd.ref(vparam.symbol(ctx))(ctx)).ensureConforms(paramType)(ctx)
+}))(immutable.this.List.canBuildFrom[dotty.tools.dotc.ast.tpd.Tree])))(immutable.this.List.canBuildFrom[List[dotty.tools.dotc.ast.tpd.Tree]])
+        </td>
+      </tr><tr>
+        <td>
+          236
+        </td>
+        <td>
+          55069
+        </td>
+        <td>
+          10016
+          -
+          10059
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Tuple2.apply
+        </td>
+        <td style="background: #AEF1AE">
+          scala.Tuple2.apply[List[List[dotty.tools.dotc.ast.Trees.ValDef[dotty.tools.dotc.core.Types.Type]]], List[List[dotty.tools.dotc.core.Types.Type]]](originalDef.vparamss, fun.tpe.paramInfoss(ctx))
+        </td>
+      </tr><tr>
+        <td>
+          237
+        </td>
+        <td>
+          55074
+        </td>
+        <td>
+          10126
+          -
+          10126
+        </td>
+        <td>
+          TypeApply
+        </td>
+        <td>
+          scala.Predef.$conforms
+        </td>
+        <td style="background: #AEF1AE">
+          scala.Predef.$conforms[List[dotty.tools.dotc.core.Types.Type]]
+        </td>
+      </tr><tr>
+        <td>
+          237
+        </td>
+        <td>
+          55079
+        </td>
+        <td>
+          10104
+          -
+          10321
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          scala.runtime.Tuple2Zipped.map
+        </td>
+        <td style="background: #AEF1AE">
+          scala.Predef.tuple2ToZippedOps[List[dotty.tools.dotc.ast.Trees.ValDef[dotty.tools.dotc.core.Types.Type]], List[dotty.tools.dotc.core.Types.Type]](scala.Tuple2.apply[List[dotty.tools.dotc.ast.Trees.ValDef[dotty.tools.dotc.core.Types.Type]], List[dotty.tools.dotc.core.Types.Type]](vparams, paramTypes)).zipped[dotty.tools.dotc.ast.Trees.ValDef[dotty.tools.dotc.core.Types.Type], List[dotty.tools.dotc.ast.Trees.ValDef[dotty.tools.dotc.core.Types.Type]], dotty.tools.dotc.core.Types.Type, List[dotty.tools.dotc.core.Types.Type]](scala.Predef.$conforms[List[dotty.tools.dotc.ast.Trees.ValDef[dotty.tools.dotc.core.Types.Type]]], scala.Predef.$conforms[List[dotty.tools.dotc.core.Types.Type]]).map[dotty.tools.dotc.ast.tpd.Tree, List[dotty.tools.dotc.ast.tpd.Tree]](((vparam: dotty.tools.dotc.ast.Trees.ValDef[dotty.tools.dotc.core.Types.Type], paramType: dotty.tools.dotc.core.Types.Type) =&gt; {
+  scala.Predef.assert(vparam.tpe.&lt;:&lt;(paramType.widen(ctx))(ctx));
+  ast.tpd.TreeOps[dotty.tools.dotc.ast.tpd.Tree](ast.tpd.ref(vparam.symbol(ctx))(ctx)).ensureConforms(paramType)(ctx)
+}))(immutable.this.List.canBuildFrom[dotty.tools.dotc.ast.tpd.Tree])
+        </td>
+      </tr><tr>
+        <td>
+          237
+        </td>
+        <td>
+          55073
+        </td>
+        <td>
+          10126
+          -
+          10126
+        </td>
+        <td>
+          TypeApply
+        </td>
+        <td>
+          scala.Predef.$conforms
+        </td>
+        <td style="background: #AEF1AE">
+          scala.Predef.$conforms[List[dotty.tools.dotc.ast.Trees.ValDef[dotty.tools.dotc.core.Types.Type]]]
+        </td>
+      </tr><tr>
+        <td>
+          237
+        </td>
+        <td>
+          55072
+        </td>
+        <td>
+          10104
+          -
+          10125
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Tuple2.apply
+        </td>
+        <td style="background: #AEF1AE">
+          scala.Tuple2.apply[List[dotty.tools.dotc.ast.Trees.ValDef[dotty.tools.dotc.core.Types.Type]], List[dotty.tools.dotc.core.Types.Type]](vparams, paramTypes)
+        </td>
+      </tr><tr>
+        <td>
+          237
+        </td>
+        <td>
+          55078
+        </td>
+        <td>
+          10136
+          -
+          10136
+        </td>
+        <td>
+          TypeApply
+        </td>
+        <td>
+          scala.collection.immutable.List.canBuildFrom
+        </td>
+        <td style="background: #AEF1AE">
+          immutable.this.List.canBuildFrom[dotty.tools.dotc.ast.tpd.Tree]
+        </td>
+      </tr><tr>
+        <td>
+          238
+        </td>
+        <td>
+          55076
+        </td>
+        <td>
+          10172
+          -
+          10210
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          scala.Predef.assert
+        </td>
+        <td style="background: #AEF1AE">
+          scala.Predef.assert(vparam.tpe.&lt;:&lt;(paramType.widen(ctx))(ctx))
+        </td>
+      </tr><tr>
+        <td>
+          238
+        </td>
+        <td>
+          55075
+        </td>
+        <td>
+          10179
+          -
+          10209
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.Types.Type.&lt;:&lt;
+        </td>
+        <td style="background: #AEF1AE">
+          vparam.tpe.&lt;:&lt;(paramType.widen(ctx))(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          239
+        </td>
+        <td>
+          55077
+        </td>
+        <td>
+          10266
+          -
+          10310
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.tpd.TreeOps.ensureConforms
+        </td>
+        <td style="background: #AEF1AE">
+          ast.tpd.TreeOps[dotty.tools.dotc.ast.tpd.Tree](ast.tpd.ref(vparam.symbol(ctx))(ctx)).ensureConforms(paramType)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          242
+        </td>
+        <td>
+          55082
+        </td>
+        <td>
+          10336
+          -
+          10360
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.ast.tpd.TreeOps.appliedToArgss
+        </td>
+        <td style="background: #AEF1AE">
+          ast.tpd.TreeOps[dotty.tools.dotc.ast.tpd.Tree](fun).appliedToArgss(args)(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          244
+        </td>
+        <td>
+          55085
+        </td>
+        <td>
+          9806
+          -
+          10397
+        </td>
+        <td>
+          Apply
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Positioned.withPos
+        </td>
+        <td style="background: #AEF1AE">
+          if (liftThisType.unary_!)
+  ast.tpd.TreeOps[dotty.tools.dotc.ast.tpd.Tree](fun).appliedToArgss(core.Decorators.ListOfListDecorator[dotty.tools.dotc.ast.Trees.ValDef[dotty.tools.dotc.core.Types.Type]](originalDef.vparamss).nestedMap[dotty.tools.dotc.ast.tpd.Tree](((vparam: dotty.tools.dotc.ast.Trees.ValDef[dotty.tools.dotc.core.Types.Type]) =&gt; ast.tpd.ref(vparam.symbol(ctx))(ctx))))(ctx)
+else
+  {
+    val args: List[List[dotty.tools.dotc.ast.tpd.Tree]] = scala.Predef.tuple2ToZippedOps[List[List[dotty.tools.dotc.ast.Trees.ValDef[dotty.tools.dotc.core.Types.Type]]], List[List[dotty.tools.dotc.core.Types.Type]]](scala.Tuple2.apply[List[List[dotty.tools.dotc.ast.Trees.ValDef[dotty.tools.dotc.core.Types.Type]]], List[List[dotty.tools.dotc.core.Types.Type]]](originalDef.vparamss, fun.tpe.paramInfoss(ctx))).zipped[List[dotty.tools.dotc.ast.Trees.ValDef[dotty.tools.dotc.core.Types.Type]], List[List[dotty.tools.dotc.ast.Trees.ValDef[dotty.tools.dotc.core.Types.Type]]], List[dotty.tools.dotc.core.Types.Type], List[List[dotty.tools.dotc.core.Types.Type]]](scala.Predef.$conforms[List[List[dotty.tools.dotc.ast.Trees.ValDef[dotty.tools.dotc.core.Types.Type]]]], scala.Predef.$conforms[List[List[dotty.tools.dotc.core.Types.Type]]]).map[List[dotty.tools.dotc.ast.tpd.Tree], List[List[dotty.tools.dotc.ast.tpd.Tree]]](((vparams: List[dotty.tools.dotc.ast.Trees.ValDef[dotty.tools.dotc.core.Types.Type]], paramTypes: List[dotty.tools.dotc.core.Types.Type]) =&gt; scala.Predef.tuple2ToZippedOps[List[dotty.tools.dotc.ast.Trees.ValDef[dotty.tools.dotc.core.Types.Type]], List[dotty.tools.dotc.core.Types.Type]](scala.Tuple2.apply[List[dotty.tools.dotc.ast.Trees.ValDef[dotty.tools.dotc.core.Types.Type]], List[dotty.tools.dotc.core.Types.Type]](vparams, paramTypes)).zipped[dotty.tools.dotc.ast.Trees.ValDef[dotty.tools.dotc.core.Types.Type], List[dotty.tools.dotc.ast.Trees.ValDef[dotty.tools.dotc.core.Types.Type]], dotty.tools.dotc.core.Types.Type, List[dotty.tools.dotc.core.Types.Type]](scala.Predef.$conforms[List[dotty.tools.dotc.ast.Trees.ValDef[dotty.tools.dotc.core.Types.Type]]], scala.Predef.$conforms[List[dotty.tools.dotc.core.Types.Type]]).map[dotty.tools.dotc.ast.tpd.Tree, List[dotty.tools.dotc.ast.tpd.Tree]](((vparam: dotty.tools.dotc.ast.Trees.ValDef[dotty.tools.dotc.core.Types.Type], paramType: dotty.tools.dotc.core.Types.Type) =&gt; {
+      scala.Predef.assert(vparam.tpe.&lt;:&lt;(paramType.widen(ctx))(ctx));
+      ast.tpd.TreeOps[dotty.tools.dotc.ast.tpd.Tree](ast.tpd.ref(vparam.symbol(ctx))(ctx)).ensureConforms(paramType)(ctx)
+    }))(immutable.this.List.canBuildFrom[dotty.tools.dotc.ast.tpd.Tree])))(immutable.this.List.canBuildFrom[List[dotty.tools.dotc.ast.tpd.Tree]]);
+    ast.tpd.TreeOps[dotty.tools.dotc.ast.tpd.Tree](fun).appliedToArgss(args)(ctx)
+  }.withPos(originalDef.rhs(ctx).pos)
+        </td>
+      </tr><tr>
+        <td>
+          244
+        </td>
+        <td>
+          55084
+        </td>
+        <td>
+          10377
+          -
+          10396
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.ast.Positioned.pos
+        </td>
+        <td style="background: #AEF1AE">
+          originalDef.rhs(ctx).pos
+        </td>
+      </tr><tr>
+        <td>
+          255
+        </td>
+        <td>
+          55086
+        </td>
+        <td>
+          10731
+          -
+          10763
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.transform.FullParameterization.memberSignature
+        </td>
+        <td style="background: #AEF1AE">
+          FullParameterization.this.memberSignature(info.resultType(ctx))(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          257
+        </td>
+        <td>
+          55087
+        </td>
+        <td>
+          10820
+          -
+          10851
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.Types.Type.signature
+        </td>
+        <td style="background: #AEF1AE">
+          TypeUtils.decorateTypeUtils(restpe).ensureMethodic(ctx).signature(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          259
+        </td>
+        <td>
+          55088
+        </td>
+        <td>
+          10943
+          -
+          11007
+        </td>
+        <td>
+          ApplyToImplicitArgs
+        </td>
+        <td>
+          dotty.tools.dotc.core.Types.Type.signature
+        </td>
+        <td style="background: #AEF1AE">
+          info.derivedLambdaType(otherNames, otherTypes, restpe)(ctx).signature(ctx)
+        </td>
+      </tr><tr>
+        <td>
+          261
+        </td>
+        <td>
+          55089
+        </td>
+        <td>
+          11028
+          -
+          11048
+        </td>
+        <td>
+          Select
+        </td>
+        <td>
+          dotty.tools.dotc.core.Signature.NotAMethod
+        </td>
+        <td style="background: #F0ADAD">
+          core.Signature.NotAMethod
+        </td>
+      </tr>
+    </table>
+          </div>
+        </div>
+      </body>
+    </html>
