@@ -2161,7 +2161,7 @@ object Types {
    *  `thistpe` is cls.this and `supertpe` is the type of the value referenced
    *  by `super`.
    */
-  class SuperType(val thistpe: Type, val supertpe: Type) extends CachedProxyType with SingletonType {
+  abstract case class SuperType(thistpe: Type, supertpe: Type) extends CachedProxyType with SingletonType {
     override def underlying(implicit ctx: Context) = supertpe
     override def superType(implicit ctx: Context) =
       thistpe.baseType(supertpe.typeSymbol)
@@ -2175,19 +2175,15 @@ object Types {
       case that: SuperType => thistpe.eq(that.thistpe) && supertpe.eq(that.supertpe)
       case _ => false
     }
-
-    def _1      = thistpe
-    def _2      = supertpe
-    def get     = this
-    def isEmpty = false
   }
+
+  final class CachedSuperType(thistpe: Type, supertpe: Type) extends SuperType(thistpe, supertpe)
 
   object SuperType {
     def apply(thistpe: Type, supertpe: Type)(implicit ctx: Context): Type = {
       assert(thistpe != NoPrefix)
-      unique(new SuperType(thistpe, supertpe))
+      unique(new CachedSuperType(thistpe, supertpe))
     }
-    def unapply(s: SuperType) = s
   }
 
   /** A constant type with  single `value`. */
@@ -2236,7 +2232,7 @@ object Types {
    *  @param infoFn: A function that produces the info of the refinement declaration,
    *                 given the refined type itself.
    */
-  class RefinedType(val parent: Type, val refinedName: Name, val refinedInfo: Type) extends RefinedOrRecType {
+  abstract case class RefinedType(parent: Type, refinedName: Name, refinedInfo: Type) extends RefinedOrRecType {
 
     if (refinedName.isTermName) assert(refinedInfo.isInstanceOf[TermType])
     else assert(refinedInfo.isInstanceOf[TypeType], this)
@@ -2267,13 +2263,10 @@ object Types {
         parent.eq(that.parent)
       case _ => false
     }
-
-    def _1      = parent
-    def _2      = refinedName
-    def _3      = refinedInfo
-    def get     = this
-    def isEmpty = false
   }
+
+  class CachedRefinedType(parent: Type, refinedName: Name, refinedInfo: Type)
+  extends RefinedType(parent, refinedName, refinedInfo)
 
   object RefinedType {
     @tailrec def make(parent: Type, names: List[Name], infos: List[Type])(implicit ctx: Context): Type =
@@ -2282,10 +2275,8 @@ object Types {
 
     def apply(parent: Type, name: Name, info: Type)(implicit ctx: Context): RefinedType = {
       assert(!ctx.erasedTypes)
-      unique(new RefinedType(parent, name, info)).checkInst
+      unique(new CachedRefinedType(parent, name, info)).checkInst
     }
-
-    def unapply(s: RefinedType) = s
   }
 
   class RecType(parentExp: RecType => Type) extends RefinedOrRecType with BindingType {
@@ -2380,7 +2371,7 @@ object Types {
 
   // --- AndType/OrType ---------------------------------------------------------------
 
-  final class AndType(val tp1: Type, val tp2: Type) extends CachedGroundType with ValueType {
+  abstract case class AndType(tp1: Type, tp2: Type) extends CachedGroundType with ValueType {
     private[this] var myBaseClassesPeriod: Period = Nowhere
     private[this] var myBaseClasses: List[ClassSymbol] = _
     /** Base classes of And are the merge of the operand base classes
@@ -2418,12 +2409,9 @@ object Types {
       case that: AndType => tp1.eq(that.tp1) && tp2.eq(that.tp2)
       case _ => false
     }
-
-    def _1      = tp1
-    def _2      = tp2
-    def get     = this
-    def isEmpty = false
   }
+
+  final class CachedAndType(tp1: Type, tp2: Type) extends AndType(tp1, tp2)
 
   object AndType {
     def apply(tp1: Type, tp2: Type)(implicit ctx: Context): AndType = {
@@ -2434,7 +2422,7 @@ object Types {
 
     def unchecked(tp1: Type, tp2: Type)(implicit ctx: Context): AndType = {
       assertUnerased()
-      unique(new AndType(tp1, tp2))
+      unique(new CachedAndType(tp1, tp2))
     }
 
     /** Make an AndType using `op` unless clearly unnecessary (i.e. without
@@ -2447,11 +2435,9 @@ object Types {
         tp2
       else
         if (checkValid) apply(tp1, tp2) else unchecked(tp1, tp2)
-
-    def unapply(s: AndType) = s
   }
 
-  final class OrType(val tp1: Type, val tp2: Type) extends CachedGroundType with ValueType {
+  abstract case class OrType(tp1: Type, tp2: Type) extends CachedGroundType with ValueType {
     private[this] var myBaseClassesPeriod: Period = Nowhere
     private[this] var myBaseClasses: List[ClassSymbol] = _
     /** Base classes of And are the merge of the operand base classes
@@ -2503,22 +2489,18 @@ object Types {
       case that: OrType => tp1.eq(that.tp1) && tp2.eq(that.tp2)
       case _ => false
     }
-
-    def _1      = tp1
-    def _2      = tp2
-    def get     = this
-    def isEmpty = false
   }
+
+  final class CachedOrType(tp1: Type, tp2: Type) extends OrType(tp1, tp2)
 
   object OrType {
     def apply(tp1: Type, tp2: Type)(implicit ctx: Context) = {
       assertUnerased()
-      unique(new OrType(tp1, tp2))
+      unique(new CachedOrType(tp1, tp2))
     }
     def make(tp1: Type, tp2: Type)(implicit ctx: Context): Type =
       if (tp1 eq tp2) tp1
       else apply(tp1, tp2)
-    def unapply(s: OrType) = s
   }
 
   // ----- ExprType and LambdaTypes -----------------------------------
@@ -3604,7 +3586,7 @@ object Types {
   // Special type objects and classes -----------------------------------------------------
 
   /** The type of an erased array */
-  class JavaArrayType(val elemType: Type) extends CachedGroundType with ValueType {
+  abstract case class JavaArrayType(elemType: Type) extends CachedGroundType with ValueType {
     def derivedJavaArrayType(elemtp: Type)(implicit ctx: Context) =
       if (elemtp eq this.elemType) this else JavaArrayType(elemtp)
 
@@ -3614,14 +3596,10 @@ object Types {
       case that: JavaArrayType => elemType.eq(that.elemType)
       case _ => false
     }
-
-    def _1      = elemType
-    def get     = this
-    def isEmpty = false
   }
+  final class CachedJavaArrayType(elemType: Type) extends JavaArrayType(elemType)
   object JavaArrayType {
-    def apply(elemType: Type)(implicit ctx: Context) = unique(new JavaArrayType(elemType))
-    def unapply(s: JavaArrayType) = s
+    def apply(elemType: Type)(implicit ctx: Context) = unique(new CachedJavaArrayType(elemType))
   }
 
   /** The type of an import clause tree */
