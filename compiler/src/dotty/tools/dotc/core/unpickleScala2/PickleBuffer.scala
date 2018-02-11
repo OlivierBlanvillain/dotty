@@ -252,21 +252,21 @@ object PickleBuffer {
     // Convert map so that it maps chunks of ChunkBits size at once
     // instead of single bits.
     def chunkMap(xs: Array[Long]): FlagMap = {
-      val chunked = Array.ofDim[Long](
-        (xs.length + ChunkBits - 1) / ChunkBits, ChunkSize)
+      val size = (xs.length + ChunkBits - 1) / ChunkBits
+      val chunked = Array.ofDim[Long](size, ChunkSize)
       var i = 0
-      var j = 0
-      var k = 0
-      while (i < chunked.length) {
+      while (i < size) {
+        var j = 0
         while (j < ChunkSize) {
+          var k = 0
           while (k < ChunkBits) {
             if ((j & (1 << k)) != 0)
               chunked(i)(j) |= xs(i * ChunkBits + k)
-            k = k + 1
+            k += 1
           }
-          j = j + 1
+          j += 1
         }
-        i = i + 1
+        i += 1
       }
       chunked
     }
