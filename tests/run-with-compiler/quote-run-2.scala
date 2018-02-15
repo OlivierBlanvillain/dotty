@@ -1,5 +1,5 @@
 
-import dotty.tools.dotc.quoted.Runners._
+// import dotty.tools.dotc.quoted.Runners._
 
 import scala.quoted._
 
@@ -11,9 +11,10 @@ object Test {
       else if (n % 2 == 0) '{ { val y = ~x * ~x; ~powerCode(n / 2, '(y)) } }
       else '{ ~x * ~powerCode(n - 1, x) }
 
-    println(powerCode(0, '(5)).show)
-    println(powerCode(1, '(5)).show)
-    println(powerCode(2, '(5)).show)
-    println(powerCode(3, '(5)).show)
+    def square(x: Double) = '{ powerCode(2, x) }
+    // println(powerCode(0, '(5)).show)
+    // println(powerCode(1, '(5)).show)
+    // println(powerCode(2, '(5)).show)
+    // println(powerCode(3, '(5)).show)
   }
 }

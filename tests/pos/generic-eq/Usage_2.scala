@@ -1,5 +1,5 @@
-object PowerInlined1 {
-  import PowerMacro._
+object EqUsage {
+  import EqMacro._
 
   def square(d: Double): Double = power(100, d)
 
