@@ -1,9 +1,6 @@
 object EqUsage {
-  // import EqMacro._
-  def process(d: Double): Double =
-    Demo.process(d)
+  import EqMacro._
 
-  def main(args: Array[String]): Unit = {
-    println(process(12.34))
-  }
+  def fooEq(f1: Foo, f2: Foo): Boolean =
+    fooEqStaged(f1, f2)
 }
