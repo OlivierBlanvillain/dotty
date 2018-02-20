@@ -61,7 +61,11 @@ object EqMacro {
     f1.i == f2.i && f1.s == f2.s
 
   inline def fooEqStaged(f1: Foo, f2: Foo): Boolean =
-    ~(implicitly[EQ[E[Foo]]].e('{f1}, '{f2}))
+    ~fooEqStagedCode('(f1), '(f2))
+
+  def fooEqStagedCode(f1: E[Foo], f2: E[Foo]): E[Boolean] =
+    implicitly[EQ[E[Foo]]].e(f1, f2)
+
 
   // inline def power(inline n: Long, x: Double): Double = ~powerCode(n, '(x))
 
