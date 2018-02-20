@@ -1,4 +1,4 @@
-import scala.quoted.{Expr => E}
+import scala.quoted.{Expr => E, Type}
 
 trait EQ[A] {
   def e(a: A, b: A): E[Boolean]
@@ -10,16 +10,16 @@ trait Equals[A] {
 
 
 object EQ {
-  implicit val eqString: EQ[E[String]] = new EQ[E[String]] { def e(a: E[String], b: E[String]) = '{ ~a == ~b } }
-  implicit val eqInt   : EQ[E[Int]   ] = new EQ[E[Int]   ] { def e(a: E[Int]   , b: E[Int]   ) = '{ ~a == ~b } }
-  implicit val caseUnit: EQ[E[Unit]  ] = new EQ[E[Unit]  ] { def e(a: E[Unit]  , b: E[Unit]  ) = '{ true } }
+  implicit def eqString: EQ[E[String]] = new EQ[E[String]] { def e(a: E[String], b: E[String]) = '{ ~a == ~b } }
+  implicit def eqInt   : EQ[E[Int]   ] = new EQ[E[Int]   ] { def e(a: E[Int]   , b: E[Int]   ) = '{ ~a == ~b } }
+  implicit def caseUnit: EQ[E[Unit]  ] = new EQ[E[Unit]  ] { def e(a: E[Unit]  , b: E[Unit]  ) = '{ true } }
 
   implicit def caseGen[A, G](implicit gen: Generic[A] { type Repr = G }, sg: EQ[G]): EQ[E[A]] =
     new EQ[E[A]] {
       def e(a: E[A], b: E[A]) = sg.e(gen.to(a), gen.to(b))
     }
 
-  implicit def caseProd[X, Y](implicit sx: => EQ[X], sy: EQ[Y]): EQ[(X, Y)] =
+  implicit def caseProd[X, Y](implicit sx: EQ[X], sy: EQ[Y]): EQ[(X, Y)] =
     new EQ[(X, Y)] {
       def e(p: (X, Y), q: (X, Y)) = {
         val (x, y) = p
@@ -44,7 +44,7 @@ trait Generic[T] {
 }
 
 object Generic {
-  implicit val gen: Generic[Foo] { type Repr = (E[Int], (E[String], E[Unit])) } =
+  implicit def gen: Generic[Foo] { type Repr = (E[Int], (E[String], E[Unit])) } =
     new Generic[Foo] {
       type Repr = (E[Int], (E[String], E[Unit]))
       def to(c: E[Foo]): Repr   = ('{(~c).i}, ('{(~c).s}, '{()}))
@@ -60,12 +60,19 @@ object EqMacro {
   def fooEqHand(f1: Foo, f2: Foo): Boolean =
     f1.i == f2.i && f1.s == f2.s
 
+
   inline def fooEqStaged(f1: Foo, f2: Foo): Boolean =
     ~fooEqStagedCode('(f1), '(f2))
 
   def fooEqStagedCode(f1: E[Foo], f2: E[Foo]): E[Boolean] =
     implicitly[EQ[E[Foo]]].e(f1, f2)
 
+
+  inline def aaEqStaged(f1: Foo, f2: Foo)(implicit inline i: EQ[E[Foo]]): Boolean =
+    ~(i.e('(f1), '(f2)))
+
+  // def aaEqStagedCode(f1: E[Foo], f2: E[Foo])(implicit inline i: EQ[E[Foo]]): E[Boolean] =
+  //   i.e(f1, f2)
 
   // inline def power(inline n: Long, x: Double): Double = ~powerCode(n, '(x))
 
