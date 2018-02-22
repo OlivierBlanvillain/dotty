@@ -63,7 +63,7 @@ class Interpreter(implicit ctx: Context) {
    *  If some error is encountered while interpreting a ctx.error is emitted and a StopInterpretation is thrown.
    */
   private def interpretTreeImpl(tree: Tree, env: Env): Object = {
-    ctx.debuglog(
+    println(
       s"""Interpreting:
         |${tree.show}
         |$env

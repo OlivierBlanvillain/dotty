@@ -2266,8 +2266,8 @@ class Typer extends Namer
         tree
       }
       else if (tree.tpe <:< pt) {
-        if (pt.hasAnnotation(defn.InlineParamAnnot))
-          checkInlineConformant(tree, "argument to inline parameter")
+        // if (pt.hasAnnotation(defn.InlineParamAnnot))
+        //   checkInlineConformant(tree, "argument to inline parameter")
         if (Inliner.hasBodyToInline(tree.symbol) &&
             !ctx.owner.ownersIterator.exists(_.isInlineMethod) &&
             !ctx.settings.YnoInline.value &&
