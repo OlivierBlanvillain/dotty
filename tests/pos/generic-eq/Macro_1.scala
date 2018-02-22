@@ -1,4 +1,4 @@
-import scala.quoted.{Expr => E, Type}
+import scala.quoted.{Expr => E, Type, Liftable}
 import dotty.tools.dotc.quoted.Runners._
 
 case class OR[L, R](x: E[Any], left: E[Boolean]) {
@@ -15,26 +15,51 @@ case class OR[L, R](x: E[Any], left: E[Boolean]) {
 
 trait EQ[A] {
   def e(a: A, b: A): E[Boolean]
+  def tag: String
 }
 
 trait Equals[A] {
   def e(a: A, b: A): Boolean
 }
 
-
 object EQ {
-  inline implicit def eqString: EQ[E[String]] = new EQ[E[String]] { def e(a: E[String], b: E[String]) = '(~a == ~b) }
-  inline implicit def eqDouble: EQ[E[Double]] = new EQ[E[Double]] { def e(a: E[Double], b: E[Double]) = '(~a == ~b) }
-  inline implicit def eqInt   : EQ[E[Int]   ] = new EQ[E[Int]   ] { def e(a: E[Int]   , b: E[Int]   ) = '(~a == ~b) }
-  inline implicit def caseUnit: EQ[E[Unit]  ] = new EQ[E[Unit]  ] { def e(a: E[Unit]  , b: E[Unit]  ) = '(true) }
+  implicit def eqIsLiftable[T]: Liftable[EQ[T]] = new Liftable[EQ[T]] {
+    def toExpr(e: EQ[T]): E[EQ[T]] =
+      (e.tag match {
+        case "eqString" => '(eqString)
+        case "eqDouble" => '(eqDouble)
+        case "eqInt"    => '(eqInt)
+        case "caseUnit" => '(caseUnit)
+        // case "caseGen"  => '(caseGen)
+        // case "caseProd" => '(caseProd)
+        // case "caseSum"  => '(caseSum)
+        // case "genFoo"   => '(genFoo)
+        // case "genMuu"   => '(genMuu)
+        // case "genBar"   => '(genBar)
+      }).asInstanceOf[EQ[T]]
+      // def remake[A](e: EQ[A]): EQ[A] = {
+      // }
 
-  inline implicit def caseGen[A, G](implicit gen: Generic[A] { type Repr = G }, sg: EQ[G]): EQ[E[A]] =
+
+      // xs match {
+      // case x :: xs1 => '{ ~implicitly[Liftable[T]].toExpr(x) :: ~toExpr(xs1) }
+      // case Nil => '(Nil: List[T])
+  }
+
+  implicit def eqString: EQ[E[String]] = new EQ[E[String]] { val tag = "eqString";  def e(a: E[String], b: E[String]) = '(~a == ~b) }
+  implicit def eqDouble: EQ[E[Double]] = new EQ[E[Double]] { val tag = "eqDouble";  def e(a: E[Double], b: E[Double]) = '(~a == ~b) }
+  implicit def eqInt   : EQ[E[Int]   ] = new EQ[E[Int]   ] { val tag = "eqInt";     def e(a: E[Int]   , b: E[Int]   ) = '(~a == ~b) }
+  implicit def caseUnit: EQ[E[Unit]  ] = new EQ[E[Unit]  ] { val tag = "caseUnit";  def e(a: E[Unit]  , b: E[Unit]  ) = '(true) }
+
+  implicit def caseGen[A, G](implicit gen: Generic[A] { type Repr = G }, sg: EQ[G]): EQ[E[A]] =
     new EQ[E[A]] {
+      val tag = "caseGen"
       def e(a: E[A], b: E[A]): E[Boolean] = sg.e(gen.to(a), gen.to(b))
     }
 
-  inline implicit def caseProd[X, Y](implicit sx: EQ[X], sy: EQ[Y]): EQ[(X, Y)] =
+  implicit def caseProd[X, Y](implicit sx: EQ[X], sy: EQ[Y]): EQ[(X, Y)] =
     new EQ[(X, Y)] {
+      val tag = "caseProd"
       def e(p: (X, Y), q: (X, Y)): E[Boolean] = {
         val (x, y) = p
         val (v, w) = q
@@ -44,8 +69,9 @@ object EQ {
 
   // implicit def caseNothing: EQ[E[Nothing]] = null
 
-  inline implicit def caseSum[X, Y](implicit sx: EQ[X], sy: EQ[Y]): EQ[OR[X, Y]] =
+  implicit def caseSum[X, Y](implicit sx: EQ[X], sy: EQ[Y]): EQ[OR[X, Y]] =
     new EQ[OR[X, Y]] {
+      val tag = "caseSum"
       def e(p: OR[X, Y], q: OR[X, Y]): E[Boolean] = {
         val OR(x, xl) = p
         val OR(y, yl) = q
@@ -66,11 +92,13 @@ trait Generic[T] {
   type Repr
   def to(x: E[T]): Repr
   def from(x: Repr): E[T]
+  def tag: String
 }
 
 object Generic {
-  inline implicit def genFoo: Generic[Foo] { type Repr = (E[Int], (E[String], E[Unit])) } =
+  implicit def genFoo: Generic[Foo] { type Repr = (E[Int], (E[String], E[Unit])) } =
     new Generic[Foo] {
+      val tag = "genFoo"
       type Repr = (E[Int], (E[String], E[Unit]))
       def to(c: E[Foo]): Repr   = ('((~c).i), ('((~c).s), '(())))
       def from(r: Repr): E[Foo] = {
@@ -79,8 +107,9 @@ object Generic {
       }
     }
 
-  inline implicit def genMuu: Generic[Muu] { type Repr = (E[Double], E[Unit]) } =
+  implicit def genMuu: Generic[Muu] { type Repr = (E[Double], E[Unit]) } =
     new Generic[Muu] {
+      val tag = "genMuu"
       type Repr = (E[Double], E[Unit])
       def to(c: E[Muu]): Repr   = ('((~c).d), '(()))
       def from(r: Repr): E[Muu] = {
@@ -89,8 +118,9 @@ object Generic {
       }
     }
 
-  inline implicit def genBar: Generic[Bar] { type Repr = OR[E[Foo], E[Muu]] } =
+  implicit def genBar: Generic[Bar] { type Repr = OR[E[Foo], E[Muu]] } =
     new Generic[Bar] {
+      val tag = "genBar"
       type Repr = OR[E[Foo], E[Muu]]
       def to(c: E[Bar]): Repr   = OR('(~c: Any), '((~c).isInstanceOf[Foo]))
       def from(r: Repr): E[Bar] = {
@@ -100,21 +130,21 @@ object Generic {
 }
 
 object EqMacro {
-  // inline def fooEqStaged(f1: Foo, f2: Foo): Boolean =
+  // def fooEqStaged(f1: Foo, f2: Foo): Boolean =
   //   ~fooEqStagedCode('(f1), '(f2))
 
   // def fooEqStagedCode(f1: E[Foo], f2: E[Foo]): E[Boolean] =
   //   implicitly[EQ[E[Foo]]].e(f1, f2)
 
 
-  // inline def muuEqStaged(f1: Muu, f2: Muu): Boolean =
+  // def muuEqStaged(f1: Muu, f2: Muu): Boolean =
   //   ~muuEqStagedCode('(f1), '(f2))
 
   // def muuEqStagedCode(f1: E[Muu], f2: E[Muu]): E[Boolean] =
   //   implicitly[EQ[E[Muu]]].e(f1, f2)
 
 
-  // inline def barEqStaged(f1: Bar, f2: Bar): Boolean =
+  // def barEqStaged(f1: Bar, f2: Bar): Boolean =
   //   ~barEqStagedCode('(f1), '(f2))
 
   // def barEqStagedCode(f1: E[Bar], f2: E[Bar]): E[Boolean] =
