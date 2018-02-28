@@ -1294,7 +1294,7 @@ object Parsers {
         case USCORE =>
           val start = in.skipToken()
           val pname = WildcardParamName.fresh()
-          val param = ValDef(pname, TypeTree(), EmptyTree).withFlags(SyntheticTermParam)
+          val param = ValDef(pname, TypeTree(), EmptyTree).withFlags(Synthetic | TermParam)
             .withPos(Position(start))
           placeholderParams = param :: placeholderParams
           atPos(start) { Ident(pname) }
@@ -1650,7 +1650,7 @@ object Parsers {
     private def normalize(mods: Modifiers): Modifiers =
       if ((mods is Private) && mods.hasPrivateWithin)
         normalize(mods &~ Private)
-      else if (mods is AbstractAndOverride)
+      else if (mods.isBoth(Abstract, and = Override))
         normalize(addFlag(mods &~ (Abstract | Override), AbsOverride))
       else
         mods
@@ -1784,7 +1784,7 @@ object Parsers {
         val start = in.offset
         val mods = atPos(start) {
           annotsAsMods() | {
-            if (ownerKind == ParamOwner.Class) Param | PrivateLocal
+            if (ownerKind == ParamOwner.Class) Param | Private | Local
             else Param
           } | {
             if (ownerKind != ParamOwner.Def)
@@ -1844,7 +1844,7 @@ object Parsers {
               } else {
                 if (!(mods.flags &~ (ParamAccessor | Inline)).isEmpty)
                   syntaxError("`val' or `var' expected")
-                if (firstClauseOfCaseClass) mods else mods | PrivateLocal
+                if (firstClauseOfCaseClass) mods else mods | Private | Local
               }
             }
         }

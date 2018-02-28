@@ -754,7 +754,7 @@ object Trees {
   class EmptyValDef[T >: Untyped] extends ValDef[T](
     nme.WILDCARD, genericEmptyTree[T], genericEmptyTree[T]) with WithoutTypeOrPos[T] {
     override def isEmpty: Boolean = true
-    setMods(untpd.Modifiers(PrivateLocal))
+    setMods(untpd.Modifiers(Private | Local))
   }
 
   @sharable val theEmptyTree: Thicket[Type] = Thicket(Nil)

@@ -122,7 +122,7 @@ object desugar {
     val ValDef(name, tpt, rhs) = vdef
     val mods = vdef.mods
     val setterNeeded =
-      (mods is Mutable) && ctx.owner.isClass && (!(mods is PrivateLocal) || (ctx.owner is Trait))
+      mods.is(Mutable) && ctx.owner.isClass && (!mods.isBoth(Private, and = Local) || ctx.owner.is(Trait))
     if (setterNeeded) {
       // TODO: copy of vdef as getter needed?
       // val getter = ValDef(mods, name, tpt, rhs) withPos vdef.pos?
@@ -145,7 +145,7 @@ object desugar {
 
   def makeImplicitParameters(tpts: List[Tree], forPrimaryConstructor: Boolean = false)(implicit ctx: Context) =
     for (tpt <- tpts) yield {
-       val paramFlags: FlagSet = if (forPrimaryConstructor) PrivateLocalParamAccessor else Param
+       val paramFlags: FlagSet = if (forPrimaryConstructor) Private | Local | ParamAccessor else Param
        val epname = EvidenceParamName.fresh()
        ValDef(epname, tpt, EmptyTree).withFlags(paramFlags | Implicit)
     }
@@ -700,7 +700,7 @@ object desugar {
         case _ =>
           val tmpName = UniqueName.fresh()
           val patMods =
-            mods & Lazy | Synthetic | (if (ctx.owner.isClass) PrivateLocal else EmptyFlags)
+            mods & Lazy | Synthetic | (if (ctx.owner.isClass) Private | Local else EmptyFlags)
           val firstDef =
             ValDef(tmpName, TypeTree(), matchExpr)
               .withPos(pat.pos.union(rhs.pos)).withMods(patMods)
