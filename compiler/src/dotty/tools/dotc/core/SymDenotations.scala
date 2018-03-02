@@ -2006,9 +2006,8 @@ object SymDenotations {
 
   // ---- Caches for inherited info -----------------------------------------
 
-  /** Base trait for caches that keep info dependent on inherited classes */
-  trait InheritedCache {
-
+  /** A cache for sets of member names, indexed by a NameFilter */
+  trait MemberNames {
     /** Is the cache valid in current period? */
     def isValid(implicit ctx: Context): Boolean
 
@@ -2017,10 +2016,7 @@ object SymDenotations {
 
     /** Render invalid this cache and all cache that depend on it */
     def invalidate(): Unit
-  }
 
-  /** A cache for sets of member names, indexed by a NameFilter */
-  trait MemberNames extends InheritedCache {
     def apply(keepOnly: NameFilter, clsd: ClassDenotation)
              (implicit onBehalf: MemberNames, ctx: Context): Set[Name]
   }
@@ -2035,7 +2031,16 @@ object SymDenotations {
   /** A cache for baseclasses, as a sequence in linearization order and as a set that
    *  can be queried efficiently for containment.
    */
-  trait BaseData extends InheritedCache {
+  trait BaseData {
+    /** Is the cache valid in current period? */
+    def isValid(implicit ctx: Context): Boolean
+
+    /** is the cache valid in current run at given phase? */
+    def isValidAt(phase: Phase)(implicit ctx: Context): Boolean
+
+    /** Render invalid this cache and all cache that depend on it */
+    def invalidate(): Unit
+
     def apply(clsd: ClassDenotation)
              (implicit onBehalf: BaseData, ctx: Context): (List[ClassSymbol], BaseClassSet)
     def signalProvisional(): Unit
@@ -2049,10 +2054,14 @@ object SymDenotations {
     def newCache()(implicit ctx: Context): BaseData = new BaseDataImpl(ctx.period)
   }
 
-  private abstract class InheritedCacheImpl(val createdAt: Period) extends InheritedCache {
-    protected def sameGroup(p1: Phase, p2: Phase): Boolean
+  private class InvalidCache {
+    def isValid(implicit ctx: Context) = false
+    def isValidAt(phase: Phase)(implicit ctx: Context) = false
+    def invalidate(): Unit = ()
+  }
 
-    private[this] var dependent: WeakHashMap[InheritedCache, Unit] = null
+  private class MemberNamesImpl(createdAt: Period) extends MemberNames {
+    private[this] var dependent: WeakHashMap[MemberNames, Unit] = null
     private[this] var checkedPeriod: Period = Nowhere
 
     protected def invalidateDependents() = {
@@ -2063,7 +2072,7 @@ object SymDenotations {
       dependent = null
     }
 
-    protected def addDependent(dep: InheritedCache) = {
+    protected def addDependent(dep: MemberNames) = {
       if (dependent == null) dependent = new WeakHashMap
       dependent.put(dep, ())
     }
@@ -2074,15 +2083,7 @@ object SymDenotations {
         createdAt.phaseId < ctx.phases.length &&
         sameGroup(ctx.phases(createdAt.phaseId), phase) &&
         { checkedPeriod = ctx.period; true }
-  }
 
-  private class InvalidCache extends InheritedCache {
-    def isValid(implicit ctx: Context) = false
-    def isValidAt(phase: Phase)(implicit ctx: Context) = false
-    def invalidate(): Unit = ()
-  }
-
-  private class MemberNamesImpl(createdAt: Period) extends InheritedCacheImpl(createdAt) with MemberNames {
     private[this] var cache: SimpleIdentityMap[NameFilter, Set[Name]] = SimpleIdentityMap.Empty
 
     final def isValid(implicit ctx: Context): Boolean =
@@ -2121,7 +2122,30 @@ object SymDenotations {
     def sameGroup(p1: Phase, p2: Phase) = p1.sameMembersStartId == p2.sameMembersStartId
   }
 
-  private class BaseDataImpl(createdAt: Period) extends InheritedCacheImpl(createdAt) with BaseData {
+  private class BaseDataImpl(createdAt: Period) extends BaseData {
+    private[this] var dependent: WeakHashMap[BaseData, Unit] = null
+    private[this] var checkedPeriod: Period = Nowhere
+
+    protected def invalidateDependents() = {
+      if (dependent != null) {
+        val it = dependent.keySet.iterator()
+        while (it.hasNext()) it.next().invalidate()
+      }
+      dependent = null
+    }
+
+    protected def addDependent(dep: BaseData) = {
+      if (dependent == null) dependent = new WeakHashMap
+      dependent.put(dep, ())
+    }
+
+    def isValidAt(phase: Phase)(implicit ctx: Context) =
+      checkedPeriod == ctx.period ||
+        createdAt.runId == ctx.runId &&
+        createdAt.phaseId < ctx.phases.length &&
+        sameGroup(ctx.phases(createdAt.phaseId), phase) &&
+        { checkedPeriod = ctx.period; true }
+
     private[this] var cache: (List[ClassSymbol], BaseClassSet) = null
 
     private[this] var valid = true
