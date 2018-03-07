@@ -1331,7 +1331,7 @@ class Typer extends Namer
       }
     }
     // necessary in order to mark the typed ahead annotations as definitely typed:
-    untpd.modsDeco(mdef).mods.annotations.foreach(typedAnnotation(_)(annotCtx))
+    mdef.mods.annotations.foreach(typedAnnotation(_)(annotCtx))
   }
 
   def typedAnnotation(annot: untpd.Tree)(implicit ctx: Context): Tree = track("typedAnnotation") {
