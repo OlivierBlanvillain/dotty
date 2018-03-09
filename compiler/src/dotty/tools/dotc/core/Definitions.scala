@@ -204,8 +204,8 @@ class Definitions {
   lazy val OpsPackageVal = ctx.newCompletePackageSymbol(RootClass, nme.OPS_PACKAGE).entered
   lazy val OpsPackageClass = OpsPackageVal.moduleClass.asClass
 
-  lazy val ScalaPackageVal = ctx.requiredPackage("scala")
-  lazy val ScalaMathPackageVal = ctx.requiredPackage("scala.math")
+  lazy val ScalaPackageVal = ctx.requiredPackage(nme.scala_)
+  lazy val ScalaMathPackageVal = ctx.requiredPackage("scala.math".toTermName)
   lazy val ScalaPackageClass = {
     val cls = ScalaPackageVal.moduleClass.asClass
     cls.info.decls.openForMutations.useSynthesizer(
@@ -215,8 +215,8 @@ class Definitions {
     cls
   }
   lazy val ScalaPackageObjectRef = ctx.requiredModuleRef("scala.package")
-  lazy val JavaPackageVal = ctx.requiredPackage("java")
-  lazy val JavaLangPackageVal = ctx.requiredPackage("java.lang")
+  lazy val JavaPackageVal = ctx.requiredPackage(nme.java)
+  lazy val JavaLangPackageVal = ctx.requiredPackage(jnme.JavaLang)
   // fundamental modules
   lazy val SysPackage = ctx.requiredModule("scala.sys.package")
     lazy val Sys_errorR = SysPackage.moduleClass.requiredMethodRef(nme.error)
@@ -341,11 +341,11 @@ class Definitions {
 
     lazy val Predef_ConformsR = ScalaPredefModule.requiredClass("<:<").typeRef
     def Predef_Conforms(implicit ctx: Context) = Predef_ConformsR.symbol
-    lazy val Predef_conformsR = ScalaPredefModule.requiredMethodRef("$conforms")
+    lazy val Predef_conformsR = ScalaPredefModule.requiredMethodRef(nme.conforms_)
     def Predef_conforms(implicit ctx: Context) = Predef_conformsR.symbol
-    lazy val Predef_classOfR = ScalaPredefModule.requiredMethodRef("classOf")
+    lazy val Predef_classOfR = ScalaPredefModule.requiredMethodRef(nme.classOf)
     def Predef_classOf(implicit ctx: Context) = Predef_classOfR.symbol
-    lazy val Predef_undefinedR = ScalaPredefModule.requiredMethodRef("???")
+    lazy val Predef_undefinedR = ScalaPredefModule.requiredMethodRef(nme.???)
     def Predef_undefined(implicit ctx: Context) = Predef_undefinedR.symbol
     // The set of all wrap{X, Ref}Array methods, where X is a value type
     val Predef_wrapArray = new PerRun[collection.Set[Symbol]]({ implicit ctx =>
@@ -357,7 +357,7 @@ class Definitions {
   def ScalaRuntimeModule(implicit ctx: Context) = ScalaRuntimeModuleRef.symbol
   def ScalaRuntimeClass(implicit ctx: Context) = ScalaRuntimeModule.moduleClass.asClass
 
-    def runtimeMethodRef(name: PreName) = ScalaRuntimeModule.requiredMethodRef(name)
+    def runtimeMethodRef(name: TermName) = ScalaRuntimeModule.requiredMethodRef(name)
     def ScalaRuntime_dropR(implicit ctx: Context) = runtimeMethodRef(nme.drop)
     def ScalaRuntime_drop(implicit ctx: Context) = ScalaRuntime_dropR.symbol
 
@@ -368,8 +368,9 @@ class Definitions {
   def ScalaStaticsModule(implicit ctx: Context) = ScalaStaticsModuleRef.symbol
   def ScalaStaticsClass(implicit ctx: Context) = ScalaStaticsModule.moduleClass.asClass
 
-    def staticsMethodRef(name: PreName) = ScalaStaticsModule.requiredMethodRef(name)
-    def staticsMethod(name: PreName) = ScalaStaticsModule.requiredMethod(name)
+    def staticsMethodRef(name: TermName) = ScalaStaticsModule.requiredMethodRef(name)
+    def staticsMethod(name: String): TermSymbol = staticsMethod(name.toTermName)
+    def staticsMethod(name: TermName): TermSymbol = ScalaStaticsModule.requiredMethod(name)
 
   // Dotty deviation: we cannot use a lazy val here because lazy vals in dotty
   // will return "null" when called recursively, see #1856.
@@ -389,8 +390,8 @@ class Definitions {
 
   lazy val DottyArraysModuleRef = ctx.requiredModuleRef("dotty.runtime.Arrays")
   def DottyArraysModule(implicit ctx: Context) = DottyArraysModuleRef.symbol
-    def newGenericArrayMethod(implicit ctx: Context) = DottyArraysModule.requiredMethod("newGenericArray")
-    def newArrayMethod(implicit ctx: Context) = DottyArraysModule.requiredMethod("newArray")
+    def newGenericArrayMethod(implicit ctx: Context) = DottyArraysModule.requiredMethod("newGenericArray".toTermName)
+    def newArrayMethod(implicit ctx: Context) = DottyArraysModule.requiredMethod("newArray".toTermName)
 
   lazy val NilModuleRef = ctx.requiredModuleRef("scala.collection.immutable.Nil")
   def NilModule(implicit ctx: Context) = NilModuleRef.symbol

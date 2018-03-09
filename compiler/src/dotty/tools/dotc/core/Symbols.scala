@@ -370,31 +370,34 @@ trait Symbols { this: Context =>
 
 // ----- Locating predefined symbols ----------------------------------------
 
-  def requiredPackage(path: PreName): TermSymbol =
-    base.staticRef(path.toTermName, isPackage = true).requiredSymbol(_ is Package).asTerm
+  def requiredPackage(path: TermName): TermSymbol =
+    base.staticRef(path, isPackage = true).requiredSymbol(_ is Package).asTerm
 
-  def requiredPackageRef(path: PreName): TermRef = requiredPackage(path).termRef
+  def requiredPackageRef(path: TermName): TermRef = requiredPackage(path).termRef
 
-  def requiredClass(path: PreName): ClassSymbol =
-    base.staticRef(path.toTypeName).requiredSymbol(_.isClass) match {
+  def requiredClass(path: String): ClassSymbol = requiredClass(path.toTypeName)
+  def requiredClass(path: TypeName): ClassSymbol =
+    base.staticRef(path).requiredSymbol(_.isClass) match {
       case cls: ClassSymbol => cls
       case sym => defn.AnyClass
     }
 
-  def requiredClassRef(path: PreName): TypeRef = requiredClass(path).typeRef
+  def requiredClassRef(path: String): TypeRef = requiredClass(path.toTypeName).typeRef
 
   /** Get ClassSymbol if class is either defined in current compilation run
    *  or present on classpath.
    *  Returns NoSymbol otherwise. */
-  def getClassIfDefined(path: PreName): Symbol =
-    base.staticRef(path.toTypeName, generateStubs = false).requiredSymbol(_.isClass, generateStubs = false)
+  def getClassIfDefined(path: TypeName): Symbol =
+    base.staticRef(path, generateStubs = false).requiredSymbol(_.isClass, generateStubs = false)
 
-  def requiredModule(path: PreName): TermSymbol =
-    base.staticRef(path.toTermName).requiredSymbol(_ is Module).asTerm
+  def requiredModule(path: String): TermSymbol = requiredModule(path.toTermName)
+  def requiredModule(path: TermName): TermSymbol =
+    base.staticRef(path).requiredSymbol(_ is Module).asTerm
 
-  def requiredModuleRef(path: PreName): TermRef = requiredModule(path).termRef
+  def requiredModuleRef(path: String): TermRef = requiredModuleRef(path.toTermName)
+  def requiredModuleRef(path: TermName): TermRef = requiredModule(path).termRef
 
-  def requiredMethod(path: PreName): TermSymbol =
+  def requiredMethod(path: String): TermSymbol =
     base.staticRef(path.toTermName).requiredSymbol(_ is Method).asTerm
 }
 

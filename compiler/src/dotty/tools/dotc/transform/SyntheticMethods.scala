@@ -83,7 +83,7 @@ class SyntheticMethods(thisPhase: DenotTransformer) {
         coord = clazz.coord).enteredAfter(thisPhase).asTerm
 
       def forwardToRuntime(vrefss: List[List[Tree]]): Tree =
-        ref(defn.runtimeMethodRef("_" + sym.name.toString)).appliedToArgs(This(clazz) :: vrefss.head)
+        ref(defn.runtimeMethodRef(("_" + sym.name).toTermName)).appliedToArgs(This(clazz) :: vrefss.head)
 
       def ownName(vrefss: List[List[Tree]]): Tree =
         Literal(Constant(clazz.name.stripModuleClassSuffix.toString))
