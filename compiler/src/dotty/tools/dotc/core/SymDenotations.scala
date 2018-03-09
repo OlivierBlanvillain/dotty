@@ -949,7 +949,7 @@ object SymDenotations {
         if (!exists || d.isEffectiveRoot || (d is PackageClass) || (d.owner is PackageClass))
           d.symbol
         else
-          topLevel(d.owner.denot)
+          topLevel(d.owner)
 
       val sym = topLevel(this)
       if (sym.isClass) sym else sym.moduleClass
@@ -1128,7 +1128,7 @@ object SymDenotations {
       (this is Deferred) ||
       (this is AbsOverride) && {
         val supersym = superSymbolIn(base)
-        supersym == NoSymbol || supersym.denot.isIncompleteIn(base)
+        supersym == NoSymbol || supersym.isIncompleteIn(base)
       }
 
     /** The class or term symbol up to which this symbol is accessible,

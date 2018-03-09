@@ -75,7 +75,7 @@ import scala.collection.mutable
         else ref(replaced).becomes(t.rhs)
 
       case t: ValDef if paramCandidates.contains(t.symbol) =>
-        t.symbol.denot.flags = Mutable
+        t.symbol.flags = Mutable
         t
 
       case t => t

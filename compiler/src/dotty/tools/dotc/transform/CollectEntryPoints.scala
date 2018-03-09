@@ -80,7 +80,7 @@ class CollectEntryPoints extends MiniPhase {
         failNoForwarder("companion is a trait")
       // Now either succeed, or issue some additional warnings for things which look like
       // attempts to be java main methods.
-      else (possibles exists (x => javaPlatform.isJavaMainMethod(x.symbol.denot))) || {
+      else (possibles exists (x => javaPlatform.isJavaMainMethod(x.symbol))) || {
         possibles exists {
           m =>
             m.symbol.info match {
@@ -90,7 +90,7 @@ class CollectEntryPoints extends MiniPhase {
                 if (t.resultType :: t.paramInfos exists (_.typeSymbol.isAbstractType))
                   fail("main methods cannot refer to type parameters or abstract types.", m.symbol.pos)
                 else
-                  javaPlatform.isJavaMainMethod(m.symbol.denot) || fail("main method must have exact signature (Array[String])Unit", m.symbol.pos)
+                  javaPlatform.isJavaMainMethod(m.symbol) || fail("main method must have exact signature (Array[String])Unit", m.symbol.pos)
               case tp =>
                 fail(s"don't know what this is: $tp", m.symbol.pos)
             }

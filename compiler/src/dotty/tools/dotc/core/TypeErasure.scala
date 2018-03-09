@@ -377,7 +377,7 @@ class TypeErasure(isJava: Boolean, semiEraseVCs: Boolean, isConstructor: Boolean
     case tp: TypeRef =>
       val sym = tp.symbol
       if (!sym.isClass) this(tp.info)
-      else if (semiEraseVCs && isDerivedValueClass(sym.denot)) eraseDerivedValueClassRef(tp)
+      else if (semiEraseVCs && isDerivedValueClass(sym)) eraseDerivedValueClassRef(tp)
       else if (sym == defn.ArrayClass) apply(tp.appliedTo(TypeBounds.empty)) // i966 shows that we can hit a raw Array type.
       else if (defn.isSyntheticFunctionClass(sym)) defn.erasedFunctionType(sym)
       else if (defn.isPhantomTerminalClass(sym)) PhantomErasure.erasedPhantomType
@@ -469,7 +469,7 @@ class TypeErasure(isJava: Boolean, semiEraseVCs: Boolean, isConstructor: Boolean
 
   private def eraseDerivedValueClassRef(tref: TypeRef)(implicit ctx: Context): Type = {
     val cls = tref.symbol.asClass
-    val underlying = underlyingOfValueClass(cls.classDenot)
+    val underlying = underlyingOfValueClass(cls)
     if (underlying.exists && !isCyclic(cls)) ErasedValueType(tref, valueErasure(underlying))
     else NoType
   }
@@ -487,7 +487,7 @@ class TypeErasure(isJava: Boolean, semiEraseVCs: Boolean, isConstructor: Boolean
       // For a value class V, "new V(x)" should have type V for type adaptation to work
       // correctly (see SIP-15 and [[Erasure.Boxing.adaptToType]]), so the return type of a
       // constructor method should not be semi-erased.
-      else if (isConstructor && isDerivedValueClass(sym.denot)) eraseNormalClassRef(tp)
+      else if (isConstructor && isDerivedValueClass(sym)) eraseNormalClassRef(tp)
       else this(tp)
     case AppliedType(tycon, _) if !(tycon isRef defn.ArrayClass) =>
       eraseResult(tycon)
@@ -521,7 +521,7 @@ class TypeErasure(isJava: Boolean, semiEraseVCs: Boolean, isConstructor: Boolean
           if (!info.exists) assert(false, "undefined: $tp with symbol $sym")
           return sigName(info)
         }
-        if (isDerivedValueClass(sym.denot)) {
+        if (isDerivedValueClass(sym)) {
           val erasedVCRef = eraseDerivedValueClassRef(tp)
           if (erasedVCRef.exists) return sigName(erasedVCRef)
         }

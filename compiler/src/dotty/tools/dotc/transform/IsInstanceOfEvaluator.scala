@@ -130,8 +130,8 @@ class IsInstanceOfEvaluator extends MiniPhase {
 
       // Cases ---------------------------------
       val valueClassesOrAny =
-        ValueClasses.isDerivedValueClass(scrutinee.typeSymbol.denot) ||
-        ValueClasses.isDerivedValueClass(selector.typeSymbol.denot)  ||
+        ValueClasses.isDerivedValueClass(scrutinee.typeSymbol) ||
+        ValueClasses.isDerivedValueClass(selector.typeSymbol)  ||
         scrutinee == defn.ObjectType
 
       val knownStatically = scFinalClass

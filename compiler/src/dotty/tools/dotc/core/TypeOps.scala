@@ -229,8 +229,8 @@ trait TypeOps { this: Context => // TODO: Make standalone object.
       tpe
     else
       tpe.prefix match {
-        case pre: ThisType if pre.cls is Package => tryInsert(pre.cls.classDenot)
-        case pre: TermRef if pre.symbol is Package => tryInsert(pre.symbol.moduleClass.denot)
+        case pre: ThisType if pre.cls is Package => tryInsert(pre.cls)
+        case pre: TermRef if pre.symbol is Package => tryInsert(pre.symbol.moduleClass)
         case _ => tpe
       }
   }

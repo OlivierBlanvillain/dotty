@@ -422,5 +422,5 @@ class SuperAccessors(thisPhase: DenotTransformer) {
 
     /** Wrap `DefDef` producing operation `op`, potentially setting `invalidClass` info */
     def wrapDefDef(ddef: DefDef)(op: => DefDef)(implicit ctx: Context) =
-      if (isMethodWithExtension(ddef.symbol.denot)) withInvalidCurrentClass(op) else op
+      if (isMethodWithExtension(ddef.symbol)) withInvalidCurrentClass(op) else op
 }

@@ -157,7 +157,7 @@ class ClassfileParser(
       moduleRoot.setFlag(Flags.JavaDefined | Flags.ModuleClassCreationFlags)
       setPrivateWithin(classRoot, jflags)
       setPrivateWithin(moduleRoot, jflags)
-      setPrivateWithin(moduleRoot.sourceModule.denot, jflags)
+      setPrivateWithin(moduleRoot.sourceModule, jflags)
 
       for (i <- 0 until in.nextChar) parseMember(method = false)
       for (i <- 0 until in.nextChar) parseMember(method = true)
@@ -758,7 +758,7 @@ class ClassfileParser(
 
       def unpickleTASTY(bytes: Array[Byte]): Some[Embedded]  = {
         val unpickler = new tasty.DottyUnpickler(bytes)
-        unpickler.enter(roots = Set(classRoot, moduleRoot, moduleRoot.sourceModule.denot))
+        unpickler.enter(roots = Set(classRoot, moduleRoot, moduleRoot.sourceModule))
         Some(unpickler)
       }
 

@@ -243,7 +243,7 @@ object Checking {
           if (isInteresting(pre)) {
             val pre1 = this(pre, false, false)
             if (locked.contains(tp) || tp.symbol.infoOrCompleter.isInstanceOf[NoCompleter])
-              throw CyclicReference(tp.symbol.denot)
+              throw CyclicReference(tp.symbol)
             locked += tp
             try checkInfo(tp.info)
             finally locked -= tp
@@ -485,7 +485,7 @@ object Checking {
       case _ =>
         ctx.error(ValueClassesMayNotContainInitalization(clazz), stat.pos)
     }
-    if (isDerivedValueClass(clazz.denot)) {
+    if (isDerivedValueClass(clazz)) {
       if (clazz.is(Trait))
         ctx.error(CannotExtendAnyVal(clazz), clazz.pos)
       if (clazz.is(Abstract))

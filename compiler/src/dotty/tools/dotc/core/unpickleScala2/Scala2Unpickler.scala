@@ -88,7 +88,7 @@ object Scala2Unpickler {
   def ensureConstructor(cls: ClassSymbol, scope: Scope)(implicit ctx: Context) =
     if (scope.lookup(nme.CONSTRUCTOR) == NoSymbol) {
       val constr = ctx.newDefaultConstructor(cls)
-      addConstructorTypeParams(constr.denot)
+      addConstructorTypeParams(constr)
       cls.enter(constr, scope)
     }
 
@@ -406,7 +406,7 @@ class Scala2Unpickler(bytes: Array[Byte], classRoot: ClassDenotation, moduleClas
           // (3) Try as a nested object symbol.
           nestedObjectSymbol orElse {
             // (4) Call the mirror's "missing" hook.
-            adjust(ctx.base.missingHook(owner, name).denot) orElse {
+            adjust(ctx.base.missingHook(owner, name)) orElse {
               // println(owner.info.decls.toList.map(_.debugString).mkString("\n  ")) // !!! DEBUG
               //              }
               // (5) Create a stub symbol to defer hard failure a little longer.

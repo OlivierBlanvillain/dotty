@@ -59,7 +59,7 @@ class SyntheticMethods(thisPhase: DenotTransformer) {
   def syntheticMethods(clazz: ClassSymbol)(implicit ctx: Context): List[Tree] = {
     val clazzType = clazz.appliedRef
     lazy val accessors =
-      if (isDerivedValueClass(clazz.denot)) clazz.paramAccessors.take(1) // Tail parameters can only be `unused`
+      if (isDerivedValueClass(clazz)) clazz.paramAccessors.take(1) // Tail parameters can only be `unused`
       else clazz.caseAccessors
 
     val symbolsToSynthesize: List[Symbol] =
@@ -67,7 +67,7 @@ class SyntheticMethods(thisPhase: DenotTransformer) {
         if (clazz.is(Module)) caseModuleSymbols
         else caseSymbols
       }
-      else if (isDerivedValueClass(clazz.denot)) valueSymbols
+      else if (isDerivedValueClass(clazz)) valueSymbols
       else Nil
 
     def syntheticDefIfMissing(sym: Symbol): List[Tree] = {
@@ -89,7 +89,7 @@ class SyntheticMethods(thisPhase: DenotTransformer) {
         Literal(Constant(clazz.name.stripModuleClassSuffix.toString))
 
       def syntheticRHS(implicit ctx: Context): List[List[Tree]] => Tree = synthetic.name match {
-        case nme.hashCode_ if isDerivedValueClass(clazz.denot) => vrefss => valueHashCodeBody
+        case nme.hashCode_ if isDerivedValueClass(clazz) => vrefss => valueHashCodeBody
         case nme.hashCode_ => vrefss => caseHashCodeBody
         case nme.toString_ => if (clazz.is(ModuleClass)) ownName else forwardToRuntime
         case nme.equals_ => vrefss => equalsBody(vrefss.head.head)
@@ -170,7 +170,7 @@ class SyntheticMethods(thisPhase: DenotTransformer) {
       val matchingCase = CaseDef(pattern, EmptyTree, rhs) // case x$0 @ (_: C) => this.x == this$0.x && this.y == x$0.y
       val defaultCase = CaseDef(wildcardAscription(defn.AnyType), EmptyTree, Literal(Constant(false))) // case _ => false
       val matchExpr = Match(that, List(matchingCase, defaultCase))
-      if (isDerivedValueClass(clazz.denot)) matchExpr
+      if (isDerivedValueClass(clazz)) matchExpr
       else {
         val eqCompare = This(clazz).select(defn.Object_eq).appliedTo(that.asInstance(defn.ObjectType))
         eqCompare or matchExpr
@@ -259,7 +259,7 @@ class SyntheticMethods(thisPhase: DenotTransformer) {
   }
 
   def addSyntheticMethods(impl: Template)(implicit ctx: Context) =
-    if (ctx.owner.is(Case) || isDerivedValueClass(ctx.owner.denot))
+    if (ctx.owner.is(Case) || isDerivedValueClass(ctx.owner))
       cpy.Template(impl)(body = impl.body ++ syntheticMethods(ctx.owner.asClass))
     else
       impl

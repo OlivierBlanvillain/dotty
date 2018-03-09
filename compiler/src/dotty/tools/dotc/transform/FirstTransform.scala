@@ -138,8 +138,8 @@ class FirstTransform extends MiniPhase with InfoTransformer { thisPhase =>
       defn.ObjectType :: Nil, Scopes.newScope, assocFile = forClass.asClass.assocFile)
     val mc = modul.moduleClass
 
-    val mcComp = ctx.synthesizeCompanionMethod(nme.COMPANION_CLASS_METHOD, forClass.denot, mc.denot)
-    val classComp = ctx.synthesizeCompanionMethod(nme.COMPANION_MODULE_METHOD, mc.denot, forClass.denot)
+    val mcComp = ctx.synthesizeCompanionMethod(nme.COMPANION_CLASS_METHOD, forClass, mc)
+    val classComp = ctx.synthesizeCompanionMethod(nme.COMPANION_MODULE_METHOD, mc, forClass)
     (modul, mcComp, classComp)
   }
 

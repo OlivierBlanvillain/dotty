@@ -61,7 +61,7 @@ object TypeTestsCasts {
                // if `test` is primitive but `found` is not, we might have a case like
                // found = java.lang.Integer, test = Int, which could be true
                // (not sure why that is so, but scalac behaves the same way)
-            !isDerivedValueClass(foundCls.denot) && !isDerivedValueClass(testCls.denot)
+            !isDerivedValueClass(foundCls) && !isDerivedValueClass(testCls)
                // we don't have the logic to handle derived value classes
 
           /** Check whether a runtime test that a value of `foundCls` can be a `testCls`
@@ -117,7 +117,7 @@ object TypeTestsCasts {
           }
           else if (testCls.isPrimitiveValueClass)
             unbox(expr.ensureConforms(defn.ObjectType), testType)
-          else if (isDerivedValueClass(testCls.denot)) {
+          else if (isDerivedValueClass(testCls)) {
             expr // adaptToType in Erasure will do the necessary type adaptation
           }
           else

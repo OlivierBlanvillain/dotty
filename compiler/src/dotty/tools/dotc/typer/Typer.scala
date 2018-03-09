@@ -1023,7 +1023,7 @@ class Typer extends Namer
               else ctx.error(new DuplicateBind(b, tree), b.pos)
             if (!ctx.isAfterTyper) {
               val bounds = ctx.gadt.bounds(sym)
-              if (bounds != null) sym.denot.info = bounds
+              if (bounds != null) sym.info = bounds
             }
             b
           case t => t
@@ -1405,7 +1405,7 @@ class Typer extends Namer
     val rhs1 = normalizeUnusedRhs(typedExpr(ddef.rhs, tpt1.tpe)(rhsCtx), sym)
 
     // Overwrite inline body to make sure it is not evaluated twice
-    if (sym.isInlineMethod) Inliner.registerInlineInfo(sym.denot, _ => rhs1)
+    if (sym.isInlineMethod) Inliner.registerInlineInfo(sym, _ => rhs1)
 
     assignType(cpy.DefDef(ddef)(name, tparams1, vparamss1, tpt1, rhs1), sym)
     //todo: make sure dependent method types do not depend on implicits or by-name params
@@ -1497,7 +1497,7 @@ class Typer extends Namer
       val dummy = localDummy(cls, impl)
       val body1 = typedStats(impl.body, dummy)(ctx.inClassContext(self1.symbol))
       if (!ctx.isAfterTyper)
-        cls.denot.setNoInitsFlags((NoInitsInterface /: body1) ((fs, stat) => fs & defKind(stat)))
+        cls.setNoInitsFlags((NoInitsInterface /: body1) ((fs, stat) => fs & defKind(stat)))
 
       // Expand comments and type usecases
       cookComments(body1.map(_.symbol), self1.symbol)(ctx.localContext(cdef, cls).setNewScope)
@@ -1826,7 +1826,7 @@ class Typer extends Namer
             traverse(xtree :: rest)
           case none =>
             typed(mdef) match {
-              case mdef1: DefDef if Inliner.hasBodyToInline(mdef1.symbol.denot) =>
+              case mdef1: DefDef if Inliner.hasBodyToInline(mdef1.symbol) =>
                 buf ++= inlineExpansion(mdef1)
               case mdef1 =>
                 buf += mdef1
@@ -1856,8 +1856,8 @@ class Typer extends Namer
    *  Overwritten in Retyper to return `mdef` unchanged.
    */
   protected def inlineExpansion(mdef: DefDef)(implicit ctx: Context): List[Tree] =
-    tpd.cpy.DefDef(mdef)(rhs = Inliner.bodyToInline(mdef.symbol.denot)) ::
-        Inliner.removeInlineAccessors(mdef.symbol.denot)
+    tpd.cpy.DefDef(mdef)(rhs = Inliner.bodyToInline(mdef.symbol)) ::
+        Inliner.removeInlineAccessors(mdef.symbol)
 
   def typedExpr(tree: untpd.Tree, pt: Type = WildcardType)(implicit ctx: Context): Tree =
     typed(tree, pt)(ctx retractMode Mode.PatternOrTypeBits)
@@ -2276,7 +2276,7 @@ class Typer extends Namer
       else if (tree.tpe <:< pt) {
         if (pt.hasAnnotation(defn.InlineParamAnnot))
           checkInlineConformant(tree, "argument to inline parameter")
-        if (Inliner.hasBodyToInline(tree.symbol.denot) &&
+        if (Inliner.hasBodyToInline(tree.symbol) &&
             !ctx.owner.ownersIterator.exists(_.isInlineMethod) &&
             !ctx.settings.YnoInline.value &&
             !ctx.isAfterTyper &&

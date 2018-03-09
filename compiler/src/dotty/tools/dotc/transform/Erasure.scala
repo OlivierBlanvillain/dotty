@@ -182,7 +182,7 @@ object Erasure {
     final def box(tree: Tree, target: => String = "")(implicit ctx: Context): Tree = trace(i"boxing ${tree.showSummary}: ${tree.tpe} into $target") {
       tree.tpe.widen match {
         case ErasedValueType(tycon, _) =>
-          New(tycon, cast(tree, underlyingOfValueClass(tycon.symbol.asClass.classDenot)) :: Nil) // todo: use adaptToType?
+          New(tycon, cast(tree, underlyingOfValueClass(tycon.symbol.asClass)) :: Nil) // todo: use adaptToType?
         case tp =>
           val cls = tp.classSymbol
           if (cls eq defn.UnitClass) constant(tree, ref(defn.BoxedUnit_UNIT))
@@ -204,7 +204,7 @@ object Erasure {
         case ErasedValueType(tycon, underlying) =>
           def unboxedTree(t: Tree) =
             adaptToType(t, tycon)
-            .select(valueClassUnbox(tycon.symbol.asClass.classDenot))
+            .select(valueClassUnbox(tycon.symbol.asClass))
             .appliedToNone
 
           // Null unboxing needs to be treated separately since we cannot call a method on null.
@@ -246,9 +246,9 @@ object Erasure {
     def cast(tree: Tree, pt: Type)(implicit ctx: Context): Tree = trace(i"cast ${tree.tpe.widen} --> $pt", show = true) {
 
       def wrap(tycon: TypeRef) =
-        ref(u2evt(tycon.typeSymbol.asClass.classDenot)).appliedTo(tree)
+        ref(u2evt(tycon.typeSymbol.asClass)).appliedTo(tree)
       def unwrap(tycon: TypeRef) =
-        ref(evt2u(tycon.typeSymbol.asClass.classDenot)).appliedTo(tree)
+        ref(evt2u(tycon.typeSymbol.asClass)).appliedTo(tree)
 
       assert(!pt.isInstanceOf[SingletonType], pt)
       if (pt isRef defn.UnitClass) unbox(tree, pt)

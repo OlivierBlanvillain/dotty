@@ -23,7 +23,7 @@ object ValueClasses {
 
   def isMethodWithExtension(d: SymDenotation)(implicit ctx: Context) =
     d.isRealMethod &&
-      isDerivedValueClass(d.owner.denot) &&
+      isDerivedValueClass(d.owner) &&
       !d.isConstructor &&
       !d.symbol.isSuperAccessor &&
       !d.is(Macro)
@@ -55,8 +55,8 @@ object ValueClasses {
   def isCyclic(cls: ClassSymbol)(implicit ctx: Context): Boolean = {
     def recur(seen: Set[Symbol], clazz: ClassSymbol)(implicit ctx: Context): Boolean =
       (seen contains clazz) || {
-        val unboxed = underlyingOfValueClass(clazz.classDenot).typeSymbol
-        (isDerivedValueClass(unboxed.denot)) && recur(seen + clazz, unboxed.asClass)
+        val unboxed = underlyingOfValueClass(clazz).typeSymbol
+        (isDerivedValueClass(unboxed)) && recur(seen + clazz, unboxed.asClass)
       }
 
     recur(Set[Symbol](), cls)

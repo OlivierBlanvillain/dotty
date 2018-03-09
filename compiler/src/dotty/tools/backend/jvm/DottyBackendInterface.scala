@@ -40,6 +40,10 @@ import dotty.tools.dotc.core.Names.TypeName
 import scala.annotation.tailrec
 
 class DottyBackendInterface(outputDirectory: AbstractFile, val superCallsMap: Map[Symbol, Set[ClassSymbol]])(implicit ctx: Context) extends BackendInterface{
+  import Symbols.{toDenot, toClassDenot}
+    // Dotty deviation: Need to (re-)import implicit decorators here because otherwise
+    // they would be shadowed by the more deeply nested `symHelper` decorator.
+
   type Symbol          = Symbols.Symbol
   type Type            = Types.Type
   type Tree            = tpd.Tree
@@ -140,7 +144,7 @@ class DottyBackendInterface(outputDirectory: AbstractFile, val superCallsMap: Ma
   val externalEqualsNumNum: Symbol = defn.BoxesRunTimeModule.requiredMethod(nme.equalsNumNum)
   val externalEqualsNumChar: Symbol = NoSymbol // ctx.requiredMethod(BoxesRunTimeTypeRef, nme.equalsNumChar) // this method is private
   val externalEqualsNumObject: Symbol = defn.BoxesRunTimeModule.requiredMethod(nme.equalsNumObject)
-  val externalEquals: Symbol = defn.BoxesRunTimeClass.info.decl(nme.equals_).suchThat(_.denot.info.firstParamTypes.size == 2).symbol
+  val externalEquals: Symbol = defn.BoxesRunTimeClass.info.decl(nme.equals_).suchThat(toDenot(_).info.firstParamTypes.size == 2).symbol
   val MaxFunctionArity: Int = Definitions.MaxImplementedFunctionArity
   val FunctionClass: Array[Symbol] = defn.FunctionClassPerRun()
   val AbstractFunctionClass: Array[Symbol] = defn.AbstractFunctionClassPerRun()
@@ -211,7 +215,7 @@ class DottyBackendInterface(outputDirectory: AbstractFile, val superCallsMap: Ma
   implicit val ClosureTag: ClassTag[Closure] = ClassTag[Closure](classOf[Closure])
 
   def isRuntimeVisible(annot: Annotation): Boolean =
-    if (annot.atp.typeSymbol.denot.hasAnnotation(AnnotationRetentionAttr))
+    if (toDenot(annot.atp.typeSymbol).hasAnnotation(AnnotationRetentionAttr))
       retentionPolicyOf(annot) == AnnotationRetentionRuntimeAttr
     else {
       // SI-8926: if the annotation class symbol doesn't have a @RetentionPolicy annotation, the
@@ -261,8 +265,8 @@ class DottyBackendInterface(outputDirectory: AbstractFile, val superCallsMap: Ma
           av.visitEnum(name, edesc, evalue)
         } else {
             // println(i"not an enum: ${t.symbol} / ${t.symbol.denot.owner} / ${t.symbol.denot.owner.isTerm} / ${t.symbol.denot.owner.flags}")
-            assert(t.symbol.denot.name.is(DefaultGetterName),
-              s"${t.symbol.denot.name.debugString}") // this should be default getter. do not emmit.
+            assert(toDenot(t.symbol).name.is(DefaultGetterName),
+              s"${toDenot(t.symbol).name.debugString}") // this should be default getter. do not emmit.
         }
       case t: SeqLiteral =>
         val arrAnnotV: AnnotationVisitor = av.visitArray(name)
@@ -270,7 +274,7 @@ class DottyBackendInterface(outputDirectory: AbstractFile, val superCallsMap: Ma
         arrAnnotV.visitEnd()
 
       case Apply(fun, args) if fun.symbol == defn.ArrayClass.primaryConstructor ||
-        fun.symbol.denot.owner == defn.ArrayClass.linkedClass && fun.symbol.name == nme_apply =>
+        toDenot(fun.symbol).owner == defn.ArrayClass.linkedClass && fun.symbol.name == nme_apply =>
         val arrAnnotV: AnnotationVisitor = av.visitArray(name)
 
         var actualArgs = if (fun.tpe.isImplicitMethod) {
@@ -652,28 +656,28 @@ class DottyBackendInterface(outputDirectory: AbstractFile, val superCallsMap: Ma
     def fullName(sep: Char): String = sym.showFullName
     def fullName: String = sym.showFullName
     def simpleName: Name = sym.name
-    def javaSimpleName: String = sym.denot.name.mangledString // addModuleSuffix(simpleName.dropLocal)
+    def javaSimpleName: String = toDenot(sym).name.mangledString // addModuleSuffix(simpleName.dropLocal)
     def javaBinaryName: String = javaClassName.replace('.', '/') // TODO: can we make this a string? addModuleSuffix(fullNameInternal('/'))
-    def javaClassName: String = sym.denot.fullName.mangledString // addModuleSuffix(fullNameInternal('.')).toString
+    def javaClassName: String = toDenot(sym).fullName.mangledString // addModuleSuffix(fullNameInternal('.')).toString
     def name: Name = sym.name
     def rawname: String = {
-      val original = sym.denot.initial
+      val original = toDenot(sym).initial
       sym.name(ctx.withPhase(original.validFor.phaseId)).mangledString
     }
 
     // types
-    def info: Type = sym.denot.info
-    def tpe: Type = sym.denot.info // todo whats the differentce between tpe and info?
-    def thisType: Type = sym.denot.thisType
+    def info: Type = toDenot(sym).info
+    def tpe: Type = toDenot(sym).info // todo whats the differentce between tpe and info?
+    def thisType: Type = toDenot(sym).thisType
 
     // tests
     def isClass: Boolean = {
       sym.isPackageObject || (sym.isClass)
     }
     def isType: Boolean = sym.isType
-    def isAnonymousClass: Boolean = sym.denot.isAnonymousClass
-    def isConstructor: Boolean = sym.denot.isConstructor
-    def isAnonymousFunction: Boolean = sym.denot.isAnonymousFunction
+    def isAnonymousClass: Boolean = toDenot(sym).isAnonymousClass
+    def isConstructor: Boolean = toDenot(sym).isConstructor
+    def isAnonymousFunction: Boolean = toDenot(sym).isAnonymousFunction
     def isMethod: Boolean = sym is Flags.Method
     def isPublic: Boolean =  sym.flags.is(Flags.EmptyFlags, butNot=Flags.Private | Flags.Protected)
     def isSynthetic: Boolean = sym is Flags.Synthetic
@@ -685,22 +689,22 @@ class DottyBackendInterface(outputDirectory: AbstractFile, val superCallsMap: Ma
     def hasPackageFlag: Boolean = sym is Flags.Package
     def isImplClass: Boolean = sym is Flags.ImplClass
     def isInterface: Boolean = (sym is Flags.PureInterface) || (sym is Flags.Trait)
-    def isGetter: Boolean = sym.denot.isGetter
-    def isSetter: Boolean = sym.denot.isSetter
+    def isGetter: Boolean = toDenot(sym).isGetter
+    def isSetter: Boolean = toDenot(sym).isSetter
     def isGetClass: Boolean = sym eq defn.Any_getClass
     def isJavaDefined: Boolean = sym is Flags.JavaDefined
-    def isJavaDefaultMethod: Boolean = !((sym is Flags.Deferred)  || sym.denot.isClassConstructor)
+    def isJavaDefaultMethod: Boolean = !((sym is Flags.Deferred)  || toDenot(sym).isClassConstructor)
     def isDeferred: Boolean = sym is Flags.Deferred
     def isPrivate: Boolean = sym is Flags.Private
     def getsJavaFinalFlag: Boolean =
-      isFinal &&  !sym.denot.isClassConstructor && !(sym is Flags.Mutable) &&  !(sym.enclosingClass is Flags.Trait)
+      isFinal &&  !toDenot(sym).isClassConstructor && !(sym is Flags.Mutable) &&  !(sym.enclosingClass is Flags.Trait)
 
     def getsJavaPrivateFlag: Boolean =
       isPrivate //|| (sym.isPrimaryConstructor && sym.owner.isTopLevelModuleClass)
 
     def isFinal: Boolean = sym is Flags.Final
     def isStaticMember: Boolean = (sym ne NoSymbol) &&
-      ((sym is Flags.JavaStatic) || (owner is Flags.ImplClass) || sym.denot.hasAnnotation(ctx.definitions.ScalaStaticAnnot))
+      ((sym is Flags.JavaStatic) || (owner is Flags.ImplClass) || toDenot(sym).hasAnnotation(ctx.definitions.ScalaStaticAnnot))
       // guard against no sumbol cause this code is executed to select which call type(static\dynamic) to use to call array.clone
 
     def isBottomClass: Boolean = (sym ne defn.NullClass) && (sym ne defn.NothingClass)
@@ -716,12 +720,12 @@ class DottyBackendInterface(outputDirectory: AbstractFile, val superCallsMap: Ma
     def hasModuleFlag: Boolean = sym is Flags.Module
     def isSynchronized: Boolean = sym is Flags.Synchronized
     def isNonBottomSubClass(other: Symbol): Boolean = sym.derivesFrom(other)
-    def hasAnnotation(ann: Symbol): Boolean = sym.denot.hasAnnotation(ann)
+    def hasAnnotation(ann: Symbol): Boolean = toDenot(sym).hasAnnotation(ann)
     def shouldEmitForwarders: Boolean =
       (sym is Flags.Module) && !(sym is Flags.ImplClass) && sym.isStatic
     def isJavaEntryPoint: Boolean = CollectEntryPoints.isJavaEntryPoint(sym)
 
-    def isClassConstructor: Boolean = sym.denot.isClassConstructor
+    def isClassConstructor: Boolean = toDenot(sym).isClassConstructor
 
     /**
      * True for module classes of modules that are top-level or owned only by objects. Module classes
@@ -732,17 +736,17 @@ class DottyBackendInterface(outputDirectory: AbstractFile, val superCallsMap: Ma
         // scalac uses atPickling here
         // this would not work if modules are created after pickling
         // for example by specialization
-        val original = sym.denot.initial
+        val original = toDenot(sym).initial
         val validity = original.validFor
         val shiftedContext = ctx.withPhase(validity.phaseId)
-        sym.denot(shiftedContext).isStatic(shiftedContext)
+        toDenot(sym)(shiftedContext).isStatic(shiftedContext)
       }
 
     def isStaticConstructor: Boolean = (isStaticMember && isClassConstructor) || (sym.name eq nme.STATIC_CONSTRUCTOR)
 
 
     // navigation
-    def owner: Symbol = sym.denot.owner
+    def owner: Symbol = toDenot(sym).owner
     def rawowner: Symbol = {
       originalOwner
     }
@@ -750,15 +754,15 @@ class DottyBackendInterface(outputDirectory: AbstractFile, val superCallsMap: Ma
       // used to populate the EnclosingMethod attribute.
       // it is very tricky in presence of classes(and annonymous classes) defined inside supper calls.
       if (sym.exists) {
-        val original = sym.denot.initial
+        val original = toDenot(sym).initial
         val validity = original.validFor
         val shiftedContext = ctx.withPhase(validity.phaseId)
-        val r = sym.denot(shiftedContext).maybeOwner.lexicallyEnclosingClass(shiftedContext)
+        val r = toDenot(sym)(shiftedContext).maybeOwner.lexicallyEnclosingClass(shiftedContext)
         r
       } else NoSymbol
-    def parentSymbols: List[Symbol] = sym.denot.info.parents.map(_.typeSymbol)
+    def parentSymbols: List[Symbol] = toDenot(sym).info.parents.map(_.typeSymbol)
     def superClass: Symbol =  {
-      val t = sym.denot.asClass.superClass
+      val t = toDenot(sym).asClass.superClass
       if (t.exists) t
       else if (sym is Flags.ModuleClass) {
         // workaround #371
@@ -768,23 +772,23 @@ class DottyBackendInterface(outputDirectory: AbstractFile, val superCallsMap: Ma
       }
       else t
     }
-    def enclClass: Symbol = sym.denot.enclosingClass
+    def enclClass: Symbol = toDenot(sym).enclosingClass
     def linkedClassOfClass: Symbol = linkedClass
-    def linkedClass: Symbol = sym.denot(ctx).linkedClass(ctx) //exitingPickler(sym.linkedClassOfClass)
-    def companionClass: Symbol = sym.denot.companionClass
-    def companionModule: Symbol = sym.denot.companionModule
+    def linkedClass: Symbol = toDenot(sym)(ctx).linkedClass(ctx) //exitingPickler(sym.linkedClassOfClass)
+    def companionClass: Symbol = toDenot(sym).companionClass
+    def companionModule: Symbol = toDenot(sym).companionModule
     def companionSymbol: Symbol = if (sym is Flags.Module) companionClass else companionModule
-    def moduleClass: Symbol = sym.denot.moduleClass
+    def moduleClass: Symbol = toDenot(sym).moduleClass
     def enclosingClassSym: Symbol = {
       if (this.isClass) {
         val ct = ctx.withPhase(ctx.base.flattenPhase.prev)
-        sym.denot(ct).owner.enclosingClass(ct)
+        toDenot(sym)(ct).owner.enclosingClass(ct)
       }
       else sym.enclosingClass(ctx.withPhase(ctx.flattenPhase.prev))
     } //todo is handled specially for JavaDefined symbols in scalac
 
     // members
-    def primaryConstructor: Symbol = sym.denot.primaryConstructor
+    def primaryConstructor: Symbol = toDenot(sym).primaryConstructor
 
     /** For currently compiled classes: All locally defined classes including local classes.
      *  The empty list for classes that are not currently compiled.
@@ -799,11 +803,11 @@ class DottyBackendInterface(outputDirectory: AbstractFile, val superCallsMap: Ma
     private def definedClasses(phase: Phase) =
       if (sym.isDefinedInCurrentRun)
         ctx.atPhase(phase) { implicit ctx =>
-          sym.denot.info.decls.filter(_.isClass)
+          toDenot(sym).info.decls.filter(_.isClass)
         }
       else Nil
 
-    def annotations: List[Annotation] = sym.denot.annotations
+    def annotations: List[Annotation] = toDenot(sym).annotations
 
     def companionModuleMembers: List[Symbol] = {
       // phase travel to exitingPickler: this makes sure that memberClassesOf only sees member classes,
@@ -813,11 +817,11 @@ class DottyBackendInterface(outputDirectory: AbstractFile, val superCallsMap: Ma
     }
 
     def fieldSymbols: List[Symbol] = {
-      sym.denot.info.decls.filter(p => p.isTerm && !p.is(Flags.Method))
+      toDenot(sym).info.decls.filter(p => p.isTerm && !p.is(Flags.Method))
     }
 
     def methodSymbols: List[Symbol] =
-      for (f <- sym.denot.info.decls.toList if f.isMethod && f.isTerm && !f.isModule) yield f
+      for (f <- toDenot(sym).info.decls.toList if f.isMethod && f.isTerm && !f.isModule) yield f
 
     def serialVUID: Option[Long] = None
 
@@ -854,7 +858,7 @@ class DottyBackendInterface(outputDirectory: AbstractFile, val superCallsMap: Ma
      */
     def isTopLevelModuleClass: Boolean = sym.isModuleClass &&
       ctx.atPhase(ctx.base.flattenPhase) { implicit ctx =>
-        sym.denot.owner.is(Flags.PackageClass)
+        toDenot(sym).owner.is(Flags.PackageClass)
       }
 
     /**
@@ -872,7 +876,7 @@ class DottyBackendInterface(outputDirectory: AbstractFile, val superCallsMap: Ma
     def addRemoteRemoteExceptionAnnotation: Unit = ()
 
     def samMethod(): Symbol =
-      sym.denot.info.abstractTermMembers.headOption.getOrElse(sym.denot.info.member(nme.apply)).symbol
+      toDenot(sym).info.abstractTermMembers.headOption.getOrElse(toDenot(sym).info.member(nme.apply)).symbol
   }
 
 
