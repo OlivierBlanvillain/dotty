@@ -259,7 +259,7 @@ class TreeUnpickler(reader: TastyReader,
               val prefix = readType()
               val space = readType()
               space.decl(name) match {
-                case symd: SymDenotation if prefix.isArgPrefixOf(symd.symbol) => TypeRef(prefix, symd.symbol)
+                case symd: SymDenotation if prefix.isArgPrefixOf(symd.symbol.denot) => TypeRef(prefix, symd.symbol)
                 case _ => TypeRef(prefix, name, space.decl(name))
               }
             case REFINEDtype =>
@@ -512,7 +512,7 @@ class TreeUnpickler(reader: TastyReader,
             else
               ctx.newSymbol(ctx.owner, name, flags, completer, privateWithin, coord)
         }
-      sym.annotations = annots
+      sym.denot.annotations = annots
       ctx.owner match {
         case cls: ClassSymbol => cls.enter(sym)
         case _ =>
@@ -719,7 +719,7 @@ class TreeUnpickler(reader: TastyReader,
           val valueParamss = ctx.normalizeIfConstructor(
               vparamss.nestedMap(_.symbol), name == nme.CONSTRUCTOR)
           val resType = ctx.effectiveResultType(sym, typeParams, tpt.tpe)
-          sym.info = ctx.methodType(typeParams, valueParamss, resType)
+          sym.denot.info = ctx.methodType(typeParams, valueParamss, resType)
           if (sym.isSetter && sym.accessedFieldOrGetter.is(ParamAccessor)) {
             // reconstitute ParamAccessor flag of setters for var parameters, which is not pickled
             sym.setFlag(ParamAccessor)
@@ -728,7 +728,7 @@ class TreeUnpickler(reader: TastyReader,
           DefDef(tparams, vparamss, tpt)
         case VALDEF =>
           val tpt = readTpt()(localCtx)
-          sym.info = tpt.tpe
+          sym.denot.info = tpt.tpe
           ValDef(tpt)
         case TYPEDEF | TYPEPARAM =>
           if (sym.isClass) {
@@ -746,14 +746,14 @@ class TreeUnpickler(reader: TastyReader,
             }
             TypeDef(readTemplate(localCtx))
           } else {
-            sym.info = TypeBounds.empty // needed to avoid cyclic references when unpicklin rhs, see i3816.scala
+            sym.denot.info = TypeBounds.empty // needed to avoid cyclic references when unpicklin rhs, see i3816.scala
             sym.setFlag(Provisional)
             val rhs = readTpt()(localCtx)
-            sym.info = new NoCompleter {
+            sym.denot.info = new NoCompleter {
               override def completerTypeParams(sym: Symbol)(implicit ctx: Context) =
                 rhs.tpe.typeParams
             }
-            sym.info = rhs.tpe match {
+            sym.denot.info = rhs.tpe match {
               case _: TypeBounds | _: ClassInfo => checkNonCyclic(sym, rhs.tpe, reportErrors = false)
               case _ => TypeAlias(rhs.tpe)
             }
@@ -763,12 +763,12 @@ class TreeUnpickler(reader: TastyReader,
         case PARAM =>
           val tpt = readTpt()(localCtx)
           if (noRhs(end)) {
-            sym.info = tpt.tpe
+            sym.denot.info = tpt.tpe
             ValDef(tpt)
           }
           else {
             sym.setFlag(Method)
-            sym.info = ExprType(tpt.tpe)
+            sym.denot.info = ExprType(tpt.tpe)
             pickling.println(i"reading param alias $name -> $currentAddr")
             DefDef(Nil, Nil, tpt)
           }
@@ -783,7 +783,7 @@ class TreeUnpickler(reader: TastyReader,
       goto(end)
       setPos(start, tree)
       if (!sym.isType) { // Only terms might have leaky aliases, see the documentation of `checkNoPrivateLeaks`
-        sym.info = ta.avoidPrivateLeaks(sym, tree.pos)
+        sym.denot.info = ta.avoidPrivateLeaks(sym, tree.pos)
       }
       if ((sym.isClass || sym.is(CaseVal)) && sym.isLocal)
         // Child annotations for local classes and enum values are not pickled, so
@@ -798,7 +798,7 @@ class TreeUnpickler(reader: TastyReader,
       val assumedSelfType =
         if (cls.is(Module) && cls.owner.isClass) TermRef(cls.owner.thisType, cls.name.sourceModuleName)
         else NoType
-      cls.info = new TempClassInfo(cls.owner.thisType, cls, cls.unforcedDecls, assumedSelfType)
+      cls.denot.info = new TempClassInfo(cls.owner.thisType, cls, cls.unforcedDecls, assumedSelfType)
       val localDummy = symbolAtCurrent()
       val parentCtx = ctx.withOwner(localDummy)
       assert(readByte() == TEMPLATE)
@@ -818,9 +818,9 @@ class TreeUnpickler(reader: TastyReader,
           untpd.ValDef(readName(), readTpt(), EmptyTree).withType(NoType)
         }
         else EmptyValDef
-      cls.info = ClassInfo(cls.owner.thisType, cls, parentTypes, cls.unforcedDecls,
+      cls.denot.info = ClassInfo(cls.owner.thisType, cls, parentTypes, cls.unforcedDecls,
         if (self.isEmpty) NoType else self.tpt.tpe)
-      cls.setNoInitsFlags(fork.indexStats(end))
+      cls.denot.setNoInitsFlags(fork.indexStats(end))
       val constr = readIndexedDef().asInstanceOf[DefDef]
       val mappedParents = parents.map(_.changeOwner(localDummy, constr.symbol))
 

@@ -26,7 +26,7 @@ class ElimErasedValueType extends MiniPhase with InfoTransformer {
   def transformInfo(tp: Type, sym: Symbol)(implicit ctx: Context): Type = sym match {
     case sym: ClassSymbol if sym is ModuleClass =>
       sym.companionClass match {
-        case origClass: ClassSymbol if isDerivedValueClass(origClass) =>
+        case origClass: ClassSymbol if isDerivedValueClass(origClass.denot) =>
           val cinfo = tp.asInstanceOf[ClassInfo]
           val decls1 = cinfo.decls.cloneScope
           ctx.atPhase(this.next) { implicit ctx =>

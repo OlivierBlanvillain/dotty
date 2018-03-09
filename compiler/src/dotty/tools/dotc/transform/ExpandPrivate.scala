@@ -64,7 +64,7 @@ class ExpandPrivate extends MiniPhase with IdentityDenotTransformer { thisPhase 
   }
 
   private def isVCPrivateParamAccessor(d: SymDenotation)(implicit ctx: Context) =
-    d.isTerm && d.isBoth(Private, and = ParamAccessor) && isDerivedValueClass(d.owner)
+    d.isTerm && d.isBoth(Private, and = ParamAccessor) && isDerivedValueClass(d.owner.denot)
 
   /** Make private terms accessed from different classes non-private.
    *  Note: this happens also for accesses between class and linked module class.
@@ -96,12 +96,12 @@ class ExpandPrivate extends MiniPhase with IdentityDenotTransformer { thisPhase 
     }
 
   override def transformIdent(tree: Ident)(implicit ctx: Context) = {
-    ensurePrivateAccessible(tree.symbol)
+    ensurePrivateAccessible(tree.symbol.denot)
     tree
   }
 
   override def transformSelect(tree: Select)(implicit ctx: Context) = {
-    ensurePrivateAccessible(tree.symbol)
+    ensurePrivateAccessible(tree.symbol.denot)
     tree
   }
 
@@ -112,7 +112,7 @@ class ExpandPrivate extends MiniPhase with IdentityDenotTransformer { thisPhase 
       if sym.isBoth(Private, and = ParamAccessor) && sel.symbol.is(ParamAccessor) && sym.name == sel.symbol.name =>
         sym.ensureNotPrivate.installAfter(thisPhase)
       case _ =>
-        if (isVCPrivateParamAccessor(sym))
+        if (isVCPrivateParamAccessor(sym.denot))
           sym.ensureNotPrivate.installAfter(thisPhase)
     }
     tree

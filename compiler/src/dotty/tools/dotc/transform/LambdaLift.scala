@@ -338,7 +338,7 @@ object LambdaLift {
             else (topClass, JavaStatic)
           }
           else (lOwner, EmptyFlags)
-        local.copySymDenotation(
+        local.denot.copySymDenotation(
           owner = newOwner,
           name = newName(local),
           initFlags = local.flags &~ Module &~ Final | Private | maybeStatic,
@@ -347,7 +347,7 @@ object LambdaLift {
       }
       for (local <- free.keys)
         if (!liftedOwner.contains(local))
-          local.copySymDenotation(info = liftedInfo(local)).installAfter(thisPhase)
+          local.denot.copySymDenotation(info = liftedInfo(local)).installAfter(thisPhase)
     }
 
     // initialization

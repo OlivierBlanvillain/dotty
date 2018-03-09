@@ -258,7 +258,7 @@ object Inliner {
    */
   def inlineCall(tree: Tree, pt: Type)(implicit ctx: Context): Tree =
     if (enclosingInlineds.length < ctx.settings.xmaxInlines.value) {
-      val body = bodyToInline(tree.symbol) // can typecheck the tree and thereby produce errors
+      val body = bodyToInline(tree.symbol.denot) // can typecheck the tree and thereby produce errors
       if (ctx.reporter.hasErrors) tree else new Inliner(tree, body).inlined(pt)
     }
     else errorTree(

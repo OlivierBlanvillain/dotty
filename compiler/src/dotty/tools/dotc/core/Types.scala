@@ -474,7 +474,7 @@ object Types {
       case tp: TypeProxy =>
         tp.underlying.findDecl(name, excluded)
       case err: ErrorType =>
-        ctx.newErrorSymbol(classSymbol orElse defn.RootClass, name, err.msg)
+        ctx.newErrorSymbol(classSymbol orElse defn.RootClass, name, err.msg).denot
       case _ =>
         NoDenotation
     }
@@ -540,7 +540,7 @@ object Types {
         case tp: JavaArrayType =>
           defn.ObjectType.findMember(name, pre, excluded)
         case err: ErrorType =>
-          ctx.newErrorSymbol(pre.classSymbol orElse defn.RootClass, name, err.msg)
+          ctx.newErrorSymbol(pre.classSymbol orElse defn.RootClass, name, err.msg).denot
         case _ =>
           NoDenotation
       }
@@ -1886,7 +1886,7 @@ object Types {
 
     /** Is this a reference to a class or object member? */
     def isMemberRef(implicit ctx: Context) = designator match {
-      case sym: Symbol => infoDependsOnPrefix(sym, prefix)
+      case sym: Symbol => infoDependsOnPrefix(sym.denot, prefix)
       case _ => true
     }
 
@@ -1918,8 +1918,8 @@ object Types {
       ctx.underlyingRecursions += 1
       if (ctx.underlyingRecursions < Config.LogPendingUnderlyingThreshold)
         op
-      else if (ctx.pendingUnderlying contains this)
-        throw CyclicReference(symbol)
+      else if (ctx.base.pendingUnderlying contains this)
+        throw CyclicReference(symbol.denot)
       else
         try {
           ctx.pendingUnderlying += this
@@ -2046,7 +2046,7 @@ object Types {
       else if (lastDenotation == null) NamedType(prefix, designator)
       else designator match {
         case sym: Symbol =>
-          if (infoDependsOnPrefix(sym, prefix) && !prefix.isArgPrefixOf(sym)) {
+          if (infoDependsOnPrefix(sym.denot, prefix) && !prefix.isArgPrefixOf(sym.denot)) {
             val candidate = reload()
             val falseOverride = sym.isClass && candidate.symbol.exists && candidate.symbol != symbol
               // A false override happens if we rebind an inner class to another type with the same name
@@ -3605,7 +3605,7 @@ object Types {
         // Note: Taking a normal typeRef does not work here. A normal ref might contain
         // also other information about the named type (e.g. bounds).
         contains(
-          TypeRef(tp.prefix, cls).withDenot(new UniqueRefDenotation(cls, tp, cls.validFor)))
+          TypeRef(tp.prefix, cls).withDenot(new UniqueRefDenotation(cls, tp, cls.denot.validFor)))
       case _ =>
         lo <:< tp && tp <:< hi
     }
@@ -4140,7 +4140,7 @@ object Types {
      *  underlying bounds to a range, otherwise return the expansion.
      */
     def expandParam(tp: NamedType, pre: Type) = tp.argForParam(pre) match {
-      case arg @ TypeRef(pre, _) if pre.isArgPrefixOf(arg.symbol) =>
+      case arg @ TypeRef(pre, _) if pre.isArgPrefixOf(arg.symbol.denot) =>
         arg.info match {
           case TypeBounds(lo, hi) => range(atVariance(-variance)(reapply(lo)), reapply(hi))
           case arg => reapply(arg)

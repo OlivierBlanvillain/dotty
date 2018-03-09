@@ -67,13 +67,13 @@ class ElimByName extends TransformByNameApply with InfoTransformer {
 
   override def transformValDef(tree: ValDef)(implicit ctx: Context): Tree =
     ctx.atPhase(next) { implicit ctx =>
-      if (exprBecomesFunction(tree.symbol))
+      if (exprBecomesFunction(tree.symbol.denot))
         cpy.ValDef(tree)(tpt = tree.tpt.withType(tree.symbol.info))
       else tree
     }
 
   def transformInfo(tp: Type, sym: Symbol)(implicit ctx: Context): Type = tp match {
-    case ExprType(rt) if exprBecomesFunction(sym) => defn.FunctionOf(Nil, rt)
+    case ExprType(rt) if exprBecomesFunction(sym.denot) => defn.FunctionOf(Nil, rt)
     case _ => tp
   }
 

@@ -910,7 +910,7 @@ object PatternMatcher {
         case LetPlan(sym, body) =>
           seq(ValDef(sym, initializer(sym).ensureConforms(sym.info)) :: Nil, emit(body))
         case LabelledPlan(label, body, params) =>
-          label.info = MethodType.fromSymbols(params, resultType)
+          label.denot.info = MethodType.fromSymbols(params, resultType)
           val labelDef = DefDef(label, Nil, params :: Nil, resultType, emit(labelled(label)))
           seq(labelDef :: Nil, emit(body))
         case CodePlan(tree) =>

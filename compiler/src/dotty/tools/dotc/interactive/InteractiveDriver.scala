@@ -194,7 +194,7 @@ class InteractiveDriver(settings: List[String]) extends Driver {
       seen += tree
       tree.foreachSubTree { t =>
         if (t.symbol.exists && t.hasType) {
-          if (!t.symbol.isCompleted) t.symbol.info = UnspecifiedErrorType
+          if (!t.symbol.isCompleted) t.symbol.denot.info = UnspecifiedErrorType
           t.symbol.annotations.foreach { annot =>
             /* In some cases annotations are are used on themself (possibly larger cycles).
             *  This is the case with the java.lang.annotation.Target annotation, would end

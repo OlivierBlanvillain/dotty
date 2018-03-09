@@ -187,7 +187,7 @@ class Definitions {
 
   private def completeClass(cls: ClassSymbol): ClassSymbol = {
     ensureConstructor(cls, EmptyScope)
-    if (cls.linkedClass.exists) cls.linkedClass.info = NoType
+    if (cls.linkedClass.exists) cls.linkedClass.denot.info = NoType
     cls
   }
 
@@ -277,13 +277,13 @@ class Definitions {
   lazy val ObjectClass: ClassSymbol = {
     val cls = ctx.requiredClass("java.lang.Object")
     assert(!cls.isCompleted, "race for completing java.lang.Object")
-    cls.info = ClassInfo(cls.owner.thisType, cls, AnyClass.typeRef :: Nil, newScope)
+    cls.denot.info = ClassInfo(cls.owner.thisType, cls, AnyClass.typeRef :: Nil, newScope)
 
     // The companion object doesn't really exist, `NoType` is the general
     // technique to do that. Here we need to set it before completing
     // attempt to load Object's classfile, which causes issue #1648.
     val companion = JavaLangPackageVal.info.decl(nme.Object).symbol
-    companion.info = NoType // to indicate that it does not really exist
+    companion.denot.info = NoType // to indicate that it does not really exist
 
     completeClass(cls)
   }
@@ -612,7 +612,7 @@ class Definitions {
     lazy val Product_productPrefixR = ProductClass.requiredMethodRef(nme.productPrefix)
     def Product_productPrefix(implicit ctx: Context) = Product_productPrefixR.symbol
   lazy val LanguageModuleRef = ctx.requiredModule("scala.language")
-  def LanguageModuleClass(implicit ctx: Context) = LanguageModuleRef.symbol.moduleClass.asClass
+  def LanguageModuleClass(implicit ctx: Context) = LanguageModuleRef.moduleClass.asClass
   lazy val NonLocalReturnControlType: TypeRef   = ctx.requiredClassRef("scala.runtime.NonLocalReturnControl")
   lazy val SelectableType: TypeRef              = ctx.requiredClassRef("scala.Selectable")
 
@@ -624,7 +624,7 @@ class Definitions {
   def QuotedExprClass(implicit ctx: Context) = QuotedExprType.symbol.asClass
 
     lazy val QuotedExpr_spliceR = QuotedExprClass.requiredMethod(nme.UNARY_~)
-    def QuotedExpr_~(implicit ctx: Context) = QuotedExpr_spliceR.symbol
+    def QuotedExpr_~(implicit ctx: Context) = QuotedExpr_spliceR
     lazy val QuotedExpr_runR = QuotedExprClass.requiredMethodRef(nme.run)
     def QuotedExpr_run(implicit ctx: Context) = QuotedExpr_runR.symbol
 

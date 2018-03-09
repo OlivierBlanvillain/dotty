@@ -554,7 +554,7 @@ private class ExtractAPICollector(implicit val ctx: Context) extends ThunkHolder
   def apiAnnotations(s: Symbol): List[api.Annotation] = {
     val annots = new mutable.ListBuffer[api.Annotation]
 
-    if (Inliner.hasBodyToInline(s)) {
+    if (Inliner.hasBodyToInline(s.denot)) {
       // FIXME: If the body of an inline method changes, all the reverse
       // dependencies of this method need to be recompiled. sbt has no way
       // of tracking method bodies, so as a hack we include the pretty-printed
@@ -562,7 +562,7 @@ private class ExtractAPICollector(implicit val ctx: Context) extends ThunkHolder
       // To do this properly we would need a way to hash trees and types in
       // dotty itself.
       val printTypesCtx = ctx.fresh.setSetting(ctx.settings.XprintTypes, true)
-      annots += marker(Inliner.bodyToInline(s).show(printTypesCtx).toString)
+      annots += marker(Inliner.bodyToInline(s.denot).show(printTypesCtx).toString)
     }
 
     // In the Scala2 ExtractAPI phase we only extract annotations that extend

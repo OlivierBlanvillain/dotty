@@ -204,9 +204,9 @@ object GenericSignatures {
             else if (sym == defn.UnitClass) jsig(defn.BoxedUnitType)
             else builder.append(defn.typeTag(sym.info))
           }
-          else if (ValueClasses.isDerivedValueClass(sym)) {
-            val unboxed     = ValueClasses.valueClassUnbox(sym.asClass).info.finalResultType
-            val unboxedSeen = tp.memberInfo(ValueClasses.valueClassUnbox(sym.asClass)).finalResultType
+          else if (ValueClasses.isDerivedValueClass(sym.denot)) {
+            val unboxed     = ValueClasses.valueClassUnbox(sym.asClass.classDenot).info.finalResultType
+            val unboxedSeen = tp.memberInfo(ValueClasses.valueClassUnbox(sym.asClass.classDenot)).finalResultType
             if (unboxedSeen.isPrimitiveValueType && !primitiveOK)
               classSig
             else

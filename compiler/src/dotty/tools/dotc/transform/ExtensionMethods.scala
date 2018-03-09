@@ -54,7 +54,7 @@ class ExtensionMethods extends MiniPhase with DenotTransformer with FullParamete
   override def transform(ref: SingleDenotation)(implicit ctx: Context): SingleDenotation = ref match {
     case moduleClassSym: ClassDenotation if moduleClassSym is ModuleClass =>
       moduleClassSym.linkedClass match {
-        case valueClass: ClassSymbol if isDerivedValueClass(valueClass) =>
+        case valueClass: ClassSymbol if isDerivedValueClass(valueClass.denot) =>
           val cinfo = moduleClassSym.classInfo
           val decls1 = cinfo.decls.cloneScope
           val moduleSym = moduleClassSym.symbol.asClass
@@ -66,7 +66,7 @@ class ExtensionMethods extends MiniPhase with DenotTransformer with FullParamete
             // not generate them again.
             if (!(valueClass is Scala2x)) ctx.atPhase(thisPhase) { implicit ctx =>
               for (decl <- valueClass.classInfo.decls) {
-                if (isMethodWithExtension(decl)) {
+                if (isMethodWithExtension(decl.denot)) {
                   val meth = createExtensionMethod(decl, moduleClassSym.symbol)
                   decls1.enter(meth)
                   // Workaround #1895: force denotation of `meth` to be
@@ -76,7 +76,7 @@ class ExtensionMethods extends MiniPhase with DenotTransformer with FullParamete
               }
             }
 
-            val underlying = valueErasure(underlyingOfValueClass(valueClass))
+            val underlying = valueErasure(underlyingOfValueClass(valueClass.classDenot))
             val evt = ErasedValueType(valueClass.typeRef, underlying)
             val u2evtSym = ctx.newSymbol(moduleSym, nme.U2EVT, Synthetic | Method,
               MethodType(List(nme.x_0), List(underlying), evt))
@@ -113,7 +113,7 @@ class ExtensionMethods extends MiniPhase with DenotTransformer with FullParamete
         ref1.removeAnnotation(defn.TailrecAnnot)
         ref1
       }
-      else if (ref.isConstructor && isDerivedValueClass(ref.owner) && ref.is(AccessFlags)) {
+      else if (ref.isConstructor && isDerivedValueClass(ref.owner.denot) && ref.is(AccessFlags)) {
         val ref1 = ref.copySymDenotation()
         ref1.resetFlag(AccessFlags)
         ref1
@@ -124,7 +124,7 @@ class ExtensionMethods extends MiniPhase with DenotTransformer with FullParamete
   }
 
   protected def rewiredTarget(target: Symbol, derived: Symbol)(implicit ctx: Context): Symbol =
-    if (isMethodWithExtension(target) &&
+    if (isMethodWithExtension(target.denot) &&
         target.owner.linkedClass == derived.owner) extensionMethod(target)
     else NoSymbol
 
@@ -144,7 +144,7 @@ class ExtensionMethods extends MiniPhase with DenotTransformer with FullParamete
   // todo: check that when transformation finished map is empty
 
   override def transformTemplate(tree: tpd.Template)(implicit ctx: Context): tpd.Tree = {
-    if (isDerivedValueClass(ctx.owner)) {
+    if (isDerivedValueClass(ctx.owner.denot)) {
       /* This is currently redundant since value classes may not
          wrap over other value classes anyway.
         checkNonCyclic(ctx.owner.pos, Set(), ctx.owner) */
@@ -161,7 +161,7 @@ class ExtensionMethods extends MiniPhase with DenotTransformer with FullParamete
   }
 
   override def transformDefDef(tree: tpd.DefDef)(implicit ctx: Context): tpd.Tree = {
-    if (isMethodWithExtension(tree.symbol)) {
+    if (isMethodWithExtension(tree.symbol.denot)) {
       val origMeth = tree.symbol
       val origClass = ctx.owner.asClass
       val staticClass = origClass.linkedClass

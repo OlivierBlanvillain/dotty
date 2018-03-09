@@ -140,7 +140,7 @@ trait NamerContextOps { this: Context =>
         val make = MethodType.maker(isJava, isImplicit, isUnused)
         if (isJava)
           for (param <- params)
-            if (param.info.isDirectRef(defn.ObjectClass)) param.info = defn.AnyType
+            if (param.info.isDirectRef(defn.ObjectClass)) param.denot.info = defn.AnyType
         make.fromSymbols(params.asInstanceOf[List[TermSymbol]], resultType)
       }
     if (typeParams.nonEmpty) PolyType.fromParams(typeParams.asInstanceOf[List[TypeSymbol]], monotpe)
@@ -317,9 +317,10 @@ class Namer { typer: Typer =>
         else NoSymbol
       val sym =
         if (prev.exists) {
-          prev.flags = flags
-          prev.info = infoFn(prev.asInstanceOf[S])
-          prev.privateWithin = privateWithinClass(tree.mods)
+          val denot = prev.denot
+          denot.flags = flags
+          denot.info = infoFn(prev.asInstanceOf[S])
+          denot.privateWithin = privateWithinClass(tree.mods)
           prev
         }
         else symFn(flags, infoFn, privateWithinClass(tree.mods))
@@ -604,8 +605,8 @@ class Namer { typer: Typer =>
       val claz = ctx.effectiveScope.lookup(classTree.name)
       val modl = ctx.effectiveScope.lookup(moduleTree.name)
       if (claz.isClass && modl.isClass) {
-        ctx.synthesizeCompanionMethod(nme.COMPANION_CLASS_METHOD, claz, modl).entered
-        ctx.synthesizeCompanionMethod(nme.COMPANION_MODULE_METHOD, modl, claz).entered
+        ctx.synthesizeCompanionMethod(nme.COMPANION_CLASS_METHOD, claz.denot, modl.denot).entered
+        ctx.synthesizeCompanionMethod(nme.COMPANION_MODULE_METHOD, modl.denot, claz.denot).entered
       }
     }
 
@@ -974,9 +975,9 @@ class Namer { typer: Typer =>
       tempInfo.finalize(denot, parentTypes)
 
       Checking.checkWellFormed(cls)
-      if (isDerivedValueClass(cls)) cls.setFlag(Final)
-      cls.info = avoidPrivateLeaks(cls, cls.pos)
-      cls.baseClasses.foreach(_.invalidateBaseTypeCache()) // we might have looked before and found nothing
+      if (isDerivedValueClass(cls.denot)) cls.setFlag(Final)
+      cls.denot.info = avoidPrivateLeaks(cls, cls.pos)
+      cls.baseClasses.foreach(_.classDenot.invalidateBaseTypeCache()) // we might have looked before and found nothing
     }
   }
 
@@ -1220,7 +1221,7 @@ class Namer { typer: Typer =>
   def typeDefSig(tdef: TypeDef, sym: Symbol, tparamSyms: List[TypeSymbol])(implicit ctx: Context): Type = {
     def abstracted(tp: Type): Type = HKTypeLambda.fromParams(tparamSyms, tp)
     val dummyInfo = abstracted(TypeBounds.empty)
-    sym.info = dummyInfo
+    sym.denot.info = dummyInfo
     sym.setFlag(Provisional)
       // Temporarily set info of defined type T to ` >: Nothing <: Any.
       // This is done to avoid cyclic reference errors for F-bounds.
@@ -1241,10 +1242,10 @@ class Namer { typer: Typer =>
     val rhsBodyType = typedAheadType(rhs).tpe
     val rhsType = if (isDerived) rhsBodyType else abstracted(rhsBodyType)
     val unsafeInfo = rhsType.toBounds
-    if (isDerived) sym.info = unsafeInfo
+    if (isDerived) sym.denot.info = unsafeInfo
     else {
-      sym.info = NoCompleter
-      sym.info = checkNonCyclic(sym, unsafeInfo, reportErrors = true)
+      sym.denot.info = NoCompleter
+      sym.denot.info = checkNonCyclic(sym, unsafeInfo, reportErrors = true)
     }
     sym.resetFlag(Provisional)
 

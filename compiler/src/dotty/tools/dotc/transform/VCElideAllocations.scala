@@ -27,7 +27,7 @@ class VCElideAllocations extends MiniPhase with IdentityDenotTransformer {
       // new V(u1) == new V(u2) => u1 == u2
       // (We don't handle != because it has been eliminated by InterceptedMethods)
       case BinaryOp(NewWithArgs(tp1, List(u1)), op, NewWithArgs(tp2, List(u2)))
-      if (tp1 eq tp2) && (op eq defn.Any_==) && isDerivedValueClass(tp1.typeSymbol) =>
+      if (tp1 eq tp2) && (op eq defn.Any_==) && isDerivedValueClass(tp1.typeSymbol.denot) =>
         // == is overloaded in primitive classes
         applyOverloaded(u1, nme.EQ, List(u2), Nil, defn.BooleanType)
 
