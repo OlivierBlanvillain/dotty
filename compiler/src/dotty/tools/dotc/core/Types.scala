@@ -3733,6 +3733,7 @@ object Types {
     }
     // equals comes from case class; no matching override is needed
   }
+  class Test123(i: Int) extends AnnotatedType(null, null)
 
   object AnnotatedType {
     def make(underlying: Type, annots: List[Annotation]) =
@@ -3756,6 +3757,23 @@ object Types {
     private[dotc] def isLegalTopLevelTree(tree: Tree): Boolean = tree match {
       case _: TypeApply | _: Apply | _: If | _: Match => true
       case _ => false
+    }
+
+    def verySimilar(tree1: Tree, tree2: Tree): Boolean = {
+      def compareArgs[T <: Tree](args1: List[T], args2: List[T]): Boolean =
+        args1.zip(args2).forall { case (a,b) => a.tpe == b.tpe }
+      (tree1, tree2) match {
+        case (t1: Apply, t2: Apply) =>
+          t1.fun.tpe == t2.fun.tpe && compareArgs(t1.args, t2.args)
+        case (t1: TypeApply, t2: TypeApply) =>
+          t1.fun.tpe == t2.fun.tpe && compareArgs(t1.args, t2.args)
+        case (t1: If, t2: If) =>
+          t1.cond.tpe == t2.cond.tpe && t1.thenp.tpe == t2.thenp.tpe && t1.elsep.tpe == t2.elsep.tpe
+        case (t1: Match, t2: Match) =>
+          t1.selector.tpe == t2.selector.tpe && compareArgs(t1.cases, t2.cases)
+        case (t1, t2) =>
+          false
+      }
     }
 
     /** To be used from type assigner. The assumption is that tree is currently

@@ -36,7 +36,12 @@ object Annotations {
     def ensureCompleted(implicit ctx: Context): Unit = tree
 
     def sameAnnotation(that: Annotation)(implicit ctx: Context) =
-      symbol == that.symbol && tree.sameTree(that.tree)
+      symbol == that.symbol && {
+        if (that.symbol eq defn.TypeOfAnnot)
+          TypeOf.verySimilar(tree, that.tree)
+        else
+          tree.sameTree(that.tree)
+      }
   }
 
   case class ConcreteAnnotation(t: Tree) extends Annotation {

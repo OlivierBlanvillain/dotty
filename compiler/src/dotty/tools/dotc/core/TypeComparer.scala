@@ -567,6 +567,7 @@ class TypeComparer(initctx: Context) extends DotClass with ConstraintHandling {
             false
         }
         compareTypeBounds
+
       case tp2: AnnotatedType if tp2.isRefining =>
         (tp1.derivesAnnotWith(tp2.annot.sameAnnotation) || defn.isBottomType(tp1)) &&
         recur(tp1, tp2.parent)
