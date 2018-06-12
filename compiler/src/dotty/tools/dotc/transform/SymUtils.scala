@@ -180,4 +180,8 @@ class SymUtils(val self: Symbol) extends AnyVal {
   /** Is symbol a splice operation? */
   def isSplice(implicit ctx: Context): Boolean =
     self == defn.QuotedExpr_~ || self == defn.QuotedType_~
+
+  /** Does this symbol have a transparent owner, itself included? */
+  def isTransitivelyTransparent(implicit ctx: Context): Boolean =
+    self.ownersIterator.exists(_.isTransparentMethod)
 }
