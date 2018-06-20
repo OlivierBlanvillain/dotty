@@ -16,6 +16,15 @@ object PrivateLeaks {
   }
 }
 
+// object CyclicTransparenType {
+//   transparent def trans(j: Int): Int = {
+//     println(opaque(j))
+//     2 * j
+//   }
+
+//   def opaque(i: Int) = {trans(2): { 2 * 2 }} + i
+// }
+
 // object SimpleEqs {
 //   val x = 1
 //   val y: {x} = x

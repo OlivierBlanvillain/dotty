@@ -1,82 +1,102 @@
-object SimpleEqs {
-  val x = 1
-  val y: {x} = x
-  // val z: {y + 1} = y + 1
-}
+// object SimpleEqs {
+//   val x = 1
+//   val y: {x} = x
+//   // val z: {y + 1} = y + 1
+// }
 
-object Call {
-  transparent def foo(x: Int) = 123
-  foo(1): { foo(1) }
-  foo(1): Int
-}
+// object Call {
+//   transparent def foo(x: Int) = 123
+//   foo(1): { foo(1) }
+//   foo(1): Int
+// }
 
-object ITE {
-  transparent def foo1(b: Boolean) = {
-    val res = if (b)
-      1
-    else
-      2
-    identity[{ if (b) 1 else 2 }](res)
-    res
-  }
+// object ITE {
+//   transparent def foo1(b: Boolean) = {
+//     val res = if (b)
+//       1
+//     else
+//       2
+//     identity[{ if (b) 1 else 2 }](res)
+//     res
+//   }
 
-  transparent def foo2(b: Boolean): { if (b) 1 else 2 } =
-    if (b) 1 else 2
+//   transparent def foo2(b: Boolean): { if (b) 1 else 2 } =
+//     if (b) 1 else 2
 
-  // Postponed until we can beta reduce
-  // foo(true):  { if(true) 1 else 2 }
-  // foo(false): { if(false) 1 else 2 }
-  // var b: Boolean = true
-  // foo(b): { if(b) 1 else 2 }
-}
+//   // Postponed until we can beta reduce
+//   // foo(true):  { if(true) 1 else 2 }
+//   // foo(false): { if(false) 1 else 2 }
+//   // var b: Boolean = true
+//   // foo(b): { if(b) 1 else 2 }
+// }
 
 object Match {
-  transparent def foo1(b: Boolean) = {
-    val res = b match {
-      case true => 1
-      case false => 2
-    }
-    identity[{ b match { case true => 1; case false => 2 } }](res)
-    res
-  }
+  // transparent def foo1(b: Boolean) = {
+  //   val res = b match {
+  //     case true => 1
+  //     case false => 2
+  //   }
+  //   identity[{ b match { case true => 1; case false => 2 } }](res)
+  //   res
+  // }
 
-  transparent def foo(b: Boolean): { b match { case true => 1; case false => 2 } } =
+  transparent def foo(b: Boolean): Int =
     b match { case true => 1; case false => 2 }
 }
 
-object Applied {
-  transparent def foo1(b: Boolean) = ???
-  transparent def foo2(b: Boolean): { foo1(b) } = foo1(b)
-  val a: { foo2(true) } = foo2(true)
-}
+// object Applied {
+//   transparent def foo1(b: Boolean) = ???
+//   transparent def foo2(b: Boolean): { foo1(b) } = foo1(b)
+//   val a: { foo2(true) } = foo2(true)
+// }
 
-object Approx1 {
-  transparent def foo(x: Any): { x } = x
-  class A {
-    transparent def bar(i: Int): Int = i + 1
-    val v: { bar(foo(1)) } = bar(foo(1))
-  }
+// object Approx1 {
+//   transparent def foo(x: Any): { x } = x
+//   class A {
+//     transparent def bar(i: Int): Int = i + 1
+//     val v: { bar(foo(1)) } = bar(foo(1))
+//   }
 
-  val a = new A {}
-  val b: { a.bar(foo(1)) } = a.v
+//   val a = new A {}
+//   val b: { a.bar(foo(1)) } = a.v
 
-  var c = new A {}
-  val d: { c.bar(foo(1)) } = c.v
-}
+//   var c = new A {}
+//   val d: { c.bar(foo(1)) } = c.v
+// }
 
-object Approx2 {
-  transparent def foo(x: Any): { x } = x
-  class A {
-    transparent def bar(i: Int): Int = i + 1
-    val v: { foo(bar(1)) } = foo(bar(1))
-  }
+// object Approx2 {
+//   transparent def foo(x: Any): { x } = x
+//   class A {
+//     transparent def bar(i: Int): Int = i + 1
+//     val v: { foo(bar(1)) } = foo(bar(1))
+//   }
 
-  val a = new A {}
-  val b: { foo(a.bar(1)) }= a.v
+//   val a = new A {}
+//   val b: { foo(a.bar(1)) }= a.v
 
-  val c = new A {}
-  val d: { foo(c.bar(1)) }= c.v
-}
+//   val c = new A {}
+//   val d: { foo(c.bar(1)) }= c.v
+// }
+
+// object SimpleType {
+//   type A = { 2 * 2 }
+// }
+
+
+// object Ignored {
+//   val a = 1
+//   transparent def plus(a: Int, b: Int) = a + b
+
+//   type Foo = {{
+//     case class Bar(i: Int)
+//     println(Bar(1))
+//     plus(a, a)
+//   }}
+
+//   type Bar = { plus(a, a) }
+
+//   implicitly[Foo =:= Bar]
+// }
 
 // object AvoidLocalRefs {
 //   type Id[T] = T
