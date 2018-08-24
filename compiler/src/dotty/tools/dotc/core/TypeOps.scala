@@ -116,8 +116,12 @@ trait TypeOps { this: Context => // TODO: Make standalone object.
   }
 
   /** Normalize */
-  final def normalize(tp: Type): Type =
-    new NormalizeMap().apply(tp)
+  final def normalize(tp: Type): Type = {
+    // print("<")
+    val res = new NormalizeMap().apply(tp)
+    // print(">")
+    res
+  }
 
   /** Normalize the type as far as possible, if we are in an opaque context before erasure. */
   final def normalizedType(tp: Type): Type =

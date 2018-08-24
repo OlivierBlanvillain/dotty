@@ -133,6 +133,27 @@ object Types {
       accu.apply(false, this)
     }
 
+    /** Normalized versions of this type */
+    private[this] var myNormalized: Type = _
+    private[this] var myIsNormalizing: Boolean = false
+
+    final def isNormalizing: Boolean = myIsNormalizing
+
+    final def normalized(implicit ctx: Context): Type = {
+      assert(!isNormalizing)
+      if (myNormalized == null) {
+        myIsNormalizing = true
+        ctx.normalize(this)
+        assert(!myIsNormalizing)
+      }
+      myNormalized
+    }
+
+    final def setNormalized(tpNormalized: Type): Unit = {
+      myNormalized = tpNormalized
+      myIsNormalizing = false
+    }
+
     /** Is this type different from NoType? */
     final def exists: Boolean = this.ne(NoType)
 

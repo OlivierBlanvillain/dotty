@@ -21,6 +21,7 @@ import scala.annotation.internal.sharable
 
 object Normalize {
   @sharable var track = true
+  @sharable var cache_normalized = true
 }
 
 private final class NormalizeMap(implicit ctx: Context) extends TypeMap {
@@ -107,7 +108,7 @@ private final class NormalizeMap(implicit ctx: Context) extends TypeMap {
     * error otherwise.
     */
   private def defUnfolder(fnSym: Symbol): Unfolder = {
-    assert(fnSym.isTerm && fnSym.isDependentMethod && fnSym.hasAnnotation(defn.BodyAnnot), s"Tried to illegally unfold $fnSym")
+    assert(fnSym.isTerm && fnSym.isDependentMethod && fnSym.hasAnnotation(defn.BodyAnnot), s"Tried to illegally unfold $fnSym with flags ${fnSym.flags} ${fnSym.isDependentMethod}")
     val body: Tree = fnSym.getAnnotation(defn.BodyAnnot) match {
       case Some(annot) =>
         if (annot.isEvaluating)
@@ -254,7 +255,17 @@ private final class NormalizeMap(implicit ctx: Context) extends TypeMap {
       errorType(i"Diverged while normalizing $tp (${ctx.settings.XmaxTypeEvaluationSteps.value} steps)", ctx.tree.pos)
     else {
       fuel -= 1
-      bigStep(tp)
+      // print(".")
+      if (Normalize.cache_normalized)
+        if (tp.isNormalizing) {
+          val tpNormalized = bigStep(tp)
+          tp.setNormalized(tpNormalized)
+          tpNormalized
+        } else {
+          tp.normalized
+        }
+      else
+        bigStep(tp)
     }
   }
 }
