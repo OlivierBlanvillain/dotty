@@ -26,4 +26,4 @@ to rename the inner classes so that their names are different.
 
 
 
-
+Seed discussion in [#4361](https://github.com/lampepfl/dotty/issues/4361)
